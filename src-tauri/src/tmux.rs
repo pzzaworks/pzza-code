@@ -1,7 +1,7 @@
 use std::process::Command;
 
-// A tmux session on the devbox. One session maps to one grid tile, mirroring
-// how the devbox-tmux-sessions script treats a session as a cmux tab.
+// A tmux session on the device. One session maps to one grid tile, and a
+// session name is treated as a cmux tab.
 #[derive(serde::Serialize)]
 pub struct TmuxSession {
     name: String,

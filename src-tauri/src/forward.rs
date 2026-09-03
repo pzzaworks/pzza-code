@@ -2,10 +2,10 @@ use std::collections::HashSet;
 use std::process::Command;
 use std::sync::Mutex;
 
-// Port forwarding over the devbox's multiplexed ssh master, mirroring the
-// devbox-autoforward logic: scan the remote's listening TCP ports and keep a
-// matching set of -L forwards. Console tracks the forwards it added itself in
-// `active`, so it never fights over ports another manager owns.
+// Port forwarding over the remote's multiplexed ssh master: scan the remote's
+// listening TCP ports and keep a matching set of -L forwards. Console tracks the
+// forwards it added itself in `active`, so it never fights over ports another
+// manager owns.
 #[derive(Default)]
 pub struct ForwardState {
     active: Mutex<HashSet<u16>>,
