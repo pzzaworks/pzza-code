@@ -448,6 +448,16 @@ button {
   border: 1px solid var(--border);
   border-radius: 13px;
   box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+  /* CSS (not JS) entrance: a rAF-driven animation can stall mid-frame with many
+     WebGL terminals on screen and leave the panel translucent. */
+  transform-origin: top center;
+  animation: menu-in 0.12s ease-out;
+}
+@keyframes menu-in {
+  from {
+    opacity: 0;
+    transform: translateY(-6px) scale(0.98);
+  }
 }
 .menu-item {
   display: flex;
@@ -945,20 +955,20 @@ button {
 }
 .usage-seg {
   display: flex;
-  gap: 2px;
-  padding: 2px;
+  gap: 3px;
+  padding: 3px;
   background: var(--bg);
   border: 1px solid var(--border);
-  border-radius: 7px;
+  border-radius: 9px;
 }
 .usage-seg button {
   border: none;
   background: transparent;
   color: var(--muted);
-  font-size: 10.5px;
+  font-size: 12px;
   font-weight: 600;
-  padding: 2px 8px;
-  border-radius: 5px;
+  padding: 4px 12px;
+  border-radius: 6px;
   cursor: pointer;
   transition: background 0.12s, color 0.12s;
 }
@@ -1076,6 +1086,31 @@ button {
 .usage-err {
   font-size: 11.5px;
   color: var(--danger);
+}
+.usage-spend {
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+  margin-top: 9px;
+  padding-top: 8px;
+  border-top: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
+  font-size: 11px;
+  color: var(--muted);
+}
+.usage-spend-label {
+  font-weight: 600;
+  color: var(--text);
+}
+.usage-spend-item b {
+  color: var(--text);
+  font-weight: 600;
+}
+.usage-spend-est {
+  margin-left: auto;
+  font-size: 9.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  opacity: 0.6;
 }
 
 /* Help & docs modal - two-pane docs site */
@@ -1384,21 +1419,22 @@ button {
 .sw-tabs {
   display: flex;
   gap: 4px;
-  padding: 3px;
+  padding: 4px;
   margin-bottom: 14px;
   background: var(--bg);
   border: 1px solid var(--border);
-  border-radius: 9px;
+  border-radius: 11px;
 }
 .sw-tab {
   flex: 1;
-  padding: 6px 10px;
+  height: 34px;
+  padding: 0 12px;
   border: none;
   background: transparent;
   color: var(--muted);
-  font-size: 12.5px;
+  font-size: 13px;
   font-weight: 600;
-  border-radius: 6px;
+  border-radius: 8px;
   cursor: pointer;
   transition: background 0.12s, color 0.12s;
 }
@@ -2090,6 +2126,18 @@ button {
   align-items: center;
   justify-content: center;
   background: rgba(0, 0, 0, 0.55);
+  animation: modal-fade 0.14s ease-out;
+}
+@keyframes modal-fade {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes modal-pop {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.97);
+  }
 }
 .modal {
   width: 500px;
@@ -2097,6 +2145,7 @@ button {
   max-height: 82vh;
   display: flex;
   flex-direction: column;
+  animation: modal-pop 0.16s cubic-bezier(0.2, 0.8, 0.2, 1);
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 18px;
