@@ -18,27 +18,42 @@ function fmtReset(iso: string | null): string {
   return `${Math.floor(h / 24)}d ${h % 24}h`;
 }
 
-function barColor(pct: number): string {
-  if (pct >= 90) return "#e5484d";
-  if (pct >= 70) return "#d9a441";
+// Color always reflects how much is USED (the risk), regardless of what the
+// number shows - a nearly-exhausted window is red whether it reads "5% left"
+// or "95% used".
+function barColor(used: number): string {
+  if (used >= 90) return "#e5484d";
+  if (used >= 70) return "#d9a441";
   return "#5fb37f";
 }
 
-function Bar({ label, w }: { label: string; w: UsageWindow | null }) {
+type Mode = "left" | "used";
+
+function Bar({ label, w, mode }: { label: string; w: UsageWindow | null; mode: Mode }) {
   if (!w) return null;
-  const pct = Math.min(100, Math.max(0, Math.round(w.utilization)));
+  const used = Math.min(100, Math.max(0, Math.round(w.utilization)));
+  const shown = mode === "used" ? used : 100 - used;
   return (
     <div className="usage-bar-row">
       <div className="usage-bar-top">
         <span className="usage-bar-label">{label}</span>
-        <span className="usage-bar-pct">{pct}%</span>
+        <span className="usage-bar-pct">{shown}%</span>
         {w.resets_at ? <span className="usage-bar-reset">· {fmtReset(w.resets_at)}</span> : null}
       </div>
       <div className="usage-bar">
-        <div className="usage-bar-fill" style={{ width: `${pct}%`, background: barColor(pct) }} />
+        <div className="usage-bar-fill" style={{ width: `${shown}%`, background: barColor(used) }} />
       </div>
     </div>
   );
+}
+
+const MODE_KEY = "pzza.usage.display";
+function loadMode(): Mode {
+  try {
+    return localStorage.getItem(MODE_KEY) === "used" ? "used" : "left";
+  } catch {
+    return "left";
+  }
 }
 
 // Agent usage for the connected device's Claude / Codex accounts.
@@ -46,6 +61,16 @@ export function UsageMenu() {
   const [loading, setLoading] = useState(true);
   const [accounts, setAccounts] = useState<AccountUsage[]>([]);
   const [failed, setFailed] = useState(false);
+  const [mode, setMode] = useState<Mode>(loadMode);
+
+  const changeMode = (m: Mode) => {
+    setMode(m);
+    try {
+      localStorage.setItem(MODE_KEY, m);
+    } catch {
+      /* ignore */
+    }
+  };
 
   const load = useCallback(() => {
     setLoading(true);
@@ -63,9 +88,25 @@ export function UsageMenu() {
     <div className="menu-body usage-menu">
       <div className="usage-head">
         <span className="menu-title">Agent usage</span>
-        <button className="usage-refresh" onClick={load} title="Refresh" disabled={loading}>
-          <RefreshCw size={13} className={loading ? "sw-spin" : ""} />
-        </button>
+        <div className="usage-tools">
+          <div className="usage-seg" role="group" title="Show remaining or used">
+            <button
+              className={mode === "left" ? "on" : ""}
+              onClick={() => changeMode("left")}
+            >
+              Left
+            </button>
+            <button
+              className={mode === "used" ? "on" : ""}
+              onClick={() => changeMode("used")}
+            >
+              Used
+            </button>
+          </div>
+          <button className="usage-refresh" onClick={load} title="Refresh" disabled={loading}>
+            <RefreshCw size={13} className={loading ? "sw-spin" : ""} />
+          </button>
+        </div>
       </div>
 
       {loading && accounts.length === 0 ? (
@@ -93,13 +134,14 @@ export function UsageMenu() {
                 <div className="usage-err">{acc.error}</div>
               ) : (
                 <>
-                  <Bar label="5h" w={acc.usage?.five_hour ?? null} />
-                  <Bar label="Weekly" w={acc.usage?.seven_day ?? null} />
+                  <Bar label="5h" w={acc.usage?.five_hour ?? null} mode={mode} />
+                  <Bar label="Weekly" w={acc.usage?.seven_day ?? null} mode={mode} />
                   {acc.usage?.scoped.map((s) => (
                     <Bar
                       key={s.name}
                       label={s.name}
                       w={{ utilization: s.percent, resets_at: s.resets_at }}
+                      mode={mode}
                     />
                   ))}
                 </>
