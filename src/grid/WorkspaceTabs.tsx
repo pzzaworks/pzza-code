@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { motion } from "framer-motion";
 import { Check, LayoutGrid, Plus } from "lucide-react";
 import { useStore } from "../state/store";
 import { Modal } from "../ui/Modal";
@@ -16,13 +15,6 @@ interface PendingMove {
   session: string;
   wsId: string;
 }
-
-const menuAnim = {
-  initial: { opacity: 0, y: -6, scale: 0.98 },
-  animate: { opacity: 1, y: 0, scale: 1 },
-  exit: { opacity: 0, y: -6, scale: 0.98 },
-  transition: { duration: 0.12 },
-};
 
 export function WorkspaceTabs() {
   const workspaces = useStore((s) => s.workspaces);
@@ -190,16 +182,16 @@ export function WorkspaceTabs() {
 
       {settingsFor
         ? createPortal(
-            <motion.div className="menu menu-panel pzza-portal" style={dropStyle(settingsRect)} {...menuAnim}>
+            <div className="menu menu-panel pzza-portal" style={dropStyle(settingsRect)}>
               <WorkspaceSettings id={settingsFor} close={() => setSettingsFor(null)} />
-            </motion.div>,
+            </div>,
             document.body,
           )
         : null}
 
       {addOpen
         ? createPortal(
-            <motion.div className="menu menu-panel pzza-portal" style={dropStyle(addRect)} {...menuAnim}>
+            <div className="menu menu-panel pzza-portal" style={dropStyle(addRect)}>
               <div className="menu-body">
                 <div className="menu-title">New workspace</div>
                 <div className="ws-chip">
@@ -247,7 +239,7 @@ export function WorkspaceTabs() {
                   Add workspace
                 </button>
               </div>
-            </motion.div>,
+            </div>,
             document.body,
           )
         : null}

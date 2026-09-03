@@ -172,6 +172,25 @@ export async function fetchUsage(): Promise<AccountUsage[]> {
   return res.json();
 }
 
+export interface SpendWindow {
+  cost: number;
+  tokens: number;
+}
+export interface AccountSpend {
+  provider: "claude" | "codex";
+  label: string;
+  today: SpendWindow;
+  yesterday: SpendWindow;
+  window: SpendWindow;
+}
+// Estimated spend per account (today / yesterday / trailing 30 days), computed
+// from local transcripts. First call can take a few seconds; the agent caches it.
+export async function fetchSpend(): Promise<AccountSpend[]> {
+  const res = await fetch(`${SERVER_HTTP}/spend`);
+  if (!res.ok) throw new Error(`spend ${res.status}`);
+  return res.json();
+}
+
 export interface Doctor {
   role: "source" | "client";
   host: string | null;

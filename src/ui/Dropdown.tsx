@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { AnimatePresence, motion } from "framer-motion";
 import type { LucideIcon } from "lucide-react";
 import { IconButton } from "./IconButton";
 import { useExclusiveMenu } from "./menuBus";
@@ -60,20 +59,11 @@ export function Dropdown({ icon: Icon, title, label, accent, width = 300, childr
           active={open}
         />
       )}
-      <AnimatePresence>
-        {open ? (
-          <motion.div
-            className="menu menu-panel"
-            style={{ width }}
-            initial={{ opacity: 0, y: -6, scale: 0.98 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: -6, scale: 0.98 }}
-            transition={{ duration: 0.12 }}
-          >
-            {typeof children === "function" ? children(close) : children}
-          </motion.div>
-        ) : null}
-      </AnimatePresence>
+      {open ? (
+        <div className="menu menu-panel" style={{ width }}>
+          {typeof children === "function" ? children(close) : children}
+        </div>
+      ) : null}
     </div>
   );
 }

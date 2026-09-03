@@ -1,6 +1,17 @@
 import { useCallback, useEffect, useState } from "react";
 import { AlertTriangle, Loader2, RefreshCw } from "lucide-react";
-import { fetchUsage, type AccountUsage, type UsageWindow } from "../serverApi";
+import {
+  fetchUsage,
+  fetchSpend,
+  type AccountUsage,
+  type AccountSpend,
+  type UsageWindow,
+} from "../serverApi";
+
+function fmtCost(c: number): string {
+  if (c >= 100) return `$${Math.round(c).toLocaleString()}`;
+  return `$${c.toFixed(2)}`;
+}
 
 const PROVIDER: Record<string, { name: string; color: string }> = {
   claude: { name: "Claude", color: "#D97757" },
@@ -62,6 +73,7 @@ export function UsageMenu() {
   const [accounts, setAccounts] = useState<AccountUsage[]>([]);
   const [failed, setFailed] = useState(false);
   const [mode, setMode] = useState<Mode>(loadMode);
+  const [spend, setSpend] = useState<Record<string, AccountSpend>>({});
 
   const changeMode = (m: Mode) => {
     setMode(m);
@@ -81,6 +93,14 @@ export function UsageMenu() {
       })
       .catch(() => setFailed(true))
       .finally(() => setLoading(false));
+    // Spend resolves separately (a slower local scan) so it never holds up usage.
+    fetchSpend()
+      .then((s) => {
+        const map: Record<string, AccountSpend> = {};
+        for (const e of s) map[`${e.provider}:${e.label}`] = e;
+        setSpend(map);
+      })
+      .catch(() => undefined);
   }, []);
   useEffect(() => load(), [load]);
 
@@ -144,6 +164,22 @@ export function UsageMenu() {
                       mode={mode}
                     />
                   ))}
+                  {(() => {
+                    const sp = spend[`${acc.provider}:${acc.label}`];
+                    if (!sp) return null;
+                    return (
+                      <div className="usage-spend" title="Estimated from local transcripts">
+                        <span className="usage-spend-label">Spend</span>
+                        <span className="usage-spend-item">
+                          today <b>{fmtCost(sp.today.cost)}</b>
+                        </span>
+                        <span className="usage-spend-item">
+                          30d <b>{fmtCost(sp.window.cost)}</b>
+                        </span>
+                        <span className="usage-spend-est">est.</span>
+                      </div>
+                    );
+                  })()}
                 </>
               )}
             </div>
