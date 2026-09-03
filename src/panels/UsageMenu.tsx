@@ -1,0 +1,113 @@
+import { useCallback, useEffect, useState } from "react";
+import { AlertTriangle, Loader2, RefreshCw } from "lucide-react";
+import { fetchUsage, type AccountUsage, type UsageWindow } from "../serverApi";
+
+const PROVIDER: Record<string, { name: string; color: string }> = {
+  claude: { name: "Claude", color: "#D97757" },
+  codex: { name: "Codex", color: "#10A37F" },
+};
+
+function fmtReset(iso: string | null): string {
+  if (!iso) return "";
+  const ms = new Date(iso).getTime() - Date.now();
+  if (ms <= 0) return "now";
+  const m = Math.round(ms / 60000);
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ${m % 60}m`;
+  return `${Math.floor(h / 24)}d ${h % 24}h`;
+}
+
+function barColor(pct: number): string {
+  if (pct >= 90) return "#e5484d";
+  if (pct >= 70) return "#d9a441";
+  return "#5fb37f";
+}
+
+function Bar({ label, w }: { label: string; w: UsageWindow | null }) {
+  if (!w) return null;
+  const pct = Math.min(100, Math.max(0, Math.round(w.utilization)));
+  return (
+    <div className="usage-bar-row">
+      <div className="usage-bar-top">
+        <span className="usage-bar-label">{label}</span>
+        <span className="usage-bar-pct">{pct}%</span>
+        {w.resets_at ? <span className="usage-bar-reset">· {fmtReset(w.resets_at)}</span> : null}
+      </div>
+      <div className="usage-bar">
+        <div className="usage-bar-fill" style={{ width: `${pct}%`, background: barColor(pct) }} />
+      </div>
+    </div>
+  );
+}
+
+// Agent usage for the connected device's Claude / Codex accounts.
+export function UsageMenu() {
+  const [loading, setLoading] = useState(true);
+  const [accounts, setAccounts] = useState<AccountUsage[]>([]);
+  const [failed, setFailed] = useState(false);
+
+  const load = useCallback(() => {
+    setLoading(true);
+    fetchUsage()
+      .then((a) => {
+        setAccounts(a);
+        setFailed(false);
+      })
+      .catch(() => setFailed(true))
+      .finally(() => setLoading(false));
+  }, []);
+  useEffect(() => load(), [load]);
+
+  return (
+    <div className="menu-body usage-menu">
+      <div className="usage-head">
+        <span className="menu-title">Agent usage</span>
+        <button className="usage-refresh" onClick={load} title="Refresh" disabled={loading}>
+          <RefreshCw size={13} className={loading ? "sw-spin" : ""} />
+        </button>
+      </div>
+
+      {loading && accounts.length === 0 ? (
+        <div className="usage-empty">
+          <Loader2 size={15} className="sw-spin" /> Loading...
+        </div>
+      ) : failed ? (
+        <div className="usage-empty">
+          <AlertTriangle size={15} className="sw-warn" /> Agent unreachable.
+        </div>
+      ) : accounts.length === 0 ? (
+        <div className="usage-empty muted">No Claude or Codex accounts found on this device.</div>
+      ) : (
+        accounts.map((acc, i) => {
+          const p = PROVIDER[acc.provider] ?? { name: acc.label, color: "var(--accent)" };
+          return (
+            <div className="usage-card" key={i}>
+              <div className="usage-card-head">
+                <span className="usage-dot" style={{ background: p.color }} />
+                <span className="usage-name">{p.name}</span>
+                {acc.plan ? <span className="usage-plan">{acc.plan.replace(/_/g, " ")}</span> : null}
+                {acc.email ? <span className="usage-email">{acc.email}</span> : null}
+              </div>
+              {acc.error ? (
+                <div className="usage-err">{acc.error}</div>
+              ) : (
+                <>
+                  <Bar label="5h" w={acc.usage?.five_hour ?? null} />
+                  <Bar label="Weekly" w={acc.usage?.seven_day ?? null} />
+                  {acc.usage?.scoped.map((s) => (
+                    <Bar
+                      key={s.name}
+                      label={s.name}
+                      w={{ utilization: s.percent, resets_at: s.resets_at }}
+                    />
+                  ))}
+                </>
+              )}
+            </div>
+          );
+        })
+      )}
+    </div>
+  );
+}
