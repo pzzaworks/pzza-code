@@ -2,10 +2,10 @@ use std::net::TcpStream;
 use std::process::Command;
 use std::time::Duration;
 
-// Launches the devbox Linux desktop over RDP, mirroring devbox-rdp / Devbox.app:
-// an ssh tunnel exposes the firewalled remote 3389 on a local port, the RDP
-// password is read from the login Keychain at launch (never stored here), and a
-// bundled/homebrew sdl-freerdp connects with the pinned cert fingerprint.
+// Launches the remote Linux desktop over RDP: an ssh tunnel exposes the
+// firewalled remote 3389 on a local port, the RDP password is read from the
+// login Keychain at launch (never stored here), and a bundled/homebrew
+// sdl-freerdp connects with the pinned cert fingerprint.
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RdpOptions {
@@ -70,14 +70,13 @@ fn keychain_password(service: &str) -> Result<String, String> {
 }
 
 // Open the RDP desktop in its own sdl-freerdp window. The window is external by
-// design (the current, working devbox-rdp approach); in-tile embedding is a
-// later phase.
+// design; in-tile embedding is a later phase.
 #[tauri::command]
 pub fn rdp_launch(opts: RdpOptions) -> Result<(), String> {
     ensure_tunnel(&opts.host, opts.tunnel_port, opts.remote_port)?;
     let password = keychain_password(&opts.keychain_service)?;
 
-    // Argument set matches Devbox.app exactly so behavior is identical.
+    // Argument set chosen for consistent, reliable RDP behavior.
     Command::new(&opts.freerdp_bin)
         .arg(format!("/v:127.0.0.1:{}", opts.tunnel_port))
         .arg(format!("/u:{}", opts.user))

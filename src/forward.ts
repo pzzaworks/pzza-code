@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 
-// Matches devbox-autoforward's defaults: never mirror ssh, the stub resolver,
-// printing, or the remote desktop listener; ports below 1024 need root locally.
+// Forwarding defaults: never mirror ssh, the stub resolver, printing, or the
+// remote desktop listener; ports below 1024 need root locally.
 export const DEFAULT_SKIP = [22, 53, 631, 3389];
 export const DEFAULT_MIN_PORT = 1024;
 

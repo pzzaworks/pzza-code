@@ -115,7 +115,7 @@ function scanSessions(host) {
   });
 }
 
-// ---- Forwarding (receiver only): the devbox-autoforward loop in-process ----
+// ---- Forwarding (client only): the port-mirror loop, in-process ----
 let fwdEnabled = true;
 const active = new Set();
 
