@@ -3,6 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "description": "A grid terminal manager for agentic coding - run, watch and orchestrate many terminals and AI coding agents across your machines from one fast cockpit.",
+  "license": "MIT",
   "type": "module",
   "scripts": {
     "dev": "vite",
