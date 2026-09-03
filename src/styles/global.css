@@ -938,6 +938,37 @@ button {
   justify-content: space-between;
   margin-bottom: 8px;
 }
+.usage-tools {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.usage-seg {
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+}
+.usage-seg button {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: 10.5px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 5px;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+.usage-seg button:hover:not(.on) {
+  color: var(--text);
+}
+.usage-seg button.on {
+  background: var(--surface-alt);
+  color: var(--text);
+}
 .usage-refresh {
   width: 24px;
   height: 24px;
