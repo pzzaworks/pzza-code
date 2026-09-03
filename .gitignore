@@ -1,0 +1,47 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Build output
+dist/
+dist-ssr/
+build/
+*.local
+
+# Machine-specific overrides (never commit personal host/user/cert/keychain)
+*.local.ts
+src/rdp.local.ts
+
+# Rust / Tauri
+src-tauri/target/
+src-tauri/gen/
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+id_rsa*
+
+# Logs
+*.log
+logs/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Caches
+.cache/
+.vite/
+.eslintcache
+
+# Editors
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
