@@ -4,7 +4,7 @@ import { fetchMcpConfig, mcpInstall, type McpConfig } from "../serverApi";
 
 const ENABLED_KEY = "pzza.mcp.enabled";
 
-// MCP dropdown: a switch to expose pzza-console to agents, and per-framework
+// MCP dropdown: a switch to expose pzzacode-mcp to agents, and per-framework
 // add/copy so Claude / Codex / Zed / Cursor / Windsurf can reach it.
 export function McpMenu() {
   const [cfg, setCfg] = useState<McpConfig | null>(null);

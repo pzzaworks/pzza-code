@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-// pzza-console MCP server. Exposes the devbox sessions / windows / ports that
-// pzza-console manages as tools any MCP-speaking agent (Claude, Codex, Zed, …)
-// can call. It drives the pzza-console HTTP backend, so nothing here runs shell
+// pzzacode-mcp server. Exposes the devbox sessions / windows / ports that
+// PzzaCode manages as tools any MCP-speaking agent (Claude, Codex, Zed, …)
+// can call. It drives the PzzaCode HTTP backend, so nothing here runs shell
 // directly - the same guarded endpoints the app uses.
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -94,7 +94,7 @@ const TOOLS = [
 ];
 
 const server = new Server(
-  { name: "pzza-console", version: "0.1.0" },
+  { name: "pzzacode-mcp", version: "0.1.0" },
   { capabilities: { tools: {} } },
 );
 
