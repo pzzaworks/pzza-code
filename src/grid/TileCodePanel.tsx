@@ -5,7 +5,7 @@ import { loadLanguage } from "@uiw/codemirror-extensions-langs";
 import { Eye, FolderOpen, FolderTree as FolderTreeIcon, Loader2, PanelLeft, Save, X } from "lucide-react";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
-import { readFile, writeFile } from "../serverApi";
+import { fileRawUrl, readFile, writeFile } from "../serverApi";
 import { useStore } from "../state/store";
 import { FolderTree } from "./FileTree";
 import { FilePicker } from "../panels/FilePicker";
@@ -87,9 +87,13 @@ export function TileCodePanel({ tileId }: { tileId: string }) {
   const root = code?.root;
   const path = code?.path;
   const isMd = !!path && /\.(md|markdown)$/i.test(path);
+  const isImage = !!path && /\.(png|jpe?g|gif|webp|avif|bmp|ico|svg)$/i.test(path);
+  const isPdf = !!path && /\.pdf$/i.test(path);
+  const isBinary = isImage || isPdf;
 
   useEffect(() => {
-    if (!path) {
+    if (!path || isBinary) {
+      // Binary files are previewed straight from their raw URL - no text load.
       setLoaded(true);
       setContent("");
       setError(null);
@@ -242,6 +246,12 @@ export function TileCodePanel({ tileId }: { tileId: string }) {
         >
           {!path ? (
             <div className="code-status muted">Pick a file from the tree to edit it.</div>
+          ) : isImage ? (
+            <div className="code-preview code-preview-img">
+              <img src={fileRawUrl(path)} alt={baseName(path)} />
+            </div>
+          ) : isPdf ? (
+            <iframe className="code-preview-pdf" src={fileRawUrl(path)} title={baseName(path)} />
           ) : !loaded ? (
             <div className="code-status">
               <Loader2 size={16} className="sw-spin" /> Loading…

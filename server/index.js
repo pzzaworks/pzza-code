@@ -866,6 +866,22 @@ function safePath(p) {
   return resolved;
 }
 
+const MIME = {
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".webp": "image/webp",
+  ".avif": "image/avif",
+  ".bmp": "image/bmp",
+  ".ico": "image/x-icon",
+  ".svg": "image/svg+xml",
+  ".pdf": "application/pdf",
+};
+function mimeType(p) {
+  return MIME[path.extname(p).toLowerCase()] || "application/octet-stream";
+}
+
 const server = http.createServer(async (req, res) => {
   if (req.method === "OPTIONS") {
     cors(res);
@@ -915,6 +931,30 @@ const server = http.createServer(async (req, res) => {
     } catch (e) {
       return json(res, 500, { error: String(e.message || e) });
     }
+  }
+  // Stream a file's raw bytes with its media type, so the code view can preview
+  // images and PDFs instead of loading them as text.
+  if (url.pathname === "/file/raw") {
+    const p = safePath(url.searchParams.get("path"));
+    if (!p) return json(res, 400, { error: "invalid path" });
+    let st;
+    try {
+      st = fs.statSync(p);
+    } catch (e) {
+      return json(res, 404, { error: String(e.message || e) });
+    }
+    if (!st.isFile()) return json(res, 400, { error: "not a file" });
+    if (st.size > 50 * 1024 * 1024) return json(res, 413, { error: "file too large" });
+    cors(res);
+    res.writeHead(200, {
+      "Content-Type": mimeType(p),
+      "Content-Length": st.size,
+      "Cache-Control": "no-store",
+    });
+    fs.createReadStream(p)
+      .on("error", () => res.destroyed || res.end())
+      .pipe(res);
+    return;
   }
   if (url.pathname === "/fs/list") {
     const p = safePath(url.searchParams.get("path")) || os.homedir();
