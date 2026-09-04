@@ -2543,7 +2543,13 @@ button {
   display: flex;
   gap: 6px;
 }
+/* host/IP fills the row so its right edge lines up with the Name field above */
+.device-add-row .field-input {
+  flex: 1;
+  min-width: 0;
+}
 .device-user {
+  flex: 0 0 90px;
   max-width: 90px;
 }
 .device-add-btn {
