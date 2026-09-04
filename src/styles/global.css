@@ -70,8 +70,7 @@ button {
   user-select: none;
 }
 .topbar-spacer {
-  /* the tab strip now owns the middle, so this no longer grows */
-  flex: 0 0 0;
+  flex: 1;
 }
 .topbar-right {
   flex: 0 0 auto;
@@ -172,17 +171,16 @@ button {
    bar with a flat bottom (browser tabs); the active tab connects to the content
    below it. The top bar is position:relative so this centers within it. */
 .ws-tabs {
-  /* A flex item that owns whatever room is left between the brand and the
-     tool cluster, so it only clips when that room is genuinely used up (no
-     fixed reservation guessing at the side controls' width). The tabs inside
-     scroll (see .ws-tabs-scroll) while the + stays pinned; the group is
-     centered within that middle region and sits on the bar's bottom edge. */
-  flex: 1 1 auto;
-  min-width: 0;
-  align-self: flex-end;
+  /* Positioned at runtime by WorkspaceTabs from the real edges of the brand
+     and the tool cluster: centered on the bar whenever the tabs fit that way,
+     shifted toward the roomier side instead of clipping when they only fit
+     off-center, and clipped (the tabs then scroll while the + stays pinned,
+     see .ws-tabs-scroll) only once the whole middle region is used up. */
+  position: absolute;
+  left: 0;
+  bottom: 0;
   display: flex;
   align-items: flex-end;
-  justify-content: center;
   gap: 2px;
 }
 /* Only the tabs scroll; the + button sits after this wrapper so it never
