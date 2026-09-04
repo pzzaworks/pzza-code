@@ -1630,13 +1630,9 @@ button {
   flex-direction: column;
   align-items: center;
   gap: 12px;
-  padding: 26px 16px 18px;
-  margin: 2px 0 18px;
-  background: radial-gradient(
-    120% 100% at 50% 0%,
-    color-mix(in srgb, var(--accent) 10%, var(--bg)),
-    var(--bg)
-  );
+  padding: 22px 16px;
+  margin: 2px 0 16px;
+  background: color-mix(in srgb, var(--text) 3.5%, transparent);
   border: 1px solid var(--border);
   border-radius: 12px;
 }
@@ -1645,6 +1641,7 @@ button {
   align-items: center;
   gap: 10px;
   min-height: 40px;
+  order: 2;
   pointer-events: none;
 }
 /* a lone control is enlarged so it reads as the hero; clusters stay native */
@@ -1658,11 +1655,13 @@ button {
   gap: 2px;
 }
 .doc-hero-cap {
-  font-size: 10.5px;
-  font-weight: 600;
+  order: 1;
+  font-size: 10px;
+  font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: 0.6px;
+  letter-spacing: 0.7px;
   color: var(--muted);
+  opacity: 0.8;
 }
 .doc-mini-select {
   display: inline-flex;
@@ -1675,32 +1674,75 @@ button {
   color: var(--text);
   font-size: 12.5px;
 }
-/* a real dropdown/panel preview, framed like the live popover but static */
+/* a real dropdown/panel preview, framed cleanly with its caption on top */
 .doc-panelwrap {
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 12px;
-  padding: 22px 16px 18px;
-  margin: 2px 0 18px;
-  background: radial-gradient(
-    120% 100% at 50% 0%,
-    color-mix(in srgb, var(--accent) 8%, var(--bg)),
-    var(--bg)
-  );
+  padding: 20px 16px;
+  margin: 2px 0 16px;
+  background: color-mix(in srgb, var(--text) 3.5%, transparent);
   border: 1px solid var(--border);
   border-radius: 12px;
 }
+.doc-panelwrap .doc-hero-cap {
+  order: 0;
+}
 .doc-panel {
+  order: 1;
   width: 300px;
   max-width: 100%;
   padding: 12px;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 13px;
-  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.4);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.28);
   pointer-events: none;
   text-align: left;
+}
+/* numbered "how to" steps */
+.doc-steps {
+  list-style: none;
+  margin: 4px 0 14px;
+  padding: 0;
+  counter-reset: docstep;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.doc-steps li {
+  counter-increment: docstep;
+  display: flex;
+  align-items: flex-start;
+  gap: 11px;
+  padding: 8px 10px;
+  border-radius: 9px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: color-mix(in srgb, var(--text) 88%, var(--muted));
+}
+.doc-steps li:hover {
+  background: color-mix(in srgb, var(--text) 3%, transparent);
+}
+.doc-steps li::before {
+  content: counter(docstep);
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  margin-top: 1px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text);
+  background: color-mix(in srgb, var(--accent) 55%, var(--surface));
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.doc-steps b {
+  color: var(--text);
 }
 .doc-select-wide {
   flex: 1;
