@@ -992,6 +992,9 @@ button {
   background: transparent;
   color: var(--text);
   font-size: 13px;
+  /* override the global button line-height:1, which otherwise crops the
+     descenders of the file name (the overflow:hidden on .ft-name clips them) */
+  line-height: 1.5;
   border-radius: 6px;
   cursor: pointer;
   text-align: left;
@@ -1026,6 +1029,7 @@ button {
 .ft-name {
   flex: 1;
   min-width: 0;
+  line-height: 1.5;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
