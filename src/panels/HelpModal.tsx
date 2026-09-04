@@ -99,6 +99,15 @@ const TileHeadDemo = () => (
   </div>
 );
 
+// A framed stage at the top of a page that shows the exact control the page is
+// about, larger and non-interactive, so every doc page opens with its component.
+const Hero = ({ children, caption }: { children: ReactNode; caption: string }) => (
+  <div className="doc-hero">
+    <div className="doc-hero-stage">{children}</div>
+    <span className="doc-hero-cap">{caption}</span>
+  </div>
+);
+
 interface Sec {
   id: string;
   label: string;
@@ -123,6 +132,9 @@ export function HelpModal({ open, onClose }: { open: boolean; onClose: () => voi
           icon: Rocket,
           body: (
             <>
+              <Hero caption="New session · top bar">
+                <IB icon={Plus} />
+              </Hero>
               <H>What PzzaCode is</H>
               <P>
                 A grid terminal manager for agentic coding. Every tile on the grid is a live
@@ -156,6 +168,18 @@ export function HelpModal({ open, onClose }: { open: boolean; onClose: () => voi
           icon: LayoutGrid,
           body: (
             <>
+              <Hero caption="Top bar · tools (right side)">
+                <span className="doc-hero-cluster">
+                  <IB icon={LayoutGrid} />
+                  <IB icon={Monitor} />
+                  <IB icon={EthernetPort} />
+                  <IB icon={HardDrive} />
+                  <IB icon={Blocks} />
+                  <IB icon={Gauge} />
+                  <IB icon={CircleQuestionMark} />
+                  <IB icon={SettingsIcon} />
+                </span>
+              </Hero>
               <H>Left to right</H>
               <P>
                 The <b>brand</b> and version sit on the left, the <b>workspace tabs</b> in the
@@ -261,6 +285,18 @@ export function HelpModal({ open, onClose }: { open: boolean; onClose: () => voi
           icon: Boxes,
           body: (
             <>
+              <Hero caption="Tile actions · top-right of every tile">
+                <span className="tile-actions">
+                  <TB icon={Moon} />
+                  <TB icon={Focus} />
+                  <TB icon={LayoutGrid} />
+                  <TB icon={Maximize2} />
+                  <TB icon={EyeOff} />
+                  <span className="tile-btn tile-btn-danger">
+                    <X size={14} />
+                  </span>
+                </span>
+              </Hero>
               <H>The buttons on each tile</H>
               <Row ui={<TB icon={Moon} />} name="Dim">
                 Darkens just this one window. Click again - or click the dimmed tile - to undim.
@@ -303,6 +339,12 @@ export function HelpModal({ open, onClose }: { open: boolean; onClose: () => voi
           icon: Focus,
           body: (
             <>
+              <Hero caption="Focus · dims every other tile">
+                <span className="tile-actions">
+                  <TB icon={Moon} on />
+                  <TB icon={Focus} on />
+                </span>
+              </Hero>
               <H>Keeping your eyes on the right tile</H>
               <P>
                 Click a tile to make it <b>active</b> - every other tile gets a light grey wash so
@@ -374,6 +416,9 @@ export function HelpModal({ open, onClose }: { open: boolean; onClose: () => voi
           icon: LayoutGrid,
           body: (
             <>
+              <Hero caption="Layout · top bar">
+                <IB icon={LayoutGrid} />
+              </Hero>
               <H>Sizing the grid</H>
               <P>
                 <IB icon={LayoutGrid} /> in the top bar sets 2, 3 or 4 columns for the active
@@ -395,6 +440,11 @@ export function HelpModal({ open, onClose }: { open: boolean; onClose: () => voi
           icon: Keyboard,
           body: (
             <>
+              <Hero caption="Activate a tile">
+                <Kbd>{ctrlBadge(1)}</Kbd>
+                <Kbd>{ctrlBadge(2)}</Kbd>
+                <Kbd>{ctrlBadge(3)}</Kbd>
+              </Hero>
               <H>Shortcuts</H>
               <table className="doc-keys">
                 <tbody>
@@ -445,6 +495,9 @@ export function HelpModal({ open, onClose }: { open: boolean; onClose: () => voi
           icon: Gauge,
           body: (
             <>
+              <Hero caption="Agent usage · top bar">
+                <IB icon={Gauge} />
+              </Hero>
               <H>Live usage</H>
               <P>
                 <IB icon={Gauge} /> shows each Claude / Codex account on the device with its{" "}
@@ -479,6 +532,11 @@ export function HelpModal({ open, onClose }: { open: boolean; onClose: () => voi
           icon: UsersRound,
           body: (
             <>
+              <Hero caption="New session · Account picker">
+                <span className="doc-mini-select">
+                  <UsersRound size={13} /> Default account
+                </span>
+              </Hero>
               <H>One session, one account</H>
               <P>
                 A device can hold several Claude or Codex accounts (each is a config directory like{" "}
@@ -501,6 +559,9 @@ export function HelpModal({ open, onClose }: { open: boolean; onClose: () => voi
           icon: HardDrive,
           body: (
             <>
+              <Hero caption="Devices · top bar">
+                <IB icon={HardDrive} />
+              </Hero>
               <H>The agent, per device</H>
               <P>
                 A small <b>agent</b> runs on each device and serves its terminals, ports, saved
@@ -528,6 +589,10 @@ export function HelpModal({ open, onClose }: { open: boolean; onClose: () => voi
           icon: ImageIcon,
           body: (
             <>
+              <Hero caption="Focused terminal">
+                <ImageIcon size={20} className="muted-icon" />
+                <Kbd>{CMD} V</Kbd>
+              </Hero>
               <H>Paste images to your agent</H>
               <P>
                 Press <Kbd>{CMD} V</Kbd> with an image in your clipboard while a terminal is
@@ -544,6 +609,9 @@ export function HelpModal({ open, onClose }: { open: boolean; onClose: () => voi
           icon: EthernetPort,
           body: (
             <>
+              <Hero caption="Ports · top bar">
+                <IB icon={EthernetPort} />
+              </Hero>
               <H>Port forwarding</H>
               <P>
                 <IB icon={EthernetPort} /> mirrors the device's listening ports to your machine
@@ -565,6 +633,9 @@ export function HelpModal({ open, onClose }: { open: boolean; onClose: () => voi
           icon: Monitor,
           body: (
             <>
+              <Hero caption="Remote desktop · top bar">
+                <IB icon={Monitor} />
+              </Hero>
               <H>Linux desktop (RDP)</H>
               <P>
                 <IB icon={Monitor} /> opens the device's Linux desktop over an SSH-tunneled RDP
@@ -580,6 +651,9 @@ export function HelpModal({ open, onClose }: { open: boolean; onClose: () => voi
           icon: Blocks,
           body: (
             <>
+              <Hero caption="MCP · top bar">
+                <IB icon={Blocks} />
+              </Hero>
               <H>Model Context Protocol</H>
               <P>
                 <IB icon={Blocks} /> exposes your sessions and ports to Claude / Codex / Zed /
@@ -600,6 +674,9 @@ export function HelpModal({ open, onClose }: { open: boolean; onClose: () => voi
           icon: Lightbulb,
           body: (
             <>
+              <Hero caption="Help · top bar">
+                <IB icon={CircleQuestionMark} />
+              </Hero>
               <H>Handy to know</H>
               <Tip>Hover almost anything for a tooltip - the icons don't need labels once you know them.</Tip>
               <Tip>
