@@ -1,15 +1,37 @@
 import { useState } from "react";
+import { ServerCog } from "lucide-react";
 import { useStore } from "../state/store";
 import { HAS_TAURI } from "../tauriEnv";
 
-// Settings dropdown content: terminal + connection.
-export function SettingsMenu() {
+// Settings dropdown content: agent/devices, terminal + connection.
+export function SettingsMenu({ close }: { close?: () => void }) {
   return (
     <div className="menu-body">
       <div className="menu-title">Settings</div>
+      <AgentSection close={close} />
       <TerminalSection />
       <ConnectionSection />
     </div>
+  );
+}
+
+// Reopen the setup wizard (local agent health + add remote devices). The wizard
+// itself lives at the app root; the store flag lets any menu raise it.
+function AgentSection({ close }: { close?: () => void }) {
+  const setWizardOpen = useStore((s) => s.setWizardOpen);
+  return (
+    <Section title="Agent & devices">
+      <button
+        className="btn btn-accent set-full-btn"
+        onClick={() => {
+          setWizardOpen(true);
+          close?.();
+        }}
+      >
+        <ServerCog size={14} strokeWidth={2} />
+        Open setup wizard
+      </button>
+    </Section>
   );
 }
 

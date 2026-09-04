@@ -11,11 +11,10 @@ export interface Connection {
 const STORAGE_KEY = "pzza.connection";
 
 function defaultHost(): string | null {
-  // On the Mac (production) reach the devbox over ssh; on the linux devbox
-  // itself talk to tmux directly.
-  const platform =
-    typeof navigator !== "undefined" ? navigator.platform || "" : "";
-  return /mac/i.test(platform) ? "devbox" : null;
+  // The app runs its own agent on the local machine, so a fresh install talks
+  // to tmux locally (host === null). A remote box is only reached over ssh once
+  // the user adds it as a device and points the connection at it.
+  return null;
 }
 
 export function loadConnection(): Connection {

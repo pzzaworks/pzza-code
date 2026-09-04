@@ -1,9 +1,11 @@
+mod agent;
 mod forward;
 mod pty;
 mod rdp;
 mod sys;
 mod tmux;
 
+use agent::AgentState;
 use forward::ForwardState;
 use pty::PtyState;
 
@@ -12,6 +14,12 @@ pub fn run() {
     tauri::Builder::default()
         .manage(PtyState::default())
         .manage(ForwardState::default())
+        .manage(AgentState::default())
+        .setup(|app| {
+            // Launch the local device agent (server/index.js) as a managed sidecar.
+            agent::start(&app.handle());
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             pty::pty_spawn,
             pty::pty_write,
@@ -25,6 +33,12 @@ pub fn run() {
             rdp::rdp_launch,
             sys::open_url,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running pzza console");
+        .build(tauri::generate_context!())
+        .expect("error while building pzza console")
+        .run(|app, event| {
+            // Tear the agent down with the app so no orphan Node process lingers.
+            if let tauri::RunEvent::Exit = event {
+                agent::stop(app);
+            }
+        });
 }

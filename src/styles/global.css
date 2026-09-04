@@ -69,6 +69,11 @@ button {
   -webkit-user-select: none;
   user-select: none;
 }
+/* macOS overlay title bar: the traffic-light buttons float over the top-left of
+   the bar, so inset the content clear of them. The bar itself stays draggable. */
+.tauri-mac .topbar {
+  padding-left: 78px;
+}
 .topbar-spacer {
   flex: 1;
 }
@@ -2916,6 +2921,10 @@ button {
   letter-spacing: 0.6px;
   text-transform: uppercase;
   color: var(--muted);
+}
+.set-full-btn {
+  width: 100%;
+  justify-content: center;
 }
 .set-row {
   display: flex;
