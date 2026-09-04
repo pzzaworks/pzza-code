@@ -41,6 +41,46 @@ export function WorkspaceTabs() {
       ?.querySelector<HTMLElement>(".ws-tab-active")
       ?.scrollIntoView({ block: "nearest", inline: "nearest" });
   }, [workspaceId]);
+
+  // Position the strip from the real edges of the brand and the tool cluster.
+  // It is centered on the bar whenever the tabs fit that way; when they only
+  // fit off-center it slides toward the roomier side instead of clipping; and
+  // only once the whole middle region is used up does it clip (the tabs then
+  // scroll while the + stays pinned). No fixed guess at the side controls.
+  useEffect(() => {
+    const strip = ref.current;
+    const scroll = scrollRef.current;
+    const bar = strip?.parentElement;
+    const brand = bar?.querySelector<HTMLElement>(".brand");
+    const right = bar?.querySelector<HTMLElement>(".topbar-right");
+    if (!strip || !scroll || !bar || !brand || !right) return;
+    const GAP = 10;
+    const measure = () => {
+      const b = bar.getBoundingClientRect();
+      const regionL = brand.getBoundingClientRect().right - b.left + GAP;
+      const regionR = right.getBoundingClientRect().left - b.left - GAP;
+      const region = Math.max(120, regionR - regionL);
+      // Natural width of the whole tab group, even while it is being clipped.
+      const addWrap = scroll.nextElementSibling as HTMLElement | null;
+      const natural = scroll.scrollWidth + (addWrap?.offsetWidth ?? 0) + 2;
+      const width = Math.min(natural, region);
+      const centered = b.width / 2 - width / 2;
+      const left = Math.min(Math.max(centered, regionL), regionR - width);
+      strip.style.left = `${Math.round(left)}px`;
+      strip.style.maxWidth = `${Math.floor(width)}px`;
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(bar);
+    ro.observe(brand);
+    ro.observe(right);
+    ro.observe(scroll);
+    window.addEventListener("resize", measure);
+    return () => {
+      ro.disconnect();
+      window.removeEventListener("resize", measure);
+    };
+  }, [workspaces]);
   const [dragOver, setDragOver] = useState<string | null>(null);
   const [pending, setPending] = useState<PendingMove | null>(null);
   const ref = useRef<HTMLDivElement>(null);
