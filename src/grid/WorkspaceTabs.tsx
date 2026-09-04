@@ -32,6 +32,15 @@ export function WorkspaceTabs() {
   const [icon, setIcon] = useState(DEFAULT_WORKSPACE_ICON);
   const [color, setColor] = useState(WORKSPACE_COLORS[0]);
   const [pickerOpen, setPickerOpen] = useState(false);
+
+  // With many workspaces the strip scrolls; keep the active tab in view when
+  // it changes so switching never lands on a tab that is scrolled out of sight.
+  const scrollRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    scrollRef.current
+      ?.querySelector<HTMLElement>(".ws-tab-active")
+      ?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, [workspaceId]);
   const [dragOver, setDragOver] = useState<string | null>(null);
   const [pending, setPending] = useState<PendingMove | null>(null);
   const ref = useRef<HTMLDivElement>(null);
@@ -112,6 +121,9 @@ export function WorkspaceTabs() {
 
   return (
     <div className="ws-tabs" ref={ref}>
+      {/* Only the tabs scroll; the + stays pinned after them so it is always
+          reachable no matter how many workspaces there are. */}
+      <div className="ws-tabs-scroll" ref={scrollRef}>
       <div
         className={`ws-tab ${workspaceId === ALL_WORKSPACE_ID ? "ws-tab-active" : ""}`}
         onClick={() => {
@@ -165,8 +177,9 @@ export function WorkspaceTabs() {
           </div>
         );
       })}
+      </div>
 
-      <div className="ws-tab-wrap">
+      <div className="ws-tab-wrap ws-tabs-add-wrap">
         <button
           className="ws-tab-add"
           onClick={(e) => {
