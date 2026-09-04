@@ -38,6 +38,7 @@ const HIDDEN_KEY = "pzza.hidden";
 const DEVICES_KEY = "pzza.devices";
 const TILESPAN_KEY = "pzza.tileSpan";
 const TILETITLES_KEY = "pzza.tileTitles";
+const TILECODE_KEY = "pzza.tileCode";
 const THEME_KEY = "pzza.theme";
 const FONT_KEY = "pzza.fontSize";
 const CURSOR_KEY = "pzza.cursorBlink";
@@ -130,6 +131,10 @@ interface ConsoleState {
   tiles: Session[];
   activeId: string | null;
   refreshing: boolean;
+  // Bumped whenever the grid is reshaped (tile added/removed, workspace switch,
+  // layout/column change). Terminals watch it and force a clean tmux redraw so a
+  // resize triggered by another tile never leaves them with paint artifacts.
+  refreshNonce: number;
 
   loadSessions: () => Promise<void>;
   openSession: (name: string, cwd?: string) => void;
@@ -139,6 +144,20 @@ interface ConsoleState {
   moveTileToEnd: (id: string) => void;
   setActive: (id: string) => void;
   seedPreview: () => void;
+
+  // Each window can flip into an inline code editor rooted at its own folder,
+  // keyed by the tile id. The terminal stays alive underneath while it is open.
+  tileCode: Record<string, TileCode>;
+  toggleTileCode: (id: string, defaultRoot?: string) => void;
+  setTileCodeRoot: (id: string, root: string) => void;
+  setTileCodePath: (id: string, path: string) => void;
+  closeTileFile: (id: string) => void;
+}
+
+export interface TileCode {
+  open: boolean;
+  root?: string;
+  path?: string;
 }
 
 export const useStore = create<ConsoleState>((set, get) => ({
@@ -160,7 +179,7 @@ export const useStore = create<ConsoleState>((set, get) => ({
   ),
   activeWorkspaceId: DEFAULT_WORKSPACE_ID,
   setWorkspace: (id) => {
-    set({ activeWorkspaceId: id });
+    set((state) => ({ activeWorkspaceId: id, refreshNonce: state.refreshNonce + 1 }));
   },
   addWorkspace: (name, icon, color) => {
     const trimmed = name.trim();
@@ -329,7 +348,7 @@ export const useStore = create<ConsoleState>((set, get) => ({
   setTileSpan: (id, c, r) => {
     const tileSpan = { ...get().tileSpan, [id]: { c, r } };
     persist(TILESPAN_KEY, tileSpan);
-    set({ tileSpan });
+    set((state) => ({ tileSpan, refreshNonce: state.refreshNonce + 1 }));
   },
 
   // Fall back to the old global columns value for workspaces without their own.
@@ -339,7 +358,7 @@ export const useStore = create<ConsoleState>((set, get) => ({
     const id = get().activeWorkspaceId;
     const workspaceColumns = { ...get().workspaceColumns, [id]: n };
     persist(WSCOLUMNS_KEY, workspaceColumns);
-    set({ workspaceColumns });
+    set((state) => ({ workspaceColumns, refreshNonce: state.refreshNonce + 1 }));
   },
 
   fontSize: load<number>(FONT_KEY, 13),
@@ -365,6 +384,7 @@ export const useStore = create<ConsoleState>((set, get) => ({
   tiles: load<Session[]>(TILES_KEY, []),
   activeId: null,
   refreshing: false,
+  refreshNonce: 0,
 
   loadSessions: async () => {
     set({ refreshing: true });
@@ -437,7 +457,7 @@ export const useStore = create<ConsoleState>((set, get) => ({
       if (state.tiles.some((t) => t.id === name)) return { activeId: name };
       const tiles = [...state.tiles, { id: name, name, cwd }];
       persist(TILES_KEY, tiles);
-      return { tiles, activeId: name };
+      return { tiles, activeId: name, refreshNonce: state.refreshNonce + 1 };
     }),
 
   openWindow: (w, displayName) =>
@@ -454,7 +474,7 @@ export const useStore = create<ConsoleState>((set, get) => ({
       };
       const tiles = [...state.tiles, tile];
       persist(TILES_KEY, tiles);
-      return { tiles, activeId: id };
+      return { tiles, activeId: id, refreshNonce: state.refreshNonce + 1 };
     }),
 
   closeTile: (id) =>
@@ -463,7 +483,7 @@ export const useStore = create<ConsoleState>((set, get) => ({
       const activeId =
         state.activeId === id ? (tiles.at(-1)?.id ?? null) : state.activeId;
       persist(TILES_KEY, tiles);
-      return { tiles, activeId };
+      return { tiles, activeId, refreshNonce: state.refreshNonce + 1 };
     }),
 
   // Move one tile to another tile's position (drag-to-reorder in the grid).
@@ -498,4 +518,41 @@ export const useStore = create<ConsoleState>((set, get) => ({
       ],
       activeId: "preview-1",
     })),
+
+  tileCode: load<Record<string, TileCode>>(TILECODE_KEY, {}),
+  toggleTileCode: (id, defaultRoot) =>
+    set((state) => {
+      const cur = state.tileCode[id];
+      const opening = !cur?.open;
+      // Closing the editor also closes the file that was open in it; reopening
+      // starts back at the folder tree with nothing selected.
+      const next: TileCode = opening
+        ? { open: true, root: cur?.root ?? defaultRoot, path: undefined }
+        : { open: false, root: cur?.root, path: undefined };
+      const tileCode = { ...state.tileCode, [id]: next };
+      persist(TILECODE_KEY, tileCode);
+      return { tileCode, activeId: id };
+    }),
+  setTileCodeRoot: (id, root) =>
+    set((state) => {
+      const cur = state.tileCode[id] ?? { open: true };
+      const tileCode = { ...state.tileCode, [id]: { ...cur, open: true, root, path: undefined } };
+      persist(TILECODE_KEY, tileCode);
+      return { tileCode };
+    }),
+  setTileCodePath: (id, filePath) =>
+    set((state) => {
+      const cur = state.tileCode[id] ?? { open: true };
+      const tileCode = { ...state.tileCode, [id]: { ...cur, open: true, path: filePath } };
+      persist(TILECODE_KEY, tileCode);
+      return { tileCode, activeId: id };
+    }),
+  closeTileFile: (id) =>
+    set((state) => {
+      const cur = state.tileCode[id];
+      if (!cur) return {};
+      const tileCode = { ...state.tileCode, [id]: { ...cur, path: undefined } };
+      persist(TILECODE_KEY, tileCode);
+      return { tileCode };
+    }),
 }));

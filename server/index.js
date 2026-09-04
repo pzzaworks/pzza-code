@@ -856,6 +856,16 @@ async function collectUsage() {
   return data;
 }
 
+// Resolve a client-supplied path, restricted to the user's home tree so the
+// code view can never read or write outside it.
+function safePath(p) {
+  if (typeof p !== "string" || !p) return null;
+  const resolved = path.resolve(p);
+  const home = os.homedir();
+  if (!home || (resolved !== home && !resolved.startsWith(home + path.sep))) return null;
+  return resolved;
+}
+
 const server = http.createServer(async (req, res) => {
   if (req.method === "OPTIONS") {
     cors(res);
@@ -882,6 +892,41 @@ const server = http.createServer(async (req, res) => {
   }
   if (url.pathname === "/spend") {
     return json(res, 200, await computeSpend());
+  }
+  if (url.pathname === "/file/read") {
+    const p = safePath(url.searchParams.get("path"));
+    if (!p) return json(res, 400, { error: "invalid path" });
+    try {
+      const st = fs.statSync(p);
+      if (!st.isFile()) return json(res, 400, { error: "not a file" });
+      if (st.size > 2 * 1024 * 1024) return json(res, 200, { path: p, content: "", tooLarge: true });
+      return json(res, 200, { path: p, content: fs.readFileSync(p, "utf8") });
+    } catch (e) {
+      return json(res, 404, { error: String(e.message || e) });
+    }
+  }
+  if (url.pathname === "/file/write" && req.method === "POST") {
+    const body = await readBody(req);
+    const p = safePath(body.path);
+    if (!p) return json(res, 400, { error: "invalid path" });
+    try {
+      fs.writeFileSync(p, String(body.content ?? ""));
+      return json(res, 200, { ok: true });
+    } catch (e) {
+      return json(res, 500, { error: String(e.message || e) });
+    }
+  }
+  if (url.pathname === "/fs/list") {
+    const p = safePath(url.searchParams.get("path")) || os.homedir();
+    try {
+      const entries = fs
+        .readdirSync(p, { withFileTypes: true })
+        .map((e) => ({ name: e.name, dir: e.isDirectory() }))
+        .sort((a, b) => (a.dir === b.dir ? a.name.localeCompare(b.name) : a.dir ? -1 : 1));
+      return json(res, 200, { path: p, parent: path.dirname(p), entries });
+    } catch (e) {
+      return json(res, 404, { error: String(e.message || e) });
+    }
   }
   if (url.pathname === "/agent/install" && req.method === "POST") {
     const body = await readBody(req);

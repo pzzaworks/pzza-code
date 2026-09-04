@@ -38,10 +38,12 @@ export function Terminal({ name, cmd, args, cwd, window: win, active, onStatus }
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<XTerm | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
+  const safeFitRef = useRef<(() => void) | null>(null);
   const activeRef = useRef(active);
   const themeId = useStore((s) => s.themeId);
   const fontSize = useStore((s) => s.fontSize);
   const cursorBlink = useStore((s) => s.cursorBlink);
+  const refreshNonce = useStore((s) => s.refreshNonce);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -143,6 +145,7 @@ export function Terminal({ name, cmd, args, cwd, window: win, active, onStatus }
         term.refresh(0, term.rows - 1);
       }
     };
+    safeFitRef.current = safeFit;
     safeFit();
 
     let disposed = false;
@@ -306,6 +309,40 @@ export function Terminal({ name, cmd, args, cwd, window: win, active, onStatus }
       /* not measurable yet */
     }
   }, [fontSize, cursorBlink]);
+
+  // When the grid is reshaped elsewhere (new session, workspace switch, layout
+  // change), a resize can leave this kept-alive terminal with stale paint cells.
+  // Re-fit, then nudge the row count so tmux does a full redraw that overwrites
+  // every cell, and finally repaint xterm. Runs twice to catch any transition.
+  useEffect(() => {
+    if (refreshNonce === 0) return;
+    const hardRefresh = () => {
+      const term = termRef.current;
+      if (!term) return;
+      safeFitRef.current?.();
+      const { cols, rows } = term;
+      if (rows > 1) {
+        try {
+          // A real size change makes the tmux server repaint the whole pane.
+          term.resize(cols, rows - 1);
+          term.resize(cols, rows);
+        } catch {
+          /* not attached */
+        }
+      }
+      try {
+        term.refresh(0, term.rows - 1);
+      } catch {
+        /* renderer not ready */
+      }
+    };
+    const t1 = setTimeout(hardRefresh, 130);
+    const t2 = setTimeout(hardRefresh, 340);
+    return () => {
+      clearTimeout(t1);
+      clearTimeout(t2);
+    };
+  }, [refreshNonce]);
 
   return <div ref={containerRef} className="term-surface" />;
 }
