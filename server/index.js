@@ -13,8 +13,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { WebSocketServer } from "ws";
-import pty from "node-pty";
+// ws + node-pty are loaded lazily (see startPtyBridge) so the agent still boots
+// on a bare Node runtime with no installed modules - the app's terminals go
+// through the Rust backend, and only the browser build's WebSocket PTY needs them.
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const MCP_PATH = path.join(REPO_ROOT, "mcp/server.js");
@@ -1063,10 +1064,23 @@ const server = http.createServer(async (req, res) => {
 });
 
 // WebSocket PTY: attaches to a tmux session. On a receiver the tmux server is on
-// the devbox, so the client is ssh; on the source it runs tmux directly.
-const wss = new WebSocketServer({ server, path: "/pty" });
+// the devbox, so the client is ssh; on the source it runs tmux directly. ws and
+// node-pty are optional: if they are not installed the agent runs without the
+// WebSocket terminal (the app uses the Rust PTY instead), so the import failure
+// is logged and swallowed rather than crashing the whole agent.
+async function startPtyBridge() {
+  let WebSocketServer;
+  let pty;
+  try {
+    ({ WebSocketServer } = await import("ws"));
+    pty = (await import("node-pty")).default;
+  } catch (e) {
+    console.warn(`PzzaCode agent: WebSocket PTY disabled (${e?.message || e}).`);
+    return;
+  }
+  const wss = new WebSocketServer({ server, path: "/pty" });
 
-wss.on("connection", (ws) => {
+  wss.on("connection", (ws) => {
   let term = null;
   let viewSession = null; // grouped view session to clean up on close
 
@@ -1156,7 +1170,8 @@ wss.on("connection", (ws) => {
       viewSession = null;
     }
   });
-});
+  });
+}
 
 // Clean up leftover internal window-view sessions that are no longer attached.
 function sweepOrphanViews() {
@@ -1176,4 +1191,5 @@ server.listen(PORT, "127.0.0.1", () => {
     `PzzaCode agent on 127.0.0.1:${PORT} · role=${IS_CLIENT ? `client (ssh ${DEVBOX})` : "source"}`,
   );
   sweepOrphanViews();
+  startPtyBridge();
 });

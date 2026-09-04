@@ -15,7 +15,7 @@ import {
   markFor,
   type Workspace,
 } from "../workspaces";
-import { DEFAULT_DEVICES, type Device } from "../devices";
+import { DEFAULT_DEVICES, THIS_MAC, type Device } from "../devices";
 import { tileTitle } from "../sessionMeta";
 
 // A tile open on the canvas. id === tmux session name. Tile order IS the grid
@@ -92,10 +92,6 @@ interface ConsoleState {
   hideTile: (name: string) => void;
   unhideTile: (name: string) => void;
 
-  // One-time: create the "Devbox System" workspace and file the system sessions
-  // (Backup/Files/Docker/System Monitor/Shell) into it.
-  seedWorkspaces: () => void;
-
   // Managed ssh devices (for RDP + forwarding server/client).
   devices: Device[];
   addDevice: (name: string, host: string, user?: string) => void;
@@ -122,6 +118,11 @@ interface ConsoleState {
 
   settingsOpen: boolean;
   setSettingsOpen: (v: boolean) => void;
+
+  // The setup/agent wizard modal. Lives in the store so it can be opened from
+  // anywhere (first-run boot, the Settings menu, an empty-state prompt).
+  wizardOpen: boolean;
+  setWizardOpen: (v: boolean) => void;
 
   showPorts: boolean;
   togglePorts: () => void;
@@ -249,69 +250,15 @@ export const useStore = create<ConsoleState>((set, get) => ({
     set({ hiddenTiles });
   },
 
-  seedWorkspaces: () => {
-    const SYS_SESSIONS = [
-      "Devbox - Backup",
-      "Devbox - Files",
-      "Devbox - Docker",
-      "Devbox - System Monitor",
-      "Devbox - Shell",
-    ];
-    let workspaces = get().workspaces;
-    const sessionWs = { ...get().sessionWs };
-    let changed = false;
-
-    // The Devbox System workspace is built-in: ensure it always exists and is
-    // marked as a system workspace (undeletable). If it was removed, recreate it
-    // and re-file its system sessions so the setup comes back intact.
-    let sys = workspaces.find((w) => w.id === "devbox-system" || w.name === "Devbox System");
-    if (!sys) {
-      sys = {
-        id: "devbox-system",
-        name: "Devbox System",
-        short: markFor("Devbox System"),
-        icon: "server",
-        system: true,
-      };
-      workspaces = [...workspaces, sys];
-      for (const n of SYS_SESSIONS) sessionWs[n] = sys.id;
-      changed = true;
-    } else if (!sys.system) {
-      const sysId = sys.id;
-      workspaces = workspaces.map((w) => (w.id === sysId ? { ...w, system: true } : w));
-      changed = true;
-    }
-
-    // First ever run: file the system sessions into it once.
-    let firstRun = false;
-    try {
-      firstRun = !localStorage.getItem("pzza.seed.v1");
-    } catch {
-      firstRun = false;
-    }
-    if (firstRun) {
-      for (const n of SYS_SESSIONS) sessionWs[n] = sys.id;
-      changed = true;
-      try {
-        localStorage.setItem("pzza.seed.v1", "1");
-      } catch {
-        /* ignore */
-      }
-    }
-
-    if (changed) {
-      persist(WORKSPACES_KEY, workspaces);
-      persist(SESSIONWS_KEY, sessionWs);
-      set({ workspaces, sessionWs });
-    }
-  },
-
-  // Always keep a "This Mac" local device (the machine running the app).
+  // Always keep a "This Mac" local device (the machine running the app), and
+  // make it the first entry so it is the default current device. Drop any stale
+  // pre-seeded "devbox" placeholder that was never actually added by the user.
   devices: ((): Device[] => {
-    const loaded = load<Device[]>(DEVICES_KEY, DEFAULT_DEVICES);
-    return loaded.some((d) => d.id === "this-mac")
-      ? loaded
-      : [...loaded, { id: "this-mac", name: "This Mac", host: "localhost" }];
+    const loaded = load<Device[]>(DEVICES_KEY, DEFAULT_DEVICES).filter(
+      (d) => d.id !== "devbox",
+    );
+    const withoutMac = loaded.filter((d) => d.id !== "this-mac");
+    return [THIS_MAC, ...withoutMac];
   })(),
   addDevice: (name, host, user) => {
     const trimmed = name.trim();
@@ -375,6 +322,9 @@ export const useStore = create<ConsoleState>((set, get) => ({
 
   settingsOpen: false,
   setSettingsOpen: (v) => set({ settingsOpen: v }),
+
+  wizardOpen: false,
+  setWizardOpen: (v) => set({ wizardOpen: v }),
 
   showPorts: false,
   togglePorts: () => set((s) => ({ showPorts: !s.showPorts })),
