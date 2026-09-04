@@ -110,7 +110,18 @@ export default function App() {
           </main>
         </div>
       </div>
-      <SetupWizard open={wizardOpen} onClose={() => setWizardOpen(false)} />
+      <SetupWizard
+        open={wizardOpen}
+        onClose={() => {
+          setWizardOpen(false);
+          // Remember it was seen so it does not auto-open on every load.
+          try {
+            localStorage.setItem("pzza.setupDone", "1");
+          } catch {
+            /* ignore */
+          }
+        }}
+      />
       <HelpModal open={helpOpen} onClose={() => setHelpOpen(false)} />
     </ThemeProvider>
   );

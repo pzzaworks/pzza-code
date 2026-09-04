@@ -862,6 +862,304 @@ button {
   inset: 0;
   pointer-events: none;
 }
+
+/* ---------- Terminal / Code view switch ---------- */
+/* ---------- Inline per-window code editor ---------- */
+/* Covers the tile body while the terminal stays mounted underneath. */
+.tile-code {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  z-index: 5;
+}
+.tile-code-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 6px 5px 8px;
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+.tile-code-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+}
+.tile-code-path {
+  font-size: 11px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.tile-code-bar .tile-btn {
+  width: 27px;
+  height: 27px;
+  border-radius: 8px;
+}
+
+.code-editor-pane {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+.code-editor-pane .cm-editor {
+  height: 100%;
+  background: transparent;
+}
+.code-editor-pane .cm-scroller {
+  font-family: ui-monospace, "SF Mono", Menlo, Monaco, monospace;
+  font-size: 12.5px;
+}
+.code-editor-pane .cm-editor.cm-focused {
+  outline: none;
+}
+.code-editor-pane .cm-gutters {
+  border-right: 1px solid var(--border);
+}
+.code-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 16px;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+.code-err {
+  color: var(--danger);
+}
+.code-dirty {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  margin-left: 6px;
+  vertical-align: middle;
+}
+
+/* the tree + editor split fills the panel under the toolbar */
+.code-split {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+.code-tile-tree {
+  flex: 0 0 auto;
+  width: 244px;
+  overflow-y: auto;
+  padding: 6px;
+  border-right: 1px solid var(--border);
+  background: color-mix(in srgb, var(--surface) 60%, transparent);
+}
+.ft-body {
+  display: flex;
+  flex-direction: column;
+}
+/* inline "open a folder" prompt for an empty editor tile */
+.code-open {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  text-align: center;
+  padding: 20px;
+}
+.code-open-icon {
+  color: var(--muted);
+  opacity: 0.7;
+}
+.code-open-title {
+  font-size: 13px;
+  color: var(--muted);
+  margin: 0;
+}
+.ft-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  padding: 5px 8px;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font-size: 13px;
+  border-radius: 6px;
+  cursor: pointer;
+  text-align: left;
+}
+.ft-row:hover {
+  background: var(--surface-alt);
+}
+.ft-row.on {
+  background: color-mix(in srgb, var(--accent) 16%, var(--surface));
+  color: var(--text);
+}
+.ft-chevron {
+  flex: 0 0 auto;
+  color: var(--muted);
+  transition: transform 0.12s;
+}
+.ft-chevron.open {
+  transform: rotate(90deg);
+}
+.ft-chevron-spacer {
+  width: 13px;
+  flex: 0 0 auto;
+}
+.ft-folder {
+  flex: 0 0 auto;
+  color: #9aa0a8;
+}
+.ft-file {
+  flex: 0 0 auto;
+  color: var(--muted);
+}
+.ft-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ft-loading {
+  padding: 4px 6px;
+  color: var(--muted);
+}
+
+/* markdown preview */
+.md-preview {
+  height: 100%;
+  overflow-y: auto;
+  padding: 16px 22px;
+  font-size: 13.5px;
+  line-height: 1.65;
+  color: var(--text);
+}
+.md-preview h1,
+.md-preview h2,
+.md-preview h3 {
+  margin: 18px 0 10px;
+  line-height: 1.3;
+}
+.md-preview h1 {
+  font-size: 22px;
+}
+.md-preview h2 {
+  font-size: 18px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+}
+.md-preview h3 {
+  font-size: 15px;
+}
+.md-preview p,
+.md-preview li {
+  color: color-mix(in srgb, var(--text) 88%, var(--muted));
+}
+.md-preview a {
+  color: var(--accent);
+}
+.md-preview code {
+  font-family: ui-monospace, Menlo, monospace;
+  font-size: 12px;
+  background: var(--surface-alt);
+  border: 1px solid var(--border);
+  padding: 1px 5px;
+  border-radius: 5px;
+}
+.md-preview pre {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px 14px;
+  overflow-x: auto;
+}
+.md-preview pre code {
+  background: none;
+  border: none;
+  padding: 0;
+}
+.md-preview blockquote {
+  margin: 12px 0;
+  padding: 2px 14px;
+  border-left: 3px solid var(--accent);
+  color: var(--muted);
+}
+.md-preview img {
+  max-width: 100%;
+  border-radius: 8px;
+}
+.md-preview table {
+  border-collapse: collapse;
+}
+.md-preview th,
+.md-preview td {
+  border: 1px solid var(--border);
+  padding: 6px 10px;
+}
+
+/* ---------- File picker ---------- */
+.fp-path {
+  font-family: ui-monospace, Menlo, monospace;
+  font-size: 11.5px;
+  color: var(--muted);
+  padding: 2px 6px 10px;
+  overflow-x: auto;
+  white-space: nowrap;
+}
+.fp-list {
+  max-height: 52vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.fp-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 7px 9px;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font-size: 13px;
+  border-radius: 8px;
+  cursor: pointer;
+  text-align: left;
+}
+.fp-row:hover {
+  background: var(--surface-alt);
+}
+.fp-folder {
+  color: var(--accent);
+  flex: 0 0 auto;
+}
+.fp-file {
+  color: var(--muted);
+  flex: 0 0 auto;
+}
+.fp-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fp-arrow {
+  color: var(--muted);
+  opacity: 0.55;
+  flex: 0 0 auto;
+}
 .grid-empty {
   height: 100%;
   display: flex;
@@ -869,6 +1167,9 @@ button {
   align-items: center;
   justify-content: center;
   gap: 4px;
+}
+.grid-empty .btn {
+  margin-top: 12px;
 }
 
 .tile {
@@ -1117,43 +1418,70 @@ button {
 .doc-layout {
   display: flex;
   margin: -8px -18px -18px;
-  height: 66vh;
+  /* Keep the panel landscape (wider than tall) instead of stretching to the
+     window height, which looked very tall on portrait displays. */
+  height: min(62vh, 560px);
   border-top: 1px solid var(--border);
 }
 .doc-nav {
   flex: 0 0 auto;
-  width: 210px;
+  width: 236px;
   overflow-y: auto;
-  padding: 10px 8px;
+  padding: 12px 10px;
+  background: color-mix(in srgb, var(--bg) 55%, transparent);
   border-right: 1px solid var(--border);
 }
+.doc-nav-group + .doc-nav-group {
+  margin-top: 12px;
+}
+.doc-nav-group-title {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--muted);
+  opacity: 0.7;
+  padding: 4px 10px 6px;
+}
 .doc-nav-item {
+  position: relative;
   display: flex;
   align-items: center;
-  gap: 9px;
+  gap: 10px;
   width: 100%;
-  padding: 7px 10px;
+  padding: 9px 11px;
   border: none;
   background: transparent;
   color: var(--muted);
-  font-size: 12.5px;
+  font-size: 13px;
   font-weight: 550;
-  border-radius: 8px;
+  border-radius: 9px;
   cursor: pointer;
   text-align: left;
   transition: background 0.12s, color 0.12s;
 }
 .doc-nav-item svg {
   flex: 0 0 auto;
-  opacity: 0.85;
+  opacity: 0.8;
 }
 .doc-nav-item:hover {
   background: var(--surface-alt);
   color: var(--text);
 }
 .doc-nav-item.on {
-  background: color-mix(in srgb, var(--accent) 14%, var(--bg));
+  background: color-mix(in srgb, var(--accent) 16%, var(--surface));
   color: var(--text);
+  font-weight: 650;
+}
+.doc-nav-item.on::before {
+  content: "";
+  position: absolute;
+  left: 3px;
+  top: 8px;
+  bottom: 8px;
+  width: 3px;
+  border-radius: 3px;
+  background: var(--accent);
 }
 .doc-nav-item.on svg {
   color: var(--accent);
@@ -1163,7 +1491,7 @@ button {
   flex: 1;
   min-width: 0;
   overflow-y: auto;
-  padding: 16px 22px 22px;
+  padding: 20px 26px 26px;
   animation: doc-fade 0.14s ease;
 }
 @keyframes doc-fade {
@@ -1173,10 +1501,51 @@ button {
   }
 }
 .doc-title {
-  font-size: 16px;
+  font-size: 19px;
   font-weight: 700;
   letter-spacing: 0.2px;
-  margin-bottom: 12px;
+  margin-bottom: 14px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+}
+.doc-code {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 11.5px;
+  color: var(--text);
+  background: var(--surface-alt);
+  border: 1px solid var(--border);
+  padding: 1px 5px;
+  border-radius: 5px;
+  white-space: nowrap;
+}
+.doc-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  margin: 12px 0;
+  padding: 10px 12px;
+  font-size: 12px;
+  line-height: 1.55;
+  color: color-mix(in srgb, var(--text) 85%, var(--muted));
+  background: color-mix(in srgb, var(--accent) 9%, var(--bg));
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border));
+  border-radius: 10px;
+}
+/* only the leading callout icon, not inline icons in the text */
+.doc-note > svg {
+  flex: 0 0 auto;
+  margin-top: 2px;
+  color: var(--accent);
+}
+.doc-note b {
+  color: var(--text);
+}
+.doc-note-tip {
+  background: color-mix(in srgb, #5fb37f 9%, var(--bg));
+  border-color: color-mix(in srgb, #5fb37f 32%, var(--border));
+}
+.doc-note-tip svg {
+  color: #5fb37f;
 }
 .doc-h {
   font-size: 11px;
@@ -1195,11 +1564,23 @@ button {
 .doc-p b {
   color: var(--text);
 }
+/* icons shown inline within prose (paragraphs and callouts): compact and
+   vertically centered so they do not inflate the line height */
 .doc-p .icon-btn,
-.doc-p .tile-btn {
+.doc-p .tile-btn,
+.doc-note .icon-btn,
+.doc-note .tile-btn {
   display: inline-flex;
   vertical-align: middle;
-  transform: scale(0.85);
+  width: 21px;
+  height: 21px;
+  border-radius: 7px;
+  margin: 0 2px;
+}
+.doc-note .icon-btn > svg,
+.doc-note .tile-btn > svg {
+  margin-top: 0;
+  color: inherit;
 }
 .doc-row {
   display: flex;
@@ -1984,8 +2365,12 @@ button {
   color: var(--danger);
 }
 .tile-btn-on {
-  background: var(--surface-alt);
-  color: var(--accent);
+  background: color-mix(in srgb, var(--text) 16%, transparent);
+  color: var(--text);
+}
+.tile-btn-on:hover {
+  background: color-mix(in srgb, var(--text) 22%, transparent);
+  color: var(--text);
 }
 
 /* Maximized single tile (the .canvas already provides the 12px padding) */
@@ -2182,7 +2567,7 @@ button {
   width: 640px;
 }
 .modal-xl {
-  width: 900px;
+  width: 940px;
   max-height: 86vh;
 }
 @keyframes spin {

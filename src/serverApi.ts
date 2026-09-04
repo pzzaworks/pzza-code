@@ -172,6 +172,33 @@ export async function fetchUsage(): Promise<AccountUsage[]> {
   return res.json();
 }
 
+export interface DirEntry {
+  name: string;
+  dir: boolean;
+}
+// Read a text file on the connected device (restricted to the home tree).
+export async function readFile(path: string): Promise<{ content: string; tooLarge?: boolean }> {
+  const res = await fetch(`${SERVER_HTTP}/file/read?path=${encodeURIComponent(path)}`);
+  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `read ${res.status}`);
+  return res.json();
+}
+export async function writeFile(path: string, content: string): Promise<void> {
+  const res = await fetch(`${SERVER_HTTP}/file/write`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path, content }),
+  });
+  if (!res.ok) throw new Error(`write ${res.status}`);
+}
+export async function listDir(
+  path?: string,
+): Promise<{ path: string; parent: string; entries: DirEntry[] }> {
+  const q = path ? `?path=${encodeURIComponent(path)}` : "";
+  const res = await fetch(`${SERVER_HTTP}/fs/list${q}`);
+  if (!res.ok) throw new Error(`list ${res.status}`);
+  return res.json();
+}
+
 export interface SpendWindow {
   cost: number;
   tokens: number;

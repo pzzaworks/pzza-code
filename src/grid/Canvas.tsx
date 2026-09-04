@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { motion } from "framer-motion";
 import {
   EyeOff,
+  FileCode,
   Focus,
   LayoutGrid,
   Maximize2,
@@ -13,6 +14,7 @@ import {
 import { useStore } from "../state/store";
 import { Modal } from "../ui/Modal";
 import { Terminal } from "../terminal/Terminal";
+import { TileCodePanel } from "./TileCodePanel";
 import { killSession } from "../serverApi";
 import { HAS_TAURI } from "../tauriEnv";
 import { attachCommand } from "../connection";
@@ -51,6 +53,8 @@ export function Canvas() {
   const tileTitles = useStore((s) => s.tileTitles);
   const renameTile = useStore((s) => s.renameTile);
   const devices = useStore((s) => s.devices);
+  const tileCode = useStore((s) => s.tileCode);
+  const toggleTileCode = useStore((s) => s.toggleTileCode);
 
   // Columns are per-workspace; the active workspace decides the grid.
   const columns = workspaceColumns[activeWorkspaceId] ?? defaultColumns;
@@ -132,7 +136,9 @@ export function Canvas() {
     const { cmd, args } = attachCommand(connection, base, t.cwd, t.window);
     const rs = allSessions.find((s) => s.name === base);
     const command = t.command ?? rs?.command;
-    const path = shortPath(t.path ?? rs?.path);
+    const fullPath = t.path ?? rs?.path;
+    const path = shortPath(fullPath);
+    const codeOpen = tileCode[t.id]?.open ?? false;
     const Icon = sessionIcon(base, command);
     const color = iconColor(base, command);
     const wsColor = workspaces.find(
@@ -314,6 +320,17 @@ export function Canvas() {
               <Focus size={13} />
             </button>
             <button
+              className={`tile-btn ${codeOpen ? "tile-btn-on" : ""}`}
+              title={codeOpen ? "Back to terminal" : "Code editor"}
+              onMouseDown={(e) => e.stopPropagation()}
+              onClick={(e) => {
+                e.stopPropagation();
+                toggleTileCode(t.id, fullPath);
+              }}
+            >
+              <FileCode size={13} />
+            </button>
+            <button
               className="tile-btn"
               title="Tile layout"
               onMouseDown={(e) => e.stopPropagation()}
@@ -375,6 +392,7 @@ export function Canvas() {
             active={activeId === t.id}
             onStatus={(s) => setStatus(t.id, s)}
           />
+          {codeOpen ? <TileCodePanel tileId={t.id} /> : null}
         </div>
         {dimmed ? (
           <div
