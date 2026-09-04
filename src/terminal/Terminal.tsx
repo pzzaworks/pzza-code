@@ -288,17 +288,31 @@ export function Terminal({ name, cmd, args, cwd, window: win, active, onStatus }
       else ws?.write(text);
     };
     const onPaste = (e: ClipboardEvent) => {
-      const items = e.clipboardData?.items;
-      if (!items) return;
-      const imgItem = Array.from(items).find((it) => it.type.startsWith("image/"));
-      if (!imgItem) return; // let xterm handle plain-text pastes
-      const blob = imgItem.getAsFile();
-      if (!blob) return;
-      e.preventDefault();
-      e.stopPropagation();
-      uploadPasteImage(blob)
-        .then((p) => sendInput(p + " "))
-        .catch((err) => term.writeln(`\r\n[image paste failed] ${err}\r\n`));
+      const dt = e.clipboardData;
+      if (!dt) return;
+      // An image: upload it to the device and type the resulting path so the
+      // agent can read it (works even over SSH, where a plain paste can't).
+      const imgItem = Array.from(dt.items).find((it) => it.type.startsWith("image/"));
+      if (imgItem) {
+        const blob = imgItem.getAsFile();
+        if (blob) {
+          e.preventDefault();
+          e.stopPropagation();
+          uploadPasteImage(blob)
+            .then((p) => sendInput(p + " "))
+            .catch((err) => term.writeln(`\r\n[image paste failed] ${err}\r\n`));
+          return;
+        }
+      }
+      // Plain text: paste it ourselves via the pty so it never depends on
+      // xterm's own paste routing or the async clipboard API (which is missing
+      // on a client opened over plain http). term.paste keeps bracketed-paste.
+      const text = dt.getData("text");
+      if (text) {
+        e.preventDefault();
+        e.stopPropagation();
+        term.paste(text);
+      }
     };
     container.addEventListener("paste", onPaste, true);
 
