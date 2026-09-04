@@ -476,6 +476,11 @@ export function HelpModal({ open, onClose }: { open: boolean; onClose: () => voi
             </>
           ),
         },
+      ],
+    },
+    {
+      title: "Windows",
+      sections: [
         {
           id: "tiles",
           label: "Sessions & tiles",
@@ -534,11 +539,6 @@ export function HelpModal({ open, onClose }: { open: boolean; onClose: () => voi
             </>
           ),
         },
-      ],
-    },
-    {
-      title: "Windows",
-      sections: [
         {
           id: "controls",
           label: "Tile controls",
