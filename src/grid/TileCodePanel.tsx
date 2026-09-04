@@ -10,46 +10,28 @@ import { useStore } from "../state/store";
 import { FolderTree } from "./FileTree";
 import { FilePicker } from "../panels/FilePicker";
 
-// file extension -> a language name known to codemirror-extensions-langs
+// file extension -> the key codemirror-extensions-langs' loadLanguage expects.
+// Those keys are extension-style ("ts", "rs", "sh"), not full language names, so
+// only genuine aliases need an entry here; everything else falls back to the raw
+// extension (see the extensions memo below).
 const EXT_LANG: Record<string, string> = {
-  ts: "typescript",
-  tsx: "tsx",
-  js: "javascript",
-  jsx: "jsx",
-  mjs: "javascript",
-  cjs: "javascript",
-  json: "json",
-  css: "css",
-  scss: "sass",
-  sass: "sass",
-  less: "less",
-  html: "html",
+  mts: "ts",
+  cts: "ts",
+  mjs: "js",
+  cjs: "js",
   htm: "html",
-  vue: "vue",
-  md: "markdown",
-  markdown: "markdown",
-  py: "python",
-  rs: "rust",
-  go: "go",
-  sh: "shell",
-  bash: "shell",
-  zsh: "shell",
+  mdx: "md",
+  markdown: "md",
+  zsh: "bash",
+  fish: "bash",
   yml: "yaml",
-  yaml: "yaml",
-  toml: "toml",
-  sql: "sql",
-  java: "java",
-  kt: "kotlin",
-  c: "c",
   h: "c",
-  cpp: "cpp",
   cc: "cpp",
+  cxx: "cpp",
   hpp: "cpp",
-  rb: "ruby",
-  php: "php",
-  swift: "swift",
-  xml: "xml",
+  hxx: "cpp",
   svg: "xml",
+  conf: "ini",
 };
 
 function baseName(p: string): string {
@@ -132,7 +114,10 @@ export function TileCodePanel({ tileId }: { tileId: string }) {
   }, [dirty, saving, content, path]);
 
   const extensions = useMemo(() => {
-    const key = path ? EXT_LANG[extOf(path)] : undefined;
+    const ext = path ? extOf(path) : "";
+    // loadLanguage keys are extension-style, so try the raw extension and only
+    // remap the handful of aliases that differ.
+    const key = ext ? EXT_LANG[ext] ?? ext : "";
     const lang = key ? loadLanguage(key as Parameters<typeof loadLanguage>[0]) : null;
     return lang ? [lang] : [];
   }, [path]);
