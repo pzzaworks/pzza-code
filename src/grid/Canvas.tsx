@@ -15,7 +15,7 @@ import { useStore } from "../state/store";
 import { Modal } from "../ui/Modal";
 import { Terminal } from "../terminal/Terminal";
 import { TileCodePanel } from "./TileCodePanel";
-import { killSession } from "../serverApi";
+import { fetchSessionPath, killSession } from "../serverApi";
 import { HAS_TAURI } from "../tauriEnv";
 import { attachCommand } from "../connection";
 import {
@@ -325,7 +325,15 @@ export function Canvas() {
               onMouseDown={(e) => e.stopPropagation()}
               onClick={(e) => {
                 e.stopPropagation();
-                toggleTileCode(t.id, fullPath);
+                if (codeOpen) {
+                  toggleTileCode(t.id);
+                  return;
+                }
+                // Root the editor at the terminal's live cwd (a fresh session
+                // has no scanned path yet); fall back to any known path.
+                fetchSessionPath(base, undefined, t.window)
+                  .then((live) => toggleTileCode(t.id, live || fullPath))
+                  .catch(() => toggleTileCode(t.id, fullPath));
               }}
             >
               <FileCode size={13} />

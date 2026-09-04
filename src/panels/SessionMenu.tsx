@@ -15,6 +15,7 @@ export function SessionMenu({ close }: { close: () => void }) {
   const tiles = useStore((s) => s.tiles);
   const openSession = useStore((s) => s.openSession);
   const openWindow = useStore((s) => s.openWindow);
+  const loadSessions = useStore((s) => s.loadSessions);
   const setActive = useStore((s) => s.setActive);
   const workspaces = useStore((s) => s.workspaces);
   const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
@@ -84,6 +85,11 @@ export function SessionMenu({ close }: { close: () => void }) {
     }
     openSession(trimmed);
     setActive(trimmed);
+    // Give tmux a beat to create the session, then re-scan so the new session's
+    // current path lands in allSessions (drives the tile header and code editor).
+    setTimeout(() => {
+      loadSessions().catch(() => {});
+    }, 500);
     setName("");
     setAccDir("");
     close();

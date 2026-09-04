@@ -32,6 +32,28 @@ export async function fetchPorts(): Promise<number[]> {
   return res.json();
 }
 
+// The live working directory of a session's active pane (empty string if it
+// cannot be resolved). Used to root the code editor at the terminal's real cwd.
+export async function fetchSessionPath(
+  name: string,
+  host?: string,
+  window?: string | number,
+): Promise<string> {
+  const params = new URLSearchParams({ name });
+  if (host) params.set("host", host);
+  if (window !== undefined && window !== null && `${window}` !== "") {
+    params.set("window", `${window}`);
+  }
+  try {
+    const res = await fetch(`${SERVER_HTTP}/session/path?${params.toString()}`);
+    if (!res.ok) return "";
+    const data = (await res.json()) as { path?: string };
+    return data.path || "";
+  } catch {
+    return "";
+  }
+}
+
 export interface RemoteWindow {
   session: string;
   window: number;
