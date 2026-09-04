@@ -95,11 +95,6 @@ button {
 .topbar-tools-wrap .topbar-tools-toggle {
   display: none;
 }
-/* "New workspace" only lives inside the collapsed menu - wide windows use the
-   tab strip's + button, so hide it there (two classes to beat .btn). */
-.topbar-tools .topbar-tools-narrow-only {
-  display: none;
-}
 @media (max-width: 1080px) {
   .topbar-tools-wrap .topbar-tools-toggle {
     display: inline-flex;
@@ -131,9 +126,6 @@ button {
   }
   .topbar-tools.open {
     display: flex;
-  }
-  .topbar-tools .topbar-tools-narrow-only {
-    display: inline-flex;
   }
   /* The collapsed tools free up room, so let the centered tabs use it. */
   .ws-tabs {
