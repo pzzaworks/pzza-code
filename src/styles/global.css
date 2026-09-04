@@ -1624,6 +1624,57 @@ button {
   border: 1px solid var(--border);
   border-radius: 10px;
 }
+/* the component showcase at the top of each doc page */
+.doc-hero {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 26px 16px 18px;
+  margin: 2px 0 18px;
+  background: radial-gradient(
+    120% 100% at 50% 0%,
+    color-mix(in srgb, var(--accent) 10%, var(--bg)),
+    var(--bg)
+  );
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+.doc-hero-stage {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 40px;
+  pointer-events: none;
+}
+/* a lone control is enlarged so it reads as the hero; clusters stay native */
+.doc-hero-stage > .icon-btn {
+  transform: scale(1.6);
+  color: var(--text);
+}
+.doc-hero-cluster {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.doc-hero-cap {
+  font-size: 10.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--muted);
+}
+.doc-mini-select {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 13px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 12.5px;
+}
 .doc-tilehead {
   border: 1px solid var(--border);
   border-radius: 10px;
