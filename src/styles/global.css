@@ -78,6 +78,68 @@ button {
   align-items: center;
   gap: 3px;
 }
+/* The tool cluster: inline on wide windows, collapsed behind a menu button and
+   opened as a full-width bar under the top bar on narrow ones. It is rendered
+   once and only repositioned, so each tool keeps its own dropdown and state. */
+.topbar-tools-wrap {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+.topbar-tools {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+/* two classes so this beats the later single-class .icon-btn display rule */
+.topbar-tools-wrap .topbar-tools-toggle {
+  display: none;
+}
+/* "New workspace" only lives inside the collapsed menu - wide windows use the
+   tab strip's + button, so hide it there (two classes to beat .btn). */
+.topbar-tools .topbar-tools-narrow-only {
+  display: none;
+}
+@media (max-width: 1080px) {
+  .topbar-tools-wrap .topbar-tools-toggle {
+    display: inline-flex;
+  }
+  /* The collapsed tools open as a right-anchored dropdown card under the menu
+     button. It is not on the exclusive-menu bus, so opening a tool's own
+     dropdown inside it leaves it open; only an outside click or Escape closes
+     it (App.tsx). Inner dropdowns keep their default right:0 anchoring, which
+     extends them leftward and keeps them on screen. */
+  .topbar-tools {
+    display: none;
+    position: absolute;
+    top: 100%;
+    right: 8px;
+    left: auto;
+    z-index: 150;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    max-width: min(440px, calc(100vw - 16px));
+    margin-top: 4px;
+    padding: 8px;
+    gap: 4px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 13px;
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+    transform-origin: top right;
+    animation: menu-in 0.12s ease-out;
+  }
+  .topbar-tools.open {
+    display: flex;
+  }
+  .topbar-tools .topbar-tools-narrow-only {
+    display: inline-flex;
+  }
+  /* The collapsed tools free up room, so let the centered tabs use it. */
+  .ws-tabs {
+    max-width: max(220px, calc(100vw - 520px));
+  }
+}
 .icon-btn-accent {
   color: var(--accent);
 }
