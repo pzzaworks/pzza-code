@@ -118,6 +118,11 @@ const Hero = ({ children, caption }: { children: ReactNode; caption: string }) =
   </div>
 );
 
+// A numbered "how to" checklist so a page tells you what to do, not just what a
+// thing is.
+const Steps = ({ children }: { children: ReactNode }) => <ol className="doc-steps">{children}</ol>;
+const Step = ({ children }: { children: ReactNode }) => <li>{children}</li>;
+
 // --- realistic, non-interactive previews of the actual dropdowns/panels each
 // top-bar button opens, built from the app's own classes so the docs show the
 // real thing (contents and all), not just an icon -----------------------------
@@ -378,6 +383,18 @@ export function HelpModal({ open, onClose }: { open: boolean; onClose: () => voi
           body: (
             <>
               <NewSessionDemo />
+              <H>Get started</H>
+              <Steps>
+                <Step>
+                  Hit <IB icon={Plus} /> <b>New session</b> in the top bar.
+                </Step>
+                <Step>Pick the device, workspace and (optionally) which account it runs under.</Step>
+                <Step>
+                  Drive every agent from the grid; jump between tiles with{" "}
+                  <Kbd>{ctrlBadge(1)}</Kbd>–<Kbd>{ctrlBadge(9)}</Kbd>.
+                </Step>
+                <Step>Close the app anytime - sessions keep running on the device.</Step>
+              </Steps>
               <H>What PzzaCode is</H>
               <P>
                 A grid terminal manager for agentic coding. Every tile on the grid is a live
@@ -630,6 +647,20 @@ export function HelpModal({ open, onClose }: { open: boolean; onClose: () => voi
                 Browser-style tabs group your sessions into contexts - one project per workspace,
                 say. <b>All</b> shows every workspace's tiles at once.
               </P>
+              <H>How to</H>
+              <Steps>
+                <Step>
+                  Hit <span className="ws-tab-add-demo">+</span> to add a workspace - name it, pick an
+                  icon and a color.
+                </Step>
+                <Step>Click a session's header and drag it onto a tab to move it there.</Step>
+                <Step>
+                  Click the <i>active</i> tab to rename it or show/hide its sessions.
+                </Step>
+                <Step>
+                  Jump between workspaces with <Kbd>{altBadge(0)}</Kbd>–<Kbd>{altBadge(9)}</Kbd>.
+                </Step>
+              </Steps>
               <Row ui={<span className="ws-tab-add-demo">+</span>} name="Add a workspace">
                 Give it a name, an icon and a color from the searchable icon picker.
               </Row>
@@ -660,6 +691,19 @@ export function HelpModal({ open, onClose }: { open: boolean; onClose: () => voi
           body: (
             <>
               <LayoutDemo />
+              <H>How to</H>
+              <Steps>
+                <Step>Switch to the workspace you want to resize.</Step>
+                <Step>
+                  Open <IB icon={LayoutGrid} /> <b>Layout</b> from the top bar.
+                </Step>
+                <Step>
+                  Pick <b>2</b>, <b>3</b> or <b>4</b> columns - it's remembered per workspace.
+                </Step>
+                <Step>
+                  For one tile, use its <TB icon={LayoutGrid} /> button to make it wide, tall or big.
+                </Step>
+              </Steps>
               <H>Sizing the grid</H>
               <P>
                 <IB icon={LayoutGrid} /> in the top bar sets 2, 3 or 4 columns for the active
@@ -737,6 +781,21 @@ export function HelpModal({ open, onClose }: { open: boolean; onClose: () => voi
           body: (
             <>
               <UsageDemo />
+              <H>How to</H>
+              <Steps>
+                <Step>
+                  Open <IB icon={Gauge} /> <b>Agent usage</b> from the top bar.
+                </Step>
+                <Step>
+                  Read each account's <b>5-hour</b> and <b>weekly</b> bars and reset countdowns.
+                </Step>
+                <Step>
+                  Toggle <b>Left / Used</b> to switch what the bars measure.
+                </Step>
+                <Step>
+                  Check <b>Spend</b> for today's and the last 30 days' estimated cost.
+                </Step>
+              </Steps>
               <H>Live usage</H>
               <P>
                 <IB icon={Gauge} /> shows each Claude / Codex account on the device with its{" "}
@@ -772,6 +831,22 @@ export function HelpModal({ open, onClose }: { open: boolean; onClose: () => voi
           body: (
             <>
               <NewSessionDemo highlightAccount />
+              <H>How to</H>
+              <Steps>
+                <Step>
+                  Log into each account once in a terminal with its own config dir (e.g.{" "}
+                  <code className="doc-code">CLAUDE_CONFIG_DIR=~/.claude-work claude</code>).
+                </Step>
+                <Step>
+                  Open <IB icon={Plus} /> <b>New session</b>.
+                </Step>
+                <Step>
+                  Pick the <b>Account</b> from the picker.
+                </Step>
+                <Step>
+                  Hit <b>Create</b> - the session launches bound to that account's config.
+                </Step>
+              </Steps>
               <H>One session, one account</H>
               <P>
                 A device can hold several Claude or Codex accounts (each is a config directory like{" "}
@@ -795,6 +870,18 @@ export function HelpModal({ open, onClose }: { open: boolean; onClose: () => voi
           body: (
             <>
               <DevicesDemo />
+              <H>How to</H>
+              <Steps>
+                <Step>
+                  Open <IB icon={HardDrive} /> <b>Devices</b> from the top bar.
+                </Step>
+                <Step>Click a device to expand it and scan its live tmux sessions.</Step>
+                <Step>Add a session to a workspace, move it, or terminate a stale one.</Step>
+                <Step>
+                  To add a new device, run the setup wizard and give it SSH details you can already
+                  reach.
+                </Step>
+              </Steps>
               <H>The agent, per device</H>
               <P>
                 A small <b>agent</b> runs on each device and serves its terminals, ports, saved
@@ -826,6 +913,15 @@ export function HelpModal({ open, onClose }: { open: boolean; onClose: () => voi
                 <ImageIcon size={20} className="muted-icon" />
                 <Kbd>{CMD} V</Kbd>
               </Hero>
+              <H>How to</H>
+              <Steps>
+                <Step>Copy an image to your clipboard (screenshot, file, or web image).</Step>
+                <Step>Click the terminal you want it in so it's focused.</Step>
+                <Step>
+                  Press <Kbd>{CMD} V</Kbd> - the image uploads and its path is typed in for the
+                  agent, even over SSH.
+                </Step>
+              </Steps>
               <H>Paste images to your agent</H>
               <P>
                 Press <Kbd>{CMD} V</Kbd> with an image in your clipboard while a terminal is
@@ -843,6 +939,21 @@ export function HelpModal({ open, onClose }: { open: boolean; onClose: () => voi
           body: (
             <>
               <PortsDemo />
+              <H>How to</H>
+              <Steps>
+                <Step>Start a server on the device (say a dev server on port 5173).</Step>
+                <Step>
+                  Open <IB icon={EthernetPort} /> <b>Ports</b> - the port shows up in the list.
+                </Step>
+                <Step>
+                  On a client machine, flip the switch <b>on</b> to mirror it to your{" "}
+                  <code className="doc-code">localhost</code>.
+                </Step>
+                <Step>
+                  Click <ExternalLink size={12} style={{ verticalAlign: "-2px" }} /> to open it in
+                  your browser.
+                </Step>
+              </Steps>
               <H>Port forwarding</H>
               <P>
                 <IB icon={EthernetPort} /> mirrors the device's listening ports to your machine
@@ -865,6 +976,16 @@ export function HelpModal({ open, onClose }: { open: boolean; onClose: () => voi
           body: (
             <>
               <RdpDemo />
+              <H>How to</H>
+              <Steps>
+                <Step>
+                  Open <IB icon={Monitor} /> <b>Remote desktop</b> from the top bar.
+                </Step>
+                <Step>Pick the server (the device) and the client (this machine).</Step>
+                <Step>
+                  Click <b>Open desktop</b> - the password is read from your OS keychain at launch.
+                </Step>
+              </Steps>
               <H>Linux desktop (RDP)</H>
               <P>
                 <IB icon={Monitor} /> opens the device's Linux desktop over an SSH-tunneled RDP
@@ -881,6 +1002,23 @@ export function HelpModal({ open, onClose }: { open: boolean; onClose: () => voi
           body: (
             <>
               <McpDemo />
+              <H>How to</H>
+              <Steps>
+                <Step>
+                  Open <IB icon={Blocks} /> <b>MCP</b> from the top bar.
+                </Step>
+                <Step>
+                  Turn <b>Expose to agents</b> on.
+                </Step>
+                <Step>
+                  Hit <b>Add</b> next to <b>Claude Code</b> or <b>Codex</b> to register the server
+                  in that CLI automatically.
+                </Step>
+                <Step>
+                  For an editor (Cursor, Zed, Windsurf), use the copy button and paste the config
+                  into its MCP settings.
+                </Step>
+              </Steps>
               <H>Model Context Protocol</H>
               <P>
                 <IB icon={Blocks} /> exposes your sessions and ports to Claude / Codex / Zed /
