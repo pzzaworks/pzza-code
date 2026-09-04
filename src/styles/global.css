@@ -70,7 +70,8 @@ button {
   user-select: none;
 }
 .topbar-spacer {
-  flex: 1;
+  /* the tab strip now owns the middle, so this no longer grows */
+  flex: 0 0 0;
 }
 .topbar-right {
   flex: 0 0 auto;
@@ -127,10 +128,6 @@ button {
   .topbar-tools.open {
     display: flex;
   }
-  /* The collapsed tools free up room, so let the centered tabs use it. */
-  .ws-tabs {
-    max-width: max(220px, calc(100vw - 520px));
-  }
 }
 .icon-btn-accent {
   color: var(--accent);
@@ -175,21 +172,25 @@ button {
    bar with a flat bottom (browser tabs); the active tab connects to the content
    below it. The top bar is position:relative so this centers within it. */
 .ws-tabs {
-  position: absolute;
-  left: 50%;
-  bottom: 0;
-  transform: translateX(-50%);
+  /* A flex item that owns whatever room is left between the brand and the
+     tool cluster, so it only clips when that room is genuinely used up (no
+     fixed reservation guessing at the side controls' width). The tabs inside
+     scroll (see .ws-tabs-scroll) while the + stays pinned; the group is
+     centered within that middle region and sits on the bar's bottom edge. */
+  flex: 1 1 auto;
+  min-width: 0;
+  align-self: flex-end;
   display: flex;
   align-items: flex-end;
+  justify-content: center;
   gap: 2px;
-  /* True viewport-centered; capped so it reserves room for the side controls.
-     The tabs inside scroll (see .ws-tabs-scroll) while the + stays pinned. */
-  max-width: max(220px, calc(100vw - 900px));
 }
 /* Only the tabs scroll; the + button sits after this wrapper so it never
    scrolls out of reach when there are many workspaces. */
 .ws-tabs-scroll {
-  flex: 1 1 auto;
+  /* shrinks and scrolls when the tabs overflow, but never grows past its
+     content so the tab group can stay centered when there is room */
+  flex: 0 1 auto;
   min-width: 0;
   display: flex;
   align-items: flex-end;
