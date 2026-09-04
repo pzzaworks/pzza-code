@@ -14,6 +14,39 @@ import { HAS_TAURI } from "../tauriEnv";
 import { uploadPasteImage } from "../serverApi";
 import type { TileStatus } from "../sessionMeta";
 
+// Copy text to the OS clipboard. navigator.clipboard only exists in a secure
+// context (https or localhost), so on a client that opened the app over plain
+// http via a LAN address it is undefined - fall back to a hidden textarea +
+// execCommand("copy"), which works from a user gesture in any context.
+function copyToClipboard(text: string): void {
+  if (!text) return;
+  const fallback = () => {
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.setAttribute("readonly", "");
+      ta.style.position = "fixed";
+      ta.style.top = "-1000px";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      document.body.removeChild(ta);
+    } catch {
+      /* clipboard genuinely unavailable */
+    }
+  };
+  try {
+    if (navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(text).catch(fallback);
+      return;
+    }
+  } catch {
+    /* fall through */
+  }
+  fallback();
+}
+
 interface Props {
   name: string;
   cmd: string;
@@ -62,6 +95,22 @@ export function Terminal({ name, cmd, args, cwd, window: win, active, onStatus }
       theme: themeById(useStore.getState().themeId).terminal,
     });
     termRef.current = term;
+
+    // Copy the selection on Cmd+C (macOS) or Ctrl+Shift+C, working in insecure
+    // contexts too. Plain Ctrl+C is left alone so it still sends SIGINT.
+    term.attachCustomKeyEventHandler((e) => {
+      if (e.type !== "keydown") return true;
+      const k = e.key.toLowerCase();
+      const isCopy =
+        (e.metaKey && !e.ctrlKey && !e.altKey && k === "c") ||
+        (e.ctrlKey && e.shiftKey && k === "c");
+      if (isCopy && term.hasSelection()) {
+        copyToClipboard(term.getSelection());
+        term.focus();
+        return false;
+      }
+      return true;
+    });
 
     const fit = new FitAddon();
     fitRef.current = fit;
@@ -253,6 +302,11 @@ export function Terminal({ name, cmd, args, cwd, window: win, active, onStatus }
     };
     container.addEventListener("paste", onPaste, true);
 
+    // Focus the terminal on click so a following Cmd/Ctrl+V lands here even when
+    // the tile was already active (the active effect only refocuses on change).
+    const onMouseDown = () => term.focus();
+    container.addEventListener("mousedown", onMouseDown);
+
     // Only scroll the terminal you actually clicked into. When the tile is not
     // active, swallow the wheel before xterm sees it (capture phase) but don't
     // preventDefault, so the grid can still scroll normally underneath.
@@ -266,6 +320,7 @@ export function Terminal({ name, cmd, args, cwd, window: win, active, onStatus }
 
     return () => {
       container.removeEventListener("paste", onPaste, true);
+      container.removeEventListener("mousedown", onMouseDown);
       container.removeEventListener("wheel", onWheel, { capture: true });
       disposed = true;
       cancelAnimationFrame(raf);
