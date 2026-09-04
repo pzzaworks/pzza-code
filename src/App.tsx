@@ -8,6 +8,7 @@ import {
   EthernetPort,
   CircleQuestionMark,
   Gauge,
+  Menu,
 } from "lucide-react";
 import { ThemeProvider } from "./theme/ThemeProvider";
 import { useStore } from "./state/store";
@@ -36,6 +37,26 @@ export default function App() {
 
   const [wizardOpen, setWizardOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
+  // On narrow windows the tool buttons collapse behind a menu button and open
+  // as a bar under the top bar; close that bar on an outside click or Escape.
+  const [toolsOpen, setToolsOpen] = useState(false);
+  const toolsRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!toolsOpen) return;
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as Node;
+      if (toolsRef.current && !toolsRef.current.contains(t)) setToolsOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setToolsOpen(false);
+    };
+    window.addEventListener("mousedown", onDown);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("mousedown", onDown);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [toolsOpen]);
 
   const seeded = useRef(false);
   useEffect(() => {
@@ -74,33 +95,61 @@ export default function App() {
           <div className="topbar-spacer" />
 
           <div className="topbar-right">
-            <LayoutMenu />
-            <Dropdown icon={Monitor} title="Linux desktop (RDP)" width={300}>
-              {(close) => <RdpMenu close={close} />}
-            </Dropdown>
-            <Dropdown icon={EthernetPort} title="Port forwarding" width={320}>
-              <PortsMenu />
-            </Dropdown>
-            <Dropdown icon={HardDrive} title="Devices" width={300}>
-              <DevicesMenu />
-            </Dropdown>
-            <Dropdown icon={Blocks} title="MCP" width={320}>
-              <McpMenu />
-            </Dropdown>
-            <Dropdown icon={Gauge} title="Agent usage" width={320}>
-              <UsageMenu />
-            </Dropdown>
-            <IconButton
-              icon={CircleQuestionMark}
-              title="Help & docs"
-              onClick={() => setHelpOpen(true)}
-            />
-            <Dropdown icon={SettingsIcon} title="Settings" width={320}>
-              <SettingsMenu />
-            </Dropdown>
-            <Dropdown icon={Plus} title="New session" label="New session" width={340}>
-              {(close) => <SessionMenu close={close} />}
-            </Dropdown>
+            {/* The tool cluster renders once. Wide: inline. Narrow: hidden behind
+                the menu button and shown as a full-width bar under the top bar,
+                so each tool's dropdown still anchors to its own button. */}
+            <div className="topbar-tools-wrap" ref={toolsRef}>
+              <IconButton
+                icon={Menu}
+                title="Tools"
+                className="topbar-tools-toggle"
+                active={toolsOpen}
+                onClick={() => setToolsOpen((v) => !v)}
+              />
+              <div className={`topbar-tools ${toolsOpen ? "open" : ""}`}>
+                <LayoutMenu />
+                <Dropdown icon={Monitor} title="Linux desktop (RDP)" width={300}>
+                  {(close) => <RdpMenu close={close} />}
+                </Dropdown>
+                <Dropdown icon={EthernetPort} title="Port forwarding" width={320}>
+                  <PortsMenu />
+                </Dropdown>
+                <Dropdown icon={HardDrive} title="Devices" width={300}>
+                  <DevicesMenu />
+                </Dropdown>
+                <Dropdown icon={Blocks} title="MCP" width={320}>
+                  <McpMenu />
+                </Dropdown>
+                <Dropdown icon={Gauge} title="Agent usage" width={320}>
+                  <UsageMenu />
+                </Dropdown>
+                <IconButton
+                  icon={CircleQuestionMark}
+                  title="Help & docs"
+                  onClick={() => setHelpOpen(true)}
+                />
+                <Dropdown icon={SettingsIcon} title="Settings" width={320}>
+                  <SettingsMenu />
+                </Dropdown>
+                <Dropdown icon={Plus} title="New session" label="New session" width={340}>
+                  {(close) => <SessionMenu close={close} />}
+                </Dropdown>
+                {/* Only shown inside the collapsed menu - on wide windows the tab
+                    strip's + already covers this. */}
+                <button
+                  type="button"
+                  className="btn dropdown-label-btn topbar-tools-narrow-only"
+                  title="New workspace"
+                  onClick={() => {
+                    window.dispatchEvent(new CustomEvent("pzza-open-add-workspace"));
+                    setToolsOpen(false);
+                  }}
+                >
+                  <Plus size={14} strokeWidth={2.2} />
+                  New workspace
+                </button>
+              </div>
+            </div>
           </div>
         </header>
 
