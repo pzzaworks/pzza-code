@@ -204,6 +204,11 @@ export async function readFile(path: string): Promise<{ content: string; tooLarg
   if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `read ${res.status}`);
   return res.json();
 }
+// Direct URL to a file's raw bytes (served with its media type) - use it as the
+// src of an <img> or PDF viewer to preview binary files in the code view.
+export function fileRawUrl(path: string): string {
+  return `${SERVER_HTTP}/file/raw?path=${encodeURIComponent(path)}`;
+}
 export async function writeFile(path: string, content: string): Promise<void> {
   const res = await fetch(`${SERVER_HTTP}/file/write`, {
     method: "POST",
