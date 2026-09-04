@@ -933,6 +933,23 @@ const server = http.createServer(async (req, res) => {
     return installAgent(body, res);
   }
   if (url.pathname === "/sessions") return json(res, 200, await listSessions());
+  // Live current directory of a session's active pane, so the code editor can
+  // root at wherever the terminal actually is right now (a fresh session, or one
+  // that has cd'd since the last scan).
+  if (url.pathname === "/session/path") {
+    const name = String(url.searchParams.get("name") || "").trim();
+    if (!name) return json(res, 400, { error: "name required" });
+    const win = url.searchParams.get("window");
+    const target = win !== null && win !== "" ? `${name}:${win}` : name;
+    const host = SSH_TOKEN.test(url.searchParams.get("host") || "")
+      ? url.searchParams.get("host")
+      : "";
+    const cmd = `tmux display-message -p -t ${shQuote(target)} '#{pane_current_path}'`;
+    const out = await new Promise((resolve) =>
+      shOn(host, cmd, (err, o) => resolve(err ? "" : String(o || "").trim())),
+    );
+    return json(res, 200, { path: out });
+  }
   if (url.pathname === "/scan") {
     const host = SSH_TOKEN.test(url.searchParams.get("host") || "")
       ? url.searchParams.get("host")
