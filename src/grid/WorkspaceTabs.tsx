@@ -32,18 +32,6 @@ export function WorkspaceTabs() {
   const [icon, setIcon] = useState(DEFAULT_WORKSPACE_ICON);
   const [color, setColor] = useState(WORKSPACE_COLORS[0]);
   const [pickerOpen, setPickerOpen] = useState(false);
-
-  // The collapsed top-bar menu can ask for the "New workspace" popover; anchor
-  // it under the tab strip's + button, same as clicking that button directly.
-  useEffect(() => {
-    const open = () => {
-      const btn = document.querySelector<HTMLElement>(".ws-tab-add");
-      if (btn) setAddRect(btn.getBoundingClientRect());
-      setAddOpen(true);
-    };
-    window.addEventListener("pzza-open-add-workspace", open);
-    return () => window.removeEventListener("pzza-open-add-workspace", open);
-  }, []);
   const [dragOver, setDragOver] = useState<string | null>(null);
   const [pending, setPending] = useState<PendingMove | null>(null);
   const ref = useRef<HTMLDivElement>(null);
