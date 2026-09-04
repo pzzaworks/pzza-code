@@ -112,6 +112,24 @@ export function Terminal({ name, cmd, args, cwd, window: win, active, onStatus }
       return true;
     });
 
+    // OSC 52 clipboard passthrough: when tmux (set-clipboard on) or a TUI app
+    // like nvim yanks, it emits OSC 52 with the copied text - mirror it to the
+    // OS clipboard so copying from inside a mouse-grabbing app works over SSH.
+    term.parser.registerOscHandler(52, (data) => {
+      const semi = data.indexOf(";");
+      if (semi < 0) return true;
+      const payload = data.slice(semi + 1);
+      if (!payload || payload === "?") return true; // read/query - ignore
+      try {
+        const bin = atob(payload);
+        const bytes = Uint8Array.from(bin, (c) => c.charCodeAt(0));
+        copyToClipboard(new TextDecoder().decode(bytes));
+      } catch {
+        /* malformed base64 - ignore */
+      }
+      return true;
+    });
+
     const fit = new FitAddon();
     fitRef.current = fit;
     term.loadAddon(fit);
