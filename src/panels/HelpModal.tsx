@@ -2,8 +2,17 @@ import { useState, type ReactNode } from "react";
 import {
   Blocks,
   Boxes,
+  Check,
+  ChevronDown,
+  ChevronRight,
   CircleQuestionMark,
+  Columns2,
+  Columns3,
+  Columns4,
+  Copy,
+  Download,
   EthernetPort,
+  ExternalLink,
   Eye,
   EyeOff,
   Focus,
@@ -20,6 +29,7 @@ import {
   Moon,
   MousePointerClick,
   Plus,
+  RefreshCw,
   Rocket,
   Settings as SettingsIcon,
   Sparkles,
@@ -108,6 +118,241 @@ const Hero = ({ children, caption }: { children: ReactNode; caption: string }) =
   </div>
 );
 
+// --- realistic, non-interactive previews of the actual dropdowns/panels each
+// top-bar button opens, built from the app's own classes so the docs show the
+// real thing (contents and all), not just an icon -----------------------------
+const Panel = ({ children, caption }: { children: ReactNode; caption: string }) => (
+  <div className="doc-panelwrap">
+    <div className="doc-panel">{children}</div>
+    <span className="doc-hero-cap">{caption}</span>
+  </div>
+);
+
+const Switch = ({ on }: { on?: boolean }) => (
+  <span className={`switch ${on ? "switch-on" : ""}`}>
+    <span className="switch-knob" />
+  </span>
+);
+
+const McpDemo = () => (
+  <Panel caption="Top bar · MCP">
+    <div className="menu-body">
+      <div className="menu-title">MCP</div>
+      <div className="mcp-toggle">
+        <span className="set-label">
+          <span>Expose to agents</span>
+          <span className="set-hint">let Claude / Codex control the app safely</span>
+        </span>
+        <Switch on />
+      </div>
+      <div className="mcp-list">
+        {[
+          { label: "Claude Code", cli: true },
+          { label: "Codex", cli: true },
+          { label: "Cursor", cli: false },
+          { label: "Zed", cli: false },
+        ].map((fw) => (
+          <div key={fw.label} className="mcp-row">
+            <span className="mcp-name">{fw.label}</span>
+            <div className="mcp-actions">
+              {fw.cli ? (
+                <span className="btn btn-accent btn-sm">
+                  <Download size={13} strokeWidth={2} /> Add
+                </span>
+              ) : null}
+              <span className="btn btn-sm">
+                <Copy size={13} strokeWidth={2} />
+              </span>
+            </div>
+          </div>
+        ))}
+      </div>
+      <p className="set-note mcp-path">
+        <Check size={11} strokeWidth={2.5} /> server: ~/.config/pzza/mcp.json
+      </p>
+    </div>
+  </Panel>
+);
+
+const PortsDemo = () => (
+  <Panel caption="Top bar · Ports">
+    <div className="menu-body">
+      <div className="menu-title">Port forwarding</div>
+      <div className="ports-status">
+        <span className="dot dot-up" />
+        <span className="small muted">forwarding 3 ports</span>
+        <div className="ports-status-spacer" />
+        <Switch on />
+      </div>
+      <div className="ports-box">
+        {[3000, 5173, 8080].map((port) => (
+          <div key={port} className="port-row">
+            <span className="port-num">
+              {port}
+              <span className="port-state on">live</span>
+            </span>
+            <span className="btn btn-sm">
+              <ExternalLink size={13} strokeWidth={2} />
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  </Panel>
+);
+
+const UsageDemo = () => (
+  <Panel caption="Top bar · Agent usage">
+    <div className="menu-body usage-menu">
+      <div className="usage-head">
+        <span className="menu-title">Agent usage</span>
+        <div className="usage-tools">
+          <span className="usage-seg">
+            <span className="on">Left</span>
+            <span>Used</span>
+          </span>
+          <span className="usage-refresh">
+            <RefreshCw size={13} />
+          </span>
+        </div>
+      </div>
+      <div className="usage-card">
+        <div className="usage-card-head">
+          <span className="usage-dot" style={{ background: "#D97757" }} />
+          <span className="usage-name">Claude</span>
+          <span className="usage-plan">max 20x</span>
+        </div>
+        {[
+          { label: "5h", pct: 62, color: "#e0a33e" },
+          { label: "Weekly", pct: 88, color: "#e0555b" },
+        ].map((b) => (
+          <div className="usage-bar-row" key={b.label}>
+            <div className="usage-bar-top">
+              <span className="usage-bar-label">{b.label}</span>
+              <span className="usage-bar-pct">{b.pct}%</span>
+              <span className="usage-bar-reset">· resets 2h</span>
+            </div>
+            <div className="usage-bar">
+              <div className="usage-bar-fill" style={{ width: `${b.pct}%`, background: b.color }} />
+            </div>
+          </div>
+        ))}
+        <div className="usage-spend">
+          <span className="usage-spend-label">Spend</span>
+          <span className="usage-spend-item">
+            today <b>$4.20</b>
+          </span>
+          <span className="usage-spend-item">
+            30d <b>$96.10</b>
+          </span>
+          <span className="usage-spend-est">est.</span>
+        </div>
+      </div>
+    </div>
+  </Panel>
+);
+
+const DevicesDemo = () => (
+  <Panel caption="Top bar · Devices">
+    <div className="menu-body">
+      <div className="menu-title">Devices</div>
+      <div className="device-list">
+        <div className="device-block on">
+          <div className="device-row device-row-click">
+            <ChevronDown size={14} className="muted-icon" />
+            <HardDrive size={15} className="muted-icon" />
+            <span className="device-main">
+              <span className="device-name">
+                Devbox <span className="device-tag">current</span>
+              </span>
+              <span className="device-sub">pzzaworks@devbox · 4 sessions</span>
+            </span>
+          </div>
+        </div>
+        <div className="device-block">
+          <div className="device-row device-row-click">
+            <ChevronRight size={14} className="muted-icon" />
+            <HardDrive size={15} className="muted-icon" />
+            <span className="device-main">
+              <span className="device-name">Laptop</span>
+              <span className="device-sub">berke@laptop</span>
+            </span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </Panel>
+);
+
+const LayoutDemo = () => (
+  <Panel caption="Top bar · Layout">
+    <div className="menu-body">
+      <div className="menu-head-title">
+        Layout <span className="menu-head-ws">Main</span>
+      </div>
+      {[
+        { Icon: Columns2, label: "2 columns", on: false },
+        { Icon: Columns3, label: "3 columns", on: true },
+        { Icon: Columns4, label: "4 columns", on: false },
+      ].map(({ Icon, label, on }) => (
+        <span key={label} className={`menu-item ${on ? "menu-item-on" : ""}`}>
+          <Icon size={16} strokeWidth={1.9} /> {label}
+        </span>
+      ))}
+    </div>
+  </Panel>
+);
+
+const RdpDemo = () => (
+  <Panel caption="Top bar · Remote desktop">
+    <div className="menu-body">
+      <div className="menu-title">Devbox · desktop</div>
+      <p className="set-note" style={{ marginTop: 0 }}>
+        Opens the Linux desktop over an SSH-tunneled RDP session.
+      </p>
+      <div className="field" style={{ marginTop: 12 }}>
+        <span className="field-label">Server</span>
+        <span className="doc-mini-select doc-select-wide">Devbox</span>
+      </div>
+      <div className="field">
+        <span className="field-label">Client</span>
+        <span className="doc-mini-select doc-select-wide">This machine</span>
+      </div>
+      <span className="btn btn-accent rdp-open">
+        <Monitor size={14} /> Open desktop
+      </span>
+    </div>
+  </Panel>
+);
+
+const NewSessionDemo = ({ highlightAccount = false }: { highlightAccount?: boolean }) => (
+  <Panel caption="Top bar · New session">
+    <div className="menu-body">
+      <div className="menu-title">New session</div>
+      <div className="doc-ns-row">
+        <span className="doc-ns-label">Device</span>
+        <span className="doc-mini-select doc-select-wide">Devbox</span>
+      </div>
+      <div className="doc-ns-row">
+        <span className="doc-ns-label">Workspace</span>
+        <span className="doc-mini-select doc-select-wide">Main</span>
+      </div>
+      <div className={`doc-ns-row ${highlightAccount ? "doc-ns-hi" : ""}`}>
+        <span className="doc-ns-label">Account</span>
+        <span className="doc-mini-select doc-select-wide">
+          <UsersRound size={12} /> Default account
+        </span>
+      </div>
+      <div className="doc-ns-create">
+        <span className="doc-ns-name">Name a new session</span>
+        <span className="btn btn-accent btn-sm">
+          <Plus size={13} /> Create
+        </span>
+      </div>
+    </div>
+  </Panel>
+);
+
 interface Sec {
   id: string;
   label: string;
@@ -132,9 +377,7 @@ export function HelpModal({ open, onClose }: { open: boolean; onClose: () => voi
           icon: Rocket,
           body: (
             <>
-              <Hero caption="New session · top bar">
-                <IB icon={Plus} />
-              </Hero>
+              <NewSessionDemo />
               <H>What PzzaCode is</H>
               <P>
                 A grid terminal manager for agentic coding. Every tile on the grid is a live
@@ -416,9 +659,7 @@ export function HelpModal({ open, onClose }: { open: boolean; onClose: () => voi
           icon: LayoutGrid,
           body: (
             <>
-              <Hero caption="Layout · top bar">
-                <IB icon={LayoutGrid} />
-              </Hero>
+              <LayoutDemo />
               <H>Sizing the grid</H>
               <P>
                 <IB icon={LayoutGrid} /> in the top bar sets 2, 3 or 4 columns for the active
@@ -495,9 +736,7 @@ export function HelpModal({ open, onClose }: { open: boolean; onClose: () => voi
           icon: Gauge,
           body: (
             <>
-              <Hero caption="Agent usage · top bar">
-                <IB icon={Gauge} />
-              </Hero>
+              <UsageDemo />
               <H>Live usage</H>
               <P>
                 <IB icon={Gauge} /> shows each Claude / Codex account on the device with its{" "}
@@ -532,11 +771,7 @@ export function HelpModal({ open, onClose }: { open: boolean; onClose: () => voi
           icon: UsersRound,
           body: (
             <>
-              <Hero caption="New session · Account picker">
-                <span className="doc-mini-select">
-                  <UsersRound size={13} /> Default account
-                </span>
-              </Hero>
+              <NewSessionDemo highlightAccount />
               <H>One session, one account</H>
               <P>
                 A device can hold several Claude or Codex accounts (each is a config directory like{" "}
@@ -559,9 +794,7 @@ export function HelpModal({ open, onClose }: { open: boolean; onClose: () => voi
           icon: HardDrive,
           body: (
             <>
-              <Hero caption="Devices · top bar">
-                <IB icon={HardDrive} />
-              </Hero>
+              <DevicesDemo />
               <H>The agent, per device</H>
               <P>
                 A small <b>agent</b> runs on each device and serves its terminals, ports, saved
@@ -609,9 +842,7 @@ export function HelpModal({ open, onClose }: { open: boolean; onClose: () => voi
           icon: EthernetPort,
           body: (
             <>
-              <Hero caption="Ports · top bar">
-                <IB icon={EthernetPort} />
-              </Hero>
+              <PortsDemo />
               <H>Port forwarding</H>
               <P>
                 <IB icon={EthernetPort} /> mirrors the device's listening ports to your machine
@@ -633,9 +864,7 @@ export function HelpModal({ open, onClose }: { open: boolean; onClose: () => voi
           icon: Monitor,
           body: (
             <>
-              <Hero caption="Remote desktop · top bar">
-                <IB icon={Monitor} />
-              </Hero>
+              <RdpDemo />
               <H>Linux desktop (RDP)</H>
               <P>
                 <IB icon={Monitor} /> opens the device's Linux desktop over an SSH-tunneled RDP
@@ -651,9 +880,7 @@ export function HelpModal({ open, onClose }: { open: boolean; onClose: () => voi
           icon: Blocks,
           body: (
             <>
-              <Hero caption="MCP · top bar">
-                <IB icon={Blocks} />
-              </Hero>
+              <McpDemo />
               <H>Model Context Protocol</H>
               <P>
                 <IB icon={Blocks} /> exposes your sessions and ports to Claude / Codex / Zed /
