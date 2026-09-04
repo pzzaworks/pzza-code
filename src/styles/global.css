@@ -2769,6 +2769,11 @@ button {
   overflow-y: auto;
   padding: 8px 18px 18px;
 }
+/* the docs manage their own scrolling (nav + content), so the modal body must
+   not add a second scrollbar that appears/disappears and shifts the layout */
+.modal-body:has(.doc-layout) {
+  overflow: hidden;
+}
 .modal-sm {
   width: 400px;
 }
