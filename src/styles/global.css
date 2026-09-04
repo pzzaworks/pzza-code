@@ -1467,6 +1467,11 @@ button {
   padding: 12px 10px;
   background: color-mix(in srgb, var(--bg) 55%, transparent);
   border-right: 1px solid var(--border);
+  /* no visible scrollbar in the nav */
+  scrollbar-width: none;
+}
+.doc-nav::-webkit-scrollbar {
+  display: none;
 }
 .doc-nav-group + .doc-nav-group {
   margin-top: 12px;
@@ -1510,16 +1515,6 @@ button {
   color: var(--text);
   font-weight: 650;
 }
-.doc-nav-item.on::before {
-  content: "";
-  position: absolute;
-  left: 3px;
-  top: 8px;
-  bottom: 8px;
-  width: 3px;
-  border-radius: 3px;
-  background: var(--accent);
-}
 .doc-nav-item.on svg {
   color: var(--accent);
   opacity: 1;
@@ -1528,6 +1523,9 @@ button {
   flex: 1;
   min-width: 0;
   overflow-y: auto;
+  /* always reserve the scrollbar gutter so switching between short and long
+     pages doesn't shift the content sideways */
+  scrollbar-gutter: stable;
   padding: 20px 26px 26px;
   animation: doc-fade 0.14s ease;
 }
