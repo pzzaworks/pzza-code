@@ -134,20 +134,6 @@ export default function App() {
                 <Dropdown icon={Plus} title="New session" label="New session" width={340}>
                   {(close) => <SessionMenu close={close} />}
                 </Dropdown>
-                {/* Only shown inside the collapsed menu - on wide windows the tab
-                    strip's + already covers this. */}
-                <button
-                  type="button"
-                  className="btn dropdown-label-btn topbar-tools-narrow-only"
-                  title="New workspace"
-                  onClick={() => {
-                    window.dispatchEvent(new CustomEvent("pzza-open-add-workspace"));
-                    setToolsOpen(false);
-                  }}
-                >
-                  <Plus size={14} strokeWidth={2.2} />
-                  New workspace
-                </button>
               </div>
             </div>
           </div>
