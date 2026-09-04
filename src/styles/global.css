@@ -1573,7 +1573,9 @@ button {
 .doc-p .icon-btn,
 .doc-p .tile-btn,
 .doc-note .icon-btn,
-.doc-note .tile-btn {
+.doc-note .tile-btn,
+.doc-steps .icon-btn,
+.doc-steps .tile-btn {
   display: inline-flex;
   vertical-align: middle;
   width: 21px;
@@ -1582,7 +1584,9 @@ button {
   margin: 0 2px;
 }
 .doc-note .icon-btn > svg,
-.doc-note .tile-btn > svg {
+.doc-note .tile-btn > svg,
+.doc-steps .icon-btn > svg,
+.doc-steps .tile-btn > svg {
   margin-top: 0;
   color: inherit;
 }
@@ -1624,17 +1628,16 @@ button {
   border: 1px solid var(--border);
   border-radius: 10px;
 }
-/* the component showcase at the top of each doc page */
+/* the component showcase at the top of each doc page - no boxed frame, it just
+   sits on the page and is set off by a hairline below */
 .doc-hero {
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 12px;
-  padding: 22px 16px;
-  margin: 2px 0 16px;
-  background: color-mix(in srgb, var(--text) 3.5%, transparent);
-  border: 1px solid var(--border);
-  border-radius: 12px;
+  padding: 6px 0 18px;
+  margin: 0 0 14px;
+  border-bottom: 1px solid var(--border);
 }
 .doc-hero-stage {
   display: flex;
@@ -1674,17 +1677,17 @@ button {
   color: var(--text);
   font-size: 12.5px;
 }
-/* a real dropdown/panel preview, framed cleanly with its caption on top */
+/* a real dropdown/panel preview - caption on top, panel sits on the page with a
+   soft lift and a hairline below, so it blends with the docs instead of floating
+   in a dark box */
 .doc-panelwrap {
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 12px;
-  padding: 20px 16px;
-  margin: 2px 0 16px;
-  background: color-mix(in srgb, var(--text) 3.5%, transparent);
-  border: 1px solid var(--border);
-  border-radius: 12px;
+  padding: 6px 0 18px;
+  margin: 0 0 14px;
+  border-bottom: 1px solid var(--border);
 }
 .doc-panelwrap .doc-hero-cap {
   order: 0;
@@ -1694,10 +1697,10 @@ button {
   width: 300px;
   max-width: 100%;
   padding: 12px;
-  background: var(--surface);
-  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--text) 5%, var(--surface));
+  border: 1px solid color-mix(in srgb, var(--text) 12%, var(--border));
   border-radius: 13px;
-  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.28);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.16);
   pointer-events: none;
   text-align: left;
 }
