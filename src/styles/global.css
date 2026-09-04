@@ -182,15 +182,27 @@ button {
   display: flex;
   align-items: flex-end;
   gap: 2px;
-  /* True viewport-centered; capped so it reserves room for the side controls
-     and scrolls instead of overlapping them. */
+  /* True viewport-centered; capped so it reserves room for the side controls.
+     The tabs inside scroll (see .ws-tabs-scroll) while the + stays pinned. */
   max-width: max(220px, calc(100vw - 900px));
+}
+/* Only the tabs scroll; the + button sits after this wrapper so it never
+   scrolls out of reach when there are many workspaces. */
+.ws-tabs-scroll {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
   overflow-x: auto;
   overflow-y: hidden;
   scrollbar-width: none;
 }
-.ws-tabs::-webkit-scrollbar {
+.ws-tabs-scroll::-webkit-scrollbar {
   display: none;
+}
+.ws-tabs-add-wrap {
+  flex: 0 0 auto;
 }
 .ws-tab {
   flex: 0 0 auto;
