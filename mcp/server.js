@@ -1,8 +1,9 @@
 #!/usr/bin/env node
-// pzzacode-mcp server. Exposes the devbox sessions / windows / ports that
-// PzzaCode manages as tools any MCP-speaking agent (Claude, Codex, Zed, …)
-// can call. It drives the PzzaCode HTTP backend, so nothing here runs shell
-// directly - the same guarded endpoints the app uses.
+// pzzacode-mcp server. Exposes everything PzzaCode's device agent manages -
+// terminals, ports, forwarding, accounts/usage/spend, files, MCP wiring and
+// remote install - as tools any MCP-speaking agent (Claude, Codex, Zed, …) can
+// call. It drives the same guarded HTTP backend the app uses, so nothing here
+// runs shell directly.
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
@@ -29,11 +30,23 @@ const post = (p, body) =>
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body ?? {}),
   });
+const qs = (params) => {
+  const u = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) {
+    if (v !== undefined && v !== null && `${v}` !== "") u.set(k, `${v}`);
+  }
+  const s = u.toString();
+  return s ? `?${s}` : "";
+};
 
+// The tools map one-to-one onto the local device agent's HTTP API, so an MCP
+// client (Claude, Codex, Zed, …) can drive everything PzzaCode itself does:
+// terminals, ports, forwarding, accounts/usage/spend, files, MCP wiring, and
+// installing the agent onto another device.
 const TOOLS = [
   {
     name: "list_sessions",
-    description: "List the tmux sessions on the devbox (name, windows, active command, path).",
+    description: "List the tmux sessions on this device (name, windows, active command, path).",
     inputSchema: { type: "object", properties: {} },
     run: () => get("/sessions"),
   },
@@ -44,36 +57,70 @@ const TOOLS = [
     run: () => get("/windows"),
   },
   {
-    name: "list_ports",
-    description: "List the TCP ports the devbox is currently listening on.",
-    inputSchema: { type: "object", properties: {} },
-    run: () => get("/ports"),
-  },
-  {
-    name: "create_session",
-    description: "Create a new detached tmux session on the devbox.",
+    name: "scan_device",
+    description:
+      "Scan every tmux session on a device. host empty = this device; otherwise an ssh alias / user@host of an added device.",
     inputSchema: {
       type: "object",
-      properties: {
-        name: { type: "string", description: "Session name" },
-        cwd: { type: "string", description: "Working directory (optional)" },
-      },
-      required: ["name"],
+      properties: { host: { type: "string", description: "ssh host (optional; blank = local)" } },
     },
-    run: (a) => post("/create", { name: a.name, cwd: a.cwd }),
+    run: (a) => get(`/scan${qs({ host: a.host })}`),
   },
   {
-    name: "kill_session",
-    description: "Terminate a tmux session (or a single window with `window`) on the devbox.",
+    name: "session_path",
+    description: "Get the live working directory of a session's active pane.",
     inputSchema: {
       type: "object",
       properties: {
         name: { type: "string", description: "Session name" },
         window: { type: "number", description: "Window index (optional)" },
+        host: { type: "string", description: "ssh host (optional)" },
       },
       required: ["name"],
     },
-    run: (a) => post("/kill", { name: a.name, window: a.window }),
+    run: (a) => get(`/session/path${qs({ name: a.name, window: a.window, host: a.host })}`),
+  },
+  {
+    name: "create_session",
+    description:
+      "Create a new detached tmux session on this device, optionally bound to a Claude/Codex account.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "Session name" },
+        cwd: { type: "string", description: "Working directory (optional)" },
+        account: {
+          type: "object",
+          description: "Optional agent account to bind: { provider, dir }.",
+          properties: {
+            provider: { type: "string" },
+            dir: { type: "string" },
+          },
+        },
+      },
+      required: ["name"],
+    },
+    run: (a) => post("/create", { name: a.name, cwd: a.cwd, account: a.account }),
+  },
+  {
+    name: "kill_session",
+    description: "Terminate a tmux session (or a single window with `window`) on a device.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "Session name" },
+        window: { type: "number", description: "Window index (optional)" },
+        host: { type: "string", description: "ssh host (optional; blank = local)" },
+      },
+      required: ["name"],
+    },
+    run: (a) => post("/kill", { name: a.name, window: a.window, host: a.host }),
+  },
+  {
+    name: "list_ports",
+    description: "List the TCP ports this device is currently listening on.",
+    inputSchema: { type: "object", properties: {} },
+    run: () => get("/ports"),
   },
   {
     name: "forwarding_status",
@@ -91,10 +138,115 @@ const TOOLS = [
     },
     run: (a) => post("/forward/toggle", { enabled: a.enabled }),
   },
+  {
+    name: "capabilities",
+    description: "Report the agent's role (source/client), whether it can forward, and its host.",
+    inputSchema: { type: "object", properties: {} },
+    run: () => get("/capabilities"),
+  },
+  {
+    name: "doctor",
+    description: "Environment diagnostics for this device's agent (role, tmux, storage, backend).",
+    inputSchema: { type: "object", properties: {} },
+    run: () => get("/doctor"),
+  },
+  {
+    name: "list_accounts",
+    description: "List the Claude / Codex agent accounts (config dirs) on this device.",
+    inputSchema: { type: "object", properties: {} },
+    run: () => get("/accounts"),
+  },
+  {
+    name: "get_usage",
+    description: "Claude/Codex account usage on this device (5h + weekly windows, per account).",
+    inputSchema: { type: "object", properties: {} },
+    run: () => get("/usage"),
+  },
+  {
+    name: "get_spend",
+    description: "Estimated spend per account (today / yesterday / trailing window).",
+    inputSchema: { type: "object", properties: {} },
+    run: () => get("/spend"),
+  },
+  {
+    name: "mcp_config",
+    description: "Show the MCP server path and which agent frameworks it is wired into.",
+    inputSchema: { type: "object", properties: {} },
+    run: () => get("/mcp/config"),
+  },
+  {
+    name: "mcp_install",
+    description: "Wire this MCP server into an agent framework's config (claude, codex, …).",
+    inputSchema: {
+      type: "object",
+      properties: { framework: { type: "string", description: "Framework key, e.g. claude" } },
+      required: ["framework"],
+    },
+    run: (a) => post("/mcp/install", { framework: a.framework }),
+  },
+  {
+    name: "list_dir",
+    description: "List a directory on this device (restricted to the home tree).",
+    inputSchema: {
+      type: "object",
+      properties: { path: { type: "string", description: "Directory (optional; blank = home)" } },
+    },
+    run: (a) => get(`/fs/list${qs({ path: a.path })}`),
+  },
+  {
+    name: "read_file",
+    description: "Read a text file on this device (restricted to the home tree).",
+    inputSchema: {
+      type: "object",
+      properties: { path: { type: "string", description: "Absolute file path" } },
+      required: ["path"],
+    },
+    run: (a) => get(`/file/read${qs({ path: a.path })}`),
+  },
+  {
+    name: "write_file",
+    description: "Write a text file on this device (restricted to the home tree).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "Absolute file path" },
+        content: { type: "string", description: "New file contents" },
+      },
+      required: ["path", "content"],
+    },
+    run: (a) => post("/file/write", { path: a.path, content: a.content }),
+  },
+  {
+    name: "install_agent",
+    description:
+      "Install the PzzaCode agent onto another device over SSH (you must already have SSH access). Returns the full install log.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        target: { type: "string", description: "user@host or ssh alias" },
+        port: { type: "number", description: "SSH port (optional)" },
+        identity: { type: "string", description: "Identity file (optional)" },
+        devboxHost: {
+          type: "string",
+          description: "For a client-role device: the source host it forwards to (optional)",
+        },
+        agentPort: { type: "number", description: "Agent port on the target (optional; 5190)" },
+      },
+      required: ["target"],
+    },
+    run: (a) =>
+      post("/agent/install", {
+        target: a.target,
+        port: a.port,
+        identity: a.identity,
+        devboxHost: a.devboxHost,
+        agentPort: a.agentPort,
+      }),
+  },
 ];
 
 const server = new Server(
-  { name: "pzzacode-mcp", version: "0.1.0" },
+  { name: "pzzacode-mcp", version: "0.2.0" },
   { capabilities: { tools: {} } },
 );
 

@@ -1,7 +1,7 @@
 {
   "name": "pzza-code-server",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "description": "PzzaCode device agent - serves persistent terminal sessions, ports and saved state to the app, per device",
   "scripts": {

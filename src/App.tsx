@@ -33,9 +33,9 @@ export default function App() {
   const loadSessions = useStore((s) => s.loadSessions);
   const seedPreview = useStore((s) => s.seedPreview);
 
-  const seedWorkspaces = useStore((s) => s.seedWorkspaces);
+  const wizardOpen = useStore((s) => s.wizardOpen);
+  const setWizardOpen = useStore((s) => s.setWizardOpen);
 
-  const [wizardOpen, setWizardOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
   // On narrow windows the tool buttons collapse behind a menu button and open
   // as a bar under the top bar; close that bar on an outside click or Escape.
@@ -58,24 +58,31 @@ export default function App() {
     };
   }, [toolsOpen]);
 
+  // On macOS the app uses an overlay title bar, so the traffic-light buttons sit
+  // on top of the top bar's left edge. Tag the root so CSS can inset the brand
+  // clear of them (and keep the whole bar draggable).
+  useEffect(() => {
+    const isMac = typeof navigator !== "undefined" && /mac/i.test(navigator.platform || navigator.userAgent || "");
+    if (HAS_TAURI && isMac) document.documentElement.classList.add("tauri-mac");
+    return () => document.documentElement.classList.remove("tauri-mac");
+  }, []);
+
   const seeded = useRef(false);
   useEffect(() => {
     if (seeded.current) return;
     seeded.current = true;
-    seedWorkspaces();
     loadSessions().catch(() => {
       if (!HAS_TAURI) seedPreview();
     });
-    // First run in the browser build: open the setup wizard so a fresh device
-    // gets its agent configured.
-    if (!HAS_TAURI) {
-      try {
-        if (!localStorage.getItem("pzza.setupDone")) setWizardOpen(true);
-      } catch {
-        /* ignore */
-      }
+    // First run: open the setup wizard so a fresh install gets its local agent
+    // verified and can add remote devices. Runs in both the app and the browser
+    // build - the wizard adapts its checks to whichever backend it is talking to.
+    try {
+      if (!localStorage.getItem("pzza.setupDone")) setWizardOpen(true);
+    } catch {
+      /* ignore */
     }
-  }, [loadSessions, seedPreview, seedWorkspaces]);
+  }, [loadSessions, seedPreview, setWizardOpen]);
 
   return (
     <ThemeProvider>
@@ -129,7 +136,7 @@ export default function App() {
                   onClick={() => setHelpOpen(true)}
                 />
                 <Dropdown icon={SettingsIcon} title="Settings" width={320}>
-                  <SettingsMenu />
+                  {(close) => <SettingsMenu close={close} />}
                 </Dropdown>
                 <Dropdown icon={Plus} title="New session" label="New session" width={340}>
                   {(close) => <SessionMenu close={close} />}

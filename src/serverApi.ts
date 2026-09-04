@@ -1,8 +1,9 @@
-// Browser backend (server/index.js on the devbox). Used only in the plain
-// browser build; the Tauri build talks to Rust instead. The page is served from
-// a devbox port (mirrored to the Mac by autoforward), so the server is reached
-// on the same hostname at its own port.
+// Device agent (server/index.js). In the app (Tauri) the agent runs locally as
+// a managed sidecar on 127.0.0.1, so every panel and the MCP talk to the same
+// local backend. In the plain browser build the page is served from a device
+// port, so the agent is reached on the same hostname at its own port.
 import type { RemoteSession } from "./connection";
+import { HAS_TAURI } from "./tauriEnv";
 
 function serverPort(): number {
   try {
@@ -14,8 +15,14 @@ function serverPort(): number {
   return 5190;
 }
 
-const HOST =
-  typeof location !== "undefined" ? location.hostname || "localhost" : "localhost";
+// 127.0.0.1 is a "potentially trustworthy" origin, so the webview may fetch it
+// even from the app's secure custom-scheme origin. location.hostname in the app
+// is the internal tauri host, never where the agent listens - so pin the loopback.
+const HOST = HAS_TAURI
+  ? "127.0.0.1"
+  : typeof location !== "undefined"
+    ? location.hostname || "localhost"
+    : "localhost";
 
 export const SERVER_HTTP = `http://${HOST}:${serverPort()}`;
 export const SERVER_WS = `ws://${HOST}:${serverPort()}/pty`;
