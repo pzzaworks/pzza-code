@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Pzzaworks Console - device agent installer.
+# PzzaCode - device agent installer.
 #
 # Sets up the agent (the process that serves terminals, ports and saved state to
 # the app) on this machine and, on Linux/macOS, registers it as a background
@@ -29,7 +29,7 @@ warn() { printf "  ${Y}!${X} %s\n" "$1"; }
 err()  { printf "  ${R}✗${X} %s\n" "$1"; }
 step() { printf "\n${B}%s${X}\n" "$1"; }
 
-printf "${B}${C}Pzzaworks Console${X}${B} - device agent installer${X}\n"
+printf "${B}${C}PzzaCode${X}${B} - device agent installer${X}\n"
 printf "${DIM}%s${X}\n" "$SCRIPT_DIR"
 
 # --- prerequisites -----------------------------------------------------------
@@ -108,7 +108,7 @@ register_systemd() {
   mkdir -p "$unit_dir"
   cat > "$unit_dir/pzza-agent.service" <<UNIT
 [Unit]
-Description=Pzzaworks Console device agent
+Description=PzzaCode device agent
 After=network.target
 
 [Service]

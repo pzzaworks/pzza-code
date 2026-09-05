@@ -17,14 +17,6 @@ import type { RemoteSession } from "../connection";
 import { sessionIcon, iconColor, tileTitle } from "../sessionMeta";
 import type { Device } from "../devices";
 
-function currentDeviceId(fallback: string): string {
-  try {
-    return localStorage.getItem("pzza.session.device") ?? fallback;
-  } catch {
-    return fallback;
-  }
-}
-
 interface ScanState {
   loading: boolean;
   sessions: RemoteSession[];
@@ -50,14 +42,19 @@ export function DevicesMenu() {
   const [pending, setPending] = useState<{ id: string; name: string } | null>(null);
   const [openDev, setOpenDev] = useState<string | null>(null);
   const [scans, setScans] = useState<Record<string, ScanState>>({});
-  const [killing, setKilling] = useState<{ session: string; host: string; open: boolean } | null>(
-    null,
-  );
+  const [killing, setKilling] = useState<{
+    session: string;
+    host: string;
+    deviceId: string;
+    open: boolean;
+  } | null>(null);
 
-  const current = currentDeviceId(devices[0]?.id ?? "");
-
+  // The local device (this Mac) runs the agent, so its tmux is reached with an
+  // empty host; every other device is reached over ssh. This is what decides how
+  // we scan and kill - independent of which device is the default for new sessions.
+  const isLocalDevice = (d: Device) => d.id === "this-mac";
   const sshTarget = (d: Device) => (d.user ? `${d.user}@${d.host}` : d.host);
-  const scanHost = (d: Device) => (d.id === current ? "" : sshTarget(d));
+  const scanHost = (d: Device) => (isLocalDevice(d) ? "" : sshTarget(d));
 
   const runScan = (d: Device) => {
     setScans((s) => ({ ...s, [d.id]: { loading: true, sessions: [], error: null } }));
@@ -95,14 +92,20 @@ export function DevicesMenu() {
     ...workspaces.map((w) => ({ value: w.id, label: w.name })),
   ];
 
-  const terminate = () => {
+  const terminate = async () => {
     if (!killing) return;
-    killSession(killing.session, undefined, killing.host || undefined);
-    // Drop any tiles pointing at this session.
+    const { session, host, deviceId } = killing;
+    // Drop any tiles pointing at this session first so nothing reattaches to it,
+    // then kill it on its device.
     for (const t of tiles) {
-      if ((t.session ?? t.name) === killing.session) closeTile(t.id);
+      if ((t.session ?? t.name) === session) closeTile(t.id);
     }
+    await killSession(session, undefined, host || undefined);
     setKilling(null);
+    // Re-scan that device so the list reflects the kill (and surfaces a session
+    // that a supervisor immediately respawned, instead of silently doing nothing).
+    const dev = devices.find((d) => d.id === deviceId);
+    if (dev) runScan(dev);
   };
 
   return (
@@ -111,8 +114,8 @@ export function DevicesMenu() {
 
       <div className="device-list">
         {devices.map((d) => {
-          const isCurrent = d.id === current;
-          const isLocal = d.id === "this-mac";
+          const isLocal = isLocalDevice(d);
+          const isCurrent = isLocal; // the local device is the one the app drives directly
           const Icon = isLocal ? Laptop : Server;
           const expanded = openDev === d.id;
           const scan = scans[d.id];
@@ -128,8 +131,7 @@ export function DevicesMenu() {
                 <span className="device-main">
                   <span className="device-name">
                     {d.name}
-                    {isCurrent ? <span className="device-tag">current</span> : null}
-                    {isLocal && !isCurrent ? <span className="device-tag">local</span> : null}
+                    {isLocal ? <span className="device-tag">current</span> : null}
                   </span>
                   <span className="device-sub">
                     {d.user ? `${d.user}@` : ""}
@@ -227,6 +229,7 @@ export function DevicesMenu() {
                               setKilling({
                                 session: sess.name,
                                 host: scanHost(d),
+                                deviceId: d.id,
                                 open: isOpen,
                               })
                             }
