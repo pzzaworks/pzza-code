@@ -270,6 +270,25 @@ export async function fetchDoctor(): Promise<Doctor> {
   return res.json();
 }
 
+export interface SshHost {
+  host: string; // Host alias from ~/.ssh/config
+  hostname?: string;
+  user?: string;
+  port?: number;
+  identity?: string;
+}
+export interface SshHosts {
+  dir: string; // the ~/.ssh directory (for rooting a file picker)
+  hosts: SshHost[];
+  identities: string[]; // private-key files found in ~/.ssh
+}
+// Auto-discovered SSH targets + identity files, to prefill the Add-a-device form.
+export async function fetchSshHosts(): Promise<SshHosts> {
+  const res = await fetch(`${SERVER_HTTP}/ssh/hosts`);
+  if (!res.ok) throw new Error(`ssh hosts ${res.status}`);
+  return res.json();
+}
+
 export interface InstallOpts {
   target: string; // [user@]host or ssh-config alias
   port?: number;

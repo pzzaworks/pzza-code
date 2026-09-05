@@ -2141,6 +2141,70 @@ button {
   flex: 1;
   width: auto;
 }
+/* Auto-detected SSH targets from ~/.ssh/config, shown as quick-fill chips. */
+.sw-detected {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+.sw-detected-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  color: var(--muted);
+}
+.sw-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.sw-chip {
+  height: 26px;
+  padding: 0 11px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 550;
+  cursor: pointer;
+  transition: border-color 0.12s, background 0.12s;
+}
+.sw-chip:hover {
+  border-color: var(--accent);
+}
+.sw-chip.on {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+}
+/* An input paired with a trailing icon button (identity-file browse). */
+.sw-input-with-btn {
+  display: flex;
+  gap: 6px;
+}
+.sw-input-with-btn input {
+  flex: 1;
+  min-width: 0;
+}
+.sw-browse {
+  flex: 0 0 auto;
+  width: 34px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--muted);
+  cursor: pointer;
+  transition: border-color 0.12s, color 0.12s;
+}
+.sw-browse:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
 .sw-role {
   display: flex;
   gap: 8px;

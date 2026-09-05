@@ -32,24 +32,65 @@ fn find_agent_script(app: &AppHandle) -> Option<PathBuf> {
     None
 }
 
-// Find a Node runtime. GUI apps launched from Finder do not inherit the login
-// shell PATH, so check the common install locations first, then ask a login
-// shell (which picks up nvm / fnm / asdf shims and Homebrew).
-fn find_node() -> Option<String> {
-    for c in ["/opt/homebrew/bin/node", "/usr/local/bin/node", "/usr/bin/node"] {
-        if std::path::Path::new(c).exists() {
-            return Some(c.to_string());
+// The login shell's PATH. GUI apps launched from Finder inherit only a minimal
+// PATH, so the agent (and every tool it runs: tmux, ssh, node) would miss
+// Homebrew, nvm, etc. Ask the user's login shell for its real PATH, then union
+// it with the common install locations so tmux from Homebrew always resolves.
+fn agent_path() -> String {
+    let mut dirs: Vec<String> = Vec::new();
+    let mut push = |p: &str| {
+        let p = p.trim();
+        if !p.is_empty() && !dirs.iter().any(|d| d == p) {
+            dirs.push(p.to_string());
+        }
+    };
+    for base in [
+        "/opt/homebrew/bin",
+        "/opt/homebrew/sbin",
+        "/usr/local/bin",
+        "/usr/bin",
+        "/bin",
+        "/usr/sbin",
+        "/sbin",
+    ] {
+        push(base);
+    }
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
+    if let Ok(out) = Command::new(&shell).arg("-lc").arg("printf %s \"$PATH\"").output() {
+        if out.status.success() {
+            for p in String::from_utf8_lossy(&out.stdout).split(':') {
+                push(p);
+            }
         }
     }
+    if let Ok(existing) = std::env::var("PATH") {
+        for p in existing.split(':') {
+            push(p);
+        }
+    }
+    dirs.join(":")
+}
+
+// Find a Node runtime, preferring whatever the login PATH resolves (nvm / fnm /
+// asdf shims and Homebrew), falling back to the common install locations.
+fn find_node(path: &str) -> Option<String> {
     let out = Command::new("/bin/sh")
         .arg("-lc")
         .arg("command -v node")
+        .env("PATH", path)
         .output()
-        .ok()?;
-    if out.status.success() {
-        let p = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        if !p.is_empty() {
-            return Some(p);
+        .ok();
+    if let Some(out) = out {
+        if out.status.success() {
+            let p = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if !p.is_empty() {
+                return Some(p);
+            }
+        }
+    }
+    for c in ["/opt/homebrew/bin/node", "/usr/local/bin/node", "/usr/bin/node"] {
+        if std::path::Path::new(c).exists() {
+            return Some(c.to_string());
         }
     }
     None
@@ -63,7 +104,8 @@ pub fn start(app: &AppHandle) {
             return;
         }
     };
-    let node = match find_node() {
+    let path = agent_path();
+    let node = match find_node(&path) {
         Some(n) => n,
         None => {
             eprintln!("pzza agent: no Node runtime found; server-backed panels disabled");
@@ -74,6 +116,9 @@ pub fn start(app: &AppHandle) {
     let mut cmd = Command::new(node);
     cmd.arg(&script)
         .env("PORT", AGENT_PORT)
+        // A full PATH so the agent's child processes (tmux, ssh) resolve even
+        // when the app was launched from Finder with a minimal environment.
+        .env("PATH", &path)
         // Empty devbox host = source role: tmux/ports are local to this machine.
         .env("PZZA_DEVBOX_HOST", "");
     if let Some(dir) = work_dir {
