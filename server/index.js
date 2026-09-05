@@ -1,7 +1,7 @@
 // PzzaCode backend. Runs in one of two roles:
 //
 //   source   (default, on the devbox): tmux/ports are local; it cannot forward.
-//   receiver (PZZA_DEVBOX_HOST set, on the Mac): tmux/ports come from the devbox
+//   receiver (PZZA_SERVER_HOST set, on the Mac): tmux/ports come from the devbox
 //            over ssh, and it OWNS port forwarding (ssh -L), so the UI exposes a
 //            global enable/disable - the "receiver controls" only show here.
 //
@@ -13,6 +13,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import crypto from "node:crypto";
 // ws + node-pty are loaded lazily (see startPtyBridge) so the agent still boots
 // on a bare Node runtime with no installed modules - the app's terminals go
 // through the Rust backend, and only the browser build's WebSocket PTY needs them.
@@ -21,7 +22,7 @@ const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..
 const MCP_PATH = path.join(REPO_ROOT, "mcp/server.js");
 
 const PORT = Number(process.env.PORT || 5190);
-const DEVBOX = process.env.PZZA_DEVBOX_HOST || ""; // e.g. "devbox"; empty = source
+const DEVBOX = process.env.PZZA_SERVER_HOST || ""; // e.g. "devbox"; empty = source
 const IS_CLIENT = DEVBOX !== ""; // client machine: tmux/ports over ssh, does -L forwarding
 const SKIP = new Set([22, 53, 631, 3389]);
 const MIN_PORT = 1024;
@@ -43,10 +44,57 @@ function sh(remote, cb) {
   else execFile("sh", ["-c", remote], cb);
 }
 
+// ---- Access control --------------------------------------------------------
+// The agent is loopback-only, but a hostile web page in a browser on this
+// machine can still reach 127.0.0.1, and DNS rebinding can even make such a
+// request same-origin. So: (1) every request except /health must carry the
+// per-launch bearer token (the app gets it from the process that spawned the
+// agent; local tools read it from a 0600 file in STATE_DIR); (2) the Host
+// header must be a loopback address on our port; (3) CORS headers are only
+// issued to the app's own origins, never "*".
+const AGENT_TOKEN = (process.env.PZZA_AGENT_TOKEN || "").trim() || crypto.randomBytes(24).toString("hex");
+const TOKEN_FILE = path.join(STATE_DIR, "agent-token");
+try {
+  fs.writeFileSync(TOKEN_FILE, AGENT_TOKEN, { mode: 0o600 });
+  fs.chmodSync(TOKEN_FILE, 0o600);
+} catch {
+  /* best effort - the app still passes the token in-process */
+}
+
+function tokenOk(candidate) {
+  if (typeof candidate !== "string" || !candidate) return false;
+  const a = Buffer.from(candidate);
+  const b = Buffer.from(AGENT_TOKEN);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+function requestToken(req, url) {
+  const auth = String(req.headers.authorization || "");
+  if (auth.startsWith("Bearer ")) return auth.slice(7).trim();
+  return url ? url.searchParams.get("token") || "" : "";
+}
+function hostOk(req) {
+  const h = String(req.headers.host || "").toLowerCase();
+  return h === `127.0.0.1:${PORT}` || h === `localhost:${PORT}` || h === `[::1]:${PORT}`;
+}
+// Origins that may read responses cross-origin: the desktop app's webview and
+// a browser build served from this machine. Anything else gets no CORS headers.
+function originOk(origin) {
+  if (!origin) return false;
+  return (
+    origin === "tauri://localhost" ||
+    origin === "http://tauri.localhost" ||
+    origin === "https://tauri.localhost" ||
+    /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/.test(origin)
+  );
+}
+
 function cors(res) {
-  res.setHeader("Access-Control-Allow-Origin", "*");
+  const origin = res.req && res.req.headers ? res.req.headers.origin : undefined;
+  if (!originOk(origin)) return;
+  res.setHeader("Access-Control-Allow-Origin", origin);
+  res.setHeader("Vary", "Origin");
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "*");
+  res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type");
 }
 function json(res, code, body) {
   cors(res);
@@ -353,8 +401,8 @@ function installAgent(opts, res) {
     return res.end();
   }
   const identity = opts.identity ? String(opts.identity) : "";
-  const devboxHost = opts.devboxHost ? String(opts.devboxHost) : "";
-  if (devboxHost && !SSH_TOKEN.test(devboxHost)) {
+  const serverHost = opts.serverHost ? String(opts.serverHost) : "";
+  if (serverHost && !SSH_TOKEN.test(serverHost)) {
     say("ERROR: invalid devbox host\n");
     return res.end();
   }
@@ -404,7 +452,7 @@ function installAgent(opts, res) {
     }
     say("Files in ~/pzzacode-agent\n\n==> Running installer on the device (may take a minute) ...\n");
 
-    const envPrefix = `PORT=${agentPort} PZZA_DEVBOX_HOST='${devboxHost}'`;
+    const envPrefix = `PORT=${agentPort} PZZA_SERVER_HOST='${serverHost}'`;
     const code = await runSsh(
       `cd ~/pzzacode-agent && chmod +x install.sh && ${envPrefix} bash install.sh`,
     );
@@ -841,12 +889,27 @@ async function scanSpend(now) {
         }
       }
     }
+    // Per-day totals across models for the trailing window (oldest first), for
+    // the usage trend sparkline. Days with no activity are filled in as zero so
+    // the bars line up on a calendar.
+    const series = [];
+    for (let i = SPEND_WINDOW_DAYS - 1; i >= 0; i--) {
+      const day = dayStr(now - i * 86400000);
+      let cost = 0;
+      let tokens = 0;
+      for (const [model, buckets] of Object.entries(days[day] || {})) {
+        cost += bucketCost(buckets, model, day);
+        tokens += buckets.reduce((a, b) => a + b, 0);
+      }
+      series.push({ day, cost, tokens });
+    }
     data.push({
       provider: acc.provider,
       label: acc.label,
       today: { cost: win.today[0], tokens: win.today[1] },
       yesterday: { cost: win.yesterday[0], tokens: win.yesterday[1] },
       window: { cost: win.window[0], tokens: win.window[1] },
+      days: series,
     });
   }
   spendCache = { at: now, data };
@@ -973,12 +1036,21 @@ function sshHosts() {
 }
 
 const server = http.createServer(async (req, res) => {
+  // Defeat DNS rebinding: only a loopback Host on our port is served at all.
+  if (!hostOk(req)) {
+    res.writeHead(421, { "Content-Type": "application/json" });
+    return res.end(JSON.stringify({ error: "bad host" }));
+  }
   if (req.method === "OPTIONS") {
     cors(res);
     res.writeHead(204);
     return res.end();
   }
   const url = new URL(req.url, `http://${req.headers.host}`);
+  // Everything except the liveness probe needs the per-launch token.
+  if (url.pathname !== "/health" && !tokenOk(requestToken(req, url))) {
+    return json(res, 401, { error: "unauthorized" });
+  }
 
   if (url.pathname === "/capabilities") {
     return json(res, 200, {
@@ -999,6 +1071,76 @@ const server = http.createServer(async (req, res) => {
   if (url.pathname === "/spend") {
     return json(res, 200, await computeSpend());
   }
+  // File access on another device: run the equivalent over ssh. Paths must be
+  // absolute and free of ".." - the remote user's own permissions bound the rest.
+  // File access on another device runs the equivalent over ssh. Paths must be
+  // absolute with no ".." and, like the local branches, are bounded to the
+  // remote user's home: the remote side resolves the real path and refuses
+  // anything outside $HOME before touching it.
+  const fsHost = SSH_TOKEN.test(url.searchParams.get("host") || "") ? url.searchParams.get("host") : "";
+  const remotePath = (p) => {
+    if (typeof p !== "string" || !p.startsWith("/") || p.split("/").includes("..")) return null;
+    return p;
+  };
+  // Shell prelude: sets $p to the resolved path if it is inside $HOME, else
+  // prints a marker and exits, so every remote command below can trust "$p".
+  const remoteGuard = (p) =>
+    `h=$(cd ~ && pwd -P); p=$(realpath -m -- ${shQuote(p)} 2>/dev/null || readlink -f -- ${shQuote(p)} 2>/dev/null); ` +
+    `case "$p" in "$h"|"$h"/*) ;; *) echo PZZA_DENIED; exit 3;; esac; `;
+  const denied = (out) => String(out || "").startsWith("PZZA_DENIED");
+  if (fsHost && url.pathname === "/fs/list") {
+    const raw = url.searchParams.get("path") || "";
+    const p = raw ? remotePath(raw) : null;
+    if (raw && !p) return json(res, 400, { error: "invalid path" });
+    const cmd = (p ? remoteGuard(p) : `p=$(cd ~ && pwd -P); `) + `cd "$p" && pwd -P && ls -1Ap 2>/dev/null`;
+    return shOn(fsHost, cmd, (err, out) => {
+      if (denied(out)) return json(res, 403, { error: "outside home" });
+      if (err) return json(res, 404, { error: String(err.message || err) });
+      const [cwd, ...names] = String(out || "").split("\n");
+      const entries = names
+        .filter(Boolean)
+        .filter((n) => n !== "./" && n !== "../")
+        .map((n) => (n.endsWith("/") ? { name: n.slice(0, -1), dir: true } : { name: n, dir: false }))
+        .sort((a, b) => (a.dir === b.dir ? a.name.localeCompare(b.name) : a.dir ? -1 : 1));
+      return json(res, 200, { path: cwd, parent: path.posix.dirname(cwd), entries });
+    });
+  }
+  if (fsHost && url.pathname === "/file/read") {
+    const p = remotePath(url.searchParams.get("path"));
+    if (!p) return json(res, 400, { error: "invalid path" });
+    const cmd =
+      remoteGuard(p) +
+      `sz=$(wc -c < "$p" 2>/dev/null || echo 0); if [ "$sz" -gt 2097152 ]; then echo TOOLARGE; else cat "$p"; fi`;
+    return execFile(
+      "ssh",
+      ["-o", "BatchMode=yes", "-o", "ConnectTimeout=8", fsHost, cmd],
+      { maxBuffer: 4 * 1024 * 1024 },
+      (err, out) => {
+        if (denied(out)) return json(res, 403, { error: "outside home" });
+        if (err) return json(res, 404, { error: String(err.message || err) });
+        const text = String(out || "");
+        if (text.startsWith("TOOLARGE")) return json(res, 200, { path: p, content: "", tooLarge: true });
+        return json(res, 200, { path: p, content: text });
+      },
+    );
+  }
+  if (fsHost && url.pathname === "/file/raw") {
+    const p = remotePath(url.searchParams.get("path"));
+    if (!p) return json(res, 400, { error: "invalid path" });
+    // Guard first (small round trip), then stream the bytes.
+    return execFile(
+      "ssh",
+      ["-o", "BatchMode=yes", "-o", "ConnectTimeout=8", fsHost, remoteGuard(p) + `printf OK`],
+      (err, out) => {
+        if (err || denied(out) || String(out || "") !== "OK") return json(res, 403, { error: "outside home" });
+        cors(res);
+        res.writeHead(200, { "Content-Type": mimeType(p), "Cache-Control": "no-store" });
+        const child = spawn("ssh", ["-o", "BatchMode=yes", "-o", "ConnectTimeout=8", fsHost, `cat ${shQuote(p)}`]);
+        child.stdout.pipe(res);
+        child.on("error", () => res.destroyed || res.end());
+      },
+    );
+  }
   if (url.pathname === "/file/read") {
     const p = safePath(url.searchParams.get("path"));
     if (!p) return json(res, 400, { error: "invalid path" });
@@ -1013,6 +1155,29 @@ const server = http.createServer(async (req, res) => {
   }
   if (url.pathname === "/file/write" && req.method === "POST") {
     const body = await readBody(req);
+    const writeHost = SSH_TOKEN.test(String(body.host || "")) ? String(body.host) : "";
+    if (writeHost) {
+      const rp = remotePath(body.path);
+      if (!rp) return json(res, 400, { error: "invalid path" });
+      // Same $HOME bound as reads; the content streams over ssh stdin so no
+      // size/quoting limits apply. Exit 3 = guard refused the path.
+      const child = spawn("ssh", [
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "ConnectTimeout=8",
+        writeHost,
+        remoteGuard(rp) + `cat > "$p"`,
+      ]);
+      child.stdout.resume();
+      child.on("error", (e) => json(res, 500, { error: String(e.message || e) }));
+      child.on("close", (code) => {
+        if (code === 3) return json(res, 403, { error: "outside home" });
+        return code === 0 ? json(res, 200, { ok: true }) : json(res, 500, { error: `write failed (${code})` });
+      });
+      child.stdin.end(String(body.content ?? ""));
+      return;
+    }
     const p = safePath(body.path);
     if (!p) return json(res, 400, { error: "invalid path" });
     try {
@@ -1170,7 +1335,18 @@ async function startPtyBridge() {
   }
   const wss = new WebSocketServer({ server, path: "/pty" });
 
-  wss.on("connection", (ws) => {
+  wss.on("connection", (ws, req) => {
+    // The upgrade carries the token as ?token=; refuse anything else.
+    let upgradeToken = "";
+    try {
+      upgradeToken = new URL(req.url, `http://${req.headers.host}`).searchParams.get("token") || "";
+    } catch {
+      /* malformed */
+    }
+    if (!hostOk(req) || !tokenOk(upgradeToken)) {
+      ws.close(1008, "unauthorized");
+      return;
+    }
   let term = null;
   let viewSession = null; // grouped view session to clean up on close
 
@@ -1282,4 +1458,9 @@ server.listen(PORT, "127.0.0.1", () => {
   );
   sweepOrphanViews();
   startPtyBridge();
+  // Warm the spend estimate in the background and keep it fresh, so the usage
+  // panel gets it instantly instead of waiting on a multi-second transcript scan.
+  const warmSpend = () => computeSpend().catch(() => undefined);
+  setTimeout(warmSpend, 1500);
+  setInterval(warmSpend, SPEND_FRESH_MS);
 });

@@ -27,14 +27,50 @@ const HOST = HAS_TAURI
 export const SERVER_HTTP = `http://${HOST}:${serverPort()}`;
 export const SERVER_WS = `ws://${HOST}:${serverPort()}/pty`;
 
+// The agent refuses every request without its per-launch bearer token. In the
+// app the token comes from the Rust side that spawned the agent; the browser
+// build reads it from localStorage (paste it from the agent's
+// ~/.config/pzzacode/agent-token). Cached once resolved so URL builders that
+// must be synchronous (raw file src, WebSocket) can append it too.
+let agentToken = "";
+const tokenReady: Promise<string> = (async () => {
+  try {
+    if (HAS_TAURI) {
+      const { invoke } = await import("@tauri-apps/api/core");
+      agentToken = await invoke<string>("agent_token");
+    } else {
+      agentToken = localStorage.getItem("pzza.agentToken") ?? "";
+    }
+  } catch {
+    agentToken = "";
+  }
+  return agentToken;
+})();
+
+async function agentFetch(input: string, init?: RequestInit): Promise<Response> {
+  const token = agentToken || (await tokenReady);
+  const headers = new Headers(init?.headers);
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+  return globalThis.fetch(input, { ...init, headers });
+}
+
+const tokenQ = () => (agentToken ? `token=${encodeURIComponent(agentToken)}` : "");
+
+// WebSocket URL for the browser build's PTY bridge, carrying the token as a
+// query parameter since the upgrade request cannot set headers.
+export function wsUrl(): string {
+  const q = tokenQ();
+  return q ? `${SERVER_WS}?${q}` : SERVER_WS;
+}
+
 export async function fetchSessions(): Promise<RemoteSession[]> {
-  const res = await fetch(`${SERVER_HTTP}/sessions`);
+  const res = await agentFetch(`${SERVER_HTTP}/sessions`);
   if (!res.ok) throw new Error(`sessions ${res.status}`);
   return res.json();
 }
 
 export async function fetchPorts(): Promise<number[]> {
-  const res = await fetch(`${SERVER_HTTP}/ports`);
+  const res = await agentFetch(`${SERVER_HTTP}/ports`);
   if (!res.ok) throw new Error(`ports ${res.status}`);
   return res.json();
 }
@@ -52,7 +88,7 @@ export async function fetchSessionPath(
     params.set("window", `${window}`);
   }
   try {
-    const res = await fetch(`${SERVER_HTTP}/session/path?${params.toString()}`);
+    const res = await agentFetch(`${SERVER_HTTP}/session/path?${params.toString()}`);
     if (!res.ok) return "";
     const data = (await res.json()) as { path?: string };
     return data.path || "";
@@ -70,7 +106,7 @@ export interface RemoteWindow {
   path: string;
 }
 export async function fetchWindows(): Promise<RemoteWindow[]> {
-  const res = await fetch(`${SERVER_HTTP}/windows`);
+  const res = await agentFetch(`${SERVER_HTTP}/windows`);
   if (!res.ok) throw new Error(`windows ${res.status}`);
   return res.json();
 }
@@ -85,7 +121,7 @@ export interface McpConfig {
   frameworks: Record<string, McpFramework>;
 }
 export async function fetchMcpConfig(): Promise<McpConfig> {
-  const res = await fetch(`${SERVER_HTTP}/mcp/config`);
+  const res = await agentFetch(`${SERVER_HTTP}/mcp/config`);
   if (!res.ok) throw new Error(`mcp config ${res.status}`);
   return res.json();
 }
@@ -97,7 +133,7 @@ export interface McpInstallResult {
   manual?: boolean;
 }
 export async function mcpInstall(framework: string): Promise<McpInstallResult> {
-  const res = await fetch(`${SERVER_HTTP}/mcp/install`, {
+  const res = await agentFetch(`${SERVER_HTTP}/mcp/install`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ framework }),
@@ -107,7 +143,7 @@ export async function mcpInstall(framework: string): Promise<McpInstallResult> {
 
 // Upload a pasted image to the devbox and get back a path the agent can read.
 export async function uploadPasteImage(blob: Blob): Promise<string> {
-  const res = await fetch(`${SERVER_HTTP}/paste-image`, {
+  const res = await agentFetch(`${SERVER_HTTP}/paste-image`, {
     method: "POST",
     headers: { "Content-Type": blob.type || "image/png" },
     body: blob,
@@ -120,7 +156,7 @@ export async function uploadPasteImage(blob: Blob): Promise<string> {
 
 // Kill a tmux session (or a single window). Pass host to kill on another device.
 export async function killSession(name: string, window?: number, host?: string): Promise<void> {
-  await fetch(`${SERVER_HTTP}/kill`, {
+  await agentFetch(`${SERVER_HTTP}/kill`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ name, window, host }),
@@ -136,7 +172,7 @@ export interface Account {
 }
 // Claude / Codex accounts (config dirs) on the connected device.
 export async function fetchAccounts(): Promise<Account[]> {
-  const res = await fetch(`${SERVER_HTTP}/accounts`);
+  const res = await agentFetch(`${SERVER_HTTP}/accounts`);
   if (!res.ok) throw new Error(`accounts ${res.status}`);
   return res.json();
 }
@@ -147,7 +183,7 @@ export async function createSession(
   cwd?: string,
   account?: { provider: string; dir: string },
 ): Promise<void> {
-  await fetch(`${SERVER_HTTP}/create`, {
+  await agentFetch(`${SERVER_HTTP}/create`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ name, cwd, account }),
@@ -156,7 +192,7 @@ export async function createSession(
 
 // Scan every tmux session on a device (host empty = the connected device).
 export async function scanDevice(host: string): Promise<RemoteSession[]> {
-  const res = await fetch(`${SERVER_HTTP}/scan?host=${encodeURIComponent(host)}`);
+  const res = await agentFetch(`${SERVER_HTTP}/scan?host=${encodeURIComponent(host)}`);
   if (!res.ok) throw new Error(`scan ${res.status}`);
   return res.json();
 }
@@ -167,7 +203,7 @@ export interface Capabilities {
   host: string | null;
 }
 export async function fetchCapabilities(): Promise<Capabilities> {
-  const res = await fetch(`${SERVER_HTTP}/capabilities`);
+  const res = await agentFetch(`${SERVER_HTTP}/capabilities`);
   if (!res.ok) throw new Error(`capabilities ${res.status}`);
   return res.json();
 }
@@ -196,7 +232,7 @@ export interface AccountUsage {
 }
 // Claude/Codex account usage on the connected device (5h + weekly windows).
 export async function fetchUsage(): Promise<AccountUsage[]> {
-  const res = await fetch(`${SERVER_HTTP}/usage`);
+  const res = await agentFetch(`${SERVER_HTTP}/usage`);
   if (!res.ok) throw new Error(`usage ${res.status}`);
   return res.json();
 }
@@ -205,35 +241,52 @@ export interface DirEntry {
   name: string;
   dir: boolean;
 }
-// Read a text file on the connected device (restricted to the home tree).
-export async function readFile(path: string): Promise<{ content: string; tooLarge?: boolean }> {
-  const res = await fetch(`${SERVER_HTTP}/file/read?path=${encodeURIComponent(path)}`);
+// File access runs on the connected device by default; pass `host` (an added
+// device's ssh target) to read/write that device's files over ssh instead.
+const hostQ = (host?: string) => (host ? `&host=${encodeURIComponent(host)}` : "");
+
+// Read a text file (restricted to the home tree).
+export async function readFile(
+  path: string,
+  host?: string,
+): Promise<{ content: string; tooLarge?: boolean }> {
+  const res = await agentFetch(`${SERVER_HTTP}/file/read?path=${encodeURIComponent(path)}${hostQ(host)}`);
   if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `read ${res.status}`);
   return res.json();
 }
 // Direct URL to a file's raw bytes (served with its media type) - use it as the
 // src of an <img> or PDF viewer to preview binary files in the code view.
-export function fileRawUrl(path: string): string {
-  return `${SERVER_HTTP}/file/raw?path=${encodeURIComponent(path)}`;
+export function fileRawUrl(path: string, host?: string): string {
+  const q = tokenQ();
+  return `${SERVER_HTTP}/file/raw?path=${encodeURIComponent(path)}${hostQ(host)}${q ? `&${q}` : ""}`;
 }
-export async function writeFile(path: string, content: string): Promise<void> {
-  const res = await fetch(`${SERVER_HTTP}/file/write`, {
+export async function writeFile(path: string, content: string, host?: string): Promise<void> {
+  const res = await agentFetch(`${SERVER_HTTP}/file/write`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ path, content }),
+    body: JSON.stringify({ path, content, host }),
   });
   if (!res.ok) throw new Error(`write ${res.status}`);
 }
 export async function listDir(
   path?: string,
+  host?: string,
 ): Promise<{ path: string; parent: string; entries: DirEntry[] }> {
-  const q = path ? `?path=${encodeURIComponent(path)}` : "";
-  const res = await fetch(`${SERVER_HTTP}/fs/list${q}`);
+  const params = new URLSearchParams();
+  if (path) params.set("path", path);
+  if (host) params.set("host", host);
+  const q = params.toString();
+  const res = await agentFetch(`${SERVER_HTTP}/fs/list${q ? `?${q}` : ""}`);
   if (!res.ok) throw new Error(`list ${res.status}`);
   return res.json();
 }
 
 export interface SpendWindow {
+  cost: number;
+  tokens: number;
+}
+export interface SpendDay {
+  day: string; // YYYY-MM-DD
   cost: number;
   tokens: number;
 }
@@ -243,11 +296,12 @@ export interface AccountSpend {
   today: SpendWindow;
   yesterday: SpendWindow;
   window: SpendWindow;
+  days: SpendDay[]; // per-day series for the trailing window (oldest first)
 }
 // Estimated spend per account (today / yesterday / trailing 30 days), computed
 // from local transcripts. First call can take a few seconds; the agent caches it.
 export async function fetchSpend(): Promise<AccountSpend[]> {
-  const res = await fetch(`${SERVER_HTTP}/spend`);
+  const res = await agentFetch(`${SERVER_HTTP}/spend`);
   if (!res.ok) throw new Error(`spend ${res.status}`);
   return res.json();
 }
@@ -265,7 +319,7 @@ export interface Doctor {
 }
 // Environment diagnostics for the setup wizard. Throws if the agent is unreachable.
 export async function fetchDoctor(): Promise<Doctor> {
-  const res = await fetch(`${SERVER_HTTP}/doctor`);
+  const res = await agentFetch(`${SERVER_HTTP}/doctor`);
   if (!res.ok) throw new Error(`doctor ${res.status}`);
   return res.json();
 }
@@ -284,7 +338,7 @@ export interface SshHosts {
 }
 // Auto-discovered SSH targets + identity files, to prefill the Add-a-device form.
 export async function fetchSshHosts(): Promise<SshHosts> {
-  const res = await fetch(`${SERVER_HTTP}/ssh/hosts`);
+  const res = await agentFetch(`${SERVER_HTTP}/ssh/hosts`);
   if (!res.ok) throw new Error(`ssh hosts ${res.status}`);
   return res.json();
 }
@@ -293,7 +347,7 @@ export interface InstallOpts {
   target: string; // [user@]host or ssh-config alias
   port?: number;
   identity?: string;
-  devboxHost?: string; // set for a client-role device (forwards to this source)
+  serverHost?: string; // set for a client-role device (forwards to this source)
   agentPort?: number;
 }
 // Install the agent on a remote device over SSH; progress streams back as text.
@@ -301,7 +355,7 @@ export async function installAgent(
   opts: InstallOpts,
   onLog: (text: string) => void,
 ): Promise<void> {
-  const res = await fetch(`${SERVER_HTTP}/agent/install`, {
+  const res = await agentFetch(`${SERVER_HTTP}/agent/install`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(opts),
@@ -324,12 +378,12 @@ export interface ForwardState {
   active: number[];
 }
 export async function fetchForwardState(): Promise<ForwardState> {
-  const res = await fetch(`${SERVER_HTTP}/forward/status`);
+  const res = await agentFetch(`${SERVER_HTTP}/forward/status`);
   if (!res.ok) throw new Error(`forward status ${res.status}`);
   return res.json();
 }
 export async function setForwardEnabled(enabled: boolean): Promise<void> {
-  await fetch(`${SERVER_HTTP}/forward/toggle`, {
+  await agentFetch(`${SERVER_HTTP}/forward/toggle`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ enabled }),

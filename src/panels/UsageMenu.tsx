@@ -9,8 +9,34 @@ import {
 } from "../serverApi";
 
 function fmtCost(c: number): string {
+  if (c >= 1000) return `$${(c / 1000).toFixed(1)}K`;
   if (c >= 100) return `$${Math.round(c).toLocaleString()}`;
   return `$${c.toFixed(2)}`;
+}
+
+function fmtTokens(n: number): string {
+  if (n >= 1e9) return `${(n / 1e9).toFixed(1)}B`;
+  if (n >= 1e6) return `${(n / 1e6).toFixed(1)}M`;
+  if (n >= 1e3) return `${(n / 1e3).toFixed(1)}K`;
+  return `${Math.round(n)}`;
+}
+
+// Per-day spend over the trailing window as a tiny bar sparkline.
+function Trend({ days, color }: { days: { day: string; cost: number }[]; color: string }) {
+  if (!days.length) return null;
+  const max = Math.max(...days.map((d) => d.cost), 0.01);
+  return (
+    <div className="usage-trend" title="Daily spend, last 30 days">
+      {days.map((d) => (
+        <span
+          key={d.day}
+          className="usage-trend-bar"
+          style={{ height: `${Math.max(2, Math.round((d.cost / max) * 100))}%`, background: color }}
+          title={`${d.day} · ${fmtCost(d.cost)}`}
+        />
+      ))}
+    </div>
+  );
 }
 
 const PROVIDER: Record<string, { name: string; color: string }> = {
@@ -167,16 +193,23 @@ export function UsageMenu() {
                   {(() => {
                     const sp = spend[`${acc.provider}:${acc.label}`];
                     if (!sp) return null;
+                    const row = (label: string, w: { cost: number; tokens: number }) => (
+                      <div className="usage-detail-row">
+                        <span className="usage-detail-label">{label}</span>
+                        <span className="usage-detail-val">
+                          <b>{fmtCost(w.cost)}</b> · {fmtTokens(w.tokens)} tokens
+                        </span>
+                      </div>
+                    );
                     return (
-                      <div className="usage-spend" title="Estimated from local transcripts">
-                        <span className="usage-spend-label">Spend</span>
-                        <span className="usage-spend-item">
-                          today <b>{fmtCost(sp.today.cost)}</b>
-                        </span>
-                        <span className="usage-spend-item">
-                          30d <b>{fmtCost(sp.window.cost)}</b>
-                        </span>
-                        <span className="usage-spend-est">est.</span>
+                      <div className="usage-detail" title="Estimated from local transcripts">
+                        <div className="usage-detail-row">
+                          <span className="usage-detail-label">Usage trend</span>
+                          <Trend days={sp.days ?? []} color={p.color} />
+                        </div>
+                        {row("Today", sp.today)}
+                        {row("Yesterday", sp.yesterday)}
+                        {row("Last 30 days", sp.window)}
                       </div>
                     );
                   })()}

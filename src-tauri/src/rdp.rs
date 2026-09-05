@@ -107,22 +107,35 @@ pub fn rdp_provision(
     {
         return Err("credentials must be alphanumeric".into());
     }
+    // A devbox usually has no graphical session, so configure GNOME Remote
+    // Desktop's *headless* daemon (it spins up a virtual monitor per client)
+    // and prefer it over the session-sharing daemon, which would otherwise
+    // accept the connection and immediately drop it for lack of a desktop.
     let remote = format!(
         r#"set -e
 export XDG_RUNTIME_DIR=/run/user/$(id -u)
 export DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus
 if ! command -v grdctl >/dev/null 2>&1; then echo "ERROR: gnome-remote-desktop (grdctl) not installed"; exit 3; fi
-grdctl rdp enable
-grdctl rdp set-credentials '{user}' '{password}'
-grdctl rdp disable-view-only || true
 D="$HOME/.local/share/gnome-remote-desktop"; mkdir -p "$D"
 if [ ! -f "$D/rdp-tls.crt" ]; then
   openssl req -new -newkey rsa:2048 -days 3650 -nodes -x509 -subj "/CN=pzzacode-$(hostname)" -out "$D/rdp-tls.crt" -keyout "$D/rdp-tls.key" >/dev/null 2>&1
 fi
-grdctl rdp set-tls-cert "$D/rdp-tls.crt"
-grdctl rdp set-tls-key "$D/rdp-tls.key"
-systemctl --user enable --now gnome-remote-desktop.service >/dev/null 2>&1 || true
-systemctl --user restart gnome-remote-desktop.service >/dev/null 2>&1 || true
+MODE=""
+if grdctl --headless status >/dev/null 2>&1; then MODE="--headless"; fi
+grdctl $MODE rdp enable
+grdctl $MODE rdp set-credentials '{user}' '{password}'
+grdctl $MODE rdp disable-view-only || true
+grdctl $MODE rdp set-tls-cert "$D/rdp-tls.crt"
+grdctl $MODE rdp set-tls-key "$D/rdp-tls.key"
+if [ "$MODE" = "--headless" ]; then
+  systemctl --user disable --now gnome-remote-desktop.service >/dev/null 2>&1 || true
+  systemctl --user enable --now gnome-remote-desktop-headless.service >/dev/null 2>&1 || true
+  systemctl --user restart gnome-remote-desktop-headless.service >/dev/null 2>&1 || true
+else
+  systemctl --user enable --now gnome-remote-desktop.service >/dev/null 2>&1 || true
+  systemctl --user restart gnome-remote-desktop.service >/dev/null 2>&1 || true
+fi
+echo "MODE:${{MODE:-session}}"
 echo "FP:$(openssl x509 -in "$D/rdp-tls.crt" -noout -fingerprint -sha256 | sed 's/.*=//; s/://g')""#
     );
     let mut args = ssh_base(port, &identity);

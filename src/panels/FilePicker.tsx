@@ -13,12 +13,14 @@ export function FilePicker({
   onPick,
   mode = "file",
   start,
+  host,
 }: {
   open: boolean;
   onClose: () => void;
   onPick: (path: string) => void;
   mode?: "file" | "folder";
   start?: string; // initial directory (falls back to the device's home)
+  host?: string; // ssh target when browsing another device's files
 }) {
   const [dir, setDir] = useState<string | null>(null);
   const [parent, setParent] = useState("");
@@ -29,7 +31,7 @@ export function FilePicker({
   const nav = (path?: string) => {
     setLoading(true);
     setError(null);
-    listDir(path)
+    listDir(path, host)
       .then((r) => {
         setDir(r.path);
         setParent(r.parent);

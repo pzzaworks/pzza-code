@@ -270,7 +270,7 @@ const DevicesDemo = () => (
               <span className="device-name">
                 Devbox <span className="device-tag">current</span>
               </span>
-              <span className="device-sub">pzzaworks@devbox · 4 sessions</span>
+              <span className="device-sub">user@my-server · 4 sessions</span>
             </span>
           </div>
         </div>
