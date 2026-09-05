@@ -217,6 +217,13 @@ const TOOLS = [
     run: (a) => post("/file/write", { path: a.path, content: a.content }),
   },
   {
+    name: "ssh_hosts",
+    description:
+      "Auto-discover SSH targets from ~/.ssh/config and private-key identity files in ~/.ssh.",
+    inputSchema: { type: "object", properties: {} },
+    run: () => get("/ssh/hosts"),
+  },
+  {
     name: "install_agent",
     description:
       "Install the PzzaCode agent onto another device over SSH (you must already have SSH access). Returns the full install log.",
@@ -246,7 +253,7 @@ const TOOLS = [
 ];
 
 const server = new Server(
-  { name: "pzzacode-mcp", version: "0.2.0" },
+  { name: "pzzacode-mcp", version: "0.2.1" },
   { capabilities: { tools: {} } },
 );
 
