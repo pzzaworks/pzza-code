@@ -8,14 +8,14 @@
 #
 # Usage:
 #   ./install.sh                      # install as a "source" device (this is the box with tmux)
-#   PZZA_DEVBOX_HOST=devbox ./install.sh   # install as a "client" (forwards to a source over ssh)
+#   PZZA_SERVER_HOST=my-server ./install.sh   # install as a "client" (tunnels a server's ports over ssh)
 #   PORT=5190 ./install.sh            # override the agent port (default 5190)
 #
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PORT="${PORT:-5190}"
-DEVBOX_HOST="${PZZA_DEVBOX_HOST:-}"
+SERVER_HOST="${PZZA_SERVER_HOST:-}"
 STATE_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/pzzacode"
 
 # --- pretty output -----------------------------------------------------------
@@ -55,8 +55,8 @@ fi
 
 command -v ssh >/dev/null 2>&1 && ok "ssh present" || warn "ssh not found (only needed for client role)"
 
-if [ -n "$DEVBOX_HOST" ]; then
-  ok "role: client -> forwards to '${DEVBOX_HOST}'"
+if [ -n "$SERVER_HOST" ]; then
+  ok "role: client -> forwards to '${SERVER_HOST}'"
 else
   ok "role: source (tmux/ports are local to this machine)"
 fi
@@ -114,7 +114,7 @@ After=network.target
 [Service]
 Type=simple
 Environment=PORT=${PORT}
-Environment=PZZA_DEVBOX_HOST=${DEVBOX_HOST}
+Environment=PZZA_SERVER_HOST=${SERVER_HOST}
 WorkingDirectory=${SCRIPT_DIR}
 ExecStart=${NODE_BIN} ${ENTRY}
 Restart=on-failure
@@ -141,7 +141,7 @@ register_launchd() {
   <key>WorkingDirectory</key><string>${SCRIPT_DIR}</string>
   <key>EnvironmentVariables</key><dict>
     <key>PORT</key><string>${PORT}</string>
-    <key>PZZA_DEVBOX_HOST</key><string>${DEVBOX_HOST}</string>
+    <key>PZZA_SERVER_HOST</key><string>${SERVER_HOST}</string>
   </dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
@@ -158,7 +158,7 @@ elif [ "$(uname)" = "Darwin" ] && command -v launchctl >/dev/null 2>&1; then
   register_launchd
 else
   warn "no systemd/launchd - start the agent manually:"
-  warn "  PORT=${PORT} PZZA_DEVBOX_HOST='${DEVBOX_HOST}' ${NODE_BIN} ${ENTRY}"
+  warn "  PORT=${PORT} PZZA_SERVER_HOST='${SERVER_HOST}' ${NODE_BIN} ${ENTRY}"
 fi
 
 # --- verify ------------------------------------------------------------------

@@ -59,7 +59,7 @@ export function SetupWizard({ open, onClose }: { open: boolean; onClose: () => v
   const [port, setPort] = useState("");
   const [identity, setIdentity] = useState("");
   const [role, setRole] = useState<"source" | "client">("source");
-  const [devboxHost, setDevboxHost] = useState("");
+  const [serverHost, setServerHost] = useState("");
   const [installing, setInstalling] = useState(false);
   const [log, setLog] = useState("");
   const [done, setDone] = useState(false);
@@ -100,7 +100,7 @@ export function SetupWizard({ open, onClose }: { open: boolean; onClose: () => v
           target: target.trim(),
           port: port ? Number(port) : undefined,
           identity: identity.trim() || undefined,
-          devboxHost: role === "client" ? devboxHost.trim() : undefined,
+          serverHost: role === "client" ? serverHost.trim() : undefined,
         },
         (text) => setLog((prev) => prev + text),
       );
@@ -120,7 +120,7 @@ export function SetupWizard({ open, onClose }: { open: boolean; onClose: () => v
     setTarget("");
     setPort("");
     setIdentity("");
-    setDevboxHost("");
+    setServerHost("");
     setLog("");
     setDone(false);
     setMode("this");
@@ -248,7 +248,7 @@ export function SetupWizard({ open, onClose }: { open: boolean; onClose: () => v
           <div className="sw-form">
             <label className="sw-field">
               <span>Device name</span>
-              <input value={name} onChange={(e) => setName(e.target.value)} placeholder="My devbox" />
+              <input value={name} onChange={(e) => setName(e.target.value)} placeholder="My server" />
             </label>
             <label className="sw-field">
               <span>SSH target</span>
@@ -310,9 +310,9 @@ export function SetupWizard({ open, onClose }: { open: boolean; onClose: () => v
               <label className="sw-field">
                 <span>Forwards to (source host)</span>
                 <input
-                  value={devboxHost}
-                  onChange={(e) => setDevboxHost(e.target.value)}
-                  placeholder="devbox"
+                  value={serverHost}
+                  onChange={(e) => setServerHost(e.target.value)}
+                  placeholder="my-server"
                   spellCheck={false}
                 />
               </label>

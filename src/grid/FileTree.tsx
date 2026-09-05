@@ -222,6 +222,7 @@ function TreeNode({
   depth,
   activePath,
   onOpenFile,
+  host,
 }: {
   path: string;
   name: string;
@@ -229,6 +230,7 @@ function TreeNode({
   depth: number;
   activePath?: string;
   onOpenFile: (p: string) => void;
+  host?: string;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [children, setChildren] = useState<DirEntry[] | null>(null);
@@ -241,7 +243,7 @@ function TreeNode({
     }
     if (!expanded && children === null) {
       setLoading(true);
-      listDir(path)
+      listDir(path, host)
         .then((r) => setChildren(r.entries))
         .catch(() => setChildren([]))
         .finally(() => setLoading(false));
@@ -284,6 +286,7 @@ function TreeNode({
           : (children ?? []).map((c) => (
               <TreeNode
                 key={c.name}
+                host={host}
                 path={join(path, c.name)}
                 name={c.name}
                 isDir={c.dir}
@@ -302,19 +305,21 @@ export function FolderTree({
   root,
   activePath,
   onOpenFile,
+  host,
 }: {
   root: string;
   activePath?: string;
   onOpenFile: (p: string) => void;
+  host?: string; // ssh target when the folder lives on another device
 }) {
   const [children, setChildren] = useState<DirEntry[] | null>(null);
 
   useEffect(() => {
     setChildren(null);
-    listDir(root)
+    listDir(root, host)
       .then((r) => setChildren(r.entries))
       .catch(() => setChildren([]));
-  }, [root]);
+  }, [root, host]);
 
   return (
     <div className="ft-body">
@@ -330,6 +335,7 @@ export function FolderTree({
         children.map((c) => (
           <TreeNode
             key={c.name}
+            host={host}
             path={join(root, c.name)}
             name={c.name}
             isDir={c.dir}

@@ -4,6 +4,9 @@
 // remote install - as tools any MCP-speaking agent (Claude, Codex, Zed, …) can
 // call. It drives the same guarded HTTP backend the app uses, so nothing here
 // runs shell directly.
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
@@ -13,9 +16,25 @@ import {
 
 const BASE = process.env.PZZA_SERVER_URL || "http://127.0.0.1:5190";
 
-async function api(path, opts) {
-  const res = await fetch(`${BASE}${path}`, opts);
-  if (!res.ok) throw new Error(`${path} -> ${res.status}`);
+// The agent requires its per-launch bearer token. Take it from the environment
+// or from the 0600 token file the agent writes for local tools.
+function agentToken() {
+  const env = (process.env.PZZA_AGENT_TOKEN || "").trim();
+  if (env) return env;
+  const dir = process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config");
+  try {
+    return fs.readFileSync(path.join(dir, "pzzacode", "agent-token"), "utf8").trim();
+  } catch {
+    return "";
+  }
+}
+
+async function api(p, opts) {
+  const token = agentToken();
+  const headers = { ...(opts && opts.headers ? opts.headers : {}) };
+  if (token) headers.Authorization = `Bearer ${token}`;
+  const res = await fetch(`${BASE}${p}`, { ...(opts || {}), headers });
+  if (!res.ok) throw new Error(`${p} -> ${res.status}`);
   const text = await res.text();
   try {
     return JSON.parse(text);
@@ -233,7 +252,7 @@ const TOOLS = [
         target: { type: "string", description: "user@host or ssh alias" },
         port: { type: "number", description: "SSH port (optional)" },
         identity: { type: "string", description: "Identity file (optional)" },
-        devboxHost: {
+        serverHost: {
           type: "string",
           description: "For a client-role device: the source host it forwards to (optional)",
         },
@@ -246,14 +265,14 @@ const TOOLS = [
         target: a.target,
         port: a.port,
         identity: a.identity,
-        devboxHost: a.devboxHost,
+        serverHost: a.serverHost,
         agentPort: a.agentPort,
       }),
   },
 ];
 
 const server = new Server(
-  { name: "pzzacode-mcp", version: "0.2.8" },
+  { name: "pzzacode-mcp", version: "0.2.9" },
   { capabilities: { tools: {} } },
 );
 

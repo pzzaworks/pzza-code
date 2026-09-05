@@ -1,4 +1,4 @@
-import { SERVER_WS } from "../serverApi";
+import { wsUrl } from "../serverApi";
 
 export interface WsPtyHandle {
   write(data: string): void;
@@ -19,7 +19,7 @@ export function openWsPty(
   onClose?: () => void,
   window?: number,
 ): WsPtyHandle {
-  const ws = new WebSocket(SERVER_WS);
+  const ws = new WebSocket(wsUrl());
   ws.binaryType = "arraybuffer";
   let open = false;
   let closed = false;

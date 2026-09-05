@@ -222,7 +222,7 @@ function ServerPorts() {
             ? enabled
               ? `forwarding ${active.length} port${active.length === 1 ? "" : "s"}`
               : "forwarding off"
-            : `source · ${caps.host ?? "devbox"}`}
+            : `source · ${caps.host ?? "server"}`}
         </span>
         <div className="ports-status-spacer" />
         <ForwardSwitch enabled={enabled} onToggle={toggle} />

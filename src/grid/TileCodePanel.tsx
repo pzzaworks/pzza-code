@@ -52,6 +52,8 @@ function extOf(p: string): string {
 // terminal stays mounted underneath.
 export function TileCodePanel({ tileId }: { tileId: string }) {
   const code = useStore((s) => s.tileCode[tileId]);
+  // A remote tile edits files on its own device over ssh.
+  const host = useStore((s) => s.tiles.find((t) => t.id === tileId)?.host);
   const setTileCodeRoot = useStore((s) => s.setTileCodeRoot);
   const setTileCodePath = useStore((s) => s.setTileCodePath);
   const closeTileFile = useStore((s) => s.closeTileFile);
@@ -87,7 +89,7 @@ export function TileCodePanel({ tileId }: { tileId: string }) {
     setError(null);
     setDirty(false);
     setPreview(false);
-    readFile(path)
+    readFile(path, host)
       .then((r) => {
         if (!alive) return;
         if (r.tooLarge) setError("File is too large to open here.");
@@ -98,13 +100,13 @@ export function TileCodePanel({ tileId }: { tileId: string }) {
     return () => {
       alive = false;
     };
-  }, [path]);
+  }, [path, host]);
 
   const save = useCallback(async () => {
     if (!path || !dirty || saving) return;
     setSaving(true);
     try {
-      await writeFile(path, content);
+      await writeFile(path, content, host);
       setDirty(false);
     } catch (e) {
       setError(String((e as Error)?.message || e));
@@ -147,6 +149,7 @@ export function TileCodePanel({ tileId }: { tileId: string }) {
           mode="folder"
           onClose={() => setPickerOpen(false)}
           onPick={(p) => setTileCodeRoot(tileId, p)}
+          host={host}
         />
       </div>
     );
@@ -215,6 +218,7 @@ export function TileCodePanel({ tileId }: { tileId: string }) {
           <div className="code-tile-tree">
             <FolderTree
               root={root}
+              host={host}
               activePath={path}
               onOpenFile={(p) => setTileCodePath(tileId, p)}
             />
@@ -233,10 +237,10 @@ export function TileCodePanel({ tileId }: { tileId: string }) {
             <div className="code-status muted">Pick a file from the tree to edit it.</div>
           ) : isImage ? (
             <div className="code-preview code-preview-img">
-              <img src={fileRawUrl(path)} alt={baseName(path)} />
+              <img src={fileRawUrl(path, host)} alt={baseName(path)} />
             </div>
           ) : isPdf ? (
-            <iframe className="code-preview-pdf" src={fileRawUrl(path)} title={baseName(path)} />
+            <iframe className="code-preview-pdf" src={fileRawUrl(path, host)} title={baseName(path)} />
           ) : !loaded ? (
             <div className="code-status">
               <Loader2 size={16} className="sw-spin" /> Loading…
