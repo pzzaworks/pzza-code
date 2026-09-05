@@ -130,13 +130,13 @@ UNIT
 }
 
 register_launchd() {
-  local plist="$HOME/Library/LaunchAgents/com.pzzaworks.console.agent.plist"
+  local plist="$HOME/Library/LaunchAgents/com.pzzacode.app.agent.plist"
   mkdir -p "$HOME/Library/LaunchAgents"
   cat > "$plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
-  <key>Label</key><string>com.pzzaworks.console.agent</string>
+  <key>Label</key><string>com.pzzacode.app.agent</string>
   <key>ProgramArguments</key><array><string>${NODE_BIN}</string><string>${ENTRY}</string></array>
   <key>WorkingDirectory</key><string>${SCRIPT_DIR}</string>
   <key>EnvironmentVariables</key><dict>
@@ -149,7 +149,7 @@ register_launchd() {
 PLIST
   launchctl unload "$plist" >/dev/null 2>&1 || true
   launchctl load "$plist"
-  ok "launchd agent 'com.pzzaworks.console.agent' loaded"
+  ok "launchd agent 'com.pzzacode.app.agent' loaded"
 }
 
 if command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; then
