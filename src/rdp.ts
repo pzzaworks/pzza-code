@@ -39,3 +39,28 @@ export function rdpStatus(tunnelPort: number): Promise<boolean> {
 export function rdpLaunch(opts: RdpOptions): Promise<void> {
   return invoke("rdp_launch", { opts });
 }
+
+// Configure GNOME Remote Desktop on a target over SSH; returns the cert's
+// SHA-256 fingerprint. The app generates the credentials and passes them in.
+export function rdpProvision(args: {
+  target: string;
+  port?: number;
+  identity?: string;
+  user: string;
+  password: string;
+}): Promise<string> {
+  return invoke<string>("rdp_provision", args);
+}
+
+// Store the RDP password in the login Keychain under `service`.
+export function keychainSet(service: string, account: string, password: string): Promise<void> {
+  return invoke("keychain_set", { service, account, password });
+}
+
+// A random alphanumeric secret (no shell-special chars), for generated RDP creds.
+export function randomSecret(len = 20): string {
+  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789";
+  const bytes = new Uint8Array(len);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (b) => alphabet[b % alphabet.length]).join("");
+}

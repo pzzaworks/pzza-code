@@ -1,7 +1,7 @@
 {
   "name": "pzza-code-mcp",
   "private": true,
-  "version": "0.2.6",
+  "version": "0.2.7",
   "type": "module",
   "description": "MCP server exposing PzzaCode terminal sessions and ports to AI coding agents",
   "bin": { "pzza-code-mcp": "server.js" },
