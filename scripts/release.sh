@@ -42,19 +42,23 @@ xcrun stapler staple "$APP" | tail -1
 
 echo "==> Writing latest.json"
 URL="https://github.com/$REPO/releases/download/$TAG/PzzaCode.app.tar.gz"
-SIGNATURE=$(cat "$SIG")
-NOTES_TEXT=$( [ -n "${NOTES:-}" ] && cat "$NOTES" || echo "PzzaCode $VERSION" )
-python3 - "$VERSION" "$URL" "$SIGNATURE" "$NOTES_TEXT" > /tmp/latest.json <<'PY'
-import json, sys, datetime
-v, url, sig, notes = sys.argv[1:5]
+# Read the signature and notes from files inside Python (argv would mangle
+# newlines and control characters), and strip the signature so the JSON is
+# exactly what the updater plugin expects.
+python3 - "$VERSION" "$URL" "$SIG" "${NOTES:-}" > /tmp/latest.json <<'PY'
+import json, sys, datetime, pathlib
+v, url, sig_path, notes_path = sys.argv[1:5]
+sig = pathlib.Path(sig_path).read_text().strip()
+notes = pathlib.Path(notes_path).read_text().strip() if notes_path else f"PzzaCode {v}"
 entry = {"signature": sig, "url": url}
 print(json.dumps({
   "version": v,
   "notes": notes,
   "pub_date": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
   "platforms": {"darwin-universal": entry, "darwin-aarch64": entry, "darwin-x86_64": entry},
-}, indent=2))
+}, indent=2, ensure_ascii=True))
 PY
+python3 -c 'import json;json.load(open("/tmp/latest.json"))' || { echo "latest.json is not valid JSON"; exit 1; }
 
 echo "==> Publishing $TAG"
 git tag -a "$TAG" -m "PzzaCode $VERSION" 2>/dev/null || true
