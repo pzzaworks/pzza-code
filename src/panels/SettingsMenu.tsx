@@ -1,16 +1,13 @@
-import { useState } from "react";
 import { ServerCog } from "lucide-react";
 import { useStore } from "../state/store";
-import { HAS_TAURI } from "../tauriEnv";
 
-// Settings dropdown content: agent/devices, terminal + connection.
+// Settings dropdown content: agent/devices + terminal.
 export function SettingsMenu({ close }: { close?: () => void }) {
   return (
     <div className="menu-body">
       <div className="menu-title">Settings</div>
       <AgentSection close={close} />
       <TerminalSection />
-      <ConnectionSection />
     </div>
   );
 }
@@ -80,49 +77,6 @@ function TerminalSection() {
           <span className="switch-knob" />
         </button>
       </Row>
-    </Section>
-  );
-}
-
-function ConnectionSection() {
-  const connection = useStore((s) => s.connection);
-  const setHost = useStore((s) => s.setHost);
-  const [port, setPort] = useState(() => {
-    try {
-      return localStorage.getItem("pzza.serverPort") ?? "5190";
-    } catch {
-      return "5190";
-    }
-  });
-  const savePort = (v: string) => {
-    setPort(v);
-    try {
-      localStorage.setItem("pzza.serverPort", v);
-    } catch {
-      /* ignore */
-    }
-  };
-
-  return (
-    <Section title="Connection">
-      {HAS_TAURI ? (
-        <Row label="Devbox host" hint="ssh Host alias, or blank for local">
-          <input
-            className="set-input"
-            value={connection.host ?? ""}
-            placeholder="devbox"
-            onChange={(e) => setHost(e.target.value.trim() || null)}
-          />
-        </Row>
-      ) : (
-        <Row label="Server port" hint="reload to apply">
-          <input
-            className="set-input"
-            value={port}
-            onChange={(e) => savePort(e.target.value.replace(/[^0-9]/g, ""))}
-          />
-        </Row>
-      )}
     </Section>
   );
 }
