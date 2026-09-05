@@ -122,13 +122,19 @@ export function Terminal({ name, cmd, args, cwd, window: win, active, onStatus }
       if (!useStore.getState().osc52Clipboard) return true;
       const semi = data.indexOf(";");
       if (semi < 0) return true;
+      // Only the clipboard selection ("c", or unspecified); ignore primary/cut buffers.
+      const sel = data.slice(0, semi);
+      if (sel && !sel.includes("c")) return true;
       const payload = data.slice(semi + 1);
       if (!payload || payload === "?") return true; // read/query - ignore
-      if (payload.length > 64 * 1024) return true; // cap absurd payloads
+      if (payload.length > 16 * 1024) return true; // yanks are small; refuse bulk payloads
       try {
         const bin = atob(payload);
         const bytes = Uint8Array.from(bin, (c) => c.charCodeAt(0));
-        copyToClipboard(new TextDecoder().decode(bytes));
+        // Strip control characters (keep tab/newline) so a planted escape
+        // sequence cannot ride along into whatever the clipboard is pasted into.
+        const text = new TextDecoder().decode(bytes).replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "");
+        copyToClipboard(text);
       } catch {
         /* malformed base64 - ignore */
       }
