@@ -2431,8 +2431,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "pzza-console"
-version = "0.2.4"
+name = "pzzacode"
+version = "0.2.5"
 dependencies = [
  "base64 0.22.1",
  "portable-pty",
