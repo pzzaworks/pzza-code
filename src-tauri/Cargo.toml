@@ -1,6 +1,6 @@
 [package]
 name = "pzza-console"
-version = "0.2.1"
+version = "0.2.2"
 description = "Terminal-first grid console for the pzzaworks devbox"
 authors = ["pzzaworks"]
 edition = "2021"
