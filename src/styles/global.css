@@ -521,12 +521,19 @@ button {
   /* CSS (not JS) entrance: a rAF-driven animation can stall mid-frame with many
      WebGL terminals on screen and leave the panel translucent. */
   transform-origin: top center;
-  animation: menu-in 0.12s ease-out;
+  animation: menu-in 0.16s ease-out;
+  will-change: transform, opacity;
 }
+/* Menus drop straight down from their anchor - a pure vertical slide, since a
+   scale on a wide right-anchored panel reads as sliding in from the side. */
 @keyframes menu-in {
   from {
     opacity: 0;
-    transform: translateY(-6px) scale(0.98);
+    transform: translateY(-10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
   }
 }
 .menu-item {
@@ -3029,6 +3036,34 @@ button {
   min-width: 2px;
   border-radius: 1px;
   opacity: 0.9;
+}
+/* Update available bar, under the top bar. */
+.update-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 14px;
+  background: color-mix(in srgb, var(--accent) 14%, var(--surface));
+  border-bottom: 1px solid var(--border);
+  font-size: 12.5px;
+  animation: menu-in 0.16s ease-out;
+}
+.update-text {
+  flex: 1;
+  min-width: 0;
+}
+.update-err {
+  color: #e5484d;
+  font-size: 12px;
+}
+.update-progress {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+}
+.update-dismiss {
+  flex: 0 0 auto;
 }
 .set-row {
   display: flex;

@@ -1,5 +1,8 @@
-import { ServerCog } from "lucide-react";
+import { useState } from "react";
+import { Download, Loader2, RefreshCw, ServerCog } from "lucide-react";
 import { useStore } from "../state/store";
+import { HAS_TAURI } from "../tauriEnv";
+import { checkForUpdate, relaunchApp, type AvailableUpdate } from "../updater";
 
 // Settings dropdown content: agent/devices + terminal.
 export function SettingsMenu({ close }: { close?: () => void }) {
@@ -8,6 +11,7 @@ export function SettingsMenu({ close }: { close?: () => void }) {
       <div className="menu-title">Settings</div>
       <AgentSection close={close} />
       <TerminalSection />
+      <UpdatesSection />
     </div>
   );
 }
@@ -28,6 +32,63 @@ function AgentSection({ close }: { close?: () => void }) {
         <ServerCog size={14} strokeWidth={2} />
         Open setup wizard
       </button>
+    </Section>
+  );
+}
+
+// Manual update check (the app also checks quietly on launch and every few
+// hours). Installs and relaunches on confirmation.
+function UpdatesSection() {
+  const [state, setState] = useState<
+    | { kind: "idle" }
+    | { kind: "checking" }
+    | { kind: "latest"; version: string }
+    | { kind: "available"; update: AvailableUpdate }
+    | { kind: "installing"; pct: number }
+    | { kind: "error"; msg: string }
+  >({ kind: "idle" });
+
+  const check = async () => {
+    setState({ kind: "checking" });
+    try {
+      const u = await checkForUpdate();
+      setState(u ? { kind: "available", update: u } : { kind: "latest", version: __APP_VERSION__ });
+    } catch (e) {
+      setState({ kind: "error", msg: String((e as Error)?.message || e) });
+    }
+  };
+  const install = async (u: AvailableUpdate) => {
+    setState({ kind: "installing", pct: 0 });
+    try {
+      await u.install((f) => setState({ kind: "installing", pct: f }));
+      await relaunchApp();
+    } catch (e) {
+      setState({ kind: "error", msg: String((e as Error)?.message || e) });
+    }
+  };
+
+  if (!HAS_TAURI) return null;
+  return (
+    <Section title="Updates">
+      <Row label={`Version ${__APP_VERSION__}`} hint="from GitHub Releases, signed">
+        {state.kind === "available" ? (
+          <button className="btn btn-accent btn-sm" onClick={() => install(state.update)}>
+            <Download size={13} strokeWidth={2} />
+            Update to {state.update.version}
+          </button>
+        ) : state.kind === "installing" ? (
+          <span className="set-hint">
+            {state.pct < 1 ? `Downloading ${Math.round(state.pct * 100)}%` : "Installing…"}
+          </span>
+        ) : (
+          <button className="btn btn-sm" onClick={check} disabled={state.kind === "checking"}>
+            {state.kind === "checking" ? <Loader2 size={13} className="sw-spin" /> : <RefreshCw size={13} />}
+            Check for updates
+          </button>
+        )}
+      </Row>
+      {state.kind === "latest" ? <p className="set-note">You are on the latest version.</p> : null}
+      {state.kind === "error" ? <p className="set-note">{state.msg}</p> : null}
     </Section>
   );
 }

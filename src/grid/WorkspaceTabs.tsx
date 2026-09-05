@@ -200,6 +200,9 @@ export function WorkspaceTabs() {
               onDragOver={(e) => {
                 if (e.dataTransfer.types.includes(SESSION_DND)) {
                   e.preventDefault();
+                  // Must match the source's effectAllowed ("move") or WebKit
+                  // refuses the drop.
+                  e.dataTransfer.dropEffect = "move";
                   setDragOver(w.id);
                 }
               }}

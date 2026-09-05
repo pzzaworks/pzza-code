@@ -27,14 +27,8 @@ import {
   SESSION_DND,
   type TileStatus,
 } from "../sessionMeta";
-import { ALL_WORKSPACE_ID, DEFAULT_WORKSPACE_ID } from "../workspaces";
+import { ALL_WORKSPACE_ID, DEFAULT_WORKSPACE_ID, wsKeyOf } from "../workspaces";
 import { ctrlBadge, digitFromCode } from "../shortcuts";
-
-// Workspace-assignment key for a tile: the base session name, namespaced by host
-// so the same session name on two devices maps independently. Window tiles of a
-// session share their base session's key.
-const wsKeyOf = (t: { host?: string; session?: string; name: string }) =>
-  (t.host ? `${t.host}::` : "") + (t.session ?? t.name);
 
 // Uniform N-column grid, filtered to the active workspace. One tile can be
 // maximized (animated). Tiles reorder by dragging their header onto another
@@ -221,6 +215,7 @@ export function Canvas() {
         onDragOver={(e) => {
           if (!fullId && dragId && dragId !== t.id) {
             e.preventDefault();
+            e.dataTransfer.dropEffect = "move";
             setOverId(t.id);
           }
         }}
@@ -451,7 +446,10 @@ export function Canvas() {
             : `repeat(${columns}, minmax(0, 1fr))`,
         }}
         onDragOver={(e) => {
-          if (dragId) e.preventDefault();
+          if (dragId) {
+            e.preventDefault();
+            e.dataTransfer.dropEffect = "move";
+          }
         }}
         onDrop={(e) => {
           if (dragId) {

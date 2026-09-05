@@ -3,7 +3,7 @@ import { Check, Eye, EyeOff, Trash2 } from "lucide-react";
 import { useStore } from "../state/store";
 import { Modal } from "../ui/Modal";
 import { tileTitle, sessionIcon, iconColor } from "../sessionMeta";
-import { DEFAULT_WORKSPACE_ID, WORKSPACE_COLORS } from "../workspaces";
+import { DEFAULT_WORKSPACE_ID, WORKSPACE_COLORS, wsKeyOf } from "../workspaces";
 import { workspaceIcon } from "../workspaceIcons";
 import { IconPicker } from "../ui/IconPicker";
 
@@ -33,7 +33,7 @@ export function WorkspaceSettings({ id, close }: { id: string; close: () => void
   const IconComp = workspaceIcon(ws.icon);
   const color = ws.color ?? "var(--accent)";
   const sessions = tiles.filter(
-    (t) => (sessionWs[t.session ?? t.name] ?? DEFAULT_WORKSPACE_ID) === id,
+    (t) => (sessionWs[wsKeyOf(t)] ?? DEFAULT_WORKSPACE_ID) === id,
   );
 
   const startRename = () => {
