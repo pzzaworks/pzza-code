@@ -58,6 +58,8 @@ function TerminalSection() {
   const setFontSize = useStore((s) => s.setFontSize);
   const cursorBlink = useStore((s) => s.cursorBlink);
   const setCursorBlink = useStore((s) => s.setCursorBlink);
+  const osc52 = useStore((s) => s.osc52Clipboard);
+  const setOsc52 = useStore((s) => s.setOsc52Clipboard);
   return (
     <Section title="Terminal">
       <Row label="Font size">
@@ -73,6 +75,16 @@ function TerminalSection() {
           onClick={() => setCursorBlink(!cursorBlink)}
           role="switch"
           aria-checked={cursorBlink}
+        >
+          <span className="switch-knob" />
+        </button>
+      </Row>
+      <Row label="Programs may set clipboard" hint="OSC 52 - off by default, output is untrusted">
+        <button
+          className={`switch ${osc52 ? "switch-on" : ""}`}
+          onClick={() => setOsc52(!osc52)}
+          role="switch"
+          aria-checked={osc52}
         >
           <span className="switch-knob" />
         </button>

@@ -44,6 +44,7 @@ const TILECODE_KEY = "pzza.tileCode";
 const THEME_KEY = "pzza.theme";
 const FONT_KEY = "pzza.fontSize";
 const CURSOR_KEY = "pzza.cursorBlink";
+const OSC52_KEY = "pzza.osc52Clipboard";
 const WORKSPACES_KEY = "pzza.workspaces";
 
 function load<T>(key: string, fallback: T): T {
@@ -125,6 +126,10 @@ interface ConsoleState {
   setFontSize: (n: number) => void;
   cursorBlink: boolean;
   setCursorBlink: (v: boolean) => void;
+  // Let programs set the OS clipboard via OSC 52. Off by default: terminal
+  // output is untrusted and a silent clipboard overwrite is a paste-jacking vector.
+  osc52Clipboard: boolean;
+  setOsc52Clipboard: (v: boolean) => void;
 
   settingsOpen: boolean;
   setSettingsOpen: (v: boolean) => void;
@@ -338,6 +343,11 @@ export const useStore = create<ConsoleState>((set, get) => ({
   setCursorBlink: (v) => {
     persist(CURSOR_KEY, v);
     set({ cursorBlink: v });
+  },
+  osc52Clipboard: load<boolean>(OSC52_KEY, false),
+  setOsc52Clipboard: (v) => {
+    persist(OSC52_KEY, v);
+    set({ osc52Clipboard: v });
   },
 
   settingsOpen: false,

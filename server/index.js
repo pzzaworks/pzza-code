@@ -53,6 +53,10 @@ function sh(remote, cb) {
 // header must be a loopback address on our port; (3) CORS headers are only
 // issued to the app's own origins, never "*".
 const AGENT_TOKEN = (process.env.PZZA_AGENT_TOKEN || "").trim() || crypto.randomBytes(24).toString("hex");
+// Non-secret per-launch instance id, echoed by /health so the app can confirm
+// it is talking to the agent it spawned and not to another process that took
+// the port first.
+const AGENT_ID = (process.env.PZZA_AGENT_ID || "").trim() || crypto.randomBytes(8).toString("hex");
 const TOKEN_FILE = path.join(STATE_DIR, "agent-token");
 try {
   fs.writeFileSync(TOKEN_FILE, AGENT_TOKEN, { mode: 0o600 });
@@ -950,11 +954,31 @@ async function collectUsage() {
 
 // Resolve a client-supplied path, restricted to the user's home tree so the
 // code view can never read or write outside it.
+// Private key material and credential stores are never something the code
+// editor legitimately opens, and they are the highest-value exfil targets for
+// a caller that has obtained the token (or a prompt-injected MCP client). Refuse
+// them outright on both the local and the ssh-proxied branches.
+function sensitivePath(rel) {
+  const parts = rel.split("/").filter(Boolean);
+  const top = parts[0] || "";
+  const base = parts[parts.length - 1] || "";
+  if (top === ".ssh" || top === ".gnupg" || top === ".aws") return true;
+  if (top === ".config" && parts[1] === "pzzacode" && base === "agent-token") return true;
+  if (/^\.claude/.test(top) && base === ".credentials.json") return true;
+  if (/^\.codex/.test(top) && base === "auth.json") return true;
+  return false;
+}
+// Shell-side twin of sensitivePath, applied by remoteGuard to the resolved
+// $HOME-relative path in "$r".
+const SENSITIVE_CASE =
+  `case "$r" in .ssh|.ssh/*|.gnupg|.gnupg/*|.aws|.aws/*|.config/pzzacode/agent-token|.claude*/.credentials.json|.codex*/auth.json) echo PZZA_DENIED; exit 3;; esac; `;
+
 function safePath(p) {
   if (typeof p !== "string" || !p) return null;
   const resolved = path.resolve(p);
   const home = os.homedir();
   if (!home || (resolved !== home && !resolved.startsWith(home + path.sep))) return null;
+  if (sensitivePath(path.relative(home, resolved))) return null;
   return resolved;
 }
 
@@ -1086,7 +1110,9 @@ const server = http.createServer(async (req, res) => {
   // prints a marker and exits, so every remote command below can trust "$p".
   const remoteGuard = (p) =>
     `h=$(cd ~ && pwd -P); p=$(realpath -m -- ${shQuote(p)} 2>/dev/null || readlink -f -- ${shQuote(p)} 2>/dev/null); ` +
-    `case "$p" in "$h"|"$h"/*) ;; *) echo PZZA_DENIED; exit 3;; esac; `;
+    `case "$p" in "$h"|"$h"/*) ;; *) echo PZZA_DENIED; exit 3;; esac; ` +
+    `r="\${p#"$h"/}"; ` +
+    SENSITIVE_CASE;
   const denied = (out) => String(out || "").startsWith("PZZA_DENIED");
   if (fsHost && url.pathname === "/fs/list") {
     const raw = url.searchParams.get("path") || "";
@@ -1254,7 +1280,7 @@ const server = http.createServer(async (req, res) => {
   if (url.pathname === "/ssh/hosts") return json(res, 200, sshHosts());
   if (url.pathname === "/windows") return json(res, 200, await listWindows());
   if (url.pathname === "/ports") return json(res, 200, await listPorts());
-  if (url.pathname === "/health") return json(res, 200, { ok: true });
+  if (url.pathname === "/health") return json(res, 200, { ok: true, id: AGENT_ID });
 
   if (url.pathname === "/forward/status") {
     return json(res, 200, {
@@ -1273,10 +1299,32 @@ const server = http.createServer(async (req, res) => {
         : ct.includes("webp")
           ? "webp"
           : "png";
-    const file = `/tmp/pzza-paste-${Date.now().toString(36)}.${ext}`;
-    return saveImage(file, buf, (err) =>
-      err ? json(res, 500, { error: String(err.message || err) }) : json(res, 200, { path: file }),
-    );
+    // Private, per-user, unguessable: a 0700 cache dir, a random name, and an
+    // exclusive 0600 create - pasted screenshots often carry secrets, and a
+    // shared /tmp would expose them to every other account on the box.
+    const name = `${crypto.randomBytes(12).toString("hex")}.${ext}`;
+    if (IS_CLIENT) {
+      const remote =
+        `d="\${XDG_RUNTIME_DIR:-$HOME/.cache}/pzzacode/paste"; umask 077; mkdir -p "$d" && ` +
+        `cat > "$d/${name}" && printf %s "$d/${name}"`;
+      const p = execFile("ssh", ["-o", "BatchMode=yes", DEVBOX, remote], (err, out) =>
+        err
+          ? json(res, 500, { error: String(err.message || err) })
+          : json(res, 200, { path: String(out || "").trim() }),
+      );
+      p.stdin.write(buf);
+      p.stdin.end();
+      return;
+    }
+    const dir = path.join(process.env.XDG_RUNTIME_DIR || path.join(os.homedir(), ".cache"), "pzzacode", "paste");
+    const file = path.join(dir, name);
+    try {
+      fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+      fs.writeFileSync(file, buf, { flag: "wx", mode: 0o600 });
+    } catch (e) {
+      return json(res, 500, { error: String(e.message || e) });
+    }
+    return json(res, 200, { path: file });
   }
   if (url.pathname === "/kill" && req.method === "POST") {
     const body = await readBody(req);
@@ -1452,6 +1500,12 @@ function sweepOrphanViews() {
   });
 }
 
+// Fail loudly if the port is already taken (another process must not silently
+// become "the agent" the app talks to); the app verifies /health's id as well.
+server.on("error", (e) => {
+  console.error(`PzzaCode agent: cannot listen on 127.0.0.1:${PORT} (${e && e.code ? e.code : e})`);
+  process.exit(2);
+});
 server.listen(PORT, "127.0.0.1", () => {
   console.log(
     `PzzaCode agent on 127.0.0.1:${PORT} · role=${IS_CLIENT ? `client (ssh ${DEVBOX})` : "source"}`,
