@@ -920,9 +920,8 @@ async function scanSpend(now) {
   return data;
 }
 
-async function collectUsage() {
-  const now = Date.now();
-  if (usageCache.data && now - usageCache.at < USAGE_FRESH_MS) return usageCache.data;
+// Fetch every account's usage from the provider APIs (in parallel) and cache it.
+async function refreshUsage() {
   const accounts = discoverAccounts();
   const data = (
     await Promise.all(
@@ -948,8 +947,33 @@ async function collectUsage() {
       }),
     )
   ).filter(Boolean);
-  usageCache = { at: now, data };
+  usageCache = { at: Date.now(), data };
   return data;
+}
+
+let usageScan = null;
+// Serve usage without ever blocking on the network once warm: a fresh cache is
+// returned as-is, a stale one is returned immediately and refreshed in the
+// background, and only a cold start waits for the first fetch (sharing one
+// in-flight scan). The cache is warmed at boot, so the menu is instant.
+function collectUsage() {
+  const now = Date.now();
+  if (usageCache.data) {
+    if (now - usageCache.at >= USAGE_FRESH_MS && !usageScan) {
+      usageScan = refreshUsage()
+        .catch(() => usageCache.data)
+        .finally(() => {
+          usageScan = null;
+        });
+    }
+    return Promise.resolve(usageCache.data);
+  }
+  if (!usageScan) {
+    usageScan = refreshUsage().finally(() => {
+      usageScan = null;
+    });
+  }
+  return usageScan;
 }
 
 // Resolve a client-supplied path, restricted to the user's home tree so the
@@ -1517,4 +1541,9 @@ server.listen(PORT, "127.0.0.1", () => {
   const warmSpend = () => computeSpend().catch(() => undefined);
   setTimeout(warmSpend, 1500);
   setInterval(warmSpend, SPEND_FRESH_MS);
+  // Warm the account usage the same way: the provider round-trips happen in the
+  // background so the first time the panel opens it is already populated.
+  const warmUsage = () => collectUsage().catch(() => undefined);
+  setTimeout(warmUsage, 800);
+  setInterval(warmUsage, USAGE_FRESH_MS);
 });

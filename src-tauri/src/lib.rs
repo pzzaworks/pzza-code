@@ -35,6 +35,7 @@ pub fn run() {
             forward::forward_set,
             forward::forward_reconcile,
             rdp::rdp_launch,
+            rdp::rdp_is_open,
             agent::agent_token,
             agent::agent_instance,
             sys::open_url,
