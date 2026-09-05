@@ -2,6 +2,8 @@ use std::collections::HashSet;
 use std::process::Command;
 use std::sync::Mutex;
 
+use crate::sshmux;
+
 // Port forwarding over the remote's multiplexed ssh master: scan the remote's
 // listening TCP ports and keep a matching set of -L forwards. Console tracks the
 // forwards it added itself in `active`, so it never fights over ports another
@@ -22,6 +24,7 @@ pub struct ForwardStatus {
 
 fn master_up(host: &str) -> bool {
     Command::new("ssh")
+        .args(sshmux::control_args())
         .args(["-O", "check", host])
         .output()
         .map(|o| o.status.success())
@@ -31,6 +34,7 @@ fn master_up(host: &str) -> bool {
 // Listening TCP ports on the devbox, IPv4 and IPv6, deduplicated and sorted.
 fn remote_ports(host: &str) -> Vec<u16> {
     let out = Command::new("ssh")
+        .args(sshmux::control_args())
         .args([
             "-o",
             "BatchMode=yes",
@@ -67,6 +71,7 @@ fn wanted_from(remote: &[u16], skip: &[u16], min_port: u16) -> Vec<u16> {
 
 fn do_forward(host: &str, port: u16) -> bool {
     Command::new("ssh")
+        .args(sshmux::control_args())
         .args([
             "-O",
             "forward",
@@ -81,6 +86,7 @@ fn do_forward(host: &str, port: u16) -> bool {
 
 fn do_cancel(host: &str, port: u16) -> bool {
     Command::new("ssh")
+        .args(sshmux::control_args())
         .args([
             "-O",
             "cancel",

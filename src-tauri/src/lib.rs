@@ -2,6 +2,7 @@ mod agent;
 mod forward;
 mod pty;
 mod rdp;
+mod sshmux;
 mod sys;
 mod tmux;
 
