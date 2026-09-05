@@ -1,5 +1,7 @@
 use std::process::Command;
 
+use crate::sshmux;
+
 // A tmux session on the device. One session maps to one grid tile, and a
 // session name is treated as a cmux tab.
 #[derive(serde::Serialize)]
@@ -15,7 +17,11 @@ pub struct TmuxSession {
 // directly (used when the app runs on the devbox itself for testing).
 fn tmux_capture(host: &Option<String>, remote: &str) -> std::io::Result<std::process::Output> {
     match host {
-        Some(h) => Command::new("ssh").arg(h).arg(remote).output(),
+        Some(h) => Command::new("ssh")
+            .args(sshmux::control_args())
+            .arg(h)
+            .arg(remote)
+            .output(),
         None => Command::new("sh").arg("-c").arg(remote).output(),
     }
 }
