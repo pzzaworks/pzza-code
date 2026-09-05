@@ -1487,6 +1487,9 @@ button {
   font-size: 10.5px;
   color: var(--muted);
 }
+.usage-bar-reset-abs {
+  opacity: 0.65;
+}
 .usage-bar {
   height: 6px;
   border-radius: 4px;
