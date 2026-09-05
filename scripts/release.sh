@@ -23,6 +23,9 @@ export TAURI_SIGNING_PRIVATE_KEY="$(cat "$KEY")"
 export TAURI_SIGNING_PRIVATE_KEY_PASSWORD="${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}"
 export APPLE_SIGNING_IDENTITY="${APPLE_SIGNING_IDENTITY:-Developer ID Application: Berke Kiran (U7SA296AP6)}"
 export PATH="$HOME/.rustup/toolchains/stable-aarch64-apple-darwin/bin:$PATH"
+# CI=true makes Tauri's DMG bundler skip the AppleScript that mounts the image
+# and opens a Finder window to arrange icons - so a build never pops the DMG open.
+export CI=true
 
 echo "==> Building $TAG (universal)"
 npm run tauri build -- --target universal-apple-darwin --bundles app,dmg
@@ -69,5 +72,4 @@ else
   gh release create "$TAG" "$DMG" "$TARGZ" "$SIG" /tmp/latest.json -R "$REPO" --title "PzzaCode $VERSION" --latest \
     $( [ -n "${NOTES:-}" ] && echo "--notes-file $NOTES" || echo "--notes PzzaCode $VERSION" )
 fi
-cp "$DMG" "$HOME/Desktop/"
 echo "==> Done: https://github.com/$REPO/releases/tag/$TAG"
