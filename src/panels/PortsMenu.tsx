@@ -38,15 +38,19 @@ function fwdSave(key: string, v: string) {
   }
 }
 
-function ForwardConfig() {
+function ForwardConfig({
+  serverId,
+  clientId,
+  onServer,
+  onClient,
+}: {
+  serverId: string;
+  clientId: string;
+  onServer: (id: string) => void;
+  onClient: (id: string) => void;
+}) {
   const devices = useStore((s) => s.devices);
   const [openCfg, setOpenCfg] = useState(false);
-  const [serverId, setServerId] = useState(() =>
-    fwdLoad("pzza.fwd.serverDev", devices[0]?.id ?? ""),
-  );
-  const [clientId, setClientId] = useState(() =>
-    fwdLoad("pzza.fwd.clientDev", devices.find((d) => d.id === "this-mac")?.id ?? ""),
-  );
 
   const server = devices.find((d) => d.id === serverId);
   const client = devices.find((d) => d.id === clientId);
@@ -67,10 +71,7 @@ function ForwardConfig() {
             </span>
             <Select
               value={serverId}
-              onChange={(v) => {
-                setServerId(v);
-                fwdSave("pzza.fwd.serverDev", v);
-              }}
+              onChange={onServer}
               options={devices.map((d) => ({ value: d.id, label: d.name, sub: d.host }))}
             />
           </div>
@@ -80,16 +81,13 @@ function ForwardConfig() {
             </span>
             <Select
               value={clientId}
-              onChange={(v) => {
-                setClientId(v);
-                fwdSave("pzza.fwd.clientDev", v);
-              }}
+              onChange={onClient}
               options={devices.map((d) => ({ value: d.id, label: d.name, sub: d.host }))}
             />
           </div>
           <p className="set-note" style={{ margin: 0 }}>
-            Tunnels run on the client. Run the server on it
-            (PZZA_DEVBOX_HOST={server?.host ?? "…"}) to forward from here.
+            This Mac opens an ssh tunnel to {server?.name ?? "the server"} and mirrors its
+            listening ports here, so you can open them on localhost.
           </p>
         </div>
       ) : null}
@@ -98,11 +96,40 @@ function ForwardConfig() {
 }
 
 export function PortsMenu() {
+  const devices = useStore((s) => s.devices);
+  const [serverId, setServerId] = useState(() =>
+    fwdLoad("pzza.fwd.serverDev", devices.find((d) => d.id !== "this-mac")?.id ?? devices[0]?.id ?? ""),
+  );
+  const [clientId, setClientId] = useState(() => fwdLoad("pzza.fwd.clientDev", "this-mac"));
+  const onServer = (v: string) => {
+    setServerId(v);
+    fwdSave("pzza.fwd.serverDev", v);
+  };
+  const onClient = (v: string) => {
+    setClientId(v);
+    fwdSave("pzza.fwd.clientDev", v);
+  };
+
+  const server = devices.find((d) => d.id === serverId);
+  // The app runs the tunnel on this Mac, so it can only forward a remote server's
+  // ports here. A local server (this Mac) has nothing to tunnel.
+  const serverHost =
+    server && server.id !== "this-mac"
+      ? server.user
+        ? `${server.user}@${server.host}`
+        : server.host
+      : null;
+  const clientIsLocal = clientId === "this-mac";
+
   return (
     <div className="menu-body">
       <div className="menu-title">Port forwarding</div>
-      <ForwardConfig />
-      {HAS_TAURI ? <TauriPorts /> : <ServerPorts />}
+      <ForwardConfig serverId={serverId} clientId={clientId} onServer={onServer} onClient={onClient} />
+      {HAS_TAURI ? (
+        <TauriPorts serverHost={serverHost} clientIsLocal={clientIsLocal} />
+      ) : (
+        <ServerPorts />
+      )}
     </div>
   );
 }
@@ -221,8 +248,8 @@ function ServerPorts() {
   );
 }
 
-function TauriPorts() {
-  const host = useStore((s) => s.connection.host);
+function TauriPorts({ serverHost, clientIsLocal }: { serverHost: string | null; clientIsLocal: boolean }) {
+  const host = serverHost;
   const [status, setStatus] = useState<ForwardStatus | null>(null);
   const [enabled, setEnabled] = useState(true);
 
@@ -251,7 +278,18 @@ function TauriPorts() {
     };
   }, [host, enabled]);
 
-  if (!host) return <p className="muted small pad">Local mode - nothing to forward.</p>;
+  if (!clientIsLocal)
+    return (
+      <p className="muted small pad">
+        Forwarding runs on this Mac - set the client to This Mac.
+      </p>
+    );
+  if (!host)
+    return (
+      <p className="muted small pad">
+        Pick a remote device as the server to mirror its ports here.
+      </p>
+    );
 
   const forwarded = [...(status?.forwarded ?? [])].sort((a, b) => a - b);
   const up = status?.masterUp;
