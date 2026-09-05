@@ -20,3 +20,8 @@ export interface Launched {
 export function rdpLaunch(opts: RdpOptions): Promise<Launched> {
   return invoke<Launched>("rdp_launch", { opts });
 }
+
+// Whether a desktop window is already open for this device (its Keychain key).
+export function rdpIsOpen(keychainService: string): Promise<boolean> {
+  return invoke<boolean>("rdp_is_open", { keychainService });
+}

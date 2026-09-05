@@ -31,6 +31,23 @@ fn master_up(host: &str) -> bool {
         .unwrap_or(false)
 }
 
+// Bring the shared ssh master up if it is not already. Port forwarding rides
+// this master, so rather than passively report "master down" when no tile to
+// the host happens to be open, the forwarding panel opens the connection
+// itself. Returns whether a master is up afterwards.
+fn ensure_master(host: &str) -> bool {
+    if master_up(host) {
+        return true;
+    }
+    // `-N -f` backgrounds a session with no command; with ControlMaster=auto and
+    // no existing master it becomes the master, and ControlPersist keeps it warm.
+    let _ = Command::new("ssh")
+        .args(sshmux::control_args())
+        .args(["-o", "BatchMode=yes", "-N", "-f", host])
+        .status();
+    master_up(host)
+}
+
 // Listening TCP ports on the devbox, IPv4 and IPv6, deduplicated and sorted.
 fn remote_ports(host: &str) -> Vec<u16> {
     let out = Command::new("ssh")
@@ -100,7 +117,7 @@ fn do_cancel(host: &str, port: u16) -> bool {
 }
 
 fn status(state: &ForwardState, host: &str, skip: &[u16], min_port: u16) -> ForwardStatus {
-    let up = master_up(host);
+    let up = ensure_master(host);
     let remote = if up { remote_ports(host) } else { Vec::new() };
     let wanted = wanted_from(&remote, skip, min_port);
     let mut forwarded: Vec<u16> = state.active.lock().unwrap().iter().copied().collect();
@@ -156,7 +173,7 @@ pub fn forward_reconcile(
     skip: Vec<u16>,
     min_port: u16,
 ) -> ForwardStatus {
-    if master_up(&host) {
+    if ensure_master(&host) {
         let remote = remote_ports(&host);
         let wanted = wanted_from(&remote, &skip, min_port);
         let current: Vec<u16> = state.active.lock().unwrap().iter().copied().collect();

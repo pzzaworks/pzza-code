@@ -55,6 +55,22 @@ function fmtReset(iso: string | null): string {
   return `${Math.floor(h / 24)}d ${h % 24}h`;
 }
 
+// The actual reset date/clock time. Same day shows just the time; a later day
+// prefixes the weekday + date, so a weekly window reads e.g. "Sun 9 · 21:40".
+function fmtResetAbs(iso: string | null): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  const now = new Date();
+  const time = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const sameDay =
+    d.getFullYear() === now.getFullYear() &&
+    d.getMonth() === now.getMonth() &&
+    d.getDate() === now.getDate();
+  if (sameDay) return time;
+  const day = d.toLocaleDateString([], { weekday: "short", day: "numeric", month: "short" });
+  return `${day} · ${time}`;
+}
+
 // Color always reflects how much is USED (the risk), regardless of what the
 // number shows - a nearly-exhausted window is red whether it reads "5% left"
 // or "95% used".
@@ -75,7 +91,11 @@ function Bar({ label, w, mode }: { label: string; w: UsageWindow | null; mode: M
       <div className="usage-bar-top">
         <span className="usage-bar-label">{label}</span>
         <span className="usage-bar-pct">{shown}%</span>
-        {w.resets_at ? <span className="usage-bar-reset">· {fmtReset(w.resets_at)}</span> : null}
+        {w.resets_at ? (
+          <span className="usage-bar-reset" title={`Resets ${fmtResetAbs(w.resets_at)}`}>
+            · {fmtReset(w.resets_at)} <span className="usage-bar-reset-abs">({fmtResetAbs(w.resets_at)})</span>
+          </span>
+        ) : null}
       </div>
       <div className="usage-bar">
         <div className="usage-bar-fill" style={{ width: `${shown}%`, background: barColor(used) }} />

@@ -1,10 +1,27 @@
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::Read;
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
+use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
+
+// Desktops currently open, keyed by the device's Keychain service (unique per
+// device), so a second "Open desktop" reuses the live window instead of
+// stacking another. The background thread that waits on each viewer removes its
+// entry when the window closes, so the state follows the real window's life.
+fn open_desktops() -> &'static Mutex<HashMap<String, Launched>> {
+    static R: OnceLock<Mutex<HashMap<String, Launched>>> = OnceLock::new();
+    R.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+// Whether a desktop is already open for a device (its Keychain service key).
+#[tauri::command]
+pub fn rdp_is_open(keychain_service: String) -> bool {
+    open_desktops().lock().unwrap().contains_key(&keychain_service)
+}
 
 // Opens a device's Linux desktop over RDP. One call does the whole job: read
 // (or create) the RDP password in the login Keychain, make sure GNOME Remote
@@ -24,7 +41,7 @@ pub struct RdpOptions {
 }
 
 // What the launch found on the device: the daemon mode and the port it serves.
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, Clone)]
 pub struct Launched {
     pub port: u16,
     pub mode: String,
@@ -276,6 +293,10 @@ fn launch_blocking(opts: RdpOptions) -> Result<Launched, String> {
     if opts.user.is_empty() || opts.user.chars().any(|c| !c.is_ascii_alphanumeric()) {
         return Err("the RDP user must be alphanumeric".into());
     }
+    // Already open for this device: reuse the live window, do not stack another.
+    if let Some(existing) = open_desktops().lock().unwrap().get(&opts.keychain_service).cloned() {
+        return Ok(existing);
+    }
     let bin = freerdp_bin()?;
     let password = match keychain_password(&opts.keychain_service) {
         Some(pw) => pw,
@@ -333,14 +354,19 @@ fn launch_blocking(opts: RdpOptions) -> Result<Launched, String> {
         }
         thread::sleep(Duration::from_millis(200));
     }
-    // The tunnel lives exactly as long as the viewer window.
+    // Mark it open and keep it so until the window closes: the tunnel lives
+    // exactly as long as the viewer, and the registry entry with it.
+    let launched = Launched {
+        port: remote_port,
+        mode,
+    };
+    let key = opts.keychain_service.clone();
+    open_desktops().lock().unwrap().insert(key.clone(), launched.clone());
     thread::spawn(move || {
         let _ = viewer.wait();
         let _ = tunnel.kill();
         let _ = tunnel.wait();
+        open_desktops().lock().unwrap().remove(&key);
     });
-    Ok(Launched {
-        port: remote_port,
-        mode,
-    })
+    Ok(launched)
 }
