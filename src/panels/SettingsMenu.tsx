@@ -1,8 +1,7 @@
-import { useState } from "react";
-import { Download, Loader2, RefreshCw, ServerCog } from "lucide-react";
+import { Download, Loader2, RefreshCw, RotateCw, ServerCog } from "lucide-react";
 import { useStore } from "../state/store";
+import { useUpdates } from "../state/updates";
 import { HAS_TAURI } from "../tauriEnv";
-import { checkForUpdate, relaunchApp, type AvailableUpdate } from "../updater";
 
 // Settings dropdown content: agent/devices + terminal.
 export function SettingsMenu({ close }: { close?: () => void }) {
@@ -36,59 +35,53 @@ function AgentSection({ close }: { close?: () => void }) {
   );
 }
 
-// Manual update check (the app also checks quietly on launch and every few
-// hours). Installs and relaunches on confirmation.
+// Update controls on top of the shared update state: manual check / install /
+// restart, plus the automatic-updates switch.
 function UpdatesSection() {
-  const [state, setState] = useState<
-    | { kind: "idle" }
-    | { kind: "checking" }
-    | { kind: "latest"; version: string }
-    | { kind: "available"; update: AvailableUpdate }
-    | { kind: "installing"; pct: number }
-    | { kind: "error"; msg: string }
-  >({ kind: "idle" });
-
-  const check = async () => {
-    setState({ kind: "checking" });
-    try {
-      const u = await checkForUpdate();
-      setState(u ? { kind: "available", update: u } : { kind: "latest", version: __APP_VERSION__ });
-    } catch (e) {
-      setState({ kind: "error", msg: String((e as Error)?.message || e) });
-    }
-  };
-  const install = async (u: AvailableUpdate) => {
-    setState({ kind: "installing", pct: 0 });
-    try {
-      await u.install((f) => setState({ kind: "installing", pct: f }));
-      await relaunchApp();
-    } catch (e) {
-      setState({ kind: "error", msg: String((e as Error)?.message || e) });
-    }
-  };
+  const status = useUpdates((s) => s.status);
+  const autoUpdate = useUpdates((s) => s.autoUpdate);
+  const setAutoUpdate = useUpdates((s) => s.setAutoUpdate);
+  const check = useUpdates((s) => s.check);
+  const install = useUpdates((s) => s.install);
+  const relaunch = useUpdates((s) => s.relaunch);
 
   if (!HAS_TAURI) return null;
   return (
     <Section title="Updates">
-      <Row label={`Version ${__APP_VERSION__}`} hint="from GitHub Releases, signed">
-        {state.kind === "available" ? (
-          <button className="btn btn-accent btn-sm" onClick={() => install(state.update)}>
+      <Row label={`Version ${__APP_VERSION__}`} hint="from GitHub Releases">
+        {status.kind === "available" ? (
+          <button className="btn btn-accent btn-sm" onClick={install}>
             <Download size={13} strokeWidth={2} />
-            Update to {state.update.version}
+            Update to {status.update.version}
           </button>
-        ) : state.kind === "installing" ? (
+        ) : status.kind === "installing" ? (
           <span className="set-hint">
-            {state.pct < 1 ? `Downloading ${Math.round(state.pct * 100)}%` : "Installing…"}
+            {status.pct < 1 ? `Downloading ${Math.round(status.pct * 100)}%` : "Installing…"}
           </span>
+        ) : status.kind === "ready" ? (
+          <button className="btn btn-accent btn-sm" onClick={relaunch}>
+            <RotateCw size={13} strokeWidth={2} />
+            Restart for {status.update.version}
+          </button>
         ) : (
-          <button className="btn btn-sm" onClick={check} disabled={state.kind === "checking"}>
-            {state.kind === "checking" ? <Loader2 size={13} className="sw-spin" /> : <RefreshCw size={13} />}
+          <button className="btn btn-sm" onClick={() => check(true)} disabled={status.kind === "checking"}>
+            {status.kind === "checking" ? <Loader2 size={13} className="sw-spin" /> : <RefreshCw size={13} />}
             Check for updates
           </button>
         )}
       </Row>
-      {state.kind === "latest" ? <p className="set-note">You are on the latest version.</p> : null}
-      {state.kind === "error" ? <p className="set-note">{state.msg}</p> : null}
+      <Row label="Automatic updates" hint="Install new releases in the background, restart when you like">
+        <button
+          className={`switch ${autoUpdate ? "switch-on" : ""}`}
+          onClick={() => setAutoUpdate(!autoUpdate)}
+          role="switch"
+          aria-checked={autoUpdate}
+        >
+          <span className="switch-knob" />
+        </button>
+      </Row>
+      {status.kind === "latest" ? <p className="set-note">You are on the latest version.</p> : null}
+      {status.kind === "error" ? <p className="set-note">{status.msg}</p> : null}
     </Section>
   );
 }

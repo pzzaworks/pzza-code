@@ -167,12 +167,13 @@ interface ConsoleState {
   closeTileFile: (id: string) => void;
 }
 
-// Per-device RDP setup written by the wizard's provisioning step.
+// Per-device RDP account (the password lives in the Keychain under
+// keychainService) plus what the last launch found on the device.
 export interface DeviceRdp {
   user: string;
-  certFingerprint: string;
   keychainService: string;
   port?: number; // RDP port on the device (the headless daemon uses its own)
+  mode?: string; // "headless" or "session"
 }
 
 export interface TileCode {

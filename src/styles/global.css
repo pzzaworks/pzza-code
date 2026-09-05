@@ -2534,12 +2534,15 @@ button {
   inset: 0;
   z-index: 400;
 }
+/* Anchored by its right edge (inline `right`), never via a transform: the
+   menu-in entrance animates transform, so a translateX here would only apply
+   once the animation ended and the popover would visibly jump left. */
 .layout-pop {
   position: fixed;
-  right: auto;
-  transform: translateX(-100%);
+  left: auto;
   width: 170px;
   min-width: 0;
+  transform-origin: top right;
 }
 
 /* Devices dropdown */
@@ -3071,6 +3074,12 @@ button {
   justify-content: space-between;
   gap: 16px;
   padding: 7px 0;
+}
+.set-control {
+  flex-shrink: 0;
+}
+.set-control .btn {
+  white-space: nowrap;
 }
 .set-label {
   display: flex;

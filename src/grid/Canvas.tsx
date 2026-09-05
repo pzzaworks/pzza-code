@@ -514,7 +514,7 @@ export function Canvas() {
             <div className="layout-pop-backdrop pzza-portal" onMouseDown={() => setMoveFor(null)}>
               <div
                 className="menu layout-pop"
-                style={{ left: moveFor.x, top: moveFor.y + 6 }}
+                style={{ right: window.innerWidth - moveFor.x, top: moveFor.y + 6 }}
                 onMouseDown={(e) => e.stopPropagation()}
               >
                 {(() => {
@@ -545,7 +545,7 @@ export function Canvas() {
             <div className="layout-pop-backdrop pzza-portal" onMouseDown={() => setLayoutFor(null)}>
               <div
                 className="menu layout-pop"
-                style={{ left: layoutFor.x, top: layoutFor.y + 6 }}
+                style={{ right: window.innerWidth - layoutFor.x, top: layoutFor.y + 6 }}
                 onMouseDown={(e) => e.stopPropagation()}
               >
                 {[
