@@ -1,7 +1,7 @@
 {
   "name": "pzza-code",
   "private": true,
-  "version": "0.2.6",
+  "version": "0.2.7",
   "description": "A grid terminal manager for agentic coding - run, watch and orchestrate many terminals and AI coding agents across your machines from one fast cockpit.",
   "license": "MIT",
   "type": "module",

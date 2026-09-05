@@ -36,6 +36,7 @@ const WSCOLUMNS_KEY = "pzza.wsColumns";
 const SESSIONWS_KEY = "pzza.sessionWs";
 const HIDDEN_KEY = "pzza.hidden";
 const DEVICES_KEY = "pzza.devices";
+const DEVICE_RDP_KEY = "pzza.deviceRdp";
 const TILESPAN_KEY = "pzza.tileSpan";
 const TILETITLES_KEY = "pzza.tileTitles";
 const TILECODE_KEY = "pzza.tileCode";
@@ -96,6 +97,14 @@ interface ConsoleState {
   devices: Device[];
   addDevice: (name: string, host: string, user?: string) => void;
   removeDevice: (id: string) => void;
+
+  // Per-device RDP config, provisioned by the wizard (user + cert fingerprint +
+  // the Keychain service holding the password). Absent = not set up yet.
+  deviceRdp: Record<string, { user: string; certFingerprint: string; keychainService: string }>;
+  setDeviceRdp: (
+    id: string,
+    cfg: { user: string; certFingerprint: string; keychainService: string },
+  ) => void;
 
   // Per-tile grid span: {c: columns, r: rows}. Capped to the column count.
   tileSpan: Record<string, { c: number; r: number }>;
@@ -279,6 +288,16 @@ export const useStore = create<ConsoleState>((set, get) => ({
     const devices = get().devices.filter((d) => d.id !== id);
     persist(DEVICES_KEY, devices);
     set({ devices });
+  },
+
+  deviceRdp: load<Record<string, { user: string; certFingerprint: string; keychainService: string }>>(
+    DEVICE_RDP_KEY,
+    {},
+  ),
+  setDeviceRdp: (id, cfg) => {
+    const deviceRdp = { ...get().deviceRdp, [id]: cfg };
+    persist(DEVICE_RDP_KEY, deviceRdp);
+    set({ deviceRdp });
   },
 
   tileTitles: load<Record<string, string>>(TILETITLES_KEY, {}),
