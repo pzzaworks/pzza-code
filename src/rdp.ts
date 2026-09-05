@@ -40,16 +40,23 @@ export function rdpLaunch(opts: RdpOptions): Promise<void> {
   return invoke("rdp_launch", { opts });
 }
 
-// Configure GNOME Remote Desktop on a target over SSH; returns the cert's
-// SHA-256 fingerprint. The app generates the credentials and passes them in.
+// Configure GNOME Remote Desktop on a target over SSH. The app generates the
+// credentials and passes them in; back come the daemon's TLS fingerprint, the
+// port it listens on (the headless daemon uses its own, since 3389 is usually
+// held by the system remote-login daemon) and which daemon mode was set up.
+export interface Provisioned {
+  fingerprint: string;
+  port: number;
+  mode: "headless" | "session" | string;
+}
 export function rdpProvision(args: {
   target: string;
   port?: number;
   identity?: string;
   user: string;
   password: string;
-}): Promise<string> {
-  return invoke<string>("rdp_provision", args);
+}): Promise<Provisioned> {
+  return invoke<Provisioned>("rdp_provision", args);
 }
 
 // Store the RDP password in the login Keychain under `service`.

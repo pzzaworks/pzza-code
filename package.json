@@ -1,7 +1,7 @@
 {
   "name": "pzza-code",
   "private": true,
-  "version": "0.2.9",
+  "version": "0.2.10",
   "description": "A grid terminal manager for agentic coding - run, watch and orchestrate many terminals and AI coding agents across your machines from one fast cockpit.",
   "license": "MIT",
   "type": "module",
@@ -13,6 +13,8 @@
   },
   "dependencies": {
     "@tauri-apps/api": "^2.1.1",
+    "@tauri-apps/plugin-process": "^2.3.1",
+    "@tauri-apps/plugin-updater": "^2.11.0",
     "@uiw/codemirror-extensions-langs": "^4.25.11",
     "@uiw/codemirror-theme-github": "^4.25.11",
     "@uiw/react-codemirror": "^4.25.11",

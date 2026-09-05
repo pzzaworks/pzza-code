@@ -101,7 +101,7 @@ pub fn rdp_provision(
     identity: Option<String>,
     user: String,
     password: String,
-) -> Result<String, String> {
+) -> Result<Provisioned, String> {
     if user.chars().any(|c| !c.is_ascii_alphanumeric())
         || password.chars().any(|c| !c.is_ascii_alphanumeric())
     {
@@ -121,21 +121,29 @@ if [ ! -f "$D/rdp-tls.crt" ]; then
   openssl req -new -newkey rsa:2048 -days 3650 -nodes -x509 -subj "/CN=pzzacode-$(hostname)" -out "$D/rdp-tls.crt" -keyout "$D/rdp-tls.key" >/dev/null 2>&1
 fi
 MODE=""
-if grdctl --headless status >/dev/null 2>&1; then MODE="--headless"; fi
+PORT=3389
+if grdctl --headless status >/dev/null 2>&1; then MODE="--headless"; PORT=3390; fi
 grdctl $MODE rdp enable
 grdctl $MODE rdp set-credentials '{user}' '{password}'
 grdctl $MODE rdp disable-view-only || true
 grdctl $MODE rdp set-tls-cert "$D/rdp-tls.crt"
 grdctl $MODE rdp set-tls-key "$D/rdp-tls.key"
 if [ "$MODE" = "--headless" ]; then
+  # 3389 is usually owned by the system-level remote-login daemon on a
+  # headless box, so the per-user headless daemon gets its own port.
+  grdctl --headless rdp set-port $PORT >/dev/null 2>&1 || true
   systemctl --user disable --now gnome-remote-desktop.service >/dev/null 2>&1 || true
+  systemctl --user reset-failed gnome-remote-desktop-headless.service >/dev/null 2>&1 || true
   systemctl --user enable --now gnome-remote-desktop-headless.service >/dev/null 2>&1 || true
   systemctl --user restart gnome-remote-desktop-headless.service >/dev/null 2>&1 || true
 else
   systemctl --user enable --now gnome-remote-desktop.service >/dev/null 2>&1 || true
   systemctl --user restart gnome-remote-desktop.service >/dev/null 2>&1 || true
 fi
+sleep 2
+if ! ss -tlnH 2>/dev/null | grep -q ":$PORT "; then echo "ERROR: RDP daemon is not listening on port $PORT"; exit 4; fi
 echo "MODE:${{MODE:-session}}"
+echo "PORT:$PORT"
 echo "FP:$(openssl x509 -in "$D/rdp-tls.crt" -noout -fingerprint -sha256 | sed 's/.*=//; s/://g')""#
     );
     let mut args = ssh_base(port, &identity);
@@ -147,19 +155,37 @@ echo "FP:$(openssl x509 -in "$D/rdp-tls.crt" -noout -fingerprint -sha256 | sed '
         .map_err(|e| e.to_string())?;
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
-    let fp = stdout
-        .lines()
-        .filter_map(|l| l.strip_prefix("FP:"))
-        .map(|s| s.trim().to_string())
-        .find(|s| s.len() == 64 && s.chars().all(|c| c.is_ascii_hexdigit()));
+    let line = |prefix: &str| {
+        stdout
+            .lines()
+            .filter_map(|l| l.strip_prefix(prefix))
+            .map(|s| s.trim().to_string())
+            .last()
+    };
+    let fp = line("FP:").filter(|s| s.len() == 64 && s.chars().all(|c| c.is_ascii_hexdigit()));
+    let port = line("PORT:").and_then(|p| p.parse::<u16>().ok()).unwrap_or(3389);
+    let mode = line("MODE:").unwrap_or_else(|| "session".into());
     match fp {
-        Some(f) => Ok(f),
+        Some(fingerprint) => Ok(Provisioned {
+            fingerprint,
+            port,
+            mode,
+        }),
         None => Err(format!(
             "RDP provisioning failed. {}{}",
             stderr.trim(),
             stdout.trim()
         )),
     }
+}
+
+// What rdp_provision set up on the device: the daemon's TLS fingerprint, the
+// port it listens on, and whether it is the headless or session daemon.
+#[derive(serde::Serialize)]
+pub struct Provisioned {
+    pub fingerprint: String,
+    pub port: u16,
+    pub mode: String,
 }
 
 // Store an RDP password in the login Keychain (created/updated), so rdp_launch

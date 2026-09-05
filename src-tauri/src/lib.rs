@@ -12,6 +12,10 @@ use pty::PtyState;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // Signed in-app updates from GitHub Releases (latest.json), plus
+        // relaunch after install.
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .manage(PtyState::default())
         .manage(ForwardState::default())
         .manage(AgentState::default())
