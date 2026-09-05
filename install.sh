@@ -16,7 +16,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PORT="${PORT:-5190}"
 DEVBOX_HOST="${PZZA_DEVBOX_HOST:-}"
-STATE_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/pzza-console"
+STATE_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/pzzacode"
 
 # --- pretty output -----------------------------------------------------------
 if [ -t 1 ]; then
@@ -81,10 +81,10 @@ ok "$STATE_DIR"
 # --- tmux config (idempotent) ------------------------------------------------
 step "Configuring tmux"
 TMUX_CONF="$HOME/.tmux.conf"
-MARK="# >>> pzza-console >>>"
-END_MARK="# <<< pzza-console <<<"
+MARK="# >>> pzzacode >>>"
+END_MARK="# <<< pzzacode <<<"
 if [ -f "$TMUX_CONF" ] && grep -qF "$MARK" "$TMUX_CONF"; then
-  ok "tmux.conf already has the pzza-console block"
+  ok "tmux.conf already has the pzzacode block"
 else
   {
     printf "\n%s\n" "$MARK"
@@ -106,7 +106,7 @@ ENTRY="$SCRIPT_DIR/server/index.js"
 register_systemd() {
   local unit_dir="$HOME/.config/systemd/user"
   mkdir -p "$unit_dir"
-  cat > "$unit_dir/pzza-agent.service" <<UNIT
+  cat > "$unit_dir/pzzacode-agent.service" <<UNIT
 [Unit]
 Description=PzzaCode device agent
 After=network.target
@@ -124,9 +124,9 @@ RestartSec=3
 WantedBy=default.target
 UNIT
   systemctl --user daemon-reload
-  systemctl --user enable --now pzza-agent.service
+  systemctl --user enable --now pzzacode-agent.service
   loginctl enable-linger "$USER" >/dev/null 2>&1 || warn "could not enable linger (agent won't start until you log in)"
-  ok "systemd user service 'pzza-agent' enabled and started"
+  ok "systemd user service 'pzzacode-agent' enabled and started"
 }
 
 register_launchd() {
@@ -170,7 +170,7 @@ if command -v curl >/dev/null 2>&1; then
       ok "agent responding on http://127.0.0.1:${PORT}"
       break
     fi
-    [ "$i" = 5 ] && warn "agent not responding yet - check: systemctl --user status pzza-agent" || sleep 1
+    [ "$i" = 5 ] && warn "agent not responding yet - check: systemctl --user status pzzacode-agent" || sleep 1
   done
 else
   warn "curl not found - skipping health check"
