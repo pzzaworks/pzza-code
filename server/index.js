@@ -8,7 +8,7 @@
 // The frontend asks /capabilities and shows forwarding controls only when the
 // connected backend can actually forward.
 import http from "node:http";
-import { execFile, spawn } from "node:child_process";
+import { execFile, execFileSync, spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -474,6 +474,30 @@ function readClaudeIdentity(dir) {
   return {};
 }
 
+// The Claude OAuth blob for an account. Linux/devbox keeps it in a file; macOS
+// (where Claude Code stores it in the login Keychain) has no file, so fall back
+// to the Keychain entry for the default account.
+function readClaudeOAuth(dir) {
+  try {
+    const j = JSON.parse(fs.readFileSync(path.join(dir, ".credentials.json"), "utf8"));
+    if (j.claudeAiOauth) return j.claudeAiOauth;
+  } catch {
+    /* no file - try the Keychain below */
+  }
+  if (process.platform === "darwin" && path.basename(dir) === ".claude") {
+    try {
+      const out = execFileSync("security", ["find-generic-password", "-s", "Claude Code-credentials", "-w"], {
+        encoding: "utf8",
+      });
+      const j = JSON.parse(out);
+      if (j.claudeAiOauth) return j.claudeAiOauth;
+    } catch {
+      /* not in Keychain */
+    }
+  }
+  return null;
+}
+
 const winShape = (w) =>
   w && (w.utilization != null || w.used_percent != null)
     ? { utilization: Number(w.utilization ?? w.used_percent), resets_at: w.resets_at ?? null }
@@ -837,9 +861,8 @@ async function collectUsage() {
     accounts.map(async (acc) => {
       try {
         if (acc.provider === "claude") {
-          const oauth =
-            JSON.parse(fs.readFileSync(path.join(acc.dir, ".credentials.json"), "utf8")).claudeAiOauth || {};
-          if (!oauth.accessToken) throw new Error("not logged in");
+          const oauth = readClaudeOAuth(acc.dir) || {};
+          if (!oauth.accessToken) throw new Error("not signed in on this device");
           const identity = readClaudeIdentity(acc.dir);
           const usage = await fetchClaudeUsage(oauth.accessToken);
           return { provider: "claude", label: acc.label, ...identity, usage, error: null };
