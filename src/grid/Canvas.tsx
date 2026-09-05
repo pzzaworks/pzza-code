@@ -138,6 +138,17 @@ export function Canvas() {
   // until a reload; keeping it alive avoids that entirely.
   const noneVisible = wsTiles.length === 0;
 
+  // A maximized tile only maximizes within its own workspace. Switching to a
+  // different workspace must show that workspace normally, not a blank grid
+  // (the maximized tile lives elsewhere and the maximize gate would otherwise
+  // hide every tile here); returning to its workspace restores the maximize.
+  const fullTile = fullId ? tiles.find((t) => t.id === fullId) : undefined;
+  const fullInActiveWs =
+    !!fullTile &&
+    (activeWorkspaceId === ALL_WORKSPACE_ID ||
+      (sessionWs[wsKeyOf(fullTile)] ?? DEFAULT_WORKSPACE_ID) === activeWorkspaceId);
+  const effFull = fullInActiveWs ? fullId : null;
+
   const tile = (t: (typeof tiles)[number]) => {
     const base = t.session ?? t.name;
     const { cmd, args } = attachCommand(t.host ? { host: t.host } : connection, base, t.cwd, t.window);
@@ -170,7 +181,7 @@ export function Canvas() {
         } 22%) border-box`
       : undefined;
     const span = tileSpan[t.id] ?? { c: 1, r: 1 };
-    const spanStyle = fullId
+    const spanStyle = effFull
       ? undefined
       : {
           gridColumn: `span ${Math.min(span.c, columns)}`,
@@ -183,7 +194,7 @@ export function Canvas() {
     const tileWs = sessionWs[wsKeyOf(t)] ?? DEFAULT_WORKSPACE_ID;
     const inWorkspace =
       activeWorkspaceId === ALL_WORKSPACE_ID || tileWs === activeWorkspaceId;
-    const visible = inWorkspace && !hiddenTiles.includes(t.id) && (!fullId || isFull);
+    const visible = inWorkspace && !hiddenTiles.includes(t.id) && (!effFull || isFull);
     const cls = [
       "tile",
       visible ? "" : "tile-off",
@@ -210,13 +221,13 @@ export function Canvas() {
             ? { border: "1px solid transparent", background: borderBg }
             : {}),
         }}
-        layout={visible && !fullId ? "position" : false}
+        layout={visible && !effFull ? "position" : false}
         initial={isFull ? { opacity: 0, scale: 0.97 } : false}
         animate={isFull ? { opacity: 1, scale: 1 } : {}}
         transition={{ type: "spring", stiffness: 320, damping: 30 }}
         onMouseDown={() => setActive(t.id)}
         onDragOver={(e) => {
-          if (!fullId && dragId && dragId !== t.id) {
+          if (!effFull && dragId && dragId !== t.id) {
             e.preventDefault();
             e.dataTransfer.dropEffect = "move";
             setOverId(t.id);
@@ -234,7 +245,7 @@ export function Canvas() {
       >
         <div
           className="tile-head"
-          draggable={!fullId && !isRenaming}
+          draggable={!effFull && !isRenaming}
           onDragStart={(e) => {
             setDragId(t.id);
             e.dataTransfer.effectAllowed = "move";
@@ -442,9 +453,9 @@ export function Canvas() {
   return (
     <>
       <div
-        className={`grid ${fullId ? "grid-full" : ""}`}
+        className={`grid ${effFull ? "grid-full" : ""}`}
         style={{
-          gridTemplateColumns: fullId
+          gridTemplateColumns: effFull
             ? "minmax(0, 1fr)"
             : `repeat(${columns}, minmax(0, 1fr))`,
         }}
