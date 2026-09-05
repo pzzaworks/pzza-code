@@ -4,7 +4,7 @@
 // setup wizard) and any external MCP client then talk to this one local backend.
 use std::path::PathBuf;
 use std::process::{Child, Command};
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 use tauri::{AppHandle, Manager};
 
 pub const AGENT_PORT: &str = "5190";
@@ -65,6 +65,15 @@ fn find_agent_script(app: &AppHandle) -> Option<PathBuf> {
 // PATH, so the agent (and every tool it runs: tmux, ssh, node) would miss
 // Homebrew, nvm, etc. Ask the user's login shell for its real PATH, then union
 // it with the common install locations so tmux from Homebrew always resolves.
+// The login-shell PATH, computed once. A GUI app launched from Finder/Dock
+// inherits only launchd's bare PATH, so anything installed by Homebrew (node,
+// tmux, ...) is invisible until we rebuild the PATH the user's shell would use.
+// Shared by the agent sidecar and local PTY spawns.
+pub(crate) fn login_path() -> &'static str {
+    static CACHED: OnceLock<String> = OnceLock::new();
+    CACHED.get_or_init(agent_path)
+}
+
 fn agent_path() -> String {
     let mut dirs: Vec<String> = Vec::new();
     let mut push = |p: &str| {
@@ -133,7 +142,7 @@ pub fn start(app: &AppHandle) {
             return;
         }
     };
-    let path = agent_path();
+    let path = login_path().to_string();
     let node = match find_node(&path) {
         Some(n) => n,
         None => {

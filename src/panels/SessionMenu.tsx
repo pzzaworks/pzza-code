@@ -73,17 +73,21 @@ export function SessionMenu({ close }: { close: () => void }) {
     const trimmed = name.trim();
     if (!trimmed) return;
     if (wsId !== activeWorkspaceId) setWorkspace(wsId);
+    // Open on the selected device: no host for this Mac, the ssh host otherwise.
+    const device = devices.find((d) => d.id === deviceId);
+    const host = device && device.id !== "this-mac" ? device.host : undefined;
     // Bind the chosen account by creating the tmux session with its env up
     // front, then attach to it (the lazy attach reuses the existing session).
+    // Account binding runs through the local agent, so it only applies locally.
     const acc = accounts.find((a) => a.dir === accDir);
-    if (acc) {
+    if (acc && !host) {
       try {
         await createSession(trimmed, undefined, { provider: acc.provider, dir: acc.dir });
       } catch {
         /* fall back to a plain session */
       }
     }
-    openSession(trimmed);
+    openSession(trimmed, undefined, host);
     setActive(trimmed);
     // Give tmux a beat to create the session, then re-scan so the new session's
     // current path lands in allSessions (drives the tile header and code editor).
