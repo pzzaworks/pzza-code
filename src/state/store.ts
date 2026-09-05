@@ -102,11 +102,8 @@ interface ConsoleState {
 
   // Per-device RDP config, provisioned by the wizard (user + cert fingerprint +
   // the Keychain service holding the password). Absent = not set up yet.
-  deviceRdp: Record<string, { user: string; certFingerprint: string; keychainService: string }>;
-  setDeviceRdp: (
-    id: string,
-    cfg: { user: string; certFingerprint: string; keychainService: string },
-  ) => void;
+  deviceRdp: Record<string, DeviceRdp>;
+  setDeviceRdp: (id: string, cfg: DeviceRdp) => void;
 
   // Per-tile grid span: {c: columns, r: rows}. Capped to the column count.
   tileSpan: Record<string, { c: number; r: number }>;
@@ -168,6 +165,14 @@ interface ConsoleState {
   setTileCodeRoot: (id: string, root: string) => void;
   setTileCodePath: (id: string, path: string) => void;
   closeTileFile: (id: string) => void;
+}
+
+// Per-device RDP setup written by the wizard's provisioning step.
+export interface DeviceRdp {
+  user: string;
+  certFingerprint: string;
+  keychainService: string;
+  port?: number; // RDP port on the device (the headless daemon uses its own)
 }
 
 export interface TileCode {
@@ -296,10 +301,7 @@ export const useStore = create<ConsoleState>((set, get) => ({
     set({ devices });
   },
 
-  deviceRdp: load<Record<string, { user: string; certFingerprint: string; keychainService: string }>>(
-    DEVICE_RDP_KEY,
-    {},
-  ),
+  deviceRdp: load<Record<string, DeviceRdp>>(DEVICE_RDP_KEY, {}),
   setDeviceRdp: (id, cfg) => {
     const deviceRdp = { ...get().deviceRdp, [id]: cfg };
     persist(DEVICE_RDP_KEY, deviceRdp);

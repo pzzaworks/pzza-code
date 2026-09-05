@@ -55,10 +55,15 @@ export function RdpMenu({ close }: { close: () => void }) {
       const user = "pzzacode";
       const password = randomSecret();
       const service = `pzzacode-rdp-${server.id}`;
-      const certFingerprint = await rdpProvision({ target: sshTarget, user, password });
+      const r = await rdpProvision({ target: sshTarget, user, password });
       await keychainSet(service, user, password);
-      setDeviceRdp(server.id, { user, certFingerprint, keychainService: service });
-      setMsg("Remote desktop enabled.");
+      setDeviceRdp(server.id, {
+        user,
+        certFingerprint: r.fingerprint,
+        keychainService: service,
+        port: r.port,
+      });
+      setMsg(`Remote desktop enabled (${r.mode}, port ${r.port}).`);
     } catch (e) {
       setMsg(String(e));
     } finally {
@@ -77,6 +82,7 @@ export function RdpMenu({ close }: { close: () => void }) {
         user: rdp.user,
         certFingerprint: rdp.certFingerprint,
         keychainService: rdp.keychainService,
+        remotePort: rdp.port ?? RDP_DEFAULTS.remotePort,
       });
       setMsg(null);
       close();

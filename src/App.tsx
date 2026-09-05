@@ -28,6 +28,7 @@ import { SetupWizard } from "./panels/SetupWizard";
 import { HelpModal } from "./panels/HelpModal";
 import { UsageMenu } from "./panels/UsageMenu";
 import { HAS_TAURI } from "./tauriEnv";
+import { UpdateBanner } from "./panels/UpdateBanner";
 
 export default function App() {
   const loadSessions = useStore((s) => s.loadSessions);
@@ -145,6 +146,8 @@ export default function App() {
             </div>
           </div>
         </header>
+
+        <UpdateBanner />
 
         <div className="body">
           <main className="canvas">

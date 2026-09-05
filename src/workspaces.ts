@@ -37,3 +37,10 @@ export function markFor(name: string): string {
   if (words.length >= 2) return (words[0][0] + words[1][0]).toUpperCase();
   return name.slice(0, 2).toUpperCase();
 }
+
+// Workspace-assignment key for a tile: the base session name, namespaced by
+// host so the same session name on two devices maps independently. Window tiles
+// of a session share their base session's key. Every place that reads or
+// writes sessionWs must use this, or tiles silently fall back to Main.
+export const wsKeyOf = (t: { host?: string; session?: string; name: string }): string =>
+  (t.host ? `${t.host}::` : "") + (t.session ?? t.name);

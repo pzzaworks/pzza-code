@@ -115,9 +115,10 @@ export function DevicesMenu() {
     if (!killing) return;
     const { session, host, deviceId } = killing;
     // Drop any tiles pointing at this session first so nothing reattaches to it,
-    // then kill it on its device.
+    // then kill it on its device. Match on the host-namespaced key so a
+    // same-named session on another device is left alone.
     for (const t of tiles) {
-      if ((t.session ?? t.name) === session) closeTile(t.id);
+      if ((t.host ?? "") === host && (t.session ?? t.name) === session) closeTile(t.id);
     }
     await killSession(session, undefined, host || undefined);
     setKilling(null);
