@@ -35,6 +35,27 @@ export function saveConnection(conn: Connection): void {
   }
 }
 
+// App-owned ssh connection multiplexing. Every tile to the same host shares one
+// real ssh connection through this control socket, so opening several tiles at
+// once reuses a single connection instead of firing a burst of independent
+// connections (each re-resolving the host - an mDNS storm that can fail). A
+// command-line `-o` overrides ~/.ssh/config, so this works whether or not the
+// user configured ControlMaster themselves. The ControlPath MUST match the one
+// the native side uses (src-tauri/src/sshmux.rs), or they would not share a
+// master; the RDP tunnel deliberately opts out.
+const SSH_MUX = [
+  "-o",
+  "ControlMaster=auto",
+  "-o",
+  "ControlPath=~/.ssh/pzza-mux-%C",
+  "-o",
+  "ControlPersist=120",
+  "-o",
+  "ServerAliveInterval=30",
+  "-o",
+  "ServerAliveCountMax=3",
+];
+
 // Single-quote a value for safe embedding in a remote shell command string.
 function shQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
@@ -68,7 +89,7 @@ export function attachCommand(
     remote = `exec tmux new-session -A -s ${shQuote(session)}${cwd ? ` -c ${shQuote(cwd)}` : ""}`;
   }
   if (conn.host) {
-    return { cmd: "ssh", args: ["-tt", conn.host, `sh -lc ${shQuote(remote)}`] };
+    return { cmd: "ssh", args: ["-tt", ...SSH_MUX, conn.host, `sh -lc ${shQuote(remote)}`] };
   }
   return { cmd: "sh", args: ["-lc", remote] };
 }

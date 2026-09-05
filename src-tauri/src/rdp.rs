@@ -256,12 +256,23 @@ fn freerdp_bin() -> Result<&'static str, String> {
         .ok_or_else(|| "sdl-freerdp is not installed on this Mac (brew install freerdp).".into())
 }
 
-// Open the device's desktop in its own sdl-freerdp window. The window is
-// external by design; in-tile embedding is a later phase. The command returns
-// only once the viewer has stayed up for a moment, so a connection or logon
-// failure comes back as an error instead of a window that flashes and closes.
+// Open the device's desktop in its own sdl-freerdp window. The heavy work (ssh
+// provisioning, tunnel, waiting for the viewer) can take many seconds, so it
+// runs on a blocking thread off the UI: an async command on Tauri's runtime,
+// with the work moved to spawn_blocking, keeps the window responsive the whole
+// time instead of freezing until the desktop appears.
 #[tauri::command]
-pub fn rdp_launch(opts: RdpOptions) -> Result<Launched, String> {
+pub async fn rdp_launch(opts: RdpOptions) -> Result<Launched, String> {
+    tauri::async_runtime::spawn_blocking(move || launch_blocking(opts))
+        .await
+        .map_err(|e| format!("remote desktop task failed: {e}"))?
+}
+
+// The device's desktop in its own sdl-freerdp window. The window is external by
+// design; in-tile embedding is a later phase. Returns only once the viewer has
+// stayed up for a moment, so a connection or logon failure comes back as an
+// error instead of a window that flashes and closes.
+fn launch_blocking(opts: RdpOptions) -> Result<Launched, String> {
     if opts.user.is_empty() || opts.user.chars().any(|c| !c.is_ascii_alphanumeric()) {
         return Err("the RDP user must be alphanumeric".into());
     }
@@ -289,6 +300,9 @@ pub fn rdp_launch(opts: RdpOptions) -> Result<Launched, String> {
         // 127.0.0.1, so the daemon's self-signed TLS cert adds nothing - accept
         // it instead of pinning a fingerprint that drifts when it regenerates.
         .arg("/cert:ignore")
+        // Open straight into fullscreen (toggle with Ctrl+Alt+Enter); the
+        // remote resizes to match via dynamic-resolution.
+        .arg("/f")
         .arg("/dynamic-resolution")
         .arg("/network:lan")
         .arg("/gfx:AVC444")
