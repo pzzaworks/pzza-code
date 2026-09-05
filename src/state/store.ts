@@ -28,6 +28,7 @@ export interface Session {
   window?: number; // tmux window index (for window tiles)
   command?: string; // window tile: active command (icon)
   path?: string; // window tile: cwd
+  host?: string; // ssh target for a session that lives on another device
 }
 
 const TILES_KEY = "pzza.tiles";
@@ -147,7 +148,7 @@ interface ConsoleState {
   refreshNonce: number;
 
   loadSessions: () => Promise<void>;
-  openSession: (name: string, cwd?: string) => void;
+  openSession: (name: string, cwd?: string, host?: string) => void;
   openWindow: (w: RemoteWindow, displayName: string) => void;
   closeTile: (id: string) => void;
   reorderTile: (fromId: string, toId: string) => void;
@@ -421,12 +422,16 @@ export const useStore = create<ConsoleState>((set, get) => ({
     }
   },
 
-  openSession: (name, cwd) =>
+  openSession: (name, cwd, host) =>
     set((state) => {
-      if (state.tiles.some((t) => t.id === name)) return { activeId: name };
-      const tiles = [...state.tiles, { id: name, name, cwd }];
+      // A remote session's tile id is namespaced by host so the same session
+      // name on two devices never collides on the grid.
+      const id = host ? `${host}::${name}` : name;
+      if (state.tiles.some((t) => t.id === id)) return { activeId: id };
+      const tile: Session = host ? { id, name, session: name, host } : { id, name, cwd };
+      const tiles = [...state.tiles, tile];
       persist(TILES_KEY, tiles);
-      return { tiles, activeId: name, refreshNonce: state.refreshNonce + 1 };
+      return { tiles, activeId: id, refreshNonce: state.refreshNonce + 1 };
     }),
 
   openWindow: (w, displayName) =>

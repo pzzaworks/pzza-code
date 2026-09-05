@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   ChevronDown,
   ChevronRight,
@@ -12,7 +12,7 @@ import {
 import { useStore } from "../state/store";
 import { Modal } from "../ui/Modal";
 import { Select } from "../ui/Select";
-import { scanDevice, killSession } from "../serverApi";
+import { scanDevice, killSession, fetchSshHosts, type SshHost } from "../serverApi";
 import type { RemoteSession } from "../connection";
 import { sessionIcon, iconColor, tileTitle } from "../sessionMeta";
 import type { Device } from "../devices";
@@ -39,6 +39,7 @@ export function DevicesMenu() {
   const [name, setName] = useState("");
   const [host, setHost] = useState("");
   const [user, setUser] = useState("");
+  const [detected, setDetected] = useState<SshHost[]>([]);
   const [pending, setPending] = useState<{ id: string; name: string } | null>(null);
   const [openDev, setOpenDev] = useState<string | null>(null);
   const [scans, setScans] = useState<Record<string, ScanState>>({});
@@ -79,12 +80,30 @@ export function DevicesMenu() {
     if (!scans[d.id]) runScan(d);
   };
 
+  // Auto-discover SSH targets from ~/.ssh/config that are not added yet, to
+  // offer as one-click fill chips in the add form.
+  useEffect(() => {
+    fetchSshHosts()
+      .then((r) =>
+        setDetected(
+          r.hosts.filter((h) => !devices.some((d) => d.host === h.host || d.host === h.hostname)),
+        ),
+      )
+      .catch(() => setDetected([]));
+  }, [devices]);
+
   const submit = () => {
     if (!name.trim() || !host.trim()) return;
     addDevice(name, host, user);
     setName("");
     setHost("");
     setUser("");
+  };
+
+  const useDetected = (h: SshHost) => {
+    setName(h.host);
+    setHost(h.host);
+    setUser(h.user ?? "");
   };
 
   const wsOptions = [
@@ -190,8 +209,12 @@ export function DevicesMenu() {
                       .map((sess) => {
                       const SIcon = sessionIcon(sess.name, sess.command);
                       const col = iconColor(sess.name, sess.command);
-                      const isOpen = tiles.some((t) => (t.session ?? t.name) === sess.name);
-                      const wsId = sessionWs[sess.name] ?? "";
+                      // A remote session opens over ssh; its tile id and workspace
+                      // key are namespaced by host so devices never collide.
+                      const host = scanHost(d);
+                      const tileId = host ? `${host}::${sess.name}` : sess.name;
+                      const isOpen = tiles.some((t) => t.id === tileId);
+                      const wsId = sessionWs[tileId] ?? "";
                       return (
                         <div className="scan-row" key={sess.name}>
                           <span className="scan-icon" style={col ? { color: col } : undefined}>
@@ -204,24 +227,18 @@ export function DevicesMenu() {
                               {isOpen ? " · open" : ""}
                             </span>
                           </span>
-                          {isCurrent ? (
-                            <div className="scan-ws">
-                              <Select
-                                value={wsId}
-                                options={wsOptions}
-                                placeholder={isOpen ? "Move..." : "Add..."}
-                                onChange={(v) => {
-                                  if (!v) return;
-                                  openSession(sess.name);
-                                  assignSession(sess.name, v);
-                                }}
-                              />
-                            </div>
-                          ) : (
-                            <span className="scan-remote-note" title="Connect this device to open its sessions">
-                              remote
-                            </span>
-                          )}
+                          <div className="scan-ws">
+                            <Select
+                              value={wsId}
+                              options={wsOptions}
+                              placeholder={isOpen ? "Move..." : "Add..."}
+                              onChange={(v) => {
+                                if (!v) return;
+                                openSession(sess.name, undefined, host || undefined);
+                                assignSession(tileId, v);
+                              }}
+                            />
+                          </div>
                           <button
                             className="icon-btn icon-btn-danger"
                             title="Terminate"
@@ -248,6 +265,24 @@ export function DevicesMenu() {
       </div>
 
       <div className="device-add">
+        {detected.length > 0 ? (
+          <div className="sw-detected" style={{ marginBottom: 10 }}>
+            <span className="sw-detected-label">From ~/.ssh/config</span>
+            <div className="sw-chips">
+              {detected.map((h) => (
+                <button
+                  key={h.host}
+                  type="button"
+                  className={`sw-chip ${host === h.host ? "on" : ""}`}
+                  title={`${h.user ? `${h.user}@` : ""}${h.hostname ?? h.host}`}
+                  onClick={() => useDetected(h)}
+                >
+                  {h.host}
+                </button>
+              ))}
+            </div>
+          </div>
+        ) : null}
         <input
           className="field-input"
           placeholder="Name"

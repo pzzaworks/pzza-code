@@ -13,7 +13,6 @@ pub struct RdpOptions {
     tunnel_port: u16,
     remote_port: u16,
     user: String,
-    cert_fingerprint: String,
     keychain_service: String,
     freerdp_bin: String,
 }
@@ -187,10 +186,11 @@ pub fn rdp_launch(opts: RdpOptions) -> Result<(), String> {
         .arg(format!("/u:{}", opts.user))
         .arg(format!("/p:{password}"))
         .arg("/ipv4:force")
-        .arg(format!(
-            "/cert:fingerprint:sha256:{}",
-            opts.cert_fingerprint
-        ))
+        // The RDP session already rides an authenticated, encrypted ssh tunnel to
+        // 127.0.0.1, so the RDP server's own TLS cert adds nothing - accept it
+        // without prompting instead of pinning a fingerprint that drifts when the
+        // remote regenerates its cert.
+        .arg("/cert:ignore")
         .arg("/dynamic-resolution")
         .arg("/network:lan")
         .arg("/gfx:AVC444")
