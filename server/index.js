@@ -857,25 +857,30 @@ async function collectUsage() {
   const now = Date.now();
   if (usageCache.data && now - usageCache.at < USAGE_FRESH_MS) return usageCache.data;
   const accounts = discoverAccounts();
-  const data = await Promise.all(
-    accounts.map(async (acc) => {
-      try {
-        if (acc.provider === "claude") {
-          const oauth = readClaudeOAuth(acc.dir) || {};
-          if (!oauth.accessToken) throw new Error("not signed in on this device");
-          const identity = readClaudeIdentity(acc.dir);
-          const usage = await fetchClaudeUsage(oauth.accessToken);
-          return { provider: "claude", label: acc.label, ...identity, usage, error: null };
+  const data = (
+    await Promise.all(
+      accounts.map(async (acc) => {
+        try {
+          if (acc.provider === "claude") {
+            const oauth = readClaudeOAuth(acc.dir) || {};
+            // No usable creds on this device (e.g. a devbox-only account seen
+            // from the Mac): hide it rather than showing a "not signed in" row.
+            if (!oauth.accessToken) return null;
+            const identity = readClaudeIdentity(acc.dir);
+            const usage = await fetchClaudeUsage(oauth.accessToken);
+            return { provider: "claude", label: acc.label, ...identity, usage, error: null };
+          }
+          if (!fs.existsSync(path.join(acc.dir, "auth.json"))) return null;
+          const creds = readCodexCreds(acc.dir);
+          if (!creds.accessToken) return null;
+          const usage = await fetchCodexUsage(creds);
+          return { provider: "codex", label: acc.label, email: creds.email, plan: creds.plan, usage, error: null };
+        } catch (e) {
+          return { provider: acc.provider, label: acc.label, usage: null, error: String(e.message || e) };
         }
-        const creds = readCodexCreds(acc.dir);
-        if (!creds.accessToken) throw new Error("not logged in");
-        const usage = await fetchCodexUsage(creds);
-        return { provider: "codex", label: acc.label, email: creds.email, plan: creds.plan, usage, error: null };
-      } catch (e) {
-        return { provider: acc.provider, label: acc.label, usage: null, error: String(e.message || e) };
-      }
-    }),
-  );
+      }),
+    )
+  ).filter(Boolean);
   usageCache = { at: now, data };
   return data;
 }

@@ -29,6 +29,12 @@ import {
 import { ALL_WORKSPACE_ID, DEFAULT_WORKSPACE_ID } from "../workspaces";
 import { ctrlBadge, digitFromCode } from "../shortcuts";
 
+// Workspace-assignment key for a tile: the base session name, namespaced by host
+// so the same session name on two devices maps independently. Window tiles of a
+// session share their base session's key.
+const wsKeyOf = (t: { host?: string; session?: string; name: string }) =>
+  (t.host ? `${t.host}::` : "") + (t.session ?? t.name);
+
 // Uniform N-column grid, filtered to the active workspace. One tile can be
 // maximized (animated). Tiles reorder by dragging their header onto another
 // tile, or move to a workspace by dragging onto a top-bar tab.
@@ -85,7 +91,7 @@ export function Canvas() {
   const wsTiles = tiles.filter(
     (t) =>
       (activeWorkspaceId === ALL_WORKSPACE_ID ||
-        (sessionWs[t.session ?? t.name] ?? DEFAULT_WORKSPACE_ID) === activeWorkspaceId) &&
+        (sessionWs[wsKeyOf(t)] ?? DEFAULT_WORKSPACE_ID) === activeWorkspaceId) &&
       !hiddenTiles.includes(t.id),
   );
 
@@ -133,7 +139,7 @@ export function Canvas() {
 
   const tile = (t: (typeof tiles)[number]) => {
     const base = t.session ?? t.name;
-    const { cmd, args } = attachCommand(connection, base, t.cwd, t.window);
+    const { cmd, args } = attachCommand(t.host ? { host: t.host } : connection, base, t.cwd, t.window);
     const rs = allSessions.find((s) => s.name === base);
     const command = t.command ?? rs?.command;
     const fullPath = t.path ?? rs?.path;
@@ -142,7 +148,7 @@ export function Canvas() {
     const Icon = sessionIcon(base, command);
     const color = iconColor(base, command);
     const wsColor = workspaces.find(
-      (w) => w.id === (sessionWs[base] ?? DEFAULT_WORKSPACE_ID),
+      (w) => w.id === (sessionWs[wsKeyOf(t)] ?? DEFAULT_WORKSPACE_ID),
     )?.color;
     const status = statuses[t.id] ?? "idle";
     const displayName = tileTitles[t.id] ?? tileTitle(t.name);
@@ -173,7 +179,7 @@ export function Canvas() {
     // Visible only when in the active workspace, not hidden, and (if a tile is
     // maximized) the maximized one. Everything else is display:none but stays
     // mounted.
-    const tileWs = sessionWs[base] ?? DEFAULT_WORKSPACE_ID;
+    const tileWs = sessionWs[wsKeyOf(t)] ?? DEFAULT_WORKSPACE_ID;
     const inWorkspace =
       activeWorkspaceId === ALL_WORKSPACE_ID || tileWs === activeWorkspaceId;
     const visible = inWorkspace && !hiddenTiles.includes(t.id) && (!fullId || isFull);

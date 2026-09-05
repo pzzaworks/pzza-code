@@ -2432,7 +2432,7 @@ dependencies = [
 
 [[package]]
 name = "pzzacode"
-version = "0.2.6"
+version = "0.2.7"
 dependencies = [
  "base64 0.22.1",
  "portable-pty",
