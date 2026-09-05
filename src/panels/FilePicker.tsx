@@ -12,11 +12,13 @@ export function FilePicker({
   onClose,
   onPick,
   mode = "file",
+  start,
 }: {
   open: boolean;
   onClose: () => void;
   onPick: (path: string) => void;
   mode?: "file" | "folder";
+  start?: string; // initial directory (falls back to the device's home)
 }) {
   const [dir, setDir] = useState<string | null>(null);
   const [parent, setParent] = useState("");
@@ -33,12 +35,19 @@ export function FilePicker({
         setParent(r.parent);
         setEntries(r.entries);
       })
-      .catch((e) => setError(String(e?.message || e)))
+      .catch((e) => {
+        // A missing start directory should not dead-end: fall back to home.
+        if (path) {
+          nav();
+          return;
+        }
+        setError(String(e?.message || e));
+      })
       .finally(() => setLoading(false));
   };
 
   useEffect(() => {
-    if (open && dir === null) nav();
+    if (open && dir === null) nav(start);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 

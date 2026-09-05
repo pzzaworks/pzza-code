@@ -1,9 +1,18 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { AlertTriangle, Check, Loader2, RefreshCw, ServerCog, X } from "lucide-react";
+import { AlertTriangle, Check, FolderOpen, Loader2, RefreshCw, ServerCog, X } from "lucide-react";
 import { Modal } from "../ui/Modal";
 import { WizardIcon } from "../ui/WizardIcon";
+import { FilePicker } from "./FilePicker";
 import { useStore } from "../state/store";
-import { fetchDoctor, installAgent, SERVER_HTTP, type Doctor } from "../serverApi";
+import {
+  fetchDoctor,
+  fetchSshHosts,
+  installAgent,
+  SERVER_HTTP,
+  type Doctor,
+  type SshHost,
+  type SshHosts,
+} from "../serverApi";
 
 type Status = "ok" | "warn" | "fail" | "pending";
 type Mode = "this" | "add";
@@ -55,6 +64,26 @@ export function SetupWizard({ open, onClose }: { open: boolean; onClose: () => v
   const [log, setLog] = useState("");
   const [done, setDone] = useState(false);
   const logRef = useRef<HTMLPreElement>(null);
+
+  // Auto-discovered SSH targets / identities from the local ~/.ssh, plus a file
+  // picker for choosing an identity by hand.
+  const [ssh, setSsh] = useState<SshHosts | null>(null);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  useEffect(() => {
+    if (open && mode === "add" && !ssh) {
+      fetchSshHosts()
+        .then(setSsh)
+        .catch(() => setSsh({ dir: "", hosts: [], identities: [] }));
+    }
+  }, [open, mode, ssh]);
+
+  // Prefill the whole form from a detected ~/.ssh/config host.
+  const applyHost = (h: SshHost) => {
+    if (!name.trim()) setName(h.host);
+    setTarget(h.host);
+    setPort(h.port ? String(h.port) : "");
+    if (h.identity) setIdentity(h.identity);
+  };
 
   useEffect(() => {
     if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
@@ -197,6 +226,25 @@ export function SetupWizard({ open, onClose }: { open: boolean; onClose: () => v
             there over that connection. You set up SSH; we just use it.
           </p>
 
+          {ssh && ssh.hosts.length > 0 ? (
+            <div className="sw-detected">
+              <span className="sw-detected-label">From your ~/.ssh/config</span>
+              <div className="sw-chips">
+                {ssh.hosts.map((h) => (
+                  <button
+                    key={h.host}
+                    type="button"
+                    className={`sw-chip ${target === h.host ? "on" : ""}`}
+                    title={`${h.user ? `${h.user}@` : ""}${h.hostname ?? h.host}${h.port ? `:${h.port}` : ""}`}
+                    onClick={() => applyHost(h)}
+                  >
+                    {h.host}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : null}
+
           <div className="sw-form">
             <label className="sw-field">
               <span>Device name</span>
@@ -218,12 +266,30 @@ export function SetupWizard({ open, onClose }: { open: boolean; onClose: () => v
               </label>
               <label className="sw-field sw-grow">
                 <span>Identity file (optional)</span>
-                <input
-                  value={identity}
-                  onChange={(e) => setIdentity(e.target.value)}
-                  placeholder="~/.ssh/id_ed25519"
-                  spellCheck={false}
-                />
+                <div className="sw-input-with-btn">
+                  <input
+                    value={identity}
+                    onChange={(e) => setIdentity(e.target.value)}
+                    placeholder="~/.ssh/id_ed25519"
+                    spellCheck={false}
+                    list="sw-identities"
+                  />
+                  <button
+                    type="button"
+                    className="sw-browse"
+                    title="Choose a key file"
+                    onClick={() => setPickerOpen(true)}
+                  >
+                    <FolderOpen size={14} />
+                  </button>
+                </div>
+                {ssh && ssh.identities.length > 0 ? (
+                  <datalist id="sw-identities">
+                    {ssh.identities.map((p) => (
+                      <option key={p} value={p} />
+                    ))}
+                  </datalist>
+                ) : null}
               </label>
             </div>
             <div className="sw-role">
@@ -278,6 +344,14 @@ export function SetupWizard({ open, onClose }: { open: boolean; onClose: () => v
           </div>
         </>
       )}
+
+      <FilePicker
+        open={pickerOpen}
+        onClose={() => setPickerOpen(false)}
+        onPick={(p) => setIdentity(p)}
+        mode="file"
+        start={ssh?.dir || undefined}
+      />
     </Modal>
   );
 }
