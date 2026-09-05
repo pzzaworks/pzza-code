@@ -1,6 +1,8 @@
 use std::collections::HashSet;
+use std::net::TcpStream;
 use std::process::Command;
 use std::sync::Mutex;
+use std::time::Duration;
 
 use crate::sshmux;
 
@@ -19,7 +21,19 @@ pub struct ForwardStatus {
     master_up: bool,
     remote: Vec<u16>,    // every listening port on the devbox
     wanted: Vec<u16>,    // remote ports minus skip / below min_port
-    forwarded: Vec<u16>, // ports console is currently forwarding
+    forwarded: Vec<u16>, // wanted ports reachable on localhost right now
+}
+
+// Whether a wanted port is already reachable on this Mac's loopback - either
+// because we forwarded it, or because another ssh tunnel (a leftover master, a
+// separate tool) already mirrors it. Either way the user can open it, so it
+// counts as forwarded and we never fight to re-bind a port that is already up.
+fn local_listening(port: u16) -> bool {
+    TcpStream::connect_timeout(
+        &([127, 0, 0, 1], port).into(),
+        Duration::from_millis(120),
+    )
+    .is_ok()
 }
 
 fn master_up(host: &str) -> bool {
@@ -120,7 +134,16 @@ fn status(state: &ForwardState, host: &str, skip: &[u16], min_port: u16) -> Forw
     let up = ensure_master(host);
     let remote = if up { remote_ports(host) } else { Vec::new() };
     let wanted = wanted_from(&remote, skip, min_port);
-    let mut forwarded: Vec<u16> = state.active.lock().unwrap().iter().copied().collect();
+    // Report every wanted port that is actually reachable on localhost now,
+    // whoever forwarded it - so the panel shows what the user can open, not just
+    // what this process bound. Union with `active` covers the brief gap between
+    // do_forward returning and the socket accepting connections.
+    let active = state.active.lock().unwrap();
+    let mut forwarded: Vec<u16> = wanted
+        .iter()
+        .copied()
+        .filter(|&p| active.contains(&p) || local_listening(p))
+        .collect();
     forwarded.sort_unstable();
     ForwardStatus {
         master_up: up,
@@ -151,6 +174,11 @@ pub fn forward_set(
     enable: bool,
 ) -> Result<(), String> {
     if enable {
+        // Already reachable (another tunnel owns it): nothing to do, and not
+        // ours to track for cancel. Success either way.
+        if local_listening(port) {
+            return Ok(());
+        }
         if do_forward(&host, port) {
             state.active.lock().unwrap().insert(port);
             Ok(())
@@ -179,7 +207,8 @@ pub fn forward_reconcile(
         let current: Vec<u16> = state.active.lock().unwrap().iter().copied().collect();
 
         for p in &wanted {
-            if !current.contains(p) && do_forward(&host, *p) {
+            // Skip ports another tunnel already mirrors; only bind the missing ones.
+            if !current.contains(p) && !local_listening(*p) && do_forward(&host, *p) {
                 state.active.lock().unwrap().insert(*p);
             }
         }
