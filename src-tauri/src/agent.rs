@@ -16,20 +16,29 @@ pub struct AgentState {
     // here, handed to the agent via its environment, and to the webview via
     // the agent_token command - it never touches disk on the app side.
     pub token: Mutex<String>,
+    // Non-secret per-launch instance id the agent echoes from /health, so the
+    // webview can refuse to talk to some other process that grabbed the port.
+    pub instance: Mutex<String>,
 }
 
-fn random_token() -> String {
+// Fail closed: if the OS RNG cannot be read we must not fall back to a
+// predictable value, so the caller skips launching the agent instead.
+fn random_hex(len: usize) -> Option<String> {
     use std::io::Read;
-    let mut bytes = [0u8; 24];
-    if let Ok(mut f) = std::fs::File::open("/dev/urandom") {
-        let _ = f.read_exact(&mut bytes);
-    }
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
+    let mut bytes = vec![0u8; len];
+    let mut f = std::fs::File::open("/dev/urandom").ok()?;
+    f.read_exact(&mut bytes).ok()?;
+    Some(bytes.iter().map(|b| format!("{b:02x}")).collect())
 }
 
 #[tauri::command]
 pub fn agent_token(state: tauri::State<AgentState>) -> String {
     state.token.lock().unwrap().clone()
+}
+
+#[tauri::command]
+pub fn agent_instance(state: tauri::State<AgentState>) -> String {
+    state.instance.lock().unwrap().clone()
 }
 
 // Locate the agent's server/index.js. In a bundled app it lives under the
@@ -132,9 +141,16 @@ pub fn start(app: &AppHandle) {
             return;
         }
     };
-    let token = random_token();
+    let (token, instance) = match (random_hex(24), random_hex(8)) {
+        (Some(t), Some(i)) => (t, i),
+        _ => {
+            eprintln!("pzza agent: OS randomness unavailable; refusing to launch the agent");
+            return;
+        }
+    };
     if let Some(state) = app.try_state::<AgentState>() {
         *state.token.lock().unwrap() = token.clone();
+        *state.instance.lock().unwrap() = instance.clone();
     }
     let work_dir = script.parent().map(PathBuf::from);
     let mut cmd = Command::new(node);
@@ -143,8 +159,10 @@ pub fn start(app: &AppHandle) {
         // A full PATH so the agent's child processes (tmux, ssh) resolve even
         // when the app was launched from Finder with a minimal environment.
         .env("PATH", &path)
-        // The bearer token every request to the agent must carry.
+        // The bearer token every request to the agent must carry, and the
+        // instance id it echoes from /health so the webview can verify it.
         .env("PZZA_AGENT_TOKEN", &token)
+        .env("PZZA_AGENT_ID", &instance)
         // Empty server host = source role: tmux/ports are local to this machine.
         .env("PZZA_SERVER_HOST", "");
     if let Some(dir) = work_dir {

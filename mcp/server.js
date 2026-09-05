@@ -205,7 +205,7 @@ const TOOLS = [
   },
   {
     name: "list_dir",
-    description: "List a directory on this device (restricted to the home tree).",
+    description: "List a directory on this device (restricted to the home tree; ssh/gpg/cloud keys and agent credential files are refused).",
     inputSchema: {
       type: "object",
       properties: { path: { type: "string", description: "Directory (optional; blank = home)" } },
@@ -214,7 +214,7 @@ const TOOLS = [
   },
   {
     name: "read_file",
-    description: "Read a text file on this device (restricted to the home tree).",
+    description: "Read a text file on this device (restricted to the home tree; ssh/gpg/cloud keys and agent credential files are refused).",
     inputSchema: {
       type: "object",
       properties: { path: { type: "string", description: "Absolute file path" } },
@@ -224,7 +224,7 @@ const TOOLS = [
   },
   {
     name: "write_file",
-    description: "Write a text file on this device (restricted to the home tree).",
+    description: "Write a text file on this device (restricted to the home tree; ssh/gpg/cloud keys and agent credential files are refused).",
     inputSchema: {
       type: "object",
       properties: {

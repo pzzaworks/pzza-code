@@ -115,11 +115,16 @@ export function Terminal({ name, cmd, args, cwd, window: win, active, onStatus }
     // OSC 52 clipboard passthrough: when tmux (set-clipboard on) or a TUI app
     // like nvim yanks, it emits OSC 52 with the copied text - mirror it to the
     // OS clipboard so copying from inside a mouse-grabbing app works over SSH.
+    // Off by default: terminal output is untrusted, and a silent clipboard
+    // overwrite is a paste-jacking vector (a crafted file `cat`ed in a tile
+    // could plant a command that runs on the next paste). Opt in via Settings.
     term.parser.registerOscHandler(52, (data) => {
+      if (!useStore.getState().osc52Clipboard) return true;
       const semi = data.indexOf(";");
       if (semi < 0) return true;
       const payload = data.slice(semi + 1);
       if (!payload || payload === "?") return true; // read/query - ignore
+      if (payload.length > 64 * 1024) return true; // cap absurd payloads
       try {
         const bin = atob(payload);
         const bytes = Uint8Array.from(bin, (c) => c.charCodeAt(0));
@@ -317,7 +322,15 @@ export function Terminal({ name, cmd, args, cwd, window: win, active, onStatus }
           e.preventDefault();
           e.stopPropagation();
           uploadPasteImage(blob)
-            .then((p) => sendInput(p + " "))
+            .then((p) => {
+              // Never type an unvalidated server response into the shell: the
+              // path must look like a plain file path (no control chars,
+              // whitespace or quotes), and it is single-quoted regardless.
+              if (!/^[A-Za-z0-9._~/-]{1,512}$/.test(p)) {
+                throw new Error("unexpected path from the agent");
+              }
+              sendInput(`'${p}' `);
+            })
             .catch((err) => term.writeln(`\r\n[image paste failed] ${err}\r\n`));
           return;
         }
