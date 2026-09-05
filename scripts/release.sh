@@ -16,7 +16,10 @@ TAG="v$VERSION"
 REPO="pzzaworks/pzza-code"
 KEY="${TAURI_SIGNING_PRIVATE_KEY_PATH:-$HOME/.tauri/pzzacode.key}"
 [ -f "$KEY" ] || { echo "updater signing key not found at $KEY"; exit 1; }
-export TAURI_SIGNING_PRIVATE_KEY_PATH="$KEY"
+# The bundler reads the key *content* from TAURI_SIGNING_PRIVATE_KEY (the
+# _PATH form is only honoured by `tauri signer sign`), so load it here; the
+# key never leaves this process's environment.
+export TAURI_SIGNING_PRIVATE_KEY="$(cat "$KEY")"
 export TAURI_SIGNING_PRIVATE_KEY_PASSWORD="${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}"
 export APPLE_SIGNING_IDENTITY="${APPLE_SIGNING_IDENTITY:-Developer ID Application: Berke Kiran (U7SA296AP6)}"
 export PATH="$HOME/.rustup/toolchains/stable-aarch64-apple-darwin/bin:$PATH"
