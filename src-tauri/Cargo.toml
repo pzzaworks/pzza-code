@@ -1,12 +1,12 @@
 [package]
-name = "pzza-console"
-version = "0.2.4"
+name = "pzzacode"
+version = "0.2.5"
 description = "PzzaCode - a grid terminal manager for agentic coding"
 authors = ["pzzaworks"]
 edition = "2021"
 
 [lib]
-name = "pzza_console_lib"
+name = "pzzacode_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
