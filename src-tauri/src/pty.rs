@@ -66,6 +66,11 @@ pub fn pty_spawn(
     }
     // Give programs a sensible terminal identity.
     builder.env("TERM", "xterm-256color");
+    // Launched from Finder/Dock, the app only has launchd's bare PATH, so a
+    // local `sh -lc exec tmux` (and tmux's own child processes) would not find
+    // Homebrew tools. Hand the PTY the same login-shell PATH the agent uses.
+    // Harmless for ssh spawns (ssh lives in /usr/bin either way).
+    builder.env("PATH", crate::agent::login_path());
 
     let child = pair
         .slave
