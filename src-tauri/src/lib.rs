@@ -31,6 +31,8 @@ pub fn run() {
             forward::forward_reconcile,
             rdp::rdp_status,
             rdp::rdp_launch,
+            rdp::rdp_provision,
+            rdp::keychain_set,
             sys::open_url,
         ])
         .build(tauri::generate_context!())
