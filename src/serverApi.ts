@@ -33,11 +33,34 @@ export const SERVER_WS = `ws://${HOST}:${serverPort()}/pty`;
 // ~/.config/pzzacode/agent-token). Cached once resolved so URL builders that
 // must be synchronous (raw file src, WebSocket) can append it too.
 let agentToken = "";
+// Set when whatever answers on the agent port is NOT the agent this app
+// launched (its /health instance id does not match). The bearer token only
+// protects the agent from callers; this check protects the app from an
+// impostor on the port, so every call then fails closed instead of handing
+// the token - and typed-back responses - to a stranger.
+let agentImpostor = false;
 const tokenReady: Promise<string> = (async () => {
   try {
     if (HAS_TAURI) {
       const { invoke } = await import("@tauri-apps/api/core");
       agentToken = await invoke<string>("agent_token");
+      const expected = await invoke<string>("agent_instance");
+      if (expected) {
+        // Give the freshly spawned agent a moment to bind before judging.
+        for (let attempt = 0; attempt < 30; attempt++) {
+          try {
+            const r = await globalThis.fetch(`${SERVER_HTTP}/health`);
+            if (r.ok) {
+              const h = (await r.json()) as { id?: string };
+              agentImpostor = h.id !== expected;
+              break;
+            }
+          } catch {
+            /* not up yet */
+          }
+          await new Promise((res) => setTimeout(res, 300));
+        }
+      }
     } else {
       agentToken = localStorage.getItem("pzza.agentToken") ?? "";
     }
@@ -49,6 +72,9 @@ const tokenReady: Promise<string> = (async () => {
 
 async function agentFetch(input: string, init?: RequestInit): Promise<Response> {
   const token = agentToken || (await tokenReady);
+  if (agentImpostor) {
+    throw new Error("another process owns the agent port (127.0.0.1:5190); refusing to talk to it");
+  }
   const headers = new Headers(init?.headers);
   if (token) headers.set("Authorization", `Bearer ${token}`);
   return globalThis.fetch(input, { ...init, headers });
