@@ -60,9 +60,12 @@ export function Canvas() {
   // Columns are per-workspace; the active workspace decides the grid.
   const columns = workspaceColumns[activeWorkspaceId] ?? defaultColumns;
 
-  const deviceName =
-    devices.find((d) => d.host === (connection.host ?? "devbox"))?.name ??
-    (connection.host ?? "local");
+  // A tile's badge names the device it actually runs on: no host = this Mac,
+  // otherwise the matching device (or the raw host if it is not in the list).
+  const tileDevice = (host?: string): string =>
+    host
+      ? (devices.find((d) => d.host === host)?.name ?? host)
+      : (devices.find((d) => d.id === "this-mac")?.name ?? "This Mac");
 
   const [closing, setClosing] = useState<string | null>(null);
   const [layoutFor, setLayoutFor] = useState<{ id: string; x: number; y: number } | null>(
@@ -295,7 +298,7 @@ export function Canvas() {
             </kbd>
           ) : null}
           <span className="tile-device" title="Running on">
-            {deviceName}
+            {tileDevice(t.host)}
           </span>
           {path ? (
             <span className="tile-path" title={rs?.path}>
