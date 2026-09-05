@@ -253,7 +253,7 @@ const TOOLS = [
 ];
 
 const server = new Server(
-  { name: "pzzacode-mcp", version: "0.2.1" },
+  { name: "pzzacode-mcp", version: "0.2.2" },
   { capabilities: { tools: {} } },
 );
 
