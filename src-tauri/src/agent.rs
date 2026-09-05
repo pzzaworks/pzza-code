@@ -23,7 +23,7 @@ pub struct AgentState {
 
 // Fail closed: if the OS RNG cannot be read we must not fall back to a
 // predictable value, so the caller skips launching the agent instead.
-fn random_hex(len: usize) -> Option<String> {
+pub(crate) fn random_hex(len: usize) -> Option<String> {
     use std::io::Read;
     let mut bytes = vec![0u8; len];
     let mut f = std::fs::File::open("/dev/urandom").ok()?;

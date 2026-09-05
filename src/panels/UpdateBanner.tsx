@@ -1,69 +1,61 @@
-import { useEffect, useState } from "react";
-import { Download, Loader2, X } from "lucide-react";
-import { checkForUpdate, relaunchApp, type AvailableUpdate } from "../updater";
+import { useEffect } from "react";
+import { Download, Loader2, RotateCw, X } from "lucide-react";
+import { startUpdateChecks, useUpdates } from "../state/updates";
 import { HAS_TAURI } from "../tauriEnv";
 
-const RECHECK_MS = 6 * 60 * 60 * 1000;
-
-// Quiet startup update check. Shows a slim bar under the top bar when a newer
-// release is published; one click downloads, installs and relaunches.
+// Slim bar under the top bar. With automatic updates on it only appears once
+// the new version is installed and a restart is all that is left; with them
+// off it offers the update and installs on click.
 export function UpdateBanner() {
-  const [update, setUpdate] = useState<AvailableUpdate | null>(null);
-  const [dismissed, setDismissed] = useState<string | null>(null);
-  const [progress, setProgress] = useState<number | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const status = useUpdates((s) => s.status);
+  const dismissed = useUpdates((s) => s.dismissed);
+  const install = useUpdates((s) => s.install);
+  const relaunch = useUpdates((s) => s.relaunch);
+  const dismiss = useUpdates((s) => s.dismiss);
 
   useEffect(() => {
-    if (!HAS_TAURI) return;
-    let alive = true;
-    const run = () =>
-      checkForUpdate()
-        .then((u) => alive && setUpdate(u))
-        .catch(() => undefined); // offline / rate-limited: stay quiet
-    run();
-    const id = setInterval(run, RECHECK_MS);
-    return () => {
-      alive = false;
-      clearInterval(id);
-    };
+    startUpdateChecks();
   }, []);
 
-  if (!update || dismissed === update.version) return null;
-
-  const install = async () => {
-    setError(null);
-    setProgress(0);
-    try {
-      await update.install(setProgress);
-      await relaunchApp();
-    } catch (e) {
-      setError(String((e as Error)?.message || e));
-      setProgress(null);
-    }
-  };
+  if (!HAS_TAURI) return null;
+  if (status.kind !== "available" && status.kind !== "installing" && status.kind !== "ready") return null;
+  if (dismissed === status.update.version) return null;
+  const v = status.update.version;
 
   return (
     <div className="update-banner" role="status">
       <span className="update-text">
-        PzzaCode <b>{update.version}</b> is available (you have {update.currentVersion}).
+        {status.kind === "ready" ? (
+          <>
+            PzzaCode <b>{v}</b> is installed. Restart to finish updating.
+          </>
+        ) : (
+          <>
+            PzzaCode <b>{v}</b> is available (you have {status.update.currentVersion}).
+          </>
+        )}
       </span>
-      {error ? <span className="update-err">{error}</span> : null}
-      {progress === null ? (
+      {status.kind === "available" ? (
         <button className="btn btn-accent btn-sm" onClick={install}>
           <Download size={13} strokeWidth={2} />
-          Update and relaunch
+          Update and restart
         </button>
-      ) : (
+      ) : status.kind === "installing" ? (
         <span className="update-progress">
           <Loader2 size={13} className="sw-spin" />
-          {progress < 1 ? `Downloading ${Math.round(progress * 100)}%` : "Installing…"}
+          {status.pct < 1 ? `Downloading ${Math.round(status.pct * 100)}%` : "Installing…"}
         </span>
+      ) : (
+        <button className="btn btn-accent btn-sm" onClick={relaunch}>
+          <RotateCw size={13} strokeWidth={2} />
+          Restart now
+        </button>
       )}
       <button
         className="icon-btn update-dismiss"
         title="Not now"
-        onClick={() => setDismissed(update.version)}
-        disabled={progress !== null}
+        onClick={dismiss}
+        disabled={status.kind === "installing"}
       >
         <X size={14} />
       </button>

@@ -1,12 +1,13 @@
 import { useState } from "react";
-import { Monitor, ServerCog } from "lucide-react";
+import { Loader2, Monitor } from "lucide-react";
 import { useStore } from "../state/store";
-import { RDP_DEFAULTS, rdpLaunch, rdpProvision, keychainSet, randomSecret } from "../rdp";
+import { rdpLaunch } from "../rdp";
 import { HAS_TAURI } from "../tauriEnv";
 import { Select } from "../ui/Select";
 
 const SERVER_KEY = "pzza.rdp.serverDev";
 const CLIENT_KEY = "pzza.rdp.clientDev";
+const RDP_USER = "pzzacode";
 
 function loadKey(key: string, fallback: string) {
   try {
@@ -17,9 +18,9 @@ function loadKey(key: string, fallback: string) {
 }
 
 // RDP dropdown: both ends are picked from the managed device list. Server is
-// the device whose desktop opens; client is where the viewer runs. A server the
-// wizard has not provisioned yet shows a one-click "Enable remote desktop" that
-// configures GNOME Remote Desktop over SSH and stores its password in Keychain.
+// the device whose desktop opens; client is where the viewer runs. "Open
+// desktop" is the only step: the first launch creates the RDP account and its
+// Keychain password, and every launch re-syncs the device before connecting.
 export function RdpMenu({ close }: { close: () => void }) {
   const devices = useStore((s) => s.devices);
   const deviceRdp = useStore((s) => s.deviceRdp);
@@ -36,7 +37,7 @@ export function RdpMenu({ close }: { close: () => void }) {
   const server = devices.find((d) => d.id === serverId) ?? devices[0];
   const client = devices.find((d) => d.id === clientId);
   const rdp = server ? deviceRdp[server.id] : undefined;
-  const sshTarget = server ? (server.user ? `${server.user}@${server.host}` : server.host) : "";
+  const remote = !!server && server.id !== "this-mac";
 
   const pick = (setter: (v: string) => void, key: string) => (id: string) => {
     setter(id);
@@ -47,43 +48,19 @@ export function RdpMenu({ close }: { close: () => void }) {
     }
   };
 
-  const provision = async () => {
-    if (!server || busy) return;
-    setBusy(true);
-    setMsg("Setting up remote desktop over SSH…");
-    try {
-      const user = "pzzacode";
-      const password = randomSecret();
-      const service = `pzzacode-rdp-${server.id}`;
-      const r = await rdpProvision({ target: sshTarget, user, password });
-      await keychainSet(service, user, password);
-      setDeviceRdp(server.id, {
-        user,
-        certFingerprint: r.fingerprint,
-        keychainService: service,
-        port: r.port,
-      });
-      setMsg(`Remote desktop enabled (${r.mode}, port ${r.port}).`);
-    } catch (e) {
-      setMsg(String(e));
-    } finally {
-      setBusy(false);
-    }
-  };
-
   const launch = async () => {
-    if (!server || !rdp) return;
+    if (!server || !remote || busy) return;
     setBusy(true);
-    setMsg("Opening…");
+    setMsg(rdp ? "Opening…" : "Setting up remote desktop on the device…");
     try {
-      await rdpLaunch({
-        ...RDP_DEFAULTS,
-        host: server.host,
-        user: rdp.user,
-        certFingerprint: rdp.certFingerprint,
-        keychainService: rdp.keychainService,
-        remotePort: rdp.port ?? RDP_DEFAULTS.remotePort,
+      const user = rdp?.user ?? RDP_USER;
+      const keychainService = rdp?.keychainService ?? `pzzacode-rdp-${server.id}`;
+      const r = await rdpLaunch({
+        host: server.user ? `${server.user}@${server.host}` : server.host,
+        user,
+        keychainService,
       });
+      setDeviceRdp(server.id, { user, keychainService, port: r.port, mode: r.mode });
       setMsg(null);
       close();
     } catch (e) {
@@ -117,25 +94,18 @@ export function RdpMenu({ close }: { close: () => void }) {
         />
       </div>
 
-      {rdp ? (
-        <button className="btn btn-accent rdp-open" onClick={launch} disabled={!server || busy}>
-          <Monitor size={14} strokeWidth={2} />
-          Open desktop
-        </button>
-      ) : (
-        <button
-          className="btn btn-accent rdp-open"
-          onClick={provision}
-          disabled={!server || server.id === "this-mac" || busy}
-        >
-          <ServerCog size={14} strokeWidth={2} />
-          {busy ? "Enabling…" : "Enable remote desktop"}
-        </button>
-      )}
-      {server?.id === "this-mac" && !rdp ? (
-        <p className="set-note">Pick a remote device as the server.</p>
+      <button className="btn btn-accent rdp-open" onClick={launch} disabled={!remote || busy}>
+        {busy ? <Loader2 size={14} className="sw-spin" /> : <Monitor size={14} strokeWidth={2} />}
+        {busy ? "Opening…" : "Open desktop"}
+      </button>
+      {!remote ? <p className="set-note">Pick a remote device as the server.</p> : null}
+      {msg ? (
+        <p className="set-note">{msg}</p>
+      ) : rdp?.mode ? (
+        <p className="set-note">
+          Remote desktop ready on {server?.name} ({rdp.mode}, port {rdp.port}).
+        </p>
       ) : null}
-      {msg ? <p className="set-note">{msg}</p> : null}
     </div>
   );
 }
