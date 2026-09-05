@@ -29,7 +29,7 @@ const MIN_PORT = 1024;
 // Where this device persists saved state and rotating backups (created on boot).
 const STATE_DIR = path.join(
   process.env.XDG_CONFIG_HOME || path.join(process.env.HOME || ".", ".config"),
-  "pzza-console",
+  "pzzacode",
 );
 try {
   fs.mkdirSync(path.join(STATE_DIR, "backups"), { recursive: true });
@@ -392,7 +392,7 @@ function installAgent(opts, res) {
     const ssh = spawn("ssh", [
       ...base,
       target,
-      "mkdir -p ~/pzza-console-agent && tar xzf - -C ~/pzza-console-agent",
+      "mkdir -p ~/pzzacode-agent && tar xzf - -C ~/pzzacode-agent",
     ]);
     tar.stderr.on("data", (d) => say(d.toString()));
     ssh.stderr.on("data", (d) => say(d.toString()));
@@ -402,11 +402,11 @@ function installAgent(opts, res) {
       say("ERROR: file transfer failed.\n");
       return res.end();
     }
-    say("Files in ~/pzza-console-agent\n\n==> Running installer on the device (may take a minute) ...\n");
+    say("Files in ~/pzzacode-agent\n\n==> Running installer on the device (may take a minute) ...\n");
 
     const envPrefix = `PORT=${agentPort} PZZA_DEVBOX_HOST='${devboxHost}'`;
     const code = await runSsh(
-      `cd ~/pzza-console-agent && chmod +x install.sh && ${envPrefix} bash install.sh`,
+      `cd ~/pzzacode-agent && chmod +x install.sh && ${envPrefix} bash install.sh`,
     );
     if (code !== 0) {
       say(`\nERROR: installer exited with code ${code}\n`);
