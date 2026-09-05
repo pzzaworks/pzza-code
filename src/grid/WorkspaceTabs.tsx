@@ -301,7 +301,8 @@ export function WorkspaceTabs() {
         {pending ? (
           <>
             <p className="move-q">
-              Move <b>{tileTitle(pending.session)}</b> to <b>{targetWs?.name ?? "workspace"}</b>?
+              Move <b>{tileTitle(pending.session.split("::").pop() ?? pending.session)}</b> to{" "}
+              <b>{targetWs?.name ?? "workspace"}</b>?
             </p>
             <div className="modal-actions">
               <button className="btn" onClick={() => setPending(null)}>

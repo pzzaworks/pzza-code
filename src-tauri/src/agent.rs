@@ -10,7 +10,27 @@ use tauri::{AppHandle, Manager};
 pub const AGENT_PORT: &str = "5190";
 
 #[derive(Default)]
-pub struct AgentState(pub Mutex<Option<Child>>);
+pub struct AgentState {
+    pub child: Mutex<Option<Child>>,
+    // Per-launch bearer token the agent requires on every request; generated
+    // here, handed to the agent via its environment, and to the webview via
+    // the agent_token command - it never touches disk on the app side.
+    pub token: Mutex<String>,
+}
+
+fn random_token() -> String {
+    use std::io::Read;
+    let mut bytes = [0u8; 24];
+    if let Ok(mut f) = std::fs::File::open("/dev/urandom") {
+        let _ = f.read_exact(&mut bytes);
+    }
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+#[tauri::command]
+pub fn agent_token(state: tauri::State<AgentState>) -> String {
+    state.token.lock().unwrap().clone()
+}
 
 // Locate the agent's server/index.js. In a bundled app it lives under the
 // resource dir; during `tauri dev` there is no bundle, so fall back to walking
@@ -112,6 +132,10 @@ pub fn start(app: &AppHandle) {
             return;
         }
     };
+    let token = random_token();
+    if let Some(state) = app.try_state::<AgentState>() {
+        *state.token.lock().unwrap() = token.clone();
+    }
     let work_dir = script.parent().map(PathBuf::from);
     let mut cmd = Command::new(node);
     cmd.arg(&script)
@@ -119,15 +143,17 @@ pub fn start(app: &AppHandle) {
         // A full PATH so the agent's child processes (tmux, ssh) resolve even
         // when the app was launched from Finder with a minimal environment.
         .env("PATH", &path)
-        // Empty devbox host = source role: tmux/ports are local to this machine.
-        .env("PZZA_DEVBOX_HOST", "");
+        // The bearer token every request to the agent must carry.
+        .env("PZZA_AGENT_TOKEN", &token)
+        // Empty server host = source role: tmux/ports are local to this machine.
+        .env("PZZA_SERVER_HOST", "");
     if let Some(dir) = work_dir {
         cmd.current_dir(dir);
     }
     match cmd.spawn() {
         Ok(child) => {
             if let Some(state) = app.try_state::<AgentState>() {
-                *state.0.lock().unwrap() = Some(child);
+                *state.child.lock().unwrap() = Some(child);
             }
         }
         Err(e) => eprintln!("pzza agent: failed to launch: {e}"),
@@ -136,7 +162,7 @@ pub fn start(app: &AppHandle) {
 
 pub fn stop(app: &AppHandle) {
     if let Some(state) = app.try_state::<AgentState>() {
-        if let Some(mut child) = state.0.lock().unwrap().take() {
+        if let Some(mut child) = state.child.lock().unwrap().take() {
             let _ = child.kill();
             let _ = child.wait();
         }

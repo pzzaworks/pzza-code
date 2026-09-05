@@ -2628,7 +2628,7 @@ button {
 }
 .scan-ws {
   flex: 0 0 auto;
-  width: 118px;
+  width: 100px;
 }
 .scan-remote-note {
   flex: 0 0 auto;
@@ -2992,6 +2992,43 @@ button {
 .set-full-btn {
   width: 100%;
   justify-content: center;
+}
+/* Usage card detail: daily trend sparkline + today / yesterday / 30d rows. */
+.usage-detail {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.usage-detail-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 12px;
+}
+.usage-detail-label {
+  color: var(--muted);
+  font-weight: 600;
+}
+.usage-detail-val {
+  color: var(--text);
+  white-space: nowrap;
+}
+.usage-trend {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 22px;
+  width: 150px;
+}
+.usage-trend-bar {
+  flex: 1;
+  min-width: 2px;
+  border-radius: 1px;
+  opacity: 0.9;
 }
 .set-row {
   display: flex;

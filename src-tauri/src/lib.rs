@@ -33,6 +33,7 @@ pub fn run() {
             rdp::rdp_launch,
             rdp::rdp_provision,
             rdp::keychain_set,
+            agent::agent_token,
             sys::open_url,
         ])
         .build(tauri::generate_context!())

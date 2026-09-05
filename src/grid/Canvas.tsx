@@ -4,6 +4,7 @@ import { motion } from "framer-motion";
 import {
   EyeOff,
   FileCode,
+  FolderInput,
   Focus,
   LayoutGrid,
   Maximize2,
@@ -73,6 +74,9 @@ export function Canvas() {
   const [layoutFor, setLayoutFor] = useState<{ id: string; x: number; y: number } | null>(
     null,
   );
+  // "Move to workspace" popup, opened from a tile's toolbar button.
+  const assignSession = useStore((s) => s.assignSession);
+  const [moveFor, setMoveFor] = useState<{ id: string; x: number; y: number } | null>(null);
 
   const [statuses, setStatuses] = useState<Record<string, TileStatus>>({});
   const setStatus = useCallback(
@@ -236,7 +240,9 @@ export function Canvas() {
           onDragStart={(e) => {
             setDragId(t.id);
             e.dataTransfer.effectAllowed = "move";
-            e.dataTransfer.setData(SESSION_DND, t.name);
+            // Carry the workspace key (host-namespaced), so dropping on a tab
+            // assigns exactly the key the grid filters by.
+            e.dataTransfer.setData(SESSION_DND, wsKeyOf(t));
             // Drag a snapshot of the whole tile, not just the header.
             const tileEl = (e.currentTarget as HTMLElement).closest(".tile");
             if (tileEl) {
@@ -337,7 +343,7 @@ export function Canvas() {
                 }
                 // Root the editor at the terminal's live cwd (a fresh session
                 // has no scanned path yet); fall back to any known path.
-                fetchSessionPath(base, undefined, t.window)
+                fetchSessionPath(base, t.host, t.window)
                   .then((live) => toggleTileCode(t.id, live || fullPath))
                   .catch(() => toggleTileCode(t.id, fullPath));
               }}
@@ -357,6 +363,18 @@ export function Canvas() {
               }}
             >
               <LayoutGrid size={13} />
+            </button>
+            <button
+              className="tile-btn"
+              title="Move to workspace"
+              onMouseDown={(e) => e.stopPropagation()}
+              onClick={(e) => {
+                e.stopPropagation();
+                const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                setMoveFor(moveFor?.id === t.id ? null : { id: t.id, x: r.right, y: r.bottom });
+              }}
+            >
+              <FolderInput size={13} />
             </button>
             <button
               className="tile-btn"
@@ -492,6 +510,37 @@ export function Canvas() {
           </button>
         </div>
       </Modal>
+
+      {moveFor
+        ? createPortal(
+            <div className="layout-pop-backdrop pzza-portal" onMouseDown={() => setMoveFor(null)}>
+              <div
+                className="menu layout-pop"
+                style={{ left: moveFor.x, top: moveFor.y + 6 }}
+                onMouseDown={(e) => e.stopPropagation()}
+              >
+                {(() => {
+                  const target = tiles.find((x) => x.id === moveFor.id);
+                  const key = target ? wsKeyOf(target) : "";
+                  const current = sessionWs[key] ?? DEFAULT_WORKSPACE_ID;
+                  return workspaces.map((w) => (
+                    <button
+                      key={w.id}
+                      className={`menu-item ${current === w.id ? "menu-item-on" : ""}`}
+                      onClick={() => {
+                        if (key) assignSession(key, w.id);
+                        setMoveFor(null);
+                      }}
+                    >
+                      {w.name}
+                    </button>
+                  ));
+                })()}
+              </div>
+            </div>,
+            document.body,
+          )
+        : null}
 
       {layoutFor
         ? createPortal(

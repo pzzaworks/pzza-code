@@ -76,7 +76,7 @@ export function McpMenu() {
 
       <p className="set-note" style={{ marginTop: 0 }}>
         Tools: list/create/kill sessions & windows, list ports, toggle
-        forwarding. Add it to your agent, then it can drive the devbox.
+        forwarding. Add it to your agent, then it can drive the server.
       </p>
 
       <div className="mcp-list">
