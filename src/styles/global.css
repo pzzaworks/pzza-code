@@ -766,9 +766,12 @@ button {
   opacity: 0.5;
   cursor: default;
 }
-.icon-btn-on {
-  color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 14%, transparent);
+/* An open/selected top-bar button reads as lit up: a bright icon on a light
+   raised fill, not the dim resting grey. */
+.icon-btn-on,
+.icon-btn-on:hover:not(:disabled) {
+  color: var(--text);
+  background: color-mix(in srgb, var(--text) 14%, transparent);
 }
 .icon-btn-danger:hover:not(:disabled) {
   color: var(--danger);
