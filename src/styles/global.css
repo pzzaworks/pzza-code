@@ -2440,7 +2440,10 @@ button {
 }
 .stat-active {
   background: var(--success);
+  /* Opacity only: it composites on the GPU, while an animated box-shadow
+     forces a repaint of the header every frame, for every active tile. */
   animation: statBlink 1.1s ease-in-out infinite;
+  will-change: opacity;
 }
 .stat-failed {
   background: var(--danger);
@@ -2449,11 +2452,9 @@ button {
   0%,
   100% {
     opacity: 1;
-    box-shadow: 0 0 0 0 color-mix(in srgb, var(--success) 60%, transparent);
   }
   50% {
     opacity: 0.4;
-    box-shadow: 0 0 0 3px color-mix(in srgb, var(--success) 0%, transparent);
   }
 }
 .tile-icon {

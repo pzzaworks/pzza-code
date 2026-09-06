@@ -1,10 +1,18 @@
 use std::collections::HashMap;
 use std::io::{Read, Write};
+use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::Mutex;
+use std::time::Duration;
 
-use base64::{engine::general_purpose::STANDARD, Engine as _};
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
-use tauri::ipc::Channel;
+use tauri::ipc::{Channel, Response};
+
+// Output is coalesced before it crosses the IPC bridge: a TUI redraw arrives as
+// a burst of small pty reads, and every channel message costs a webview eval,
+// so bursts are gathered for a few milliseconds (bounded in size) and sent as
+// one raw-bytes message. Small enough to be invisible for interactive typing.
+const COALESCE_WINDOW: Duration = Duration::from_millis(4);
+const COALESCE_MAX_BYTES: usize = 64 * 1024;
 
 // One running PTY. The master is kept for resizing and cloning readers; the
 // writer feeds keystrokes in; the child lets us terminate on kill.
@@ -42,8 +50,9 @@ fn size(cols: u16, rows: u16) -> PtySize {
     }
 }
 
-// Spawn a PTY-backed command and stream its output over `on_data` as base64
-// chunks. Returns an id used by the write/resize/kill commands.
+// Spawn a PTY-backed command and stream its output over `on_data` as raw byte
+// chunks (the frontend receives each as an ArrayBuffer). Returns an id used by
+// the write/resize/kill commands.
 #[tauri::command]
 pub fn pty_spawn(
     state: tauri::State<'_, PtyState>,
@@ -52,7 +61,7 @@ pub fn pty_spawn(
     cwd: Option<String>,
     cols: u16,
     rows: u16,
-    on_data: Channel<String>,
+    on_data: Channel<Response>,
 ) -> Result<u32, String> {
     let pty_system = native_pty_system();
     let pair = pty_system
@@ -103,19 +112,40 @@ pub fn pty_spawn(
         id
     };
 
-    // Blocking reader on its own thread; forwards raw output to the frontend.
+    // Blocking reader on its own thread; hands raw chunks to the sender thread.
+    // Two threads instead of one so the reader never stalls on IPC and the
+    // sender can coalesce whatever piled up while it was busy.
+    let (tx, rx) = mpsc::channel::<Vec<u8>>();
     std::thread::spawn(move || {
         let mut buf = [0u8; 8192];
         loop {
             match reader.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
-                    let encoded = STANDARD.encode(&buf[..n]);
-                    if on_data.send(encoded).is_err() {
+                    if tx.send(buf[..n].to_vec()).is_err() {
                         break;
                     }
                 }
                 Err(_) => break,
+            }
+        }
+    });
+    std::thread::spawn(move || {
+        // Block for the first chunk, then gather the rest of the burst.
+        while let Ok(first) = rx.recv() {
+            let mut batch = first;
+            while batch.len() < COALESCE_MAX_BYTES {
+                match rx.recv_timeout(COALESCE_WINDOW) {
+                    Ok(more) => batch.extend_from_slice(&more),
+                    Err(RecvTimeoutError::Timeout) => break,
+                    Err(RecvTimeoutError::Disconnected) => {
+                        let _ = on_data.send(Response::new(batch));
+                        return;
+                    }
+                }
+            }
+            if on_data.send(Response::new(batch)).is_err() {
+                return;
             }
         }
     });
