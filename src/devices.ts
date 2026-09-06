@@ -12,3 +12,10 @@ export interface Device {
 export const THIS_MAC: Device = { id: "this-mac", name: "This Mac", host: "localhost" };
 
 export const DEFAULT_DEVICES: Device[] = [THIS_MAC];
+
+// Name of the device a session runs on: no host = this Mac, otherwise the
+// matching device (or the raw host when it is not in the list).
+export function deviceNameFor(devices: Device[], host?: string): string {
+  if (host) return devices.find((d) => d.host === host)?.name ?? host;
+  return devices.find((d) => d.id === THIS_MAC.id)?.name ?? THIS_MAC.name;
+}

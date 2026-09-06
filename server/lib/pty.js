@@ -64,18 +64,24 @@ export async function startPtyBridge(server) {
             `tmux new-session -d -t ${shQuote(name)} -s ${shQuote(view)} 2>/dev/null; ` +
             `tmux set-option -t ${shQuote(view)} window-size latest 2>/dev/null; ` +
             `tmux select-window -t ${shQuote(view + ":" + msg.window)} 2>/dev/null; ` +
-            `exec tmux attach -t ${shQuote(view)}`;
+            `exec tmux -u attach -t ${shQuote(view)}`;
         } else {
           // Never shrink a session another client (cmux) is viewing.
-          const prep = `tmux set-option -t ${shQuote(name)} window-size latest 2>/dev/null; tmux set-option -t ${shQuote(name)} aggressive-resize on 2>/dev/null`;
-          attach = `${prep}; exec tmux new-session -A -s ${shQuote(name)}${
+          // Also heal a server started without a locale so new panes get a UTF-8 LANG.
+          const prep =
+            `tmux show-environment -g LANG >/dev/null 2>&1 || tmux set-environment -g LANG "\${LANG:-en_US.UTF-8}" 2>/dev/null; ` +
+            `tmux set-option -t ${shQuote(name)} window-size latest 2>/dev/null; tmux set-option -t ${shQuote(name)} aggressive-resize on 2>/dev/null`;
+          attach = `${prep}; exec tmux -u new-session -A -s ${shQuote(name)}${
             msg.cwd ? ` -c ${shQuote(msg.cwd)}` : ""
           }`;
         }
 
         // Advertise truecolor so apps inside tmux (yazi, ratatui TUIs) emit 24-bit
-        // colors instead of quantizing to 256 and washing out.
-        const ptyEnv = { ...process.env, COLORTERM: "truecolor" };
+        // colors instead of quantizing to 256 and washing out. tmux and zsh read
+        // the locale from LC_ALL / LC_CTYPE / LANG; an agent launched without one
+        // would get `_` for every non-ASCII glyph, so supply a UTF-8 locale then.
+        const hasLocale = ["LC_ALL", "LC_CTYPE", "LANG"].some((k) => process.env[k]);
+        const ptyEnv = { ...process.env, ...(hasLocale ? {} : { LANG: "en_US.UTF-8" }), COLORTERM: "truecolor" };
         if (IS_CLIENT) {
           term = pty.spawn("ssh", ["-tt", DEVBOX, `sh -lc ${shQuote(attach)}`], {
             name: "xterm-256color",

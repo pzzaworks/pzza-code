@@ -71,6 +71,11 @@ pub fn pty_spawn(
     // Homebrew tools. Hand the PTY the same login-shell PATH the agent uses.
     // Harmless for ssh spawns (ssh lives in /usr/bin either way).
     builder.env("PATH", crate::agent::login_path());
+    // Without a UTF-8 locale tmux treats this client as ASCII-only and draws
+    // `_` in place of every non-ASCII character.
+    if let Some((k, v)) = crate::agent::utf8_locale_env() {
+        builder.env(k, v);
+    }
 
     let child = pair
         .slave
