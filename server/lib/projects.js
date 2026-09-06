@@ -74,6 +74,23 @@ export function groupProjects(scan) {
   });
 }
 
+// Turn git's failure text into one line that says what to do about it; the
+// raw tail follows for anything the table does not know.
+const GIT_HINTS = [
+  [/Not possible to fast-forward/i, "diverged from origin: local commits are not on origin, push or rebase first"],
+  [/refusing to merge unrelated histories/i, "origin has an unrelated history: a different repo answers behind this remote"],
+  [/Repository not found|Could not read from remote|does not appear to be a git repository/i, "origin not found: deleted, renamed or no access from this device"],
+  [/needs merge|not uptodate\. Cannot merge|You have unmerged paths|unmerged files/i, "an unfinished merge or rebase is in progress, finish or abort it first"],
+  [/would be overwritten by checkout/i, "untracked files here would be overwritten by the checkout"],
+  [/Permission denied \(publickey\)|Authentication failed/i, "no git access from this device: ssh key or token missing"],
+  [/Could not resolve host|Network is unreachable|Connection timed out/i, "no network access to the remote from this device"],
+];
+export function explainGit(detail) {
+  const text = String(detail || "");
+  for (const [re, hint] of GIT_HINTS) if (re.test(text)) return `${hint} (${text.trim()})`;
+  return text;
+}
+
 // Strip embedded credentials ("https://user:token@host/...") from anything that
 // leaves the agent: origin URLs in the scan and git output quoted in results.
 export function redact(text) {
@@ -182,7 +199,7 @@ function scanScript(rootE) {
 // defined once per script so each repo is a one-line call.
 const SYNC_FUNCS =
   `pz_r() { printf 'PZZA_R\\t%s\\t%s\\t%s\\n' "$1" "$2" "$3"; }; ` +
-  `pz_tail() { printf '%s' "$1" | tail -n 3 | tr '\\n' ' '; }; ` +
+  `pz_tail() { printf '%s' "$1" | grep -v '^hint:' | tail -n 3 | tr '\\n' ' '; }; ` +
   `pz_clone() { if mkdir -p "$(dirname "$2")" && out=$(git clone --quiet "$1" "$2" 2>&1); then pz_r "$2" cloned ""; else pz_r "$2" failed "$(pz_tail "$out")"; fi; }; ` +
   // pz_update REL STASH SWITCH: STASH=1 stashes modified tracked files (else a
   // dirty tree is reported and left alone); SWITCH=1 moves to origin's default
@@ -445,7 +462,7 @@ export async function syncProjects(body) {
       for (const line of res.stdout.split("\n")) {
         if (!line.startsWith("PZZA_R\t")) continue;
         const [, rel, status, detail] = line.split("\t");
-        results.push({ rel, status, detail: redact(detail || "") });
+        results.push({ rel, status, detail: status === "failed" ? explainGit(redact(detail || "")) : redact(detail || "") });
       }
       // A step that produced no report line (killed by the timeout, ssh dropped)
       // must not silently vanish from the summary.
