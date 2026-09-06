@@ -98,9 +98,23 @@ interface EnvStatus {
   hashes: Map<string, string>; // deviceId -> hash
 }
 
+// Identity of a repo across devices: its origin, normalized so that scp-style,
+// ssh:// and https:// spellings of the same remote collapse to one key. Mirrors
+// originKey in the agent.
+function originKey(url: string | null): string | null {
+  if (!url) return null;
+  let u = url.trim().replace(/\/+$/, "").replace(/\.git$/i, "");
+  const scp = u.match(/^(?:[^@\s]+@)?([^:/\s]+):(.+)$/);
+  if (scp && !/^\w+:\/\//.test(u)) u = `${scp[1]}/${scp[2]}`;
+  else u = u.replace(/^\w+:\/\/(?:[^@/]+@)?/, "");
+  return u.toLowerCase();
+}
+
 interface Row {
-  rel: string;
+  rel: string; // display path: where the first device that has it keeps it
+  rels: Set<string>; // every path it lives at across devices (for result lookup)
   origin: string | null;
+  origins: string[]; // every distinct origin seen (a moved remote shows two)
   defaultBranch: string | null; // best guess across devices
   byDevice: Map<string, ProjectRepo>;
   envs: EnvStatus[];
@@ -108,19 +122,48 @@ interface Row {
 }
 
 // Merge the per-device scans into one row per repo, with cross-device env state.
+// Same grouping as the agent: one project per origin OR path. The path rule
+// catches a remote that moved (berkekiran/x -> pzzaworks/x), the origin rule
+// catches the same repo kept at different paths.
+function groupProjects(scan: ProjectScan): Map<string, ProjectRepo>[] {
+  interface Group {
+    keys: Set<string>;
+    members: Map<string, ProjectRepo>;
+  }
+  const groups: Group[] = [];
+  const byKey = new Map<string, Group>();
+  for (const d of scan.devices) {
+    for (const r of d.repos) {
+      const keys = [`path:${r.rel}`];
+      const ok = originKey(r.origin);
+      if (ok) keys.push(`origin:${ok}`);
+      const hits = [...new Set(keys.map((k) => byKey.get(k)).filter((g): g is Group => Boolean(g)))];
+      let g = hits[0];
+      if (!g) groups.push((g = { keys: new Set(), members: new Map() }));
+      for (const other of hits.slice(1)) {
+        for (const [id, rep] of other.members) if (!g.members.has(id)) g.members.set(id, rep);
+        for (const k of other.keys) g.keys.add(k);
+        groups.splice(groups.indexOf(other), 1);
+      }
+      for (const k of keys) {
+        g.keys.add(k);
+        byKey.set(k, g);
+      }
+      if (!g.members.has(d.id)) g.members.set(d.id, r);
+    }
+  }
+  return groups.map((g) => g.members);
+}
+
 function buildRows(scan: ProjectScan): Row[] {
-  const rels = new Set<string>();
-  for (const d of scan.devices) for (const r of d.repos) rels.add(r.rel);
   const okDevices = scan.devices.filter((d) => !d.error);
   const rows: Row[] = [];
-  for (const rel of [...rels].sort((a, b) => a.localeCompare(b))) {
-    const byDevice = new Map<string, ProjectRepo>();
-    for (const d of scan.devices) {
-      const r = d.repos.find((x) => x.rel === rel);
-      if (r) byDevice.set(d.id, r);
-    }
+  for (const byDevice of groupProjects(scan)) {
     const present = [...byDevice.values()];
+    const rel = present[0].rel;
+    const rels = new Set(present.map((r) => r.rel));
     const origin = present.find((r) => r.origin)?.origin ?? null;
+    const origins = [...new Set(present.map((r) => r.origin).filter((o): o is string => Boolean(o)))];
     const defaultBranch = present.find((r) => r.defaultBranch)?.defaultBranch ?? null;
 
     const envNames = new Set<string>();
@@ -150,14 +193,16 @@ function buildRows(scan: ProjectScan): Row[] {
     const envDrift = envs.some((e) => e.state === "differs" || e.state === "partial");
     rows.push({
       rel,
+      rels,
       origin,
+      origins,
       defaultBranch,
       byDevice,
       envs,
       attention: missingSomewhere || offDefault || dirty || behind || envDrift,
     });
   }
-  return rows;
+  return rows.sort((a, b) => a.rel.localeCompare(b.rel));
 }
 
 function ago(ts: number): string {
@@ -220,6 +265,7 @@ function EnvChips({ envs, devices }: { envs: EnvStatus[]; devices: ProjectDevice
 function DeviceLine({
   device,
   repo,
+  displayRel,
   defaultBranch,
   result,
   envResults,
@@ -227,6 +273,7 @@ function DeviceLine({
 }: {
   device: ProjectDeviceRef;
   repo: ProjectRepo | undefined;
+  displayRel: string;
   defaultBranch: string | null;
   result: ProjectSyncResult | undefined;
   envResults: EnvSyncResult[];
@@ -298,7 +345,14 @@ function DeviceLine({
   return (
     <div className="pj-line">
       <span className="pj-line-device">{device.name}</span>
-      <span className="pj-line-body">{body}</span>
+      <span className="pj-line-body">
+        {repo && repo.rel !== displayRel ? (
+          <span className="pj-line-path" title={`On this device the repo lives at ${repo.rel}`}>
+            {repo.rel}
+          </span>
+        ) : null}
+        {body}
+      </span>
       {outcome}
     </div>
   );
@@ -309,7 +363,13 @@ function RowDetails({ row, devices }: { row: Row; devices: ProjectDeviceRef[] })
     <div className="pj-details">
       <div className="pj-detail-line">
         <span className="pj-k">origin</span>
-        <span className="pj-v">{row.origin ?? "no origin remote (cannot be cloned elsewhere)"}</span>
+        <span className="pj-v">
+          {row.origins.length === 0
+            ? "no origin remote (cannot be cloned elsewhere)"
+            : row.origins.length === 1
+              ? row.origin
+              : `${row.origins.join("  ·  ")}  (remote differs between devices, clones use the first)`}
+        </span>
       </div>
       <div className="pj-detail-line">
         <span className="pj-k">default</span>
@@ -350,8 +410,8 @@ function ProjectCard({
   scan: ProjectScan | null;
   open: boolean;
   onToggle: () => void;
-  resultFor: (deviceId: string, rel: string) => ProjectSyncResult | undefined;
-  envsFor: (deviceId: string, rel: string) => EnvSyncResult[];
+  resultFor: (deviceId: string, rels: Set<string>) => ProjectSyncResult | undefined;
+  envsFor: (deviceId: string, rels: Set<string>) => EnvSyncResult[];
   enabled: boolean;
   envOn: boolean;
   envsGlobal: boolean;
@@ -387,9 +447,10 @@ function ProjectCard({
             key={d.id}
             device={d}
             repo={row.byDevice.get(d.id)}
+            displayRel={row.rel}
             defaultBranch={row.defaultBranch}
-            result={resultFor(d.id, row.rel)}
-            envResults={envsFor(d.id, row.rel)}
+            result={resultFor(d.id, row.rels)}
+            envResults={envsFor(d.id, row.rels)}
             deviceError={errorOf(d.id)}
           />
         ))}
@@ -497,10 +558,10 @@ export function ProjectsMenu() {
   const rows = useMemo(() => (scan ? buildRows(scan) : []), [scan]);
   const shown = filter === "attention" ? rows.filter((r) => r.attention) : rows;
   const attention = rows.filter((r) => r.attention).length;
-  const resultFor = (deviceId: string, rel: string) =>
-    sync?.devices.find((d) => d.id === deviceId)?.results.find((r) => r.rel === rel);
-  const envsFor = (deviceId: string, rel: string) =>
-    sync?.devices.find((d) => d.id === deviceId)?.envs.filter((e) => e.rel === rel) ?? [];
+  const resultFor = (deviceId: string, rels: Set<string>) =>
+    sync?.devices.find((d) => d.id === deviceId)?.results.find((r) => rels.has(r.rel));
+  const envsFor = (deviceId: string, rels: Set<string>) =>
+    sync?.devices.find((d) => d.id === deviceId)?.envs.filter((e) => rels.has(e.rel)) ?? [];
 
   const busy = scanning || syncing;
   const toggle = (rel: string) =>
@@ -511,7 +572,7 @@ export function ProjectsMenu() {
       return n;
     });
 
-  const deviceStrip = scan?.devices ?? refs.map((r) => ({ ...r, error: null, repos: [] }));
+  const deviceStrip = scan?.devices ?? refs.map((r) => ({ ...r, error: null, root: null, repos: [] }));
 
   return (
     <div className="menu-body pj">
@@ -640,7 +701,11 @@ export function ProjectsMenu() {
 
       <div className="pj-devices">
         {deviceStrip.map((d) => (
-          <div key={d.id} className={`pj-device ${d.error ? "pj-device-err" : ""}`} title={d.error ?? (d.host || "local")}>
+          <div
+            key={d.id}
+            className={`pj-device ${d.error ? "pj-device-err" : ""}`}
+            title={d.error ?? `${d.host || "local"}${d.root ? ` · ${d.root}` : ""}`}
+          >
             <span className={`dot ${d.error ? "dot-down" : "dot-up"}`} />
             <span className="pj-device-name">{d.name}</span>
             <span className="pj-device-n">
