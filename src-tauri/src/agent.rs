@@ -4,7 +4,9 @@
 // setup wizard) and any external MCP client then talk to this one local backend.
 use std::path::PathBuf;
 use std::process::{Child, Command};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
+use std::time::Duration;
 use tauri::{AppHandle, Manager};
 
 pub const AGENT_PORT: &str = "5190";
@@ -19,6 +21,8 @@ pub struct AgentState {
     // Non-secret per-launch instance id the agent echoes from /health, so the
     // webview can refuse to talk to some other process that grabbed the port.
     pub instance: Mutex<String>,
+    // Set on app shutdown so the watchdog stops respawning the agent.
+    pub shutting_down: AtomicBool,
 }
 
 // Fail closed: if the OS RNG cannot be read we must not fall back to a
@@ -161,23 +165,7 @@ pub fn start(app: &AppHandle) {
         *state.token.lock().unwrap() = token.clone();
         *state.instance.lock().unwrap() = instance.clone();
     }
-    let work_dir = script.parent().map(PathBuf::from);
-    let mut cmd = Command::new(node);
-    cmd.arg(&script)
-        .env("PORT", AGENT_PORT)
-        // A full PATH so the agent's child processes (tmux, ssh) resolve even
-        // when the app was launched from Finder with a minimal environment.
-        .env("PATH", &path)
-        // The bearer token every request to the agent must carry, and the
-        // instance id it echoes from /health so the webview can verify it.
-        .env("PZZA_AGENT_TOKEN", &token)
-        .env("PZZA_AGENT_ID", &instance)
-        // Empty server host = source role: tmux/ports are local to this machine.
-        .env("PZZA_SERVER_HOST", "");
-    if let Some(dir) = work_dir {
-        cmd.current_dir(dir);
-    }
-    match cmd.spawn() {
+    match spawn_agent_process(&node, &script, &path, &token, &instance) {
         Ok(child) => {
             if let Some(state) = app.try_state::<AgentState>() {
                 *state.child.lock().unwrap() = Some(child);
@@ -185,10 +173,66 @@ pub fn start(app: &AppHandle) {
         }
         Err(e) => eprintln!("pzza agent: failed to launch: {e}"),
     }
+
+    // Watchdog: if the agent process dies (a crash, or something outside the app
+    // killing it), bring it back with the SAME token and instance id so the
+    // webview's cached credentials stay valid - instead of leaving the app stuck
+    // on "Server unreachable" until the user restarts it.
+    let app = app.clone();
+    std::thread::spawn(move || loop {
+        std::thread::sleep(Duration::from_secs(2));
+        let Some(state) = app.try_state::<AgentState>() else {
+            return;
+        };
+        if state.shutting_down.load(Ordering::SeqCst) {
+            return;
+        }
+        let mut guard = state.child.lock().unwrap();
+        let alive = matches!(guard.as_mut().map(|c| c.try_wait()), Some(Ok(None)));
+        if !alive {
+            match spawn_agent_process(&node, &script, &path, &token, &instance) {
+                Ok(child) => {
+                    *guard = Some(child);
+                    eprintln!("pzza agent: respawned after it exited");
+                }
+                Err(e) => eprintln!("pzza agent: respawn failed: {e}"),
+            }
+        }
+    });
+}
+
+// Spawn the agent node process. Kept separate so the initial launch and the
+// watchdog respawn share exactly the same environment (PATH, token, instance).
+fn spawn_agent_process(
+    node: &str,
+    script: &std::path::Path,
+    path: &str,
+    token: &str,
+    instance: &str,
+) -> std::io::Result<Child> {
+    let mut cmd = Command::new(node);
+    cmd.arg(script)
+        .env("PORT", AGENT_PORT)
+        // A full PATH so the agent's child processes (tmux, ssh) resolve even
+        // when the app was launched from Finder with a minimal environment.
+        .env("PATH", path)
+        // The bearer token every request to the agent must carry, and the
+        // instance id it echoes from /health so the webview can verify it.
+        .env("PZZA_AGENT_TOKEN", token)
+        .env("PZZA_AGENT_ID", instance)
+        // Empty server host = source role: tmux/ports are local to this machine.
+        .env("PZZA_SERVER_HOST", "");
+    if let Some(dir) = script.parent() {
+        cmd.current_dir(dir);
+    }
+    cmd.spawn()
 }
 
 pub fn stop(app: &AppHandle) {
     if let Some(state) = app.try_state::<AgentState>() {
+        // Signal the watchdog before killing, so it does not respawn the agent
+        // during shutdown.
+        state.shutting_down.store(true, Ordering::SeqCst);
         if let Some(mut child) = state.child.lock().unwrap().take() {
             let _ = child.kill();
             let _ = child.wait();

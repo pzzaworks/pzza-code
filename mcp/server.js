@@ -14,7 +14,7 @@ import {
 import { TOOLS } from "./lib/tools.js";
 
 const server = new Server(
-  { name: "pzzacode-mcp", version: "0.2.20" },
+  { name: "pzzacode-mcp", version: "0.2.21" },
   { capabilities: { tools: {} } },
 );
 
