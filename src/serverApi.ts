@@ -450,6 +450,7 @@ export interface ProjectRepo {
 
 export interface ProjectScanDevice extends ProjectDeviceRef {
   error: string | null;
+  root: string | null; // where the projects root resolved on this device (case-insensitive match)
   repos: ProjectRepo[];
 }
 
