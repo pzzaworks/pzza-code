@@ -4100,6 +4100,10 @@ button {
 }
 .pj-out-failed {
   color: var(--danger);
+  max-width: 70%;
+}
+.pj-out-failed .pj-outcome-detail {
+  white-space: normal;
 }
 .pj-details {
   display: flex;
