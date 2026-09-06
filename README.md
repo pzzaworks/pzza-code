@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  A grid terminal manager for agentic coding - run and watch many terminals and AI coding agents across your machines, from one fast cockpit.
+  Every terminal, every agent, one grid. A grid terminal manager for agentic coding - run and watch many terminals and AI coding agents across your machines.
 </p>
 
 <p align="center">
