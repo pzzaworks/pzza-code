@@ -3882,6 +3882,9 @@ button {
   margin: 0;
 }
 .pj-card {
+  /* The list is a scrolling flex column: without this, many cards shrink to a
+     sliver each so that all of them "fit" the max-height. */
+  flex: 0 0 auto;
   border: 1px solid var(--border);
   border-radius: 12px;
   background: var(--bg);
@@ -3889,8 +3892,9 @@ button {
 }
 .pj-card-head {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
+  gap: 4px 8px;
   width: 100%;
   min-height: 32px;
   padding: 5px 10px 5px 9px;
@@ -3912,20 +3916,24 @@ button {
   transform: rotate(90deg);
 }
 .pj-rel {
+  flex: 1 1 200px;
+  min-width: 0;
   font-size: 12.5px;
   font-weight: 650;
-  word-break: break-all;
+  overflow-wrap: anywhere;
 }
 .pj-rel-dir {
   font-weight: 400;
   color: var(--muted);
 }
 .pj-envs {
-  display: inline-flex;
+  /* Env chips take their own line under the name, indented past the chevron. */
+  order: 3;
+  flex-basis: 100%;
+  display: flex;
   flex-wrap: wrap;
   gap: 4px;
-  margin-left: auto;
-  justify-content: flex-end;
+  margin-left: 21px;
 }
 .pj-env {
   display: inline-flex;
@@ -4305,6 +4313,7 @@ button {
   background: var(--bg);
 }
 .fp-row {
+  flex: 0 0 auto; /* same shrink trap as the project cards */
   display: flex;
   align-items: center;
   gap: 10px;
@@ -4495,10 +4504,11 @@ button {
   border-color: var(--accent);
 }
 .pj-card-switches {
+  order: 2;
   display: inline-flex;
   align-items: center;
   gap: 10px;
-  margin-left: 8px;
+  margin-left: auto;
   flex-shrink: 0;
 }
 .pj-switch-wrap {
