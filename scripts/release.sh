@@ -88,7 +88,9 @@ git push origin "$TAG"
 if gh release view "$TAG" -R "$REPO" >/dev/null 2>&1; then
   gh release upload "$TAG" "$DMG" "$TARGZ" "$SIG" /tmp/latest.json -R "$REPO" --clobber
 else
-  gh release create "$TAG" "$DMG" "$TARGZ" "$SIG" /tmp/latest.json -R "$REPO" --title "PzzaCode $VERSION" --latest \
-    $( [ -n "${NOTES:-}" ] && echo "--notes-file $NOTES" || echo "--notes PzzaCode $VERSION" )
+  # Notes are passed as a proper array: an unquoted "--notes PzzaCode $VERSION"
+  # word-splits and gh then treats the version as a missing asset file.
+  if [ -n "${NOTES:-}" ]; then NOTE_ARGS=(--notes-file "$NOTES"); else NOTE_ARGS=(--notes "PzzaCode $VERSION"); fi
+  gh release create "$TAG" "$DMG" "$TARGZ" "$SIG" /tmp/latest.json -R "$REPO" --title "PzzaCode $VERSION" --latest "${NOTE_ARGS[@]}"
 fi
 echo "==> Done: https://github.com/$REPO/releases/tag/$TAG"
