@@ -556,12 +556,18 @@ export function ProjectsMenu() {
   };
 
   const rows = useMemo(() => (scan ? buildRows(scan) : []), [scan]);
-  const shown = filter === "attention" ? rows.filter((r) => r.attention) : rows;
-  const attention = rows.filter((r) => r.attention).length;
   const resultFor = (deviceId: string, rels: Set<string>) =>
     sync?.devices.find((d) => d.id === deviceId)?.results.find((r) => rels.has(r.rel));
   const envsFor = (deviceId: string, rels: Set<string>) =>
     sync?.devices.find((d) => d.id === deviceId)?.envs.filter((e) => rels.has(e.rel)) ?? [];
+  // After a sync, anything that failed on any device needs attention too.
+  const failedRow = (r: Row) =>
+    refs.some(
+      (d) => resultFor(d.id, r.rels)?.status === "failed" || envsFor(d.id, r.rels).some((e) => e.status === "failed"),
+    );
+  const needsAttention = (r: Row) => r.attention || failedRow(r);
+  const shown = filter === "attention" ? rows.filter(needsAttention) : rows;
+  const attention = rows.filter(needsAttention).length;
 
   const busy = scanning || syncing;
   const toggle = (rel: string) =>
