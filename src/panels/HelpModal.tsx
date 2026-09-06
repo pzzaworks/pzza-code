@@ -397,7 +397,7 @@ export function HelpModal({ open, onClose }: { open: boolean; onClose: () => voi
               </Steps>
               <H>What PzzaCode is</H>
               <P>
-                A grid terminal manager for agentic coding. Every tile on the grid is a live
+                Every terminal, every agent, one grid. Every tile on the grid is a live
                 terminal - a plain shell, or a coding agent like <b>Claude Code</b> or{" "}
                 <b>Codex</b>. Instead of hunting through tmux windows or a stack of terminal tabs,
                 you see and drive all of them from one screen.
