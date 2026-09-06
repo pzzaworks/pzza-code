@@ -13,6 +13,7 @@ import {
   X,
 } from "lucide-react";
 import { useStore } from "../state/store";
+import { deviceNameFor } from "../devices";
 import { Modal } from "../ui/Modal";
 import { Terminal } from "../terminal/Terminal";
 import { TileCodePanel } from "./TileCodePanel";
@@ -60,12 +61,8 @@ export function Canvas() {
   // Columns are per-workspace; the active workspace decides the grid.
   const columns = workspaceColumns[activeWorkspaceId] ?? defaultColumns;
 
-  // A tile's badge names the device it actually runs on: no host = this Mac,
-  // otherwise the matching device (or the raw host if it is not in the list).
-  const tileDevice = (host?: string): string =>
-    host
-      ? (devices.find((d) => d.host === host)?.name ?? host)
-      : (devices.find((d) => d.id === "this-mac")?.name ?? "This Mac");
+  // A tile's badge names the device it actually runs on.
+  const tileDevice = (host?: string): string => deviceNameFor(devices, host);
 
   const [closing, setClosing] = useState<string | null>(null);
   const [layoutFor, setLayoutFor] = useState<{ id: string; x: number; y: number } | null>(

@@ -130,9 +130,9 @@ export function UsageMenu() {
     }
   };
 
-  const load = useCallback(() => {
+  const load = useCallback((fresh = false) => {
     setLoading(true);
-    fetchUsage()
+    fetchUsage(fresh)
       .then((a) => {
         setAccounts(a);
         setFailed(false);
@@ -148,7 +148,7 @@ export function UsageMenu() {
       })
       .catch(() => undefined);
   }, []);
-  useEffect(() => load(), [load]);
+  useEffect(() => load(false), [load]);
 
   return (
     <div className="menu-body usage-menu">
@@ -169,7 +169,7 @@ export function UsageMenu() {
               Used
             </button>
           </div>
-          <button className="usage-refresh" onClick={load} title="Refresh" disabled={loading}>
+          <button className="usage-refresh" onClick={() => load(true)} title="Refresh" disabled={loading}>
             <RefreshCw size={13} className={loading ? "sw-spin" : ""} />
           </button>
         </div>

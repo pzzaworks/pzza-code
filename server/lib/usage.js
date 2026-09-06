@@ -6,7 +6,11 @@ import path from "node:path";
 import { discoverAccounts, readClaudeOAuth, readClaudeIdentity, readCodexCreds } from "./accounts.js";
 
 export const USAGE_FRESH_MS = 5 * 60 * 1000; // the endpoints 429 if polled harder
-let usageCache = { at: 0, data: null };
+// A failed entry (expired token, provider hiccup) is retried much sooner, so the
+// panel recovers right after the CLI refreshes its token instead of showing the
+// stale failure for the whole cache window.
+const USAGE_RETRY_MS = 30 * 1000;
+let usageCache = { at: 0, data: null, failed: false };
 
 const winShape = (w) =>
   w && (w.utilization != null || w.used_percent != null)
@@ -60,6 +64,35 @@ async function fetchCodexUsage(creds) {
   return { five_hour, seven_day, scoped };
 }
 
+const CLAUDE_SIGNIN_HINT = "run claude once in a terminal to refresh it";
+
+// Usage for one Claude account. Claude Code refreshes the OAuth token itself
+// whenever it runs and the agent never refreshes on its behalf (a refresh
+// rotates the token and could sign the CLI out), so an expired or rejected
+// token is reported as exactly that instead of a bare "usage 401".
+async function claudeAccountUsage(acc) {
+  const oauth = readClaudeOAuth(acc.dir);
+  // No usable creds on this device (e.g. a devbox-only account seen from the
+  // Mac): hide it rather than showing a "not signed in" row.
+  if (!oauth?.accessToken) return null;
+  const entry = { provider: "claude", label: acc.label, ...readClaudeIdentity(acc.dir), usage: null, error: null };
+  if (oauth.expiresAt && Number(oauth.expiresAt) <= Date.now()) {
+    return { ...entry, error: `Session token expired - ${CLAUDE_SIGNIN_HINT}` };
+  }
+  try {
+    return { ...entry, usage: await fetchClaudeUsage(oauth.accessToken) };
+  } catch (e) {
+    if (!/\b401\b/.test(String(e.message))) throw e;
+    // The CLI may have rotated the token between our read and the call: re-read
+    // once and retry with the new one before giving up.
+    const again = readClaudeOAuth(acc.dir);
+    if (again?.accessToken && again.accessToken !== oauth.accessToken) {
+      return { ...entry, usage: await fetchClaudeUsage(again.accessToken) };
+    }
+    return { ...entry, error: `Session token rejected - ${CLAUDE_SIGNIN_HINT}` };
+  }
+}
+
 // Fetch every account's usage from the provider APIs (in parallel) and cache it.
 async function refreshUsage() {
   const accounts = discoverAccounts();
@@ -67,15 +100,7 @@ async function refreshUsage() {
     await Promise.all(
       accounts.map(async (acc) => {
         try {
-          if (acc.provider === "claude") {
-            const oauth = readClaudeOAuth(acc.dir) || {};
-            // No usable creds on this device (e.g. a devbox-only account seen
-            // from the Mac): hide it rather than showing a "not signed in" row.
-            if (!oauth.accessToken) return null;
-            const identity = readClaudeIdentity(acc.dir);
-            const usage = await fetchClaudeUsage(oauth.accessToken);
-            return { provider: "claude", label: acc.label, ...identity, usage, error: null };
-          }
+          if (acc.provider === "claude") return await claudeAccountUsage(acc);
           if (!fs.existsSync(path.join(acc.dir, "auth.json"))) return null;
           const creds = readCodexCreds(acc.dir);
           if (!creds.accessToken) return null;
@@ -87,31 +112,28 @@ async function refreshUsage() {
       }),
     )
   ).filter(Boolean);
-  usageCache = { at: Date.now(), data };
+  usageCache = { at: Date.now(), data, failed: data.some((a) => a.error) };
   return data;
 }
 
 let usageScan = null;
+function startScan() {
+  usageScan = refreshUsage().finally(() => {
+    usageScan = null;
+  });
+  return usageScan;
+}
+
 // Serve usage without ever blocking on the network once warm: a fresh cache is
 // returned as-is, a stale one is returned immediately and refreshed in the
 // background, and only a cold start waits for the first fetch (sharing one
-// in-flight scan). The cache is warmed at boot, so the menu is instant.
-export function collectUsage() {
-  const now = Date.now();
-  if (usageCache.data) {
-    if (now - usageCache.at >= USAGE_FRESH_MS && !usageScan) {
-      usageScan = refreshUsage()
-        .catch(() => usageCache.data)
-        .finally(() => {
-          usageScan = null;
-        });
-    }
-    return Promise.resolve(usageCache.data);
+// in-flight scan). The cache is warmed at boot, so the menu is instant. `fresh`
+// (the panel's refresh button) skips the cache and waits for a real fetch.
+export function collectUsage({ fresh = false } = {}) {
+  if (fresh || !usageCache.data) {
+    return (usageScan ?? startScan()).catch(() => usageCache.data ?? Promise.reject(new Error("usage unavailable")));
   }
-  if (!usageScan) {
-    usageScan = refreshUsage().finally(() => {
-      usageScan = null;
-    });
-  }
-  return usageScan;
+  const ttl = usageCache.failed ? USAGE_RETRY_MS : USAGE_FRESH_MS;
+  if (Date.now() - usageCache.at >= ttl && !usageScan) startScan().catch(() => undefined);
+  return Promise.resolve(usageCache.data);
 }

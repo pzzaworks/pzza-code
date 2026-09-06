@@ -257,8 +257,9 @@ export interface AccountUsage {
   error: string | null;
 }
 // Claude/Codex account usage on the connected device (5h + weekly windows).
-export async function fetchUsage(): Promise<AccountUsage[]> {
-  const res = await agentFetch(`${SERVER_HTTP}/usage`);
+// `fresh` bypasses the agent's cache and waits for a real provider round-trip.
+export async function fetchUsage(fresh = false): Promise<AccountUsage[]> {
+  const res = await agentFetch(`${SERVER_HTTP}/usage${fresh ? "?fresh=1" : ""}`);
   if (!res.ok) throw new Error(`usage ${res.status}`);
   return res.json();
 }

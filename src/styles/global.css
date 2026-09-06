@@ -1435,7 +1435,7 @@ button {
   align-items: center;
   gap: 6px;
   margin-bottom: 9px;
-  flex-wrap: wrap;
+  min-width: 0;
 }
 .usage-dot {
   width: 8px;
@@ -1444,11 +1444,15 @@ button {
   flex: 0 0 auto;
 }
 .usage-name {
+  flex: 0 0 auto;
   font-size: 13px;
   font-weight: 650;
   color: var(--text);
+  white-space: nowrap;
 }
 .usage-plan {
+  flex: 0 0 auto;
+  white-space: nowrap;
   font-size: 10px;
   font-weight: 600;
   text-transform: capitalize;
@@ -1459,13 +1463,14 @@ button {
   border-radius: 20px;
 }
 .usage-email {
+  flex: 0 1 auto;
+  min-width: 0;
   margin-left: auto;
   font-size: 10.5px;
   color: var(--muted);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  max-width: 150px;
 }
 .usage-bar-row + .usage-bar-row {
   margin-top: 8px;
@@ -3594,6 +3599,21 @@ button {
   flex: 0 0 auto;
   display: inline-flex;
   color: var(--muted);
+}
+.ws-sess-device {
+  flex: 0 0 auto;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+  color: var(--muted);
+  background: var(--surface-alt);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 1px 6px;
+  max-width: 110px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .ws-sess-name {
   flex: 1;

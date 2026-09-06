@@ -11,6 +11,23 @@ use tauri::{AppHandle, Manager};
 
 pub const AGENT_PORT: &str = "5190";
 
+// tmux decides whether a client speaks UTF-8 from the first set one of
+// LC_ALL / LC_CTYPE / LANG, and zsh's line editor reads the same variables. A
+// Finder/Dock launch carries none of them, so tmux would print `_` for every
+// non-ASCII glyph (Turkish letters, box drawing) in a local session. Hand
+// children a UTF-8 locale when the environment has none; an explicit locale,
+// UTF-8 or not, is the user's choice and left alone.
+pub fn utf8_locale_env() -> Option<(&'static str, &'static str)> {
+    let has_locale = ["LC_ALL", "LC_CTYPE", "LANG"]
+        .iter()
+        .any(|k| std::env::var(k).map(|v| !v.is_empty()).unwrap_or(false));
+    if has_locale {
+        None
+    } else {
+        Some(("LANG", "en_US.UTF-8"))
+    }
+}
+
 #[derive(Default)]
 pub struct AgentState {
     pub child: Mutex<Option<Child>>,
@@ -222,6 +239,10 @@ fn spawn_agent_process(
         .env("PZZA_AGENT_ID", instance)
         // Empty server host = source role: tmux/ports are local to this machine.
         .env("PZZA_SERVER_HOST", "");
+    // So the tmux servers and shells the agent starts render UTF-8.
+    if let Some((k, v)) = utf8_locale_env() {
+        cmd.env(k, v);
+    }
     if let Some(dir) = script.parent() {
         cmd.current_dir(dir);
     }

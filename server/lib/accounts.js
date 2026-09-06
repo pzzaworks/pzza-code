@@ -1,5 +1,6 @@
 // Claude / Codex agent accounts on this device: discovery, identity, OAuth/token
 // reading, and the env arg that points an agent CLI at a specific account.
+import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -58,9 +59,18 @@ export function readClaudeIdentity(dir) {
   return {};
 }
 
+// Claude Code keys its login-Keychain entry per config dir: the default
+// ~/.claude uses the plain service name, any other dir (CLAUDE_CONFIG_DIR)
+// suffixes it with the first 8 hex chars of the dir path's sha256.
+function keychainService(dir) {
+  const base = "Claude Code-credentials";
+  if (path.resolve(dir) === path.join(os.homedir(), ".claude")) return base;
+  return `${base}-${crypto.createHash("sha256").update(dir).digest("hex").slice(0, 8)}`;
+}
+
 // The Claude OAuth blob for an account. Linux/devbox keeps it in a file; macOS
 // (where Claude Code stores it in the login Keychain) has no file, so fall back
-// to the Keychain entry for the default account.
+// to that account's Keychain entry.
 export function readClaudeOAuth(dir) {
   try {
     const j = JSON.parse(fs.readFileSync(path.join(dir, ".credentials.json"), "utf8"));
@@ -68,9 +78,9 @@ export function readClaudeOAuth(dir) {
   } catch {
     /* no file - try the Keychain below */
   }
-  if (process.platform === "darwin" && path.basename(dir) === ".claude") {
+  if (process.platform === "darwin") {
     try {
-      const out = execFileSync("security", ["find-generic-password", "-s", "Claude Code-credentials", "-w"], {
+      const out = execFileSync("security", ["find-generic-password", "-s", keychainService(dir), "-w"], {
         encoding: "utf8",
       });
       const j = JSON.parse(out);

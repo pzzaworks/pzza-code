@@ -60,7 +60,9 @@ const server = http.createServer(async (req, res) => {
     return json(res, 200, { role: IS_CLIENT ? "client" : "source", forward: IS_CLIENT, host: DEVBOX || null });
   }
   if (url.pathname === "/doctor") return json(res, 200, await doctor());
-  if (url.pathname === "/usage") return json(res, 200, await collectUsage());
+  if (url.pathname === "/usage") {
+    return json(res, 200, await collectUsage({ fresh: url.searchParams.get("fresh") === "1" }));
+  }
   if (url.pathname === "/accounts") return json(res, 200, listAccounts());
   if (url.pathname === "/spend") return json(res, 200, await computeSpend());
 
