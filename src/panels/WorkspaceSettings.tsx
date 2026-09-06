@@ -4,6 +4,7 @@ import { useStore } from "../state/store";
 import { Modal } from "../ui/Modal";
 import { tileTitle, sessionIcon, iconColor } from "../sessionMeta";
 import { DEFAULT_WORKSPACE_ID, WORKSPACE_COLORS, wsKeyOf } from "../workspaces";
+import { deviceNameFor } from "../devices";
 import { workspaceIcon } from "../workspaceIcons";
 import { IconPicker } from "../ui/IconPicker";
 
@@ -21,6 +22,7 @@ export function WorkspaceSettings({ id, close }: { id: string; close: () => void
   const unhideTile = useStore((s) => s.unhideTile);
   const sessionWs = useStore((s) => s.sessionWs);
   const tiles = useStore((s) => s.tiles);
+  const devices = useStore((s) => s.devices);
 
   const [pickerOpen, setPickerOpen] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -116,6 +118,9 @@ export function WorkspaceSettings({ id, close }: { id: string; close: () => void
                     <Icon size={14} />
                   </span>
                   <span className="ws-sess-name">{tileTitle(t.name)}</span>
+                  <span className="ws-sess-device" title="Running on">
+                    {deviceNameFor(devices, t.host)}
+                  </span>
                   <button
                     className="ws-sess-toggle"
                     title={isHidden ? "Show" : "Hide"}
