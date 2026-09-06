@@ -32,6 +32,7 @@ import { mcpConfigs, mcpInstall } from "./lib/mcp.js";
 import { installAgent } from "./lib/install.js";
 import { filesRouter } from "./lib/files.js";
 import { startPtyBridge, sweepOrphanViews } from "./lib/pty.js";
+import { scanProjects, syncProjects } from "./lib/projects.js";
 
 // A query-param host, validated for safe ssh use ("" when absent/invalid).
 const queryHost = (url) => {
@@ -120,6 +121,15 @@ const server = http.createServer(async (req, res) => {
       sh(`tmux new-session -d -s ${shQuote(name)}${cwd}${env}`, () => {});
     }
     return json(res, 200, { ok: true });
+  }
+  // Project sync: git repos under the projects root, across every device.
+  if (url.pathname === "/projects/scan" && req.method === "POST") {
+    const out = await scanProjects(await readBody(req), { redact: true });
+    return json(res, out.error ? 400 : 200, out);
+  }
+  if (url.pathname === "/projects/sync" && req.method === "POST") {
+    const out = await syncProjects(await readBody(req));
+    return json(res, out.error ? 400 : 200, out);
   }
   if (url.pathname === "/mcp/config") return json(res, 200, { path: MCP_PATH, ...mcpConfigs(MCP_PATH) });
   if (url.pathname === "/mcp/install" && req.method === "POST") {

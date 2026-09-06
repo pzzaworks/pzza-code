@@ -4,8 +4,9 @@
 import { execFile } from "node:child_process";
 import { DEVBOX, IS_CLIENT } from "./config.js";
 
-// [user@]host or an ssh-config alias. Kept strict so it is safe to interpolate.
-export const SSH_TOKEN = /^[A-Za-z0-9._@-]{1,128}$/;
+// [user@]host or an ssh-config alias. Kept strict so it is safe to interpolate,
+// and it may not start with "-" or ssh would read it as an option.
+export const SSH_TOKEN = /^[A-Za-z0-9._][A-Za-z0-9._@-]{0,127}$/;
 
 // Single-quote a value for safe embedding in a remote shell command string.
 export function shQuote(v) {

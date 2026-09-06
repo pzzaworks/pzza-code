@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
 interface TipState {
@@ -78,11 +78,28 @@ export function Tooltip() {
     };
   }, []);
 
-  if (!tip) return null;
+  return tip ? <Bubble tip={tip} /> : null;
+}
+
+const EDGE = 8;
+
+// The bubble is centered on its target, then nudged back inside the viewport
+// once its real width is known, so a long tip near an edge never overflows.
+function Bubble({ tip }: { tip: TipState }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [x, setX] = useState(tip.x);
+
+  useLayoutEffect(() => {
+    const w = ref.current?.offsetWidth ?? 0;
+    const half = w / 2;
+    setX(Math.min(Math.max(tip.x, EDGE + half), window.innerWidth - EDGE - half));
+  }, [tip]);
+
   return createPortal(
     <div
+      ref={ref}
       className={`pzza-tooltip ${tip.flip ? "flip" : ""}`}
-      style={{ left: tip.x, top: tip.y }}
+      style={{ left: x, top: tip.y }}
       role="tooltip"
     >
       {tip.text}

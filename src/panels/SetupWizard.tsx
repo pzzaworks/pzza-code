@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { AlertTriangle, Check, FolderOpen, Loader2, RefreshCw, ServerCog, X } from "lucide-react";
+import { AlertTriangle, Check, Loader2, RefreshCw, ServerCog, X } from "lucide-react";
 import { Modal } from "../ui/Modal";
 import { WizardIcon } from "../ui/WizardIcon";
-import { FilePicker } from "./FilePicker";
+import { PathField } from "../ui/PathField";
 import { useStore } from "../state/store";
 import {
   fetchDoctor,
@@ -68,7 +68,6 @@ export function SetupWizard({ open, onClose }: { open: boolean; onClose: () => v
   // Auto-discovered SSH targets / identities from the local ~/.ssh, plus a file
   // picker for choosing an identity by hand.
   const [ssh, setSsh] = useState<SshHosts | null>(null);
-  const [pickerOpen, setPickerOpen] = useState(false);
   useEffect(() => {
     if (open && mode === "add" && !ssh) {
       fetchSshHosts()
@@ -266,30 +265,15 @@ export function SetupWizard({ open, onClose }: { open: boolean; onClose: () => v
               </label>
               <label className="sw-field sw-grow">
                 <span>Identity file (optional)</span>
-                <div className="sw-input-with-btn">
-                  <input
-                    value={identity}
-                    onChange={(e) => setIdentity(e.target.value)}
-                    placeholder="~/.ssh/id_ed25519"
-                    spellCheck={false}
-                    list="sw-identities"
-                  />
-                  <button
-                    type="button"
-                    className="sw-browse"
-                    title="Choose a key file"
-                    onClick={() => setPickerOpen(true)}
-                  >
-                    <FolderOpen size={14} />
-                  </button>
-                </div>
-                {ssh && ssh.identities.length > 0 ? (
-                  <datalist id="sw-identities">
-                    {ssh.identities.map((p) => (
-                      <option key={p} value={p} />
-                    ))}
-                  </datalist>
-                ) : null}
+                <PathField
+                  value={identity}
+                  mode="file"
+                  start={ssh?.dir || undefined}
+                  placeholder="~/.ssh/id_ed25519"
+                  title="Choose a key file"
+                  pickerTitle="SSH identity file"
+                  onChange={(p) => setIdentity(p)}
+                />
               </label>
             </div>
             <div className="sw-role">
@@ -345,13 +329,6 @@ export function SetupWizard({ open, onClose }: { open: boolean; onClose: () => v
         </>
       )}
 
-      <FilePicker
-        open={pickerOpen}
-        onClose={() => setPickerOpen(false)}
-        onPick={(p) => setIdentity(p)}
-        mode="file"
-        start={ssh?.dir || undefined}
-      />
     </Modal>
   );
 }

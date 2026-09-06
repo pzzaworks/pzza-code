@@ -25,7 +25,7 @@ export async function filesRouter(req, res, url) {
     const raw = url.searchParams.get("path") || "";
     const p = raw ? remotePath(raw) : null;
     if (raw && !p) return json(res, 400, { error: "invalid path" }), true;
-    const cmd = (p ? remoteGuard(p) : `p=$(cd ~ && pwd -P); `) + `cd "$p" && pwd -P && ls -1Ap 2>/dev/null`;
+    const cmd = (p ? remoteGuard(p, { listOnly: true }) : `p=$(cd ~ && pwd -P); `) + `cd "$p" && pwd -P && ls -1Ap 2>/dev/null`;
     shOn(fsHost, cmd, (err, out) => {
       if (denied(out)) return json(res, 403, { error: "outside home" });
       if (err) return json(res, 404, { error: String(err.message || err) });
@@ -154,7 +154,7 @@ export async function filesRouter(req, res, url) {
   }
 
   if (url.pathname === "/fs/list") {
-    const p = safePath(url.searchParams.get("path")) || os.homedir();
+    const p = safePath(url.searchParams.get("path"), { listOnly: true }) || os.homedir();
     try {
       const entries = fs
         .readdirSync(p, { withFileTypes: true })

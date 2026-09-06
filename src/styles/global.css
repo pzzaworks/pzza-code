@@ -126,7 +126,6 @@ button {
     border: 1px solid var(--border);
     border-radius: 13px;
     box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
-    transform-origin: top right;
     animation: menu-in 0.12s ease-out;
   }
   .topbar-tools.open {
@@ -519,21 +518,19 @@ button {
   border-radius: 13px;
   box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
   /* CSS (not JS) entrance: a rAF-driven animation can stall mid-frame with many
-     WebGL terminals on screen and leave the panel translucent. */
-  transform-origin: top center;
-  animation: menu-in 0.16s ease-out;
-  will-change: transform, opacity;
+     WebGL terminals on screen and leave the panel translucent. Opacity only,
+     never a transform and never will-change: an absolutely positioned panel
+     that is promoted to its own layer and transformed on its first frame gets
+     painted at a stale position by WKWebView, so the menu visibly appears
+     somewhere else and slides to its anchor. */
+  animation: menu-in 0.14s ease-out;
 }
-/* Menus drop straight down from their anchor - a pure vertical slide, since a
-   scale on a wide right-anchored panel reads as sliding in from the side. */
 @keyframes menu-in {
   from {
     opacity: 0;
-    transform: translateY(-10px);
   }
   to {
     opacity: 1;
-    transform: translateY(0);
   }
 }
 .menu-item {
@@ -1225,58 +1222,6 @@ button {
 }
 
 /* ---------- File picker ---------- */
-.fp-path {
-  font-family: ui-monospace, Menlo, monospace;
-  font-size: 11.5px;
-  color: var(--muted);
-  padding: 2px 6px 10px;
-  overflow-x: auto;
-  white-space: nowrap;
-}
-.fp-list {
-  max-height: 52vh;
-  overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-}
-.fp-row {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  width: 100%;
-  padding: 7px 9px;
-  border: none;
-  background: transparent;
-  color: var(--text);
-  font-size: 13px;
-  border-radius: 8px;
-  cursor: pointer;
-  text-align: left;
-}
-.fp-row:hover {
-  background: var(--surface-alt);
-}
-.fp-folder {
-  color: var(--accent);
-  flex: 0 0 auto;
-}
-.fp-file {
-  color: var(--muted);
-  flex: 0 0 auto;
-}
-.fp-name {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.fp-arrow {
-  color: var(--muted);
-  opacity: 0.55;
-  flex: 0 0 auto;
-}
 .grid-empty {
   height: 100%;
   display: flex;
@@ -2369,7 +2314,7 @@ button {
   position: fixed;
   z-index: 5000;
   transform: translateX(-50%);
-  max-width: 260px;
+  max-width: min(360px, calc(100vw - 16px));
   padding: 4px 8px;
   background: var(--surface-alt, #14161c);
   color: var(--text);
@@ -2377,7 +2322,8 @@ button {
   border-radius: 7px;
   font-size: 11.5px;
   line-height: 1.35;
-  white-space: nowrap;
+  white-space: normal;
+  width: max-content;
   pointer-events: none;
   box-shadow: 0 6px 22px rgba(0, 0, 0, 0.45);
   animation: pzza-tip-in 0.1s ease-out;
@@ -2546,9 +2492,8 @@ button {
   inset: 0;
   z-index: 400;
 }
-/* Anchored by its right edge (inline `right`), never via a transform: the
-   menu-in entrance animates transform, so a translateX here would only apply
-   once the animation ended and the popover would visibly jump left. */
+/* Anchored by its right edge (inline `right`), never via a transform, so the
+   popover sits at its anchor from the first frame. */
 .layout-pop {
   position: fixed;
   left: auto;
@@ -3808,4 +3753,767 @@ button {
 }
 ::-webkit-scrollbar-thumb:hover {
   background: var(--muted);
+}
+
+/* --- Projects sync dashboard ------------------------------------------- */
+.pj-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+.pj-title {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+.pj-subtitle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+}
+.pj-root {
+  max-width: 340px;
+}
+.pj-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.pj-devices {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+.pj-device {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 26px;
+  padding: 0 10px 0 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 11.5px;
+  max-width: 260px;
+}
+.pj-device-name {
+  font-weight: 600;
+}
+.pj-device-n {
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pj-device-err .pj-device-n {
+  color: var(--danger);
+}
+.pj-filter {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+}
+.pj-filter-btn {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  border-radius: 999px;
+  height: 20px;
+  padding: 0 9px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.pj-filter-btn b {
+  font-weight: 650;
+  margin-left: 2px;
+}
+.pj-filter-btn.on {
+  color: var(--text);
+  background: var(--surface-alt);
+}
+.pj-filter-warn:not(.on) b {
+  color: var(--warning);
+}
+.pj-error {
+  margin: 0 0 10px;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--danger) 45%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.pj-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+  margin: 0 0 10px;
+  padding: 7px 10px;
+  border-radius: 10px;
+  background: var(--surface-alt);
+  font-size: 11.5px;
+}
+.pj-summary-dev {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.pj-sum {
+  color: var(--muted);
+}
+.pj-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 52vh;
+  overflow: auto;
+  padding-right: 2px;
+}
+.pj-empty {
+  margin: 0;
+}
+.pj-card {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg);
+  overflow: hidden;
+}
+.pj-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 32px;
+  padding: 5px 10px 5px 9px;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.pj-card-head:hover {
+  background: var(--surface-alt);
+}
+.pj-chev {
+  flex-shrink: 0;
+  transition: transform 0.15s;
+}
+.pj-chev.flip {
+  transform: rotate(90deg);
+}
+.pj-rel {
+  font-size: 12.5px;
+  font-weight: 650;
+  word-break: break-all;
+}
+.pj-rel-dir {
+  font-weight: 400;
+  color: var(--muted);
+}
+.pj-envs {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-left: auto;
+  justify-content: flex-end;
+}
+.pj-env {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 18px;
+  padding: 0 7px;
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  font-family: ui-monospace, Menlo, monospace;
+  font-size: 10.5px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.pj-env-state {
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  font-size: 9.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+.pj-env-synced .pj-env-state {
+  color: var(--success);
+}
+.pj-env-differs .pj-env-state {
+  color: var(--danger);
+}
+.pj-env-partial .pj-env-state {
+  color: var(--warning);
+}
+.pj-lines {
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--border);
+}
+.pj-line {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 28px;
+  padding: 3px 10px 3px 30px;
+  font-size: 12px;
+}
+.pj-line + .pj-line {
+  border-top: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
+}
+.pj-line-device {
+  flex: 0 0 92px;
+  color: var(--muted);
+  font-size: 11.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pj-line-body {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+}
+.pj-branch {
+  font-family: ui-monospace, Menlo, monospace;
+  font-weight: 600;
+}
+.pj-sha {
+  font-family: ui-monospace, Menlo, monospace;
+  font-size: 11px;
+  color: var(--muted);
+}
+.pj-missing {
+  color: var(--muted);
+  font-style: italic;
+}
+.pj-missing-hint {
+  margin-left: 8px;
+  font-style: normal;
+  font-size: 11px;
+  color: var(--muted);
+  opacity: 0.8;
+}
+.pj-badges {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.pj-badge {
+  font-family: ui-monospace, Menlo, monospace;
+  font-size: 10.5px;
+  line-height: 16px;
+  padding: 0 6px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  white-space: nowrap;
+}
+.pj-ok {
+  color: var(--success);
+}
+.pj-warn {
+  color: var(--warning);
+}
+.pj-bad {
+  color: var(--danger);
+}
+.pj-dim {
+  color: var(--muted);
+}
+.pj-acc {
+  color: var(--accent);
+}
+.pj-outcome {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  max-width: 45%;
+  font-size: 10px;
+  font-weight: 650;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  padding: 2px 7px;
+  border-radius: 6px;
+  background: var(--surface-alt);
+  color: var(--muted);
+}
+.pj-outcome-detail {
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 10.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pj-out-cloned,
+.pj-out-updated {
+  color: var(--success);
+}
+.pj-out-stashed {
+  color: var(--warning);
+}
+.pj-out-env {
+  color: var(--success);
+}
+.pj-outcomes {
+  display: inline-flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 4px;
+  flex-shrink: 0;
+  max-width: 50%;
+}
+.pj-outcomes .pj-outcome {
+  max-width: 100%;
+}
+.pj-out-failed {
+  color: var(--danger);
+}
+.pj-details {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 7px 10px 8px 30px;
+  border-top: 1px solid var(--border);
+  background: var(--surface-alt);
+  font-size: 11.5px;
+}
+.pj-detail-line {
+  display: flex;
+  gap: 10px;
+}
+.pj-k {
+  flex: 0 0 92px;
+  color: var(--muted);
+}
+.pj-v {
+  font-family: ui-monospace, Menlo, monospace;
+  word-break: break-all;
+}
+.pj-note {
+  margin: 10px 0 0;
+}
+
+/* --- Path field: a path chip that opens the device file browser ------------ */
+.path-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  max-width: 100%;
+  height: 28px;
+  padding: 0 10px 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+.path-field:hover {
+  border-color: var(--accent);
+}
+.path-field-icon {
+  flex: 0 0 auto;
+  color: var(--accent);
+}
+.path-field-value {
+  font-family: ui-monospace, Menlo, monospace;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.path-field-empty .path-field-value {
+  color: var(--muted);
+}
+.sw-field .path-field {
+  height: 32px;
+  border-radius: 8px;
+}
+
+/* --- File / folder picker ---------------------------------------------- */
+.fp {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: -4px 0 0;
+}
+.fp-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.fp-host {
+  flex: 0 0 auto;
+}
+.fp-host .cselect {
+  width: auto;
+  min-width: 150px;
+  height: 30px;
+}
+.fp-search {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  height: 30px;
+  padding: 0 9px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--bg);
+}
+.fp-search:focus-within {
+  border-color: var(--accent);
+}
+.fp-search input {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+}
+.fp-search input:focus {
+  outline: none;
+}
+.fp-tool {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--bg);
+  color: var(--muted);
+  cursor: pointer;
+}
+.fp-tool:hover:not(:disabled) {
+  color: var(--text);
+  border-color: var(--accent);
+}
+.fp-tool:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.fp-tool.on {
+  color: var(--accent);
+}
+.fp-crumbs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 30px;
+}
+.fp-crumb-list {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  min-width: 0;
+  height: 30px;
+  padding: 0 4px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  white-space: nowrap;
+  scrollbar-width: none; /* the trail scrolls, the bar stays a single quiet line */
+}
+.fp-crumb-list::-webkit-scrollbar {
+  display: none;
+}
+.fp-crumb-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+  flex: 0 0 auto;
+}
+.fp-crumb-sep {
+  color: var(--muted);
+  opacity: 0.6;
+}
+.fp-crumb {
+  display: inline-flex;
+  align-items: center;
+  height: 24px;
+  padding: 0 6px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-family: ui-monospace, Menlo, monospace;
+  font-size: 12px;
+  cursor: pointer;
+}
+.fp-crumb:hover {
+  background: var(--surface-alt);
+  color: var(--text);
+}
+.fp-crumb-cur {
+  color: var(--text);
+  font-weight: 650;
+  cursor: default;
+}
+.fp-crumb-cur:hover {
+  background: transparent;
+}
+.fp-crumb-edit {
+  flex: 1;
+  min-width: 0;
+  height: 30px;
+  padding: 0 9px;
+  border: 1px solid var(--accent);
+  border-radius: 9px;
+  background: var(--bg);
+  color: var(--text);
+  font-family: ui-monospace, Menlo, monospace;
+  font-size: 12px;
+}
+.fp-crumb-edit:focus {
+  outline: none;
+}
+.fp-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  height: min(48vh, 420px);
+  overflow-y: auto;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg);
+}
+.fp-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  height: 32px;
+  padding: 0 10px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+.fp-row:hover,
+.fp-row-cur {
+  background: var(--surface-alt);
+}
+.fp-row-hidden {
+  opacity: 0.7;
+}
+.fp-folder {
+  color: var(--accent);
+  flex: 0 0 auto;
+}
+.fp-file {
+  color: var(--muted);
+  flex: 0 0 auto;
+}
+.fp-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fp-arrow {
+  color: var(--muted);
+  opacity: 0.5;
+  flex: 0 0 auto;
+}
+.fp-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 18px 12px;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+.fp-status-err {
+  color: var(--danger);
+}
+.fp-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-top: 2px;
+}
+.fp-foot-path {
+  flex: 1;
+  min-width: 0;
+  font-family: ui-monospace, Menlo, monospace;
+  font-size: 12px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fp-foot-hint {
+  flex: 0 0 auto;
+}
+
+/* --- Sync settings --------------------------------------------------------- */
+.switch-sm {
+  width: 30px;
+  height: 18px;
+  border-radius: 9px;
+}
+.switch-sm .switch-knob {
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+}
+.switch-sm.switch-on .switch-knob {
+  transform: translateX(12px);
+}
+/* Pressed/open state for a ghost button (an open dropdown, a toggled panel). */
+.btn-on:not(:disabled) {
+  color: var(--text);
+  border-color: var(--accent);
+  background: var(--surface-alt);
+}
+/* Icon-only sibling of .btn-sm: same height, radius and ghost look. */
+.btn-icon.btn-sm {
+  width: 26px;
+  padding: 0;
+  justify-content: center;
+}
+.pj-settings {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin: 0 0 10px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface-alt);
+}
+.pj-set-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.pj-set-title {
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.pj-set-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.pj-set-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 26px;
+  padding: 0 10px 0 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg);
+  color: var(--muted);
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+.pj-set-chip .dot {
+  background: var(--border);
+}
+.pj-set-chip.on {
+  color: var(--text);
+  border-color: color-mix(in srgb, var(--success) 50%, var(--border));
+}
+.pj-set-chip.on .dot {
+  background: var(--success);
+}
+.pj-set-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 6px 8px;
+  border-radius: 9px;
+  background: var(--bg);
+  font-size: 12.5px;
+}
+.pj-set-row > span {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.pj-set-row small {
+  font-size: 11px;
+  color: var(--muted);
+}
+.pj-set-row-off {
+  opacity: 0.5;
+}
+.pj-set-input {
+  flex: 0 0 200px;
+  height: 28px;
+  padding: 0 9px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  font-family: ui-monospace, Menlo, monospace;
+  font-size: 11.5px;
+}
+.pj-set-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.pj-card-switches {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  margin-left: 8px;
+  flex-shrink: 0;
+}
+.pj-switch-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.pj-switch-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: var(--muted);
+}
+.pj-card-off .pj-lines,
+.pj-card-off .pj-rel,
+.pj-card-off .pj-envs {
+  opacity: 0.45;
 }
