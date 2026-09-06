@@ -3,6 +3,7 @@
 // warmed in the background so the usage panel never waits on the scan.
 import fs from "node:fs";
 import path from "node:path";
+import { STATE_DIR } from "./config.js";
 import { discoverAccounts } from "./accounts.js";
 
 // USD per million (input, output) tokens.
@@ -112,13 +113,56 @@ function addBuckets(days, day, model, values) {
   for (let i = 0; i < values.length; i++) b[i] += values[i];
 }
 
-function parseClaudeSpend(file, seen, days) {
+// Sum one file's day -> model -> buckets into the account-wide accumulator.
+function mergeDays(into, from) {
+  for (const [day, models] of Object.entries(from)) {
+    for (const [model, buckets] of Object.entries(models)) {
+      addBuckets(into, day, model, buckets);
+    }
+  }
+}
+
+// Per-file parse cache persisted to disk, keyed by absolute path, each entry
+// tagged with the file's mtime + size. It survives restarts, so after the first
+// full scan the (multi-second, whole-history) parse never runs again except for
+// files that actually changed. A corrupt or missing cache just means a cold scan.
+const CACHE_FILE = path.join(STATE_DIR, "spend-cache.json");
+let memCache = null;
+
+function loadFileCache() {
+  if (memCache) return memCache;
+  try {
+    memCache = JSON.parse(fs.readFileSync(CACHE_FILE, "utf8"));
+    if (!memCache || typeof memCache !== "object") memCache = {};
+  } catch {
+    memCache = {};
+  }
+  return memCache;
+}
+
+function saveFileCache(cache) {
+  memCache = cache;
+  try {
+    fs.writeFileSync(CACHE_FILE, JSON.stringify(cache));
+  } catch {
+    /* best effort - a failed write just costs a re-parse next boot */
+  }
+}
+
+// Parse one Claude transcript into day -> model -> buckets. Deduplicates by
+// (message id, requestId) within the file (retries logged twice); each file is
+// parsed at most once and the result is cached, so cross-file dupes - which
+// Claude Code does not actually produce (a session appends to its own file) -
+// are not worth a global pass.
+function parseClaudeFile(file) {
+  const days = {};
   let text;
   try {
     text = fs.readFileSync(file, "utf8");
   } catch {
-    return;
+    return days;
   }
+  const seen = new Set();
   for (const line of text.split("\n")) {
     if (!line || !line.includes('"usage"')) continue;
     let rec;
@@ -149,14 +193,16 @@ function parseClaudeSpend(file, seen, days) {
       hour || 0,
     ]);
   }
+  return days;
 }
 
-function parseCodexSpend(file, days) {
+function parseCodexFile(file) {
+  const days = {};
   let text;
   try {
     text = fs.readFileSync(file, "utf8");
   } catch {
-    return;
+    return days;
   }
   let model = null;
   let previous = null;
@@ -188,6 +234,7 @@ function parseCodexSpend(file, days) {
     const cached = Math.min(delta[1], delta[0]);
     addBuckets(days, day, model, [delta[0] - cached, delta[2], cached, 0, 0]);
   }
+  return days;
 }
 
 // The transcripts can be big; yield to the event loop between files so scanning
@@ -201,10 +248,11 @@ async function scanSpend(now) {
   const dayYesterday = dayStr(now - 86400000);
   const horizon = now - SPEND_WINDOW_DAYS * 86400000;
 
+  const cache = loadFileCache();
+  const nextCache = {};
   const data = [];
   for (const acc of discoverAccounts()) {
     const days = {};
-    const seen = new Set();
     for (const file of transcriptFiles(acc.provider, acc.dir)) {
       let st;
       try {
@@ -213,9 +261,17 @@ async function scanSpend(now) {
         continue;
       }
       if (st.mtimeMs < horizon) continue; // too old to touch the 30-day window
-      if (acc.provider === "claude") parseClaudeSpend(file, seen, days);
-      else parseCodexSpend(file, days);
-      await new Promise((r) => setImmediate(r)); // let the event loop breathe
+      // Reuse the parsed result unless the file grew or was rewritten. Only an
+      // actually-changed file (essentially just the active transcript) is
+      // re-read, so a huge history is scanned in full only once.
+      let entry = cache[file];
+      if (!entry || entry.mtimeMs !== st.mtimeMs || entry.size !== st.size) {
+        const fileDays = acc.provider === "claude" ? parseClaudeFile(file) : parseCodexFile(file);
+        entry = { mtimeMs: st.mtimeMs, size: st.size, days: fileDays };
+        await new Promise((r) => setImmediate(r)); // let the event loop breathe
+      }
+      nextCache[file] = entry;
+      mergeDays(days, entry.days);
     }
     const win = { today: [0, 0], yesterday: [0, 0], window: [0, 0] };
     for (const [day, models] of Object.entries(days)) {
@@ -260,6 +316,9 @@ async function scanSpend(now) {
       days: series,
     });
   }
+  // nextCache holds only the files seen this pass, so deleted / aged-out files
+  // drop out and the cache never grows without bound.
+  saveFileCache(nextCache);
   spendCache = { at: now, data };
   return data;
 }
