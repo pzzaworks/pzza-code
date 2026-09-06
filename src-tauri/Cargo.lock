@@ -2574,7 +2574,7 @@ dependencies = [
 
 [[package]]
 name = "pzzacode"
-version = "0.2.24"
+version = "0.2.25"
 dependencies = [
  "portable-pty",
  "serde",
