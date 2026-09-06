@@ -61,6 +61,7 @@ export function installAgent(opts, res) {
       "server/lib",
       "server/package.json",
       "mcp/server.js",
+      "mcp/lib",
       "mcp/package.json",
       "install.sh",
     ];
