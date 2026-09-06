@@ -72,6 +72,7 @@ export function Terminal({ name, cmd, args, cwd, window: win, active, onStatus }
   const termRef = useRef<XTerm | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const safeFitRef = useRef<(() => void) | null>(null);
+  const flushOutputRef = useRef<(() => void) | null>(null);
   const activeRef = useRef(active);
   const themeId = useStore((s) => s.themeId);
   const fontSize = useStore((s) => s.fontSize);
@@ -91,7 +92,9 @@ export function Terminal({ name, cmd, args, cwd, window: win, active, onStatus }
         '"MesloLGS NF", "JetBrainsMono Nerd Font", "JetBrainsMonoNL Nerd Font", "Hack Nerd Font", "FiraCode Nerd Font", "CaskaydiaCove Nerd Font", "Symbols Nerd Font Mono", "Symbols Nerd Font", ui-monospace, "SF Mono", Menlo, Monaco, monospace',
       fontSize: useStore.getState().fontSize,
       lineHeight: snappedLineHeight(useStore.getState().fontSize),
-      scrollback: 10000,
+      // tmux keeps the real history on the remote side; a deep local buffer
+      // only multiplies memory per tile (each line is a typed-array row).
+      scrollback: 3000,
       theme: themeById(useStore.getState().themeId).terminal,
     });
     termRef.current = term;
@@ -268,14 +271,50 @@ export function Terminal({ name, cmd, args, cwd, window: win, active, onStatus }
     const t1 = setTimeout(safeFit, 80);
     const t2 = setTimeout(safeFit, 250);
 
+    // Output scheduling. The focused tile writes straight through so typing
+    // stays instant. Every other tile batches its output: a TUI that redraws
+    // continuously (a spinner, btop) would otherwise force a full WebGL repaint
+    // per burst in a pane nobody is looking at closely. Batches flush at a fixed
+    // cadence (slower still while the window is hidden or another app has
+    // focus) and immediately once they grow large, so a flood of output never
+    // piles up in memory.
+    const BACKGROUND_FLUSH_MS = 50; // ~20 fps for visible, unfocused tiles
+    const HIDDEN_FLUSH_MS = 250; // window hidden or in the background
+    const MAX_PENDING_BYTES = 256 * 1024;
+    let pending: Uint8Array[] = [];
+    let pendingBytes = 0;
+    let flushTimer: ReturnType<typeof setTimeout> | undefined;
+    const flushOutput = () => {
+      clearTimeout(flushTimer);
+      flushTimer = undefined;
+      const chunks = pending;
+      pending = [];
+      pendingBytes = 0;
+      for (const chunk of chunks) term.write(chunk);
+    };
+    flushOutputRef.current = flushOutput;
+    const windowFocused = () => document.visibilityState === "visible" && document.hasFocus();
+    const writeOutput = (bytes: Uint8Array) => {
+      markActive();
+      if (activeRef.current && windowFocused()) {
+        if (pending.length) flushOutput();
+        term.write(bytes);
+        return;
+      }
+      pending.push(bytes);
+      pendingBytes += bytes.length;
+      if (pendingBytes >= MAX_PENDING_BYTES) {
+        flushOutput();
+        return;
+      }
+      if (flushTimer === undefined) {
+        const delay = document.visibilityState === "visible" ? BACKGROUND_FLUSH_MS : HIDDEN_FLUSH_MS;
+        flushTimer = setTimeout(flushOutput, delay);
+      }
+    };
+
     if (HAS_TAURI) {
-      spawnPty(
-        { cmd, args, cwd, cols: term.cols, rows: term.rows },
-        (bytes) => {
-          markActive();
-          term.write(bytes);
-        },
-      )
+      spawnPty({ cmd, args, cwd, cols: term.cols, rows: term.rows }, writeOutput)
         .then((id) => {
           if (disposed) return killPty(id);
           tauriId = id;
@@ -291,8 +330,7 @@ export function Terminal({ name, cmd, args, cwd, window: win, active, onStatus }
         cwd,
         (bytes) => {
           gotData = true;
-          markActive();
-          term.write(bytes);
+          writeOutput(bytes);
         },
         () => {
           // Server unreachable and nothing streamed yet: show the preview so the
@@ -378,6 +416,8 @@ export function Terminal({ name, cmd, args, cwd, window: win, active, onStatus }
       clearTimeout(t1);
       clearTimeout(t2);
       clearTimeout(idleTimer);
+      clearTimeout(flushTimer);
+      flushOutputRef.current = null;
       resizeObserver.disconnect();
       previewDispose?.();
       // Detach only - the remote tmux session keeps running.
@@ -398,7 +438,11 @@ export function Terminal({ name, cmd, args, cwd, window: win, active, onStatus }
   // becomes active (so keyboard tile shortcuts land input in the right pane).
   useEffect(() => {
     activeRef.current = active;
-    if (active) termRef.current?.focus();
+    if (active) {
+      // Catch up on any output batched while this tile was in the background.
+      flushOutputRef.current?.();
+      termRef.current?.focus();
+    }
   }, [active]);
 
   // Live font size / cursor changes from Settings, then refit so the PTY

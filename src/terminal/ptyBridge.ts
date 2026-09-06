@@ -1,9 +1,9 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 
 // Thin wrapper over the Rust PTY commands. Output is streamed over a Tauri
-// Channel as base64 chunks (raw bytes are not valid UTF-8, and a JSON array of
-// numbers would be far heavier than base64). A later pass can switch this to a
-// binary channel; the WebGL renderer is where the real throughput win lives.
+// Channel as raw bytes: the Rust side coalesces each output burst into one
+// message and the runtime delivers it as an ArrayBuffer, so nothing is
+// base64-encoded or decoded on either side of the bridge.
 
 export interface SpawnOptions {
   cmd: string;
@@ -13,20 +13,12 @@ export interface SpawnOptions {
   rows: number;
 }
 
-function base64ToBytes(b64: string): Uint8Array {
-  const binary = atob(b64);
-  const len = binary.length;
-  const bytes = new Uint8Array(len);
-  for (let i = 0; i < len; i++) bytes[i] = binary.charCodeAt(i);
-  return bytes;
-}
-
 export async function spawnPty(
   opts: SpawnOptions,
   onData: (bytes: Uint8Array) => void,
 ): Promise<number> {
-  const channel = new Channel<string>();
-  channel.onmessage = (chunk) => onData(base64ToBytes(chunk));
+  const channel = new Channel<ArrayBuffer>();
+  channel.onmessage = (chunk) => onData(new Uint8Array(chunk));
   const id = await invoke<number>("pty_spawn", {
     cmd: opts.cmd,
     args: opts.args,
