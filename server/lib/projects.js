@@ -25,6 +25,55 @@ const MAX_OUTPUT = 8 * 1024 * 1024;
 // git would parse as an option ("-oProxyCommand=...") or a local path.
 const REMOTE_URL = /^(?:[A-Za-z0-9._-]+@[A-Za-z0-9._-]+:[^\s'"]+|(?:ssh|https?|git):\/\/[^\s'"]+)$/;
 
+// Identity of a repo across devices: its origin, normalized so that
+// git@github.com:org/repo.git, ssh://git@github.com/org/repo and
+// https://github.com/org/repo.git all collapse to "github.com/org/repo".
+export function originKey(url) {
+  if (!url) return null;
+  let u = String(url).trim().replace(/\/+$/, "").replace(/\.git$/i, "");
+  const scp = u.match(/^(?:[^@\s]+@)?([^:/\s]+):(.+)$/);
+  if (scp && !/^\w+:\/\//.test(u)) u = `${scp[1]}/${scp[2]}`;
+  else u = u.replace(/^\w+:\/\/(?:[^@/]+@)?/, "");
+  return u.toLowerCase();
+}
+
+// Group every device's repos into projects. Two repos are the same project
+// when they share an origin (normalized) OR the same path below the root:
+// the path rule catches a remote that moved (berkekiran/x -> pzzaworks/x)
+// while the origin rule catches the same repo kept at different paths.
+// Returns [{ rel, origin, members: Map(deviceId -> repo) }], rel/origin being
+// the first clonable ones seen (device order = client order).
+export function groupProjects(scan) {
+  const groups = []; // { keys: Set, members: Map }
+  const byKey = new Map(); // key -> group
+  for (const d of scan.devices) {
+    for (const r of d.repos) {
+      const keys = [`path:${r.rel}`];
+      const ok = originKey(r.origin);
+      if (ok) keys.push(`origin:${ok}`);
+      const hits = [...new Set(keys.map((k) => byKey.get(k)).filter(Boolean))];
+      let g = hits[0];
+      if (!g) groups.push((g = { keys: new Set(), members: new Map() }));
+      // Merge any other groups these keys touch into g.
+      for (const other of hits.slice(1)) {
+        for (const [id, rep] of other.members) if (!g.members.has(id)) g.members.set(id, rep);
+        for (const k of other.keys) g.keys.add(k);
+        groups.splice(groups.indexOf(other), 1);
+      }
+      for (const k of keys) {
+        g.keys.add(k);
+        byKey.set(k, g);
+      }
+      if (!g.members.has(d.id)) g.members.set(d.id, r);
+    }
+  }
+  return groups.map((g) => {
+    const members = [...g.members.values()];
+    const first = members.find((r) => r.origin && REMOTE_URL.test(r.origin));
+    return { rel: (first ?? members[0]).rel, origin: first ? first.origin : null, members: g.members };
+  });
+}
+
 // Strip embedded credentials ("https://user:token@host/...") from anything that
 // leaves the agent: origin URLs in the scan and git output quoted in results.
 export function redact(text) {
@@ -34,16 +83,35 @@ export function redact(text) {
     .replace(/(\w+:\/\/)[^\s/@:]+:[^\s/@]*@/g, "$1***@");
 }
 
-// The root must stay inside $HOME: "~", "~/x" or an absolute path, no "..".
-// Returns the POSIX shell expression that evaluates to the root on the device.
+// The root must stay inside $HOME: "~", "~/x" or an absolute path, no ".." and
+// no shell or glob metacharacters. Returns the shell call that resolves it on
+// the device: `pz_root BASE SEG...`, where each segment is matched exactly
+// first and case-insensitively second, so ~/Projects on the Mac finds
+// ~/projects on a Linux box.
 export function rootExpr(root) {
   const r = String(root || "").trim().replace(/\/+$/, "");
-  if (!r || r.split("/").includes("..") || /['"\\$`]/.test(r)) return null;
-  if (r === "~") return '"$HOME"';
-  if (r.startsWith("~/")) return `"$HOME"/${shQuote(r.slice(2))}`;
-  if (r.startsWith("/")) return shQuote(r);
-  return null;
+  if (!r || r.split("/").includes("..") || /['"\\$`*?[\]]/.test(r)) return null;
+  let base;
+  let rest;
+  if (r === "~" || r.startsWith("~/")) {
+    base = '"$h"';
+    rest = r.slice(1);
+  } else if (r.startsWith("/")) {
+    base = "/";
+    rest = r;
+  } else return null;
+  const segs = rest.split("/").filter(Boolean).map(shQuote);
+  return `pz_root ${base}${segs.length ? " " + segs.join(" ") : ""}`;
 }
+
+// Shell function behind rootExpr: walks BASE/SEG/SEG..., taking an exact
+// directory match when there is one and otherwise the first case-insensitive
+// match, and prints the resolved path (fails if a segment matches nothing).
+const ROOT_FUNC =
+  `pz_root() { cur=$1; shift; for seg in "$@"; do ` +
+  `if [ -d "$cur/$seg" ]; then cur="$cur/$seg"; ` +
+  `else m=$(find "$cur" -mindepth 1 -maxdepth 1 -type d -iname "$seg" 2>/dev/null | head -n 1); [ -n "$m" ] || return 1; cur=$m; fi; done; ` +
+  `printf '%s\\n' "$cur"; }; `;
 
 // Run a script on a device: locally for "" (or via the configured devbox when
 // this agent is a receiver), else over ssh.
@@ -74,7 +142,9 @@ function runOn(host, script, timeout) {
 // Shell prelude shared by both phases: bounds the root to $HOME and cds into it.
 function prelude(rootE) {
   return (
-    `h=$(cd ~ && pwd -P); root=$(cd ${rootE} 2>/dev/null && pwd -P) || { echo PZZA_NOROOT; exit 0; }; ` +
+    `h=$(cd ~ && pwd -P); ` +
+    ROOT_FUNC +
+    `root=$(r=$(${rootE}) && cd "$r" 2>/dev/null && pwd -P) || { echo PZZA_NOROOT; exit 0; }; ` +
     `case "$root" in "$h"|"$h"/*) ;; *) echo PZZA_DENIED; exit 3;; esac; ` +
     `command -v git >/dev/null 2>&1 || { echo PZZA_NOGIT; exit 0; }; `
   );
@@ -88,6 +158,7 @@ function prelude(rootE) {
 function scanScript(rootE) {
   return (
     prelude(rootE) +
+    `printf 'PZZA_ROOT\\t%s\\n' "$root"; ` +
     `cd "$root" && find . -mindepth 1 -maxdepth ${SCAN_DEPTH} \\( -name node_modules -o -name .git \\) -prune -o -type d -print 2>/dev/null | ` +
     `while IFS= read -r d; do [ -d "$d/.git" ] || continue; ` +
     `rel="\${d#./}"; ` +
@@ -150,9 +221,10 @@ function syncScript(rootE, plan, opts) {
 // Copy one env file between devices through this agent: read it from the
 // source, stream it into the target. Content lives in memory only for the
 // duration of the copy and is never logged or persisted here.
-async function copyEnv(rootE, src, dst, rel, name) {
+async function copyEnv(rootE, src, dst, srcRel, rel, name) {
   const file = `${shQuote(rel)}/${shQuote(name)}`;
-  const read = await runOn(src, prelude(rootE) + `cd "$root" && cat ${file}`, SCAN_TIMEOUT_MS);
+  const srcFile = `${shQuote(srcRel)}/${shQuote(name)}`;
+  const read = await runOn(src, prelude(rootE) + `cd "$root" && cat ${srcFile}`, SCAN_TIMEOUT_MS);
   if (!read.ok || deviceError(read)) return deviceError(read) || read.stderr.trim() || "read failed";
   // A newest-but-empty file must not wipe a populated copy elsewhere.
   if (read.stdout.trim() === "") return "source file is empty, not copied";
@@ -175,31 +247,34 @@ async function copyEnv(rootE, src, dst, rel, name) {
 // target. Returns { deviceId: [{ rel, name, from, status, detail }] }.
 export function planEnvSync(scan, gitResults, opts = normalizeOptions()) {
   if (!opts.syncEnvs) return [];
-  const ok = scan.devices.filter((d) => !d.error);
-  const hasRepo = (d, rel) =>
-    d.repos.some((r) => r.rel === rel) ||
-    (gitResults.get(d.id) || []).some((r) => r.rel === rel && r.status === "cloned");
+  const ok = new Set(scan.devices.filter((d) => !d.error).map((d) => d.id));
   const jobs = [];
-  const seen = new Set();
-  for (const d of ok) {
-    for (const r of d.repos) {
-      if (!repoOn(opts, r.rel) || !repoEnvOn(opts, r.rel)) continue;
-      for (const e of r.envs) {
-        const key = `${r.rel}\0${e.name}`;
-        if (seen.has(key) || envExcluded(opts, e.name)) continue;
-        seen.add(key);
-        let best = null;
-        for (const o of ok) {
-          const oe = o.repos.find((x) => x.rel === r.rel)?.envs.find((x) => x.name === e.name);
-          if (oe && (!best || oe.mtime > best.env.mtime)) best = { device: o, env: oe };
-        }
-        if (!best) continue;
-        for (const o of ok) {
-          if (o.id === best.device.id || !hasRepo(o, r.rel)) continue;
-          const oe = o.repos.find((x) => x.rel === r.rel)?.envs.find((x) => x.name === e.name);
-          if (oe && oe.hash === best.env.hash) continue;
-          jobs.push({ target: o, rel: r.rel, name: e.name, from: best.device });
-        }
+  for (const p of groupProjects(scan)) {
+    if (!repoOn(opts, p.rel) || !repoEnvOn(opts, p.rel)) continue;
+    // Where the project lives on each device: its member repo, or the path it
+    // was just cloned to.
+    const where = new Map();
+    for (const d of scan.devices) {
+      if (!ok.has(d.id)) continue;
+      const m = p.members.get(d.id);
+      if (m) where.set(d.id, { rel: m.rel, envs: m.envs, device: d });
+      else if ((gitResults.get(d.id) || []).some((x) => x.rel === p.rel && x.status === "cloned")) where.set(d.id, { rel: p.rel, envs: [], device: d });
+    }
+    const names = new Set();
+    for (const w of where.values()) for (const e of w.envs) names.add(e.name);
+    for (const name of names) {
+      if (envExcluded(opts, name)) continue;
+      let best = null;
+      for (const w of where.values()) {
+        const e = w.envs.find((x) => x.name === name);
+        if (e && (!best || e.mtime > best.env.mtime)) best = { ...w, env: e };
+      }
+      if (!best) continue;
+      for (const w of where.values()) {
+        if (w.device.id === best.device.id) continue;
+        const e = w.envs.find((x) => x.name === name);
+        if (e && e.hash === best.env.hash) continue;
+        jobs.push({ target: w.device, rel: w.rel, srcRel: best.rel, name, from: best.device });
       }
     }
   }
@@ -219,7 +294,12 @@ const num = (v) => (v === undefined || v === "-" || v === "" || Number.isNaN(Num
 
 function parseScan(stdout) {
   const repos = [];
+  let root = null;
   for (const line of stdout.split("\n")) {
+    if (line.startsWith("PZZA_ROOT\t")) {
+      root = line.slice("PZZA_ROOT\t".length);
+      continue;
+    }
     if (!line.includes("\t")) continue;
     const [rel, origin, def, branch, head, mod, unt, ab, stash, ts, envs] = line.split("\t");
     if (!rel) continue;
@@ -246,7 +326,7 @@ function parseScan(stdout) {
         }),
     });
   }
-  return repos;
+  return { root, repos };
 }
 
 // Sync options from the client, with safe defaults. `repos` holds per-repo
@@ -295,7 +375,8 @@ function normalizeDevices(list) {
   return out;
 }
 
-// Scan every device in parallel: { root, devices: [{ id, name, host, error, repos }] }.
+// Scan every device in parallel: { root, devices: [{ id, name, host, error, root, repos }] }
+// where the device root is the path the requested root resolved to there.
 // The HTTP route passes `redact` so credentials in origin URLs never reach the
 // app; the sync keeps the raw URL because the clone needs it.
 export async function scanProjects(body, { redact: strip = false } = {}) {
@@ -307,9 +388,9 @@ export async function scanProjects(body, { redact: strip = false } = {}) {
     devices.map(async (d) => {
       const res = await runOn(d.host, scanScript(rootE), SCAN_TIMEOUT_MS);
       const error = deviceError(res);
-      const repos = error ? [] : parseScan(res.stdout);
-      if (strip) for (const r of repos) if (r.origin) r.origin = redact(r.origin);
-      return { ...d, error, repos };
+      const parsed = error ? { root: null, repos: [] } : parseScan(res.stdout);
+      if (strip) for (const r of parsed.repos) if (r.origin) r.origin = redact(r.origin);
+      return { ...d, error, root: parsed.root, repos: parsed.repos };
     }),
   );
   return { root: String(body.root), devices: results };
@@ -318,26 +399,24 @@ export async function scanProjects(body, { redact: strip = false } = {}) {
 // Decide what each device has to do for every repo in the union. A repo only
 // travels between devices when some device knows its origin URL.
 export function planSync(scan, opts = normalizeOptions()) {
-  const origins = new Map(); // rel -> origin url
-  for (const d of scan.devices) {
-    for (const r of d.repos) if (r.origin && REMOTE_URL.test(r.origin) && !origins.has(r.rel)) origins.set(r.rel, r.origin);
-  }
+  const projects = groupProjects(scan);
   return scan.devices.map((d) => {
     if (d.error) return { ...d, plan: [], skipped: [] };
-    const have = new Map(d.repos.map((r) => [r.rel, r]));
     const plan = [];
     const skipped = [];
-    for (const [rel, origin] of origins) {
-      const local = have.get(rel);
-      if (!repoOn(opts, rel)) {
-        if (local) skipped.push({ rel, status: "skipped", detail: "sync is off for this project" });
+    for (const p of projects) {
+      const local = p.members.get(d.id);
+      if (!p.origin) {
+        if (local) skipped.push({ rel: local.rel, status: "skipped", detail: local.origin ? "unsupported origin url" : "no origin remote" });
+        continue;
+      }
+      const on = repoOn(opts, p.rel) && (!local || repoOn(opts, local.rel));
+      if (!on) {
+        if (local) skipped.push({ rel: local.rel, status: "skipped", detail: "sync is off for this project" });
       } else if (!local) {
-        if (opts.cloneMissing) plan.push({ rel, action: "clone", origin });
-        else skipped.push({ rel, status: "skipped", detail: "missing here, cloning is off" });
-      } else plan.push({ rel, action: "update", origin });
-    }
-    for (const r of d.repos) {
-      if (!origins.has(r.rel)) skipped.push({ rel: r.rel, status: "skipped", detail: r.origin ? "unsupported origin url" : "no origin remote" });
+        if (opts.cloneMissing) plan.push({ rel: p.rel, action: "clone", origin: p.origin });
+        else skipped.push({ rel: p.rel, status: "skipped", detail: "missing here, cloning is off" });
+      } else plan.push({ rel: local.rel, action: "update", origin: p.origin });
     }
     // Stable order so the report reads top-down the same way on every device.
     plan.sort((a, b) => a.rel.localeCompare(b.rel));
@@ -384,7 +463,7 @@ export async function syncProjects(body) {
   for (const job of jobs) {
     const target = devices.find((d) => d.id === job.target.id);
     if (!target) continue;
-    const err = await copyEnv(rootE, job.from.host, job.target.host, job.rel, job.name);
+    const err = await copyEnv(rootE, job.from.host, job.target.host, job.srcRel, job.rel, job.name);
     target.envs.push({ rel: job.rel, name: job.name, from: job.from.name, status: err ? "failed" : "copied", detail: redact(err || "") });
   }
   return { root: scan.root, devices };
