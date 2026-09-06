@@ -51,9 +51,9 @@ export function LayoutMenu() {
         {open ? (
           <motion.div
             className="menu"
-            initial={{ opacity: 0, y: -6, scale: 0.97 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: -6, scale: 0.97 }}
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
             transition={{ duration: 0.12 }}
           >
             <div className="menu-head-title">
