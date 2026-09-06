@@ -125,62 +125,105 @@ function mergeDays(into, from) {
 // Per-file parse cache persisted to disk, keyed by absolute path, each entry
 // tagged with the file's mtime + size. It survives restarts, so after the first
 // full scan the (multi-second, whole-history) parse never runs again except for
-// files that actually changed. A corrupt or missing cache just means a cold scan.
+// files that actually changed - and a file that only grew (the active session)
+// is resumed from the last complete line instead of re-read. A corrupt, missing
+// or older-format cache just means a cold scan.
 const CACHE_FILE = path.join(STATE_DIR, "spend-cache.json");
+const CACHE_VERSION = 2;
+// Cap on the dedup keys persisted per Claude file for incremental resumes. A
+// retry is logged right next to its original, so the last few hundred keys
+// are all a resume ever needs; a cold parse still dedups the whole file.
+const SEEN_KEEP = 200;
+// Bytes per read: bounds peak memory per file and the sync work per tick.
+const READ_CHUNK = 1024 * 1024;
 let memCache = null;
 
 function loadFileCache() {
   if (memCache) return memCache;
+  memCache = {};
   try {
-    memCache = JSON.parse(fs.readFileSync(CACHE_FILE, "utf8"));
-    if (!memCache || typeof memCache !== "object") memCache = {};
+    const raw = JSON.parse(fs.readFileSync(CACHE_FILE, "utf8"));
+    if (raw && raw.version === CACHE_VERSION && raw.files && typeof raw.files === "object") {
+      memCache = raw.files;
+    }
   } catch {
-    memCache = {};
+    /* cold scan */
   }
   return memCache;
 }
 
-function saveFileCache(cache) {
-  memCache = cache;
+function saveFileCache(files) {
+  memCache = files;
   try {
-    fs.writeFileSync(CACHE_FILE, JSON.stringify(cache));
+    fs.writeFileSync(CACHE_FILE, JSON.stringify({ version: CACHE_VERSION, files }));
   } catch {
     /* best effort - a failed write just costs a re-parse next boot */
   }
 }
 
-// Parse one Claude transcript into day -> model -> buckets. Deduplicates by
-// (message id, requestId) within the file (retries logged twice); each file is
-// parsed at most once and the result is cached, so cross-file dupes - which
-// Claude Code does not actually produce (a session appends to its own file) -
-// are not worth a global pass.
-function parseClaudeFile(file) {
-  const days = {};
-  let text;
-  try {
-    text = fs.readFileSync(file, "utf8");
-  } catch {
-    return days;
+// Stream `file` from byte `start`, calling onLine(line) for every complete
+// (newline-terminated) line. Chunks are split on the raw bytes, so a multi-byte
+// character straddling two reads is decoded intact and only the unfinished tail
+// is carried between reads. Resolves with the byte offset just past the last
+// line consumed; a trailing line without a newline is consumed only if it is
+// already valid JSON (a fully written record awaiting its "\n"), otherwise it
+// is left for the next scan, which resumes from the returned offset.
+async function readLines(file, start, onLine) {
+  let consumed = start;
+  let rest = null; // bytes after the last newline seen so far
+  const stream = fs.createReadStream(file, { start, highWaterMark: READ_CHUNK });
+  for await (const chunk of stream) {
+    const buf = rest ? Buffer.concat([rest, chunk]) : chunk;
+    let from = 0;
+    for (let nl = buf.indexOf(10, from); nl !== -1; nl = buf.indexOf(10, from)) {
+      onLine(buf.toString("utf8", from, nl));
+      from = nl + 1;
+    }
+    consumed += from;
+    rest = from < buf.length ? buf.subarray(from) : null;
   }
-  const seen = new Set();
-  for (const line of text.split("\n")) {
-    if (!line || !line.includes('"usage"')) continue;
+  if (rest) {
+    const tail = rest.toString("utf8");
+    let complete = false;
+    try {
+      JSON.parse(tail);
+      complete = true;
+    } catch {
+      /* partial write - re-read from `consumed` next time */
+    }
+    if (complete) {
+      onLine(tail);
+      consumed += rest.length;
+    }
+  }
+  return consumed;
+}
+
+// Parse a Claude transcript (from byte `start`, continuing `state`) into
+// day -> model -> buckets. Deduplicates by (message id, requestId) within the
+// file (retries logged twice); each file is parsed at most once and the result
+// is cached, so cross-file dupes - which Claude Code does not actually produce
+// (a session appends to its own file) - are not worth a global pass.
+async function parseClaudeFile(file, start, days, state) {
+  const seen = new Set(state && Array.isArray(state.seen) ? state.seen : []);
+  const parsedBytes = await readLines(file, start, (line) => {
+    if (!line.includes('"usage"')) return;
     let rec;
     try {
       rec = JSON.parse(line);
     } catch {
-      continue;
+      return;
     }
     const msg = rec.message;
-    if (!msg || typeof msg !== "object") continue;
+    if (!msg || typeof msg !== "object") return;
     const usage = msg.usage;
     const model = msg.model;
-    if (!usage || typeof usage !== "object" || !model || String(model).startsWith("<")) continue;
+    if (!usage || typeof usage !== "object" || !model || String(model).startsWith("<")) return;
     const key = `${msg.id} ${rec.requestId}`;
-    if (seen.has(key)) continue;
+    if (seen.has(key)) return;
     seen.add(key);
     const day = recordDay(rec);
-    if (!day) continue;
+    if (!day) return;
     const created = usage.cache_creation || {};
     let five = created.ephemeral_5m_input_tokens;
     const hour = created.ephemeral_1h_input_tokens;
@@ -192,37 +235,37 @@ function parseClaudeFile(file) {
       five || 0,
       hour || 0,
     ]);
-  }
-  return days;
+  });
+  // Sets iterate in insertion order, so the slice keeps the most recent keys.
+  const keys = [...seen];
+  return { parsedBytes, state: { seen: keys.slice(Math.max(0, keys.length - SEEN_KEEP)) } };
 }
 
-function parseCodexFile(file) {
-  const days = {};
-  let text;
-  try {
-    text = fs.readFileSync(file, "utf8");
-  } catch {
-    return days;
-  }
-  let model = null;
-  let previous = null;
-  for (const line of text.split("\n")) {
-    if (!line || (!line.includes('"turn_context"') && !line.includes('"token_count"'))) continue;
+// Parse a Codex transcript. token_count events carry running totals, so the
+// last totals (`previous`) and the current `model` are the resume state.
+async function parseCodexFile(file, start, days, state) {
+  let model = state && typeof state.model === "string" ? state.model : null;
+  let previous =
+    state && Array.isArray(state.previous) && state.previous.length === CODEX_COUNTERS.length
+      ? state.previous.map(Number)
+      : null;
+  const parsedBytes = await readLines(file, start, (line) => {
+    if (!line.includes('"turn_context"') && !line.includes('"token_count"')) return;
     let rec;
     try {
       rec = JSON.parse(line);
     } catch {
-      continue;
+      return;
     }
     const payload = rec.payload;
-    if (!payload || typeof payload !== "object") continue;
+    if (!payload || typeof payload !== "object") return;
     if (rec.type === "turn_context") {
       if (typeof payload.model === "string") model = payload.model;
-      continue;
+      return;
     }
-    if (rec.type !== "event_msg" || payload.type !== "token_count") continue;
+    if (rec.type !== "event_msg" || payload.type !== "token_count") return;
     const total = (payload.info || {}).total_token_usage;
-    if (!total || typeof total !== "object") continue;
+    if (!total || typeof total !== "object") return;
     const current = CODEX_COUNTERS.map((n) => Number(total[n] || 0));
     const delta =
       previous === null || current.some((now, i) => now < previous[i])
@@ -230,15 +273,47 @@ function parseCodexFile(file) {
         : current.map((now, i) => now - previous[i]);
     previous = current;
     const day = recordDay(rec);
-    if (!model || !day || !delta.some((x) => x)) continue;
+    if (!model || !day || !delta.some((x) => x)) return;
     const cached = Math.min(delta[1], delta[0]);
     addBuckets(days, day, model, [delta[0] - cached, delta[2], cached, 0, 0]);
-  }
-  return days;
+  });
+  return { parsedBytes, state: { model, previous } };
 }
 
-// The transcripts can be big; yield to the event loop between files so scanning
-// never freezes the terminals/WS for the whole (multi-second) pass.
+// Produce the cache entry for `file`: untouched files are reused as-is, files
+// that only grew are resumed from the last complete line, anything else (shrunk,
+// rewritten, mtime moved backwards, unusable state) is parsed from scratch.
+// Returns null when the file cannot be read, so it is retried next scan.
+async function parseTranscript(provider, file, st, prev) {
+  const parse = provider === "claude" ? parseClaudeFile : parseCodexFile;
+  const canResume =
+    prev &&
+    typeof prev.parsedBytes === "number" &&
+    prev.parsedBytes <= st.size &&
+    prev.mtimeMs <= st.mtimeMs &&
+    prev.days &&
+    typeof prev.days === "object";
+  if (canResume && prev.parsedBytes === st.size && prev.mtimeMs === st.mtimeMs) return prev;
+  if (canResume) {
+    try {
+      const days = structuredClone(prev.days);
+      const { parsedBytes, state } = await parse(file, prev.parsedBytes, days, prev.state);
+      return { mtimeMs: st.mtimeMs, size: st.size, parsedBytes, days, state };
+    } catch {
+      /* fall through to a full parse */
+    }
+  }
+  try {
+    const days = {};
+    const { parsedBytes, state } = await parse(file, 0, days, null);
+    return { mtimeMs: st.mtimeMs, size: st.size, parsedBytes, days, state };
+  } catch {
+    return null;
+  }
+}
+
+// The transcripts can be big; they are streamed chunk by chunk, so the event
+// loop gets a turn between reads and scanning never freezes the terminals/WS.
 async function scanSpend(now) {
   const dayStr = (ms) => {
     const d = new Date(ms);
@@ -261,15 +336,11 @@ async function scanSpend(now) {
         continue;
       }
       if (st.mtimeMs < horizon) continue; // too old to touch the 30-day window
-      // Reuse the parsed result unless the file grew or was rewritten. Only an
-      // actually-changed file (essentially just the active transcript) is
-      // re-read, so a huge history is scanned in full only once.
-      let entry = cache[file];
-      if (!entry || entry.mtimeMs !== st.mtimeMs || entry.size !== st.size) {
-        const fileDays = acc.provider === "claude" ? parseClaudeFile(file) : parseCodexFile(file);
-        entry = { mtimeMs: st.mtimeMs, size: st.size, days: fileDays };
-        await new Promise((r) => setImmediate(r)); // let the event loop breathe
-      }
+      // Reuse the parsed result unless the file changed. Only the bytes an
+      // actually-changed file (essentially just the active transcript) gained
+      // are read, so a huge history is streamed in full only once.
+      const entry = await parseTranscript(acc.provider, file, st, cache[file]);
+      if (!entry) continue;
       nextCache[file] = entry;
       mergeDays(days, entry.days);
     }
