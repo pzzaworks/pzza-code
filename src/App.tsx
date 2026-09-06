@@ -6,6 +6,7 @@ import {
   Plus,
   Settings as SettingsIcon,
   EthernetPort,
+  FolderSync,
   CircleQuestionMark,
   Gauge,
   Menu,
@@ -27,6 +28,7 @@ import { Tooltip } from "./ui/Tooltip";
 import { SetupWizard } from "./panels/SetupWizard";
 import { HelpModal } from "./panels/HelpModal";
 import { UsageMenu } from "./panels/UsageMenu";
+import { ProjectsMenu } from "./panels/ProjectsMenu";
 import { HAS_TAURI } from "./tauriEnv";
 import { UpdateBanner } from "./panels/UpdateBanner";
 
@@ -116,6 +118,9 @@ export default function App() {
               />
               <div className={`topbar-tools ${toolsOpen ? "open" : ""}`}>
                 <LayoutMenu />
+                <Dropdown icon={FolderSync} title="Sync projects" width={680}>
+                  <ProjectsMenu />
+                </Dropdown>
                 <Dropdown icon={Monitor} title="Linux desktop (RDP)" width={300}>
                   {(close) => <RdpMenu close={close} />}
                 </Dropdown>

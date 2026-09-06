@@ -416,3 +416,118 @@ export async function setForwardEnabled(enabled: boolean): Promise<void> {
     body: JSON.stringify({ enabled }),
   });
 }
+
+// --- Project sync ------------------------------------------------------------
+// A project is a git repo under the projects root (same ~-relative folder on
+// every device). The agent scans/syncs every device itself (local + ssh).
+
+export interface ProjectDeviceRef {
+  id: string;
+  name: string;
+  host: string; // "" = this Mac (the agent's own machine), else [user@]host
+}
+
+export interface EnvFile {
+  name: string;
+  hash: string; // sha256 prefix, compared across devices
+  mtime: number; // unix seconds; the newest copy wins when syncing
+}
+
+export interface ProjectRepo {
+  rel: string; // path below the root, e.g. "Personal/pzza-code"
+  origin: string | null;
+  defaultBranch: string | null; // origin's HEAD when the clone knows it
+  branch: string | null; // checked-out branch (or "HEAD" when detached)
+  head: string | null; // short sha
+  modified: number; // staged + unstaged changes
+  untracked: number;
+  ahead: number | null; // vs upstream; null when there is no upstream
+  behind: number | null;
+  stashes: number;
+  lastCommitTs: number; // unix seconds, 0 if unknown
+  envs: EnvFile[];
+}
+
+export interface ProjectScanDevice extends ProjectDeviceRef {
+  error: string | null;
+  repos: ProjectRepo[];
+}
+
+export interface ProjectScan {
+  root: string;
+  devices: ProjectScanDevice[];
+}
+
+export type ProjectSyncStatus = "cloned" | "updated" | "stashed" | "current" | "dirty" | "skipped" | "failed";
+
+// What a sync is allowed to do. Per-repo overrides are keyed by rel.
+export interface RepoSyncOptions {
+  enabled: boolean; // false = leave this project alone everywhere
+  env: boolean; // false = never copy its env files
+}
+export interface SyncOptions {
+  cloneMissing: boolean;
+  switchToDefault: boolean; // false = fast-forward the current branch in place
+  stashDirty: boolean; // false = dirty repos are reported and skipped
+  syncEnvs: boolean;
+  envExclude: string[]; // env file name patterns, * wildcard
+  repos: Record<string, RepoSyncOptions>;
+}
+export const DEFAULT_SYNC_OPTIONS: SyncOptions = {
+  cloneMissing: true,
+  switchToDefault: true,
+  stashDirty: true,
+  syncEnvs: true,
+  envExclude: [],
+  repos: {},
+};
+
+export interface ProjectSyncResult {
+  rel: string;
+  status: ProjectSyncStatus;
+  detail: string;
+}
+
+// An env file copied onto this device from the device holding the newest copy.
+export interface EnvSyncResult {
+  rel: string;
+  name: string;
+  from: string; // source device name
+  status: "copied" | "failed";
+  detail: string;
+}
+
+export interface ProjectSyncDevice extends ProjectDeviceRef {
+  error: string | null;
+  results: ProjectSyncResult[];
+  envs: EnvSyncResult[];
+}
+
+export interface ProjectSync {
+  root: string;
+  devices: ProjectSyncDevice[];
+}
+
+async function projectsPost<T>(
+  path: string,
+  root: string,
+  devices: ProjectDeviceRef[],
+  options?: SyncOptions,
+): Promise<T> {
+  const res = await agentFetch(`${SERVER_HTTP}${path}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ root, devices, options }),
+  });
+  const data = (await res.json()) as T & { error?: string };
+  if (!res.ok) throw new Error(data.error || `${path} ${res.status}`);
+  return data;
+}
+
+export const scanProjects = (root: string, devices: ProjectDeviceRef[]): Promise<ProjectScan> =>
+  projectsPost<ProjectScan>("/projects/scan", root, devices);
+
+// Long-running: clones, stashes, pulls and copies env files on every device,
+// then returns the full report.
+export const syncProjects = (root: string, devices: ProjectDeviceRef[], options: SyncOptions): Promise<ProjectSync> =>
+  projectsPost<ProjectSync>("/projects/sync", root, devices, options);
