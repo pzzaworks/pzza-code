@@ -5,15 +5,26 @@
 #   scripts/release.sh            # release the version in src-tauri/tauri.conf.json
 #   NOTES=path/to/notes.md scripts/release.sh
 #
-# Needs: the Tauri updater private key at ~/.tauri/pzzacode.key (in 1Password:
+# Secrets and signing identifiers are pulled from 1Password at run time, so
+# nothing identifying lives in the repo. Needs: `op` signed in (1Password CLI),
+# the Tauri updater private key at ~/.tauri/pzzacode.key (1Password item
 # "PzzaCode Tauri updater signing key"), the Developer ID cert in the login
-# Keychain, the notarytool API key at ~/.private_keys, and `gh` logged in.
+# Keychain, and `gh` logged in. The Apple signing identity, App Store Connect
+# notary key id / issuer and the .p8 key all come from the 1Password items
+# referenced below (Personal vault, by opaque id). Any of the env vars can be
+# set to override 1Password.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 VERSION=$(python3 -c 'import json;print(json.load(open("src-tauri/tauri.conf.json"))["version"])')
 TAG="v$VERSION"
 REPO="pzzaworks/pzza-code"
+
+# 1Password references (Personal vault). The item holds the Apple signing
+# identity + notary key id / issuer; the document is the notary .p8 private key.
+OP_NOTARY_ITEM="op://Personal/qz5upvymqlr4il7gkvad5l2gtm"
+OP_P8_DOC="hu6q7jbcg5w2bubye4fptjioei"
+
 KEY="${TAURI_SIGNING_PRIVATE_KEY_PATH:-$HOME/.tauri/pzzacode.key}"
 [ -f "$KEY" ] || { echo "updater signing key not found at $KEY"; exit 1; }
 # The bundler reads the key *content* from TAURI_SIGNING_PRIVATE_KEY (the
@@ -21,7 +32,9 @@ KEY="${TAURI_SIGNING_PRIVATE_KEY_PATH:-$HOME/.tauri/pzzacode.key}"
 # key never leaves this process's environment.
 export TAURI_SIGNING_PRIVATE_KEY="$(cat "$KEY")"
 export TAURI_SIGNING_PRIVATE_KEY_PASSWORD="${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}"
-export APPLE_SIGNING_IDENTITY="${APPLE_SIGNING_IDENTITY:-Developer ID Application: Berke Kiran (U7SA296AP6)}"
+export APPLE_SIGNING_IDENTITY="${APPLE_SIGNING_IDENTITY:-$(op read "$OP_NOTARY_ITEM/signing identity")}"
+NOTARY_KEY_ID="${NOTARY_KEY_ID:-$(op read "$OP_NOTARY_ITEM/key id")}"
+NOTARY_ISSUER="${NOTARY_ISSUER:-$(op read "$OP_NOTARY_ITEM/issuer")}"
 export PATH="$HOME/.rustup/toolchains/stable-aarch64-apple-darwin/bin:$PATH"
 # CI=true makes Tauri's DMG bundler skip the AppleScript that mounts the image
 # and opens a Finder window to arrange icons - so a build never pops the DMG open.
@@ -38,8 +51,14 @@ SIG="$TARGZ.sig"
 for f in "$APP" "$DMG" "$TARGZ" "$SIG"; do [ -e "$f" ] || { echo "missing artifact: $f"; exit 1; }; done
 
 echo "==> Notarizing"
-xcrun notarytool submit "$DMG" --key "$HOME/.private_keys/AuthKey_F583398JAT.p8" --key-id F583398JAT \
-  --issuer c203e675-87f8-43a8-89f8-8581ba23de62 --wait | tail -2
+# Pull the .p8 notary key from 1Password into a temp file for the duration of
+# the submit, then shred it - the private key never lands in the repo or a
+# persistent path here.
+P8="$(mktemp)"; trap 'rm -f "$P8"' EXIT
+op document get "$OP_P8_DOC" --out-file "$P8" --force >/dev/null
+xcrun notarytool submit "$DMG" --key "$P8" --key-id "$NOTARY_KEY_ID" \
+  --issuer "$NOTARY_ISSUER" --wait | tail -2
+rm -f "$P8"
 xcrun stapler staple "$DMG" | tail -1
 xcrun stapler staple "$APP" | tail -1
 
