@@ -18,6 +18,7 @@ export function openWsPty(
   onError?: (msg: string) => void,
   onClose?: () => void,
   window?: number,
+  host?: string,
 ): WsPtyHandle {
   const ws = new WebSocket(wsUrl());
   ws.binaryType = "arraybuffer";
@@ -33,7 +34,7 @@ export function openWsPty(
 
   ws.onopen = () => {
     open = true;
-    ws.send(JSON.stringify({ type: "attach", name, cols, rows, cwd, window }));
+    ws.send(JSON.stringify({ type: "attach", name, cols, rows, cwd, window, host }));
     for (const q of queue) ws.send(q);
     queue.length = 0;
   };

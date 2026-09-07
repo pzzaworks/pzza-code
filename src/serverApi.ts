@@ -3,6 +3,7 @@
 // local backend. In the plain browser build the page is served from a device
 // port, so the agent is reached on the same hostname at its own port.
 import type { RemoteSession } from "./connection";
+import type { DeviceOs } from "./devices";
 import { HAS_TAURI } from "./tauriEnv";
 
 function serverPort(): number {
@@ -89,10 +90,32 @@ export function wsUrl(): string {
   return q ? `${SERVER_WS}?${q}` : SERVER_WS;
 }
 
+export interface SessionActivity {
+  session: string;
+  window: number;
+  active: boolean;
+  command: string;
+}
+export async function fetchSessionActivity(host?: string, signal?: AbortSignal): Promise<SessionActivity[]> {
+  const response = await agentFetch(`${SERVER_HTTP}/sessions/activity${host !== undefined ? `?host=${encodeURIComponent(host)}` : ""}`, { signal });
+  if (!response.ok) throw new Error("Session activity unavailable");
+  return response.json();
+}
+
 export async function fetchSessions(): Promise<RemoteSession[]> {
   const res = await agentFetch(`${SERVER_HTTP}/sessions`);
   if (!res.ok) throw new Error(`sessions ${res.status}`);
   return res.json();
+}
+
+export interface PortDetails {
+  port: number;
+  processes: Array<{ pid: number; process: string; name: string; source: "package" | "folder" | "process"; folder: string | null }>;
+}
+export async function fetchPortDetails(host?: string, signal?: AbortSignal): Promise<PortDetails[]> {
+  const response = await agentFetch(`${SERVER_HTTP}/ports/details${host ? `?host=${encodeURIComponent(host)}` : ""}`, { signal });
+  if (!response.ok) throw new Error("Service names are unavailable from this device.");
+  return response.json();
 }
 
 export async function fetchPorts(): Promise<number[]> {
@@ -168,25 +191,29 @@ export async function mcpInstall(framework: string): Promise<McpInstallResult> {
 }
 
 // Upload a pasted image to the devbox and get back a path the agent can read.
-export async function uploadPasteImage(blob: Blob): Promise<string> {
-  const res = await agentFetch(`${SERVER_HTTP}/paste-image`, {
+export async function uploadPasteImage(blob: Blob, host?: string, signal?: AbortSignal): Promise<string> {
+  const res = await agentFetch(`${SERVER_HTTP}/paste-image${host !== undefined ? `?host=${encodeURIComponent(host)}` : ""}`, {
     method: "POST",
     headers: { "Content-Type": blob.type || "image/png" },
     body: blob,
+    signal,
   });
-  if (!res.ok) throw new Error(`paste-image ${res.status}`);
-  const data = (await res.json()) as { path?: string };
+  const data = (await res.json()) as { path?: string; error?: string };
+  if (!res.ok) throw new Error(data.error || `Image upload failed (${res.status})`);
   if (!data.path) throw new Error("paste-image: no path");
   return data.path;
 }
 
 // Kill a tmux session (or a single window). Pass host to kill on another device.
 export async function killSession(name: string, window?: number, host?: string): Promise<void> {
-  await agentFetch(`${SERVER_HTTP}/kill`, {
+  const targetHost = HAS_TAURI ? host ?? "" : host;
+  const res = await agentFetch(`${SERVER_HTTP}/kill`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name, window, host }),
+    body: JSON.stringify({ name, window, host: targetHost }),
   });
+  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `kill ${res.status}`);
+  globalThis.window.dispatchEvent(new CustomEvent("pzza:sessions-changed", { detail: { name, host: targetHost ?? "", window } }));
 }
 
 export interface Account {
@@ -295,6 +322,26 @@ export async function writeFile(path: string, content: string, host?: string): P
   });
   if (!res.ok) throw new Error(`write ${res.status}`);
 }
+export async function moveFile(root: string, path: string, destination: string, host?: string): Promise<{ path: string }> {
+  const res = await agentFetch(`${SERVER_HTTP}/fs/move`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ root, path, destination, host }),
+  });
+  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `move ${res.status}`);
+  return res.json();
+}
+
+export async function deleteFile(root: string, path: string, host?: string): Promise<{ ok: true }> {
+  const res = await agentFetch(`${SERVER_HTTP}/fs/delete`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ root, path, host }),
+  });
+  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `delete ${res.status}`);
+  return res.json();
+}
+
 export async function listDir(
   path?: string,
   host?: string,
@@ -434,6 +481,7 @@ export interface EnvFile {
 }
 
 export interface ProjectRepo {
+  projectId: string;
   rel: string; // path below the root, e.g. "Personal/pzza-code"
   origin: string | null;
   defaultBranch: string | null; // origin's HEAD when the clone knows it
@@ -461,7 +509,7 @@ export interface ProjectScan {
 
 export type ProjectSyncStatus = "cloned" | "updated" | "stashed" | "current" | "dirty" | "skipped" | "failed";
 
-// What a sync is allowed to do. Per-repo overrides are keyed by rel.
+// What a sync is allowed to do. Per-repo overrides are keyed by projectId.
 export interface RepoSyncOptions {
   enabled: boolean; // false = leave this project alone everywhere
   env: boolean; // false = never copy its env files
@@ -484,6 +532,7 @@ export const DEFAULT_SYNC_OPTIONS: SyncOptions = {
 };
 
 export interface ProjectSyncResult {
+  projectId: string;
   rel: string;
   status: ProjectSyncStatus;
   detail: string;
@@ -491,6 +540,7 @@ export interface ProjectSyncResult {
 
 // An env file copied onto this device from the device holding the newest copy.
 export interface EnvSyncResult {
+  projectId: string;
   rel: string;
   name: string;
   from: string; // source device name
@@ -525,10 +575,97 @@ async function projectsPost<T>(
   return data;
 }
 
-export const scanProjects = (root: string, devices: ProjectDeviceRef[]): Promise<ProjectScan> =>
-  projectsPost<ProjectScan>("/projects/scan", root, devices);
+export interface ProjectScanProgress {
+  completed: number;
+  total: number;
+  repos: number;
+  finished: Array<{ id: string; error: boolean }>;
+}
+
+type ProjectScanEvent =
+  | { type: "progress"; progress: ProjectScanProgress }
+  | { type: "result"; result: ProjectScan }
+  | { type: "error"; error: string };
+
+export async function scanProjects(
+  root: string,
+  devices: ProjectDeviceRef[],
+  onProgress: (progress: ProjectScanProgress) => void,
+  signal?: AbortSignal,
+): Promise<ProjectScan> {
+  const res = await agentFetch(`${SERVER_HTTP}/projects/scan`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "application/x-ndjson" },
+    body: JSON.stringify({ root, devices }),
+    signal,
+  });
+  if (!res.ok || !res.body) throw new Error(`Project scan failed (${res.status})`);
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      buffer += decoder.decode(value, { stream: !done });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+      if (done && buffer.trim()) lines.push(buffer);
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        const event = JSON.parse(line) as ProjectScanEvent;
+        if (event.type === "error") throw new Error(event.error);
+        if (event.type === "result") return event.result;
+        if (event.type === "progress") onProgress(event.progress);
+      }
+      if (done) throw new Error("Project scan ended before its results arrived.");
+    }
+  } finally {
+    await reader.cancel().catch(() => {});
+    reader.releaseLock();
+  }
+}
 
 // Long-running: clones, stashes, pulls and copies env files on every device,
 // then returns the full report.
 export const syncProjects = (root: string, devices: ProjectDeviceRef[], options: SyncOptions): Promise<ProjectSync> =>
   projectsPost<ProjectSync>("/projects/sync", root, devices, options);
+
+export interface DeviceInfo {
+  health: "reachable" | "unreachable";
+  connection: "local" | "ssh";
+  /** Elapsed system-probe round trip, including SSH and collection; not ICMP ping. */
+  connectionMs: number;
+  checkedAt: number;
+  error: string | null;
+  info: {
+    os: DeviceOs;
+    osName: string;
+    osVersion: string | null;
+    kernelVersion: string;
+    arch: string;
+    hostname: string;
+    addresses: Array<{ interface: string; address: string; family: "IPv4" | "IPv6" }>;
+    uptimeSeconds: number;
+    cpu: { model: string | null; logicalCores: number; loadAverage: [number, number, number] | null };
+    memory: { totalBytes: number; freeBytes: number; availableBytes: number | null };
+  } | null;
+}
+
+export async function fetchDeviceInfo(host: string, signal?: AbortSignal, fresh = false): Promise<DeviceInfo> {
+  const response = await agentFetch(`${SERVER_HTTP}/device/info?host=${encodeURIComponent(host)}${fresh ? "&fresh=1" : ""}`, { signal });
+  if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || `device info ${response.status}`);
+  return response.json();
+}
+
+export async function fetchDeviceOs(host: string): Promise<DeviceOs> {
+  const response = await agentFetch(`${SERVER_HTTP}/device/os?host=${encodeURIComponent(host)}`, {
+    signal: AbortSignal.timeout(10000),
+  });
+  if (!response.ok) throw new Error("Device OS detection failed");
+  const value: unknown = await response.json();
+  if (typeof value === "object" && value !== null && "os" in value) {
+    const os = value.os;
+    if (os === "macos" || os === "linux" || os === "windows" || os === "freebsd") return os;
+  }
+  return "unknown";
+}

@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { execFile } from "node:child_process";
 import { DEVBOX, IS_CLIENT, PORT, STATE_DIR } from "./config.js";
-import { runCheck } from "./shell.js";
+import { SSH_TOKEN, runCheck } from "./shell.js";
 
 export async function doctor() {
   const tmuxVersion = await runCheck("tmux", ["-V"]);
@@ -97,4 +97,38 @@ export function sshHosts() {
     /* no ssh dir */
   }
   return { dir: sshDir, hosts, identities };
+}
+
+const deviceOsCache = new Map();
+const deviceOsPending = new Map();
+
+export function normalizeDeviceOs(value) {
+  const system = String(value).trim().toLowerCase();
+  if (system === "darwin") return "macos";
+  if (system === "linux") return "linux";
+  if (/windows|^(mingw|msys|cygwin)/.test(system)) return "windows";
+  if (system === "freebsd") return "freebsd";
+  return "unknown";
+}
+
+export async function deviceOs(host = "") {
+  if (!host) return { os: normalizeDeviceOs(os.type()) };
+  if (!SSH_TOKEN.test(host)) return { os: "unknown" };
+  const cached = deviceOsCache.get(host);
+  if (cached && cached.expires > Date.now()) return cached.result;
+  if (deviceOsPending.has(host)) return deviceOsPending.get(host);
+  const pending = new Promise((resolve) => {
+    execFile("ssh", [
+      "-o", "BatchMode=yes", "-o", "ConnectTimeout=5",
+      "-o", "StrictHostKeyChecking=yes", host, "uname -s || ver",
+    ], { timeout: 7000, maxBuffer: 4096 }, (error, stdout) => {
+      const result = { os: error ? "unknown" : normalizeDeviceOs(stdout) };
+      if (deviceOsCache.size >= 256) deviceOsCache.delete(deviceOsCache.keys().next().value);
+      deviceOsCache.set(host, { result, expires: Date.now() + (result.os === "unknown" ? 30000 : 3600000) });
+      deviceOsPending.delete(host);
+      resolve(result);
+    });
+  });
+  deviceOsPending.set(host, pending);
+  return pending;
 }

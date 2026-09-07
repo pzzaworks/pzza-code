@@ -1,3 +1,4 @@
+import { confirmEditorDiscard } from "../editorChanges";
 import { create } from "zustand";
 import { checkForUpdate, relaunchApp, type AvailableUpdate } from "../updater";
 import { HAS_TAURI } from "../tauriEnv";
@@ -86,7 +87,7 @@ export const useUpdates = create<UpdateState>((set, get) => ({
       set({ status: { kind: "error", msg: errMsg(e) } });
     }
   },
-  relaunch: () => relaunchApp(),
+  relaunch: async () => { if (await confirmEditorDiscard()) await relaunchApp(); },
   dismiss: () => {
     const st = get().status;
     if (st.kind === "available" || st.kind === "ready") set({ dismissed: st.update.version });

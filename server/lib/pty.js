@@ -4,7 +4,7 @@
 // installed the agent runs without the WebSocket terminal (the desktop app uses
 // the Rust PTY instead), so the import failure is logged and swallowed.
 import { DEVBOX, IS_CLIENT } from "./config.js";
-import { sh, shQuote } from "./shell.js";
+import { sh, shOn, shQuote, SSH_TOKEN } from "./shell.js";
 import { hostOk, tokenOk } from "./http.js";
 
 export async function startPtyBridge(server) {
@@ -32,6 +32,7 @@ export async function startPtyBridge(server) {
       return;
     }
     let term = null;
+    let attachedHost = "";
     let viewSession = null; // grouped view session to clean up on close
 
     ws.on("message", (raw, isBinary) => {
@@ -44,6 +45,11 @@ export async function startPtyBridge(server) {
       }
 
       if (msg.type === "attach" && !term) {
+        if (msg.host !== undefined && (typeof msg.host !== "string" || (msg.host && !SSH_TOKEN.test(msg.host)))) {
+          ws.close(1008, "invalid host");
+          return;
+        }
+        attachedHost = msg.host || "";
         const name = String(msg.name || "").trim();
         if (!name || name === "undefined") {
           ws.close();
@@ -82,8 +88,8 @@ export async function startPtyBridge(server) {
         // would get `_` for every non-ASCII glyph, so supply a UTF-8 locale then.
         const hasLocale = ["LC_ALL", "LC_CTYPE", "LANG"].some((k) => process.env[k]);
         const ptyEnv = { ...process.env, ...(hasLocale ? {} : { LANG: "en_US.UTF-8" }), COLORTERM: "truecolor" };
-        if (IS_CLIENT) {
-          term = pty.spawn("ssh", ["-tt", DEVBOX, `sh -lc ${shQuote(attach)}`], {
+        if (attachedHost || IS_CLIENT) {
+          term = pty.spawn("ssh", ["-tt", attachedHost || DEVBOX, `sh -lc ${shQuote(attach)}`], {
             name: "xterm-256color",
             cols,
             rows,
@@ -122,7 +128,7 @@ export async function startPtyBridge(server) {
         term = null;
       }
       if (viewSession) {
-        sh(`tmux kill-session -t ${shQuote(viewSession)} 2>/dev/null`, () => {});
+        shOn(attachedHost, `tmux kill-session -t ${shQuote(viewSession)} 2>/dev/null`, () => {});
         viewSession = null;
       }
     });

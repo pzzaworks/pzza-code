@@ -21,13 +21,14 @@ import {
   requestToken,
   tokenOk,
 } from "./lib/http.js";
-import { listPorts } from "./lib/ports.js";
-import { listSessions, listWindows, scanSessions } from "./lib/tmux.js";
+import { listPorts, listPortDetails } from "./lib/ports.js";
+import { listSessions, listWindows, scanSessions, sessionActivity, terminateSession } from "./lib/tmux.js";
 import { forwardStatus, setForwardEnabled, startForwardLoop } from "./lib/forward.js";
 import { accountEnvArg, listAccounts } from "./lib/accounts.js";
 import { USAGE_FRESH_MS, collectUsage } from "./lib/usage.js";
 import { SPEND_FRESH_MS, computeSpend } from "./lib/spend.js";
-import { doctor, sshHosts } from "./lib/system.js";
+import { deviceInfo } from "./lib/device-info.js";
+import { deviceOs, doctor, sshHosts } from "./lib/system.js";
 import { mcpConfigs, mcpInstall } from "./lib/mcp.js";
 import { installAgent } from "./lib/install.js";
 import { filesRouter } from "./lib/files.js";
@@ -88,25 +89,56 @@ const server = http.createServer(async (req, res) => {
     );
     return json(res, 200, { path: out });
   }
-  if (url.pathname === "/scan") return json(res, 200, await scanSessions(queryHost(url)));
+  if (url.pathname === "/scan") {
+    const host = url.searchParams.has("host") ? url.searchParams.get("host") : undefined;
+    if (host && !SSH_TOKEN.test(host)) return json(res, 400, { error: "invalid host" });
+    try { return json(res, 200, await scanSessions(host)); }
+    catch { return json(res, 503, { error: "Could not scan sessions on this device" }); }
+  }
+  if (url.pathname === "/sessions/activity" && req.method === "GET") {
+    const host = url.searchParams.has("host") ? url.searchParams.get("host") : undefined;
+    if (host && !SSH_TOKEN.test(host)) return json(res, 400, { error: "invalid host" });
+    return json(res, 200, await sessionActivity(host));
+  }
+  if (url.pathname === "/device/info" && req.method === "GET") {
+    const host = url.searchParams.get("host") || "";
+    if (host && !SSH_TOKEN.test(host)) return json(res, 400, { error: "invalid host" });
+    return json(res, 200, await deviceInfo(host, { fresh: url.searchParams.get("fresh") === "1" }));
+  }
+  if (url.pathname === "/device/os" && req.method === "GET") {
+    const host = url.searchParams.get("host") || "";
+    if (host && !SSH_TOKEN.test(host)) return json(res, 400, { error: "invalid host" });
+    return json(res, 200, await deviceOs(host));
+  }
   if (url.pathname === "/ssh/hosts") return json(res, 200, sshHosts());
   if (url.pathname === "/windows") return json(res, 200, await listWindows());
+  if (url.pathname === "/ports/details") {
+    const host = url.searchParams.get("host") || "";
+    if (host && !SSH_TOKEN.test(host)) return json(res, 400, { error: "invalid host" });
+    try { return json(res, 200, await listPortDetails(host)); }
+    catch (error) { return json(res, 503, { error: error.message }); }
+  }
   if (url.pathname === "/ports") return json(res, 200, await listPorts());
   if (url.pathname === "/health") return json(res, 200, { ok: true, id: AGENT_ID });
   if (url.pathname === "/forward/status") return json(res, 200, forwardStatus());
 
   if (url.pathname === "/kill" && req.method === "POST") {
     const body = await readBody(req);
-    const name = String(body.name || "").trim();
-    if (name) {
-      const hasWin = body.window !== undefined && body.window !== null;
-      const cmd = hasWin
-        ? `tmux kill-window -t ${shQuote(name + ":" + body.window)}`
-        : `tmux kill-session -t ${shQuote(name)}`;
-      const host = SSH_TOKEN.test(String(body.host || "")) ? String(body.host) : "";
-      shOn(host, cmd, () => {});
+    if (!body || typeof body !== "object" || Array.isArray(body)) return json(res, 400, { error: "invalid request" });
+    const name = typeof body.name === "string" ? body.name.trim() : "";
+    if (!name) return json(res, 400, { error: "session name is required" });
+    if (body.host !== undefined && (typeof body.host !== "string" || (body.host && !SSH_TOKEN.test(body.host)))) {
+      return json(res, 400, { error: "invalid host" });
     }
-    return json(res, 200, { ok: true });
+    const hasWin = body.window !== undefined && body.window !== null;
+    if (hasWin && (!Number.isInteger(body.window) || body.window < 0)) return json(res, 400, { error: "invalid window" });
+    try {
+      await terminateSession(name, hasWin ? body.window : undefined, body.host);
+      json(res, 200, { ok: true });
+    } catch {
+      json(res, 500, { error: "Could not close the session on this device" });
+    }
+    return;
   }
   if (url.pathname === "/forward/toggle" && req.method === "POST") {
     const body = await readBody(req);
@@ -124,7 +156,22 @@ const server = http.createServer(async (req, res) => {
   }
   // Project sync: git repos under the projects root, across every device.
   if (url.pathname === "/projects/scan" && req.method === "POST") {
-    const out = await scanProjects(await readBody(req), { redact: true });
+    const body = await readBody(req);
+    if (req.headers.accept === "application/x-ndjson") {
+      res.writeHead(200, { "Content-Type": "application/x-ndjson", "Cache-Control": "no-store", "X-Accel-Buffering": "no" });
+      const send = (event) => { if (!res.destroyed) res.write(JSON.stringify(event) + "\n"); };
+      try {
+        const result = await scanProjects(body, {
+          redact: true,
+          onProgress: (progress) => send({ type: "progress", progress }),
+        });
+        send(result.error ? { type: "error", error: result.error } : { type: "result", result });
+      } catch {
+        send({ type: "error", error: "Project scan failed" });
+      }
+      return res.end();
+    }
+    const out = await scanProjects(body, { redact: true });
     return json(res, out.error ? 400 : 200, out);
   }
   if (url.pathname === "/projects/sync" && req.method === "POST") {

@@ -1,3 +1,4 @@
+import { DeviceIcon } from "../ui/DeviceIcon";
 import { useEffect, useState } from "react";
 import { ChevronDown, ExternalLink } from "lucide-react";
 import { useStore } from "../state/store";
@@ -7,6 +8,8 @@ import {
   fetchCapabilities,
   fetchForwardState,
   fetchPorts,
+  fetchPortDetails,
+  type PortDetails,
   setForwardEnabled,
   type Capabilities,
 } from "../serverApi";
@@ -72,7 +75,7 @@ function ForwardConfig({
             <Select
               value={serverId}
               onChange={onServer}
-              options={devices.map((d) => ({ value: d.id, label: d.name, sub: d.host }))}
+              options={devices.map((d) => ({ value: d.id, label: d.name, sub: d.host, icon: <DeviceIcon device={d} /> }))}
             />
           </div>
           <div className="field">
@@ -82,11 +85,11 @@ function ForwardConfig({
             <Select
               value={clientId}
               onChange={onClient}
-              options={devices.map((d) => ({ value: d.id, label: d.name, sub: d.host }))}
+              options={devices.map((d) => ({ value: d.id, label: d.name, sub: d.host, icon: <DeviceIcon device={d} /> }))}
             />
           </div>
           <p className="set-note" style={{ margin: 0 }}>
-            This Mac opens an ssh tunnel to {server?.name ?? "the server"} and mirrors its
+            This device opens an SSH tunnel to {server?.name ?? "the server"} and mirrors its
             listening ports here, so you can open them on localhost.
           </p>
         </div>
@@ -148,6 +151,40 @@ function ForwardSwitch({ enabled, onToggle }: { enabled: boolean; onToggle: () =
   );
 }
 
+function usePortDetails(host?: string, enabled = true) {
+  const [details, setDetails] = useState<PortDetails[]>([]);
+  const [unavailable, setUnavailable] = useState(false);
+  useEffect(() => {
+    setDetails([]); setUnavailable(false);
+    if (!enabled) return;
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const refresh = async () => {
+      try {
+        const result = await fetchPortDetails(host, controller.signal);
+        if (!controller.signal.aborted) { setDetails(result); setUnavailable(false); }
+      } catch {
+        if (!controller.signal.aborted) { setDetails([]); setUnavailable(true); }
+      } finally {
+        if (!controller.signal.aborted) timer = setTimeout(refresh, POLL_MS);
+      }
+    };
+    void refresh();
+    return () => { controller.abort(); clearTimeout(timer); };
+  }, [host, enabled]);
+  return { details, unavailable };
+}
+
+function PortIdentity({ port, details, live }: { port: number; details: PortDetails[]; live: boolean }) {
+  const processes = details.find((entry) => entry.port === port)?.processes ?? [];
+  const names = [...new Set(processes.map((process) => process.name))];
+  const info = processes.map((process) => `${process.name} · ${process.source === "package" ? "project name" : process.source === "folder" ? "working folder" : "process name"} · ${process.process} · PID ${process.pid}`).join("\n");
+  return <div className="port-identity" title={info || "The source device has not provided a readable process identity."}>
+    <span className="port-project">{names.join(", ") || "Name unavailable"}</span>
+    <span className="port-num">{port}{live ? <span className="port-state on">live</span> : null}<span className="port-process">{[...new Set(processes.map((process) => process.process))].join(", ")}</span></span>
+  </div>;
+}
+
 function OpenLink({ port }: { port: number }) {
   return (
     <a className="btn btn-sm" href={`http://localhost:${port}`} target="_blank" rel="noreferrer">
@@ -158,6 +195,7 @@ function OpenLink({ port }: { port: number }) {
 }
 
 function ServerPorts() {
+  const { details, unavailable } = usePortDetails();
   const [caps, setCaps] = useState<Capabilities | null>(null);
   const [ports, setPorts] = useState<number[]>([]);
   const [enabled, setEnabled] = useState(true);
@@ -227,6 +265,7 @@ function ServerPorts() {
         <div className="ports-status-spacer" />
         <ForwardSwitch enabled={enabled} onToggle={toggle} />
       </div>
+      {unavailable ? <p className="small muted pad">Service names are unavailable. Port forwarding still works.</p> : null}
       <div className="ports-box">
         {rows.length === 0 ? (
           <p className="muted small pad">
@@ -235,10 +274,7 @@ function ServerPorts() {
         ) : (
           rows.map((port) => (
             <div key={port} className="port-row">
-              <span className="port-num">
-                {port}
-                {isClient ? <span className="port-state on">live</span> : null}
-              </span>
+              <PortIdentity port={port} details={details} live={isClient} />
               <OpenLink port={port} />
             </div>
           ))
@@ -250,6 +286,7 @@ function ServerPorts() {
 
 function TauriPorts({ serverHost, clientIsLocal }: { serverHost: string | null; clientIsLocal: boolean }) {
   const host = serverHost;
+  const { details, unavailable } = usePortDetails(host ?? undefined, !!host && clientIsLocal);
   const [status, setStatus] = useState<ForwardStatus | null>(null);
   const [enabled, setEnabled] = useState(true);
 
@@ -281,7 +318,7 @@ function TauriPorts({ serverHost, clientIsLocal }: { serverHost: string | null; 
   if (!clientIsLocal)
     return (
       <p className="muted small pad">
-        Forwarding runs on this Mac - set the client to This Mac.
+        Forwarding runs on this device - select it as the client.
       </p>
     );
   if (!host)
@@ -304,6 +341,7 @@ function TauriPorts({ serverHost, clientIsLocal }: { serverHost: string | null; 
         <div className="ports-status-spacer" />
         <ForwardSwitch enabled={enabled} onToggle={() => setEnabled((v) => !v)} />
       </div>
+      {unavailable ? <p className="small muted pad">Service names are unavailable. Port forwarding still works.</p> : null}
       <div className="ports-box">
         {forwarded.length === 0 ? (
           <p className="muted small pad">
@@ -312,10 +350,7 @@ function TauriPorts({ serverHost, clientIsLocal }: { serverHost: string | null; 
         ) : (
           forwarded.map((port) => (
             <div key={port} className="port-row">
-              <span className="port-num">
-                {port}
-                <span className="port-state on">live</span>
-              </span>
+              <PortIdentity port={port} details={details} live />
               <button className="btn btn-sm" onClick={() => openUrl(`http://localhost:${port}`)}>
                 <ExternalLink size={13} strokeWidth={2} />
                 Open
