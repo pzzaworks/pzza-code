@@ -44,11 +44,12 @@ const TILEBROWSER_KEY = "pzza.tileBrowser";
 const TILECODE_KEY = "pzza.tileCode";
 const TRANSPARENCY_KEY = "pzza.semiTransparent";
 const TRANSPARENCY_OPTIONS_KEY = "pzza.transparencyOptions";
-export interface TransparencyOptions { opacity: number; blur: number; saturation: number }
+export interface TransparencyOptions { opacity: number; blur: number; saturation: number; surfaceOpacity: number; desktopBlur: boolean }
 function transparencyOptions(value: Partial<TransparencyOptions>): TransparencyOptions {
   const bound = (value: unknown, fallback: number, min: number, max: number) =>
     typeof value === "number" && Number.isFinite(value) ? Math.min(max, Math.max(min, value)) : fallback;
-  return { opacity: bound(value?.opacity, 55, 15, 95), blur: bound(value?.blur, 20, 0, 40), saturation: bound(value?.saturation, 115, 50, 180) };
+  return { opacity: bound(value?.opacity, 55, 5, 95), blur: bound(value?.blur, 20, 0, 40), saturation: bound(value?.saturation, 115, 50, 180),
+    surfaceOpacity: bound(value?.surfaceOpacity, 65, 5, 100), desktopBlur: typeof value?.desktopBlur === "boolean" ? value.desktopBlur : true };
 }
 const THEME_KEY = "pzza.theme";
 const FONT_KEY = "pzza.fontSize";
