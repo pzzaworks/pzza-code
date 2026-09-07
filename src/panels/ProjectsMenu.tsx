@@ -1,4 +1,5 @@
 import { Modal } from "../ui/Modal";
+import { deviceExclusions, projectSettings } from "../projectSettings";
 import { confirmEditorDiscard } from "../editorChanges";
 import { DeviceIcon } from "../ui/DeviceIcon";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
@@ -30,13 +31,10 @@ function ScanProgress({ progress }: { progress: ProjectScanProgress | null }) {
   }, [started]);
   const failed = progress?.finished.filter((device) => device.error).length ?? 0;
   return (
-    <div className="pj-scan-progress">
-      <div className="pj-scan-progress-label" role="status">
-        <span>Scanning · {progress ? `${progress.completed}/${progress.total} devices checked · ${progress.repos} repos found` : "Connecting to devices…"}{failed ? ` · ${failed} failed` : ""}</span>
-        <span>{elapsed < 60 ? `${elapsed}s` : `${Math.floor(elapsed / 60)}m ${elapsed % 60}s`} elapsed</span>
-      </div>
-      <progress aria-label="Devices scanned" max={progress?.total || 1} value={progress ? progress.completed : undefined} />
-      <span className="pj-scan-progress-hint">Devices scan in parallel; progress reflects completed devices, not remaining time.</span>
+    <div className="pj-scan-status" role="status">
+      <Loader2 size={14} className="sw-spin" />
+      <span>Scanning{progress ? ` · ${progress.completed}/${progress.total} devices · ${progress.repos} repos` : " · connecting…"}{failed ? ` · ${failed} failed` : ""}</span>
+      <span className="pj-scan-time">{elapsed < 60 ? `${elapsed}s` : `${Math.floor(elapsed / 60)}m ${elapsed % 60}s`}</span>
     </div>
   );
 }
@@ -69,12 +67,12 @@ function saveRoot(v: string): void {
 const OPTS_KEY = "pzza.sync.options";
 const DEVICES_OFF_KEY = "pzza.sync.devicesOff";
 
-function loadJson<T>(key: string, fallback: T): T {
+function loadJson(key: string): unknown {
   try {
     const raw = localStorage.getItem(key);
-    return raw ? { ...fallback, ...(JSON.parse(raw) as T) } : fallback;
+    return raw ? JSON.parse(raw) : null;
   } catch {
-    return fallback;
+    return null;
   }
 }
 function saveJson(key: string, v: unknown): void {
@@ -559,8 +557,8 @@ export function ProjectsMenu() {
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<Filter>("all");
   const [open, setOpen] = useState<Set<string>>(() => new Set());
-  const [opts, setOpts] = useState<SyncOptions>(() => loadJson(OPTS_KEY, DEFAULT_SYNC_OPTIONS));
-  const [devicesOff, setDevicesOff] = useState<string[]>(() => loadJson(DEVICES_OFF_KEY, [] as string[]));
+  const [opts, setOpts] = useState<SyncOptions>(() => projectSettings(loadJson(OPTS_KEY), DEFAULT_SYNC_OPTIONS));
+  const [devicesOff, setDevicesOff] = useState<string[]>(() => deviceExclusions(loadJson(DEVICES_OFF_KEY)));
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [excludeText, setExcludeText] = useState(() => opts.envExclude.join(", "));
 
@@ -803,7 +801,6 @@ export function ProjectsMenu() {
         </div>
       ) : null}
 
-      {scanning ? <ScanProgress key={root} progress={scanProgress} /> : null}
       <div className="pj-devices">
         {deviceStrip.map((d) => (
           <div
@@ -872,11 +869,8 @@ export function ProjectsMenu() {
       ) : null}
 
       <div className="pj-list">
-        {!scan && scanning ? (
-          <p className="muted small pad pj-empty">
-            <Loader2 size={14} className="sw-spin" /> Scanning {refs.length} device{refs.length === 1 ? "" : "s"}…
-          </p>
-        ) : !scan ? null : shown.length === 0 ? (
+        {scanning ? <ScanProgress key={root} progress={scanProgress} /> : null}
+        {!scan ? null : shown.length === 0 && !scanning ? (
           <p className="muted small pad pj-empty">
             {rows.length === 0 ? `No git repos under ${root} on any device.` : "Everything is in sync."}
           </p>

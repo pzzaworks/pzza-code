@@ -127,19 +127,29 @@ function AppearanceSection() {
       </button>
     </Row>
     {optionsOpen ? <div className="transparency-options">
-      <Row label="Background opacity" hint={`${options.opacity}%`}>
-        <input aria-label="Background opacity" type="range" min={15} max={95} value={options.opacity}
+      <Row label="App background opacity" hint={`${options.opacity}%`}>
+        <input aria-label="App background opacity" type="range" min={5} max={95} value={options.opacity}
           onChange={(event) => setOptions({ opacity: Number(event.target.value) })} />
       </Row>
-      <Row label="Surface blur" hint={options.blur ? `${options.blur}px · desktop blur on` : "Blur off"}>
-        <input aria-label="Surface blur" type="range" min={0} max={40} value={options.blur}
+      <Row label="Desktop background blur" hint="Native blur behind the app window">
+        <button type="button" className={`switch ${options.desktopBlur ? "switch-on" : ""}`} role="switch"
+          aria-label="Desktop background blur" aria-checked={options.desktopBlur} onClick={() => setOptions({ desktopBlur: !options.desktopBlur })}>
+          <span className="switch-knob" />
+        </button>
+      </Row>
+      <Row label="Panel background opacity" hint={`${options.surfaceOpacity}% · text stays opaque`}>
+        <input aria-label="Panel background opacity" type="range" min={5} max={100} value={options.surfaceOpacity}
+          onChange={(event) => setOptions({ surfaceOpacity: Number(event.target.value) })} />
+      </Row>
+      <Row label="Panel backdrop blur" hint={options.blur ? `${options.blur}px` : "Blur off"}>
+        <input aria-label="Panel backdrop blur" type="range" min={0} max={40} value={options.blur}
           onChange={(event) => setOptions({ blur: Number(event.target.value) })} />
       </Row>
       <Row label="Saturation" hint={`${options.saturation}%`}>
         <input aria-label="Saturation" type="range" min={50} max={180} value={options.saturation}
           onChange={(event) => setOptions({ saturation: Number(event.target.value) })} />
       </Row>
-      <p className="set-note">Desktop blur strength is managed by the operating system. Surface blur controls the app panels.</p>
+      <p className="set-note">macOS controls desktop blur strength. Panel blur affects content behind panels, not the desktop or text inside them.</p>
     </div> : null}
     {enabled && notice ? <p className="set-note" role="status">{notice}</p> : null}
   </Section>;

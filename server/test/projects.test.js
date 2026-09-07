@@ -59,6 +59,36 @@ test("parallel scans preserve every repository and dirty/untracked counts", asyn
   assert.ok(repos.every((repo) => repo.branch === "main" && repo.head));
 });
 
+test("scans exclude linked worktrees but retain main clones, duplicate clones and submodules", async (t) => {
+  const { root, origin, projects, plan } = await fixture(t, 2);
+  const main = path.join(projects, plan[0].rel);
+  await git(main, "worktree", "add", "-b", "feature", path.join(projects, "feature checkout"));
+  await git(main, "worktree", "add", "--detach", path.join(projects, "detached checkout"));
+  await git(main, "-c", "protocol.file.allow=always", "submodule", "add", "--quiet", origin, "module");
+  await run("git", ["clone", "--quiet", "--separate-git-dir", path.join(root, "separate-metadata"), origin, path.join(projects, "separate checkout")]);
+  const scan = await scanProjects({ root: projects, devices: [{ id: "local", host: "" }] });
+  assert.equal(scan.devices[0].error, null);
+  assert.deepEqual(scan.devices[0].repos.map((repo) => repo.rel).sort(), [plan[0].rel, `${plan[0].rel}/module`, plan[1].rel, "separate checkout"].sort());
+});
+
+test("sync rechecks stale targets and leaves linked worktrees unchanged", async (t) => {
+  const { origin, projects, plan } = await fixture(t, 1);
+  const main = path.join(projects, plan[0].rel);
+  const rel = "feature checkout";
+  const linked = path.join(projects, rel);
+  await git(main, "worktree", "add", "-b", "feature", linked);
+  await writeFile(path.join(linked, "tracked.txt"), "unfinished feature\n");
+  const head = (await git(linked, "rev-parse", "HEAD")).stdout;
+  for (const action of ["update", "clone"]) {
+    const { stdout } = await run("sh", ["-c", syncScript(rootExpr(projects), [{ rel, origin, action }], normalizeOptions({ stashDirty: true, switchToDefault: true }))]);
+    assert.deepEqual(results(stdout), [["PZZA_R", rel, "skipped", "linked worktree; left alone"]]);
+  }
+  assert.equal((await git(linked, "branch", "--show-current")).stdout.trim(), "feature");
+  assert.equal((await git(linked, "rev-parse", "HEAD")).stdout, head);
+  assert.equal((await git(linked, "stash", "list")).stdout, "");
+  assert.equal(await readFile(path.join(linked, "tracked.txt"), "utf8"), "unfinished feature\n");
+});
+
 test("parallel sync updates all repos, leaves dirty changes alone, and reports failures", async (t) => {
   const { projects, origin, plan } = await fixture(t, 6);
   await writeFile(path.join(origin, "tracked.txt"), "updated\n");
@@ -135,7 +165,7 @@ exec "$PZZA_TEST_GIT" "$@"
   assert.ok(peak <= 4, "fetch concurrency must remain bounded");
 });
 
-test("scan skips dependency/cache/output trees and preserves real nested projects and worktrees", async (t) => {
+test("scan skips dependency/cache/output trees and linked worktrees while preserving real nested projects", async (t) => {
   const { projects, origin, plan } = await fixture(t, 1);
   const clone = async (rel) => {
     const dest = path.join(projects, rel);
@@ -148,8 +178,7 @@ test("scan skips dependency/cache/output trees and preserves real nested project
   await git(path.join(projects, plan[0].rel), "worktree", "add", "--quiet", "-b", "linked", path.join(projects, "linked"));
   const scan = await scanProjects({ root: projects, devices: [{ id: "local", host: "" }] });
   assert.equal(scan.devices[0].error, null);
-  assert.deepEqual(scan.devices[0].repos.map((repo) => repo.rel).sort(), [...kept, plan[0].rel, "linked"].sort());
-  assert.equal(scan.devices[0].repos.find((repo) => repo.rel === "linked").branch, "linked");
+  assert.deepEqual(scan.devices[0].repos.map((repo) => repo.rel).sort(), [...kept, plan[0].rel].sort());
 });
 
 test("consolidated scan keeps tracking, stash, rename, detached and unborn metadata accurate", async (t) => {
