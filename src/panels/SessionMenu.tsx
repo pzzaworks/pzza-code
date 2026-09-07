@@ -1,7 +1,10 @@
+import { LiveSessionIcon } from "../ui/LiveSessionIcon";
+import { DeviceIcon } from "../ui/DeviceIcon";
 import { useEffect, useState } from "react";
 import { ChevronRight, CornerDownLeft, SquareTerminal } from "lucide-react";
 import { useStore } from "../state/store";
-import { tileTitle } from "../sessionMeta";
+import { deviceHost } from "../devices";
+import { tileTitle, sessionDisplayName } from "../sessionMeta";
 import { Select } from "../ui/Select";
 import { HAS_TAURI } from "../tauriEnv";
 import { fetchAccounts, createSession, type Account } from "../serverApi";
@@ -13,10 +16,10 @@ const DEVICE_KEY = "pzza.session.device";
 export function SessionMenu({ close }: { close: () => void }) {
   const allWindows = useStore((s) => s.allWindows);
   const tiles = useStore((s) => s.tiles);
+  const tileTitles = useStore((s) => s.tileTitles);
   const openSession = useStore((s) => s.openSession);
   const openWindow = useStore((s) => s.openWindow);
   const loadSessions = useStore((s) => s.loadSessions);
-  const setActive = useStore((s) => s.setActive);
   const workspaces = useStore((s) => s.workspaces);
   const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
   const setWorkspace = useStore((s) => s.setWorkspace);
@@ -56,16 +59,24 @@ export function SessionMenu({ close }: { close: () => void }) {
   const counts: Record<string, number> = {};
   for (const w of allWindows) counts[w.session] = (counts[w.session] ?? 0) + 1;
 
-  const winDisplay = (w: (typeof allWindows)[number]) =>
+  const winDefaultName = (w: (typeof allWindows)[number]) =>
     (counts[w.session] ?? 1) > 1
       ? `${tileTitle(w.session)} · ${w.windowName}`
       : tileTitle(w.session);
 
+  const winDisplay = (w: (typeof allWindows)[number]) =>
+    sessionDisplayName({
+      id: `${w.session}::w::${w.window}`,
+      name: winDefaultName(w),
+      session: w.session,
+      window: w.window,
+    }, tileTitles);
+
   const isWindowOpen = (w: (typeof allWindows)[number]) =>
     tiles.some(
       (t) =>
-        (t.session === w.session && t.window === w.window) ||
-        (t.id === w.session && w.active),
+        !t.host && ((t.session === w.session && t.window === w.window) ||
+        (t.id === w.session && w.active)),
     );
   const available = allWindows.filter((w) => !isWindowOpen(w));
 
@@ -75,7 +86,7 @@ export function SessionMenu({ close }: { close: () => void }) {
     if (wsId !== activeWorkspaceId) setWorkspace(wsId);
     // Open on the selected device: no host for this Mac, the ssh host otherwise.
     const device = devices.find((d) => d.id === deviceId);
-    const host = device && device.id !== "this-mac" ? device.host : undefined;
+    const host = device ? deviceHost(device) || undefined : undefined;
     // Bind the chosen account by creating the tmux session with its env up
     // front, then attach to it (the lazy attach reuses the existing session).
     // Account binding runs through the local agent, so it only applies locally.
@@ -88,7 +99,6 @@ export function SessionMenu({ close }: { close: () => void }) {
       }
     }
     openSession(trimmed, undefined, host);
-    setActive(trimmed);
     // Give tmux a beat to create the session, then re-scan so the new session's
     // current path lands in allSessions (drives the tile header and code editor).
     setTimeout(() => {
@@ -107,7 +117,7 @@ export function SessionMenu({ close }: { close: () => void }) {
           <Select
             value={deviceId}
             onChange={pickDevice}
-            options={devices.map((d) => ({ value: d.id, label: d.name, sub: d.host }))}
+            options={devices.map((d) => ({ value: d.id, label: d.name, sub: d.host, icon: <DeviceIcon device={d} /> }))}
           />
         </div>
       </div>
@@ -171,12 +181,12 @@ export function SessionMenu({ close }: { close: () => void }) {
                 key={`${w.session}::w::${w.window}`}
                 className="session-pick"
                 onClick={() => {
-                  openWindow(w, winDisplay(w));
+                  openWindow(w, winDefaultName(w));
                   close();
                 }}
               >
                 <span className="session-pick-icon">
-                  <SquareTerminal size={15} />
+                  <LiveSessionIcon session={w.session} window={w.window} size={15} />
                 </span>
                 <span className="session-pick-main">
                   <span className="session-pick-name">{winDisplay(w)}</span>

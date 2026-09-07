@@ -1,12 +1,14 @@
-import { useEffect, useState } from "react";
+import { DeviceInfo } from "./DeviceInfo";
+import { LiveSessionIcon } from "../ui/LiveSessionIcon";
+import { confirmEditorDiscard } from "../editorChanges";
+import { DeviceIcon } from "../ui/DeviceIcon";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ChevronDown,
   ChevronRight,
-  Laptop,
   Loader2,
   Plus,
   RefreshCw,
-  Server,
   Trash2,
 } from "lucide-react";
 import { useStore } from "../state/store";
@@ -14,8 +16,8 @@ import { Modal } from "../ui/Modal";
 import { Select } from "../ui/Select";
 import { scanDevice, killSession, fetchSshHosts, type SshHost } from "../serverApi";
 import type { RemoteSession } from "../connection";
-import { sessionIcon, iconColor, tileTitle } from "../sessionMeta";
-import type { Device } from "../devices";
+import { sessionDisplayName } from "../sessionMeta";
+import { deviceHost, type Device } from "../devices";
 
 interface ScanState {
   loading: boolean;
@@ -27,10 +29,12 @@ interface ScanState {
 // app never opened) to add, move, or terminate them.
 export function DevicesMenu() {
   const devices = useStore((s) => s.devices);
+  const connectionHost = useStore((s) => s.connection.host);
   const addDevice = useStore((s) => s.addDevice);
   const removeDevice = useStore((s) => s.removeDevice);
   const workspaces = useStore((s) => s.workspaces);
   const tiles = useStore((s) => s.tiles);
+  const tileTitles = useStore((s) => s.tileTitles);
   const sessionWs = useStore((s) => s.sessionWs);
   const openSession = useStore((s) => s.openSession);
   const assignSession = useStore((s) => s.assignSession);
@@ -43,6 +47,8 @@ export function DevicesMenu() {
   const [pending, setPending] = useState<{ id: string; name: string } | null>(null);
   const [openDev, setOpenDev] = useState<string | null>(null);
   const [scans, setScans] = useState<Record<string, ScanState>>({});
+  const [terminating, setTerminating] = useState(false);
+  const [killError, setKillError] = useState<string | null>(null);
   const [killing, setKilling] = useState<{
     session: string;
     host: string;
@@ -50,26 +56,55 @@ export function DevicesMenu() {
     open: boolean;
   } | null>(null);
 
-  // The local device (this Mac) runs the agent, so its tmux is reached with an
-  // empty host; every other device is reached over ssh. This is what decides how
-  // we scan and kill - independent of which device is the default for new sessions.
-  const isLocalDevice = (d: Device) => d.id === "this-mac";
-  const sshTarget = (d: Device) => (d.user ? `${d.user}@${d.host}` : d.host);
-  const scanHost = (d: Device) => (isLocalDevice(d) ? "" : sshTarget(d));
+  const scanRequests = useRef(new Map<string, symbol>());
+  const mounted = useRef(true);
+  const isLocalDevice = (device: Device) => device.id === "this-mac";
+  const scanHost = deviceHost;
 
-  const runScan = (d: Device) => {
-    setScans((s) => ({ ...s, [d.id]: { loading: true, sessions: [], error: null } }));
-    scanDevice(scanHost(d))
-      .then((sessions) =>
-        setScans((s) => ({ ...s, [d.id]: { loading: false, sessions, error: null } })),
-      )
-      .catch((e) =>
-        setScans((s) => ({
-          ...s,
-          [d.id]: { loading: false, sessions: [], error: String(e?.message || e) },
-        })),
-      );
-  };
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      scanRequests.current.clear();
+    };
+  }, []);
+
+  const runScan = useCallback((device: Device) => {
+    const request = Symbol();
+    scanRequests.current.set(device.id, request);
+    const current = () => mounted.current && scanRequests.current.get(device.id) === request;
+    setScans((scans) => ({ ...scans, [device.id]: { loading: true, sessions: [], error: null } }));
+    void scanDevice(deviceHost(device)).then((sessions) => {
+      if (current()) setScans((scans) => ({ ...scans, [device.id]: { loading: false, sessions, error: null } }));
+    }).catch((error: unknown) => {
+      if (current()) setScans((scans) => ({
+        ...scans,
+        [device.id]: { loading: false, sessions: [], error: error instanceof Error ? error.message : String(error) },
+      }));
+    });
+  }, []);
+
+  useEffect(() => {
+    const refresh = (event: Event) => {
+      if (!(event instanceof CustomEvent)) return;
+      const detail: unknown = event.detail;
+      if (typeof detail !== "object" || detail === null || !("host" in detail)) return;
+      const host = typeof detail.host === "string" ? detail.host : "";
+      const changed = devices.filter((device) => deviceHost(device) === host);
+      for (const device of changed) {
+        scanRequests.current.set(device.id, Symbol());
+      }
+      setScans((current) => {
+        const next = { ...current };
+        for (const device of changed) delete next[device.id];
+        return next;
+      });
+      const expanded = changed.find((device) => device.id === openDev);
+      if (expanded) runScan(expanded);
+    };
+    window.addEventListener("pzza:sessions-changed", refresh);
+    return () => window.removeEventListener("pzza:sessions-changed", refresh);
+  }, [devices, openDev, runScan]);
 
   const toggleDevice = (d: Device) => {
     if (openDev === d.id) {
@@ -77,7 +112,7 @@ export function DevicesMenu() {
       return;
     }
     setOpenDev(d.id);
-    if (!scans[d.id]) runScan(d);
+    runScan(d);
   };
 
   // Auto-discover SSH targets from ~/.ssh/config that are not added yet, to
@@ -112,31 +147,32 @@ export function DevicesMenu() {
   ];
 
   const terminate = async () => {
-    if (!killing) return;
-    const { session, host, deviceId } = killing;
-    // Drop any tiles pointing at this session first so nothing reattaches to it,
-    // then kill it on its device. Match on the host-namespaced key so a
-    // same-named session on another device is left alone.
-    for (const t of tiles) {
-      if ((t.host ?? "") === host && (t.session ?? t.name) === session) closeTile(t.id);
+    if (!killing || terminating) return;
+    const { session, host } = killing;
+    setTerminating(true);
+    setKillError(null);
+    try {
+      const affected = tiles.filter((tile) => (tile.host ?? connectionHost ?? "") === host && (tile.session ?? tile.name) === session);
+      if (!await confirmEditorDiscard(affected.map((tile) => tile.id))) return;
+      await killSession(session, undefined, host);
+      for (const tile of affected) closeTile(tile.id);
+      setKilling(null);
+
+    } catch (error) {
+      setKillError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setTerminating(false);
     }
-    await killSession(session, undefined, host || undefined);
-    setKilling(null);
-    // Re-scan that device so the list reflects the kill (and surfaces a session
-    // that a supervisor immediately respawned, instead of silently doing nothing).
-    const dev = devices.find((d) => d.id === deviceId);
-    if (dev) runScan(dev);
   };
 
   return (
-    <div className="menu-body">
+    <div className="menu-body device-info-panel">
       <div className="menu-title">Devices</div>
 
       <div className="device-list">
         {devices.map((d) => {
           const isLocal = isLocalDevice(d);
           const isCurrent = isLocal; // the local device is the one the app drives directly
-          const Icon = isLocal ? Laptop : Server;
           const expanded = openDev === d.id;
           const scan = scans[d.id];
           return (
@@ -147,7 +183,7 @@ export function DevicesMenu() {
                 ) : (
                   <ChevronRight size={14} className="muted-icon" />
                 )}
-                <Icon size={15} className="muted-icon" />
+                <DeviceIcon device={d} size={15} />
                 <span className="device-main">
                   <span className="device-name">
                     {d.name}
@@ -174,6 +210,7 @@ export function DevicesMenu() {
 
               {expanded ? (
                 <div className="device-scan">
+                  <DeviceInfo key={scanHost(d)} device={d} />
                   <div className="device-scan-head">
                     <span className="device-scan-title">
                       Sessions
@@ -208,8 +245,6 @@ export function DevicesMenu() {
                       // Hide the app's internal window-view sessions.
                       .filter((s) => !s.name.startsWith("pzza-v-"))
                       .map((sess) => {
-                      const SIcon = sessionIcon(sess.name, sess.command);
-                      const col = iconColor(sess.name, sess.command);
                       // A remote session opens over ssh; its tile id and workspace
                       // key are namespaced by host so devices never collide.
                       const host = scanHost(d);
@@ -218,11 +253,11 @@ export function DevicesMenu() {
                       const wsId = sessionWs[tileId] ?? "";
                       return (
                         <div className="scan-row" key={sess.name}>
-                          <span className="scan-icon" style={col ? { color: col } : undefined}>
-                            <SIcon size={13} />
+                          <span className="scan-icon">
+                            <LiveSessionIcon session={sess.name} host={host} size={13} />
                           </span>
                           <span className="scan-main">
-                            <span className="scan-name">{tileTitle(sess.name)}</span>
+                            <span className="scan-name">{sessionDisplayName({ id: tileId, name: sess.name }, tileTitles)}</span>
                             <span className="scan-meta">
                               {sess.windows}w{sess.attached ? " · live" : ""}
                               {isOpen ? " · open" : ""}
@@ -235,7 +270,7 @@ export function DevicesMenu() {
                               placeholder={isOpen ? "Move..." : "Add..."}
                               onChange={(v) => {
                                 if (!v) return;
-                                openSession(sess.name, undefined, host || undefined);
+                                openSession(sess.name, undefined, host);
                                 assignSession(tileId, v);
                               }}
                             />
@@ -341,20 +376,21 @@ export function DevicesMenu() {
         ) : null}
       </Modal>
 
-      <Modal open={!!killing} onClose={() => setKilling(null)} title="Terminate session" size="sm">
+      <Modal open={!!killing} onClose={() => { if (!terminating) { setKilling(null); setKillError(null); } }} title="Terminate session" size="sm">
         {killing ? (
           <>
             <p className="move-q">
-              Terminate <b>{tileTitle(killing.session)}</b>? This kills the tmux session and
+              Terminate <b>{sessionDisplayName({ id: killing.host ? `${killing.host}::${killing.session}` : killing.session, name: killing.session }, tileTitles)}</b>? This kills the tmux session and
               everything running in it - it cannot be undone.
             </p>
+            {killError ? <p className="pj-error" role="alert">{killError}</p> : null}
             <div className="modal-actions">
-              <button className="btn" onClick={() => setKilling(null)}>
+              <button className="btn" disabled={terminating} onClick={() => { setKilling(null); setKillError(null); }}>
                 Cancel
               </button>
-              <button className="btn btn-danger" onClick={terminate}>
+              <button className="btn btn-danger" disabled={terminating} onClick={() => void terminate()}>
                 <Trash2 size={14} strokeWidth={2} />
-                Terminate
+                {terminating ? "Terminating…" : "Terminate"}
               </button>
             </div>
           </>

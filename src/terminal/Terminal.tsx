@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebglAddon } from "@xterm/addon-webgl";
@@ -18,37 +18,35 @@ import type { TileStatus } from "../sessionMeta";
 // context (https or localhost), so on a client that opened the app over plain
 // http via a LAN address it is undefined - fall back to a hidden textarea +
 // execCommand("copy"), which works from a user gesture in any context.
-function copyToClipboard(text: string): void {
-  if (!text) return;
-  const fallback = () => {
-    try {
-      const ta = document.createElement("textarea");
-      ta.value = text;
-      ta.setAttribute("readonly", "");
-      ta.style.position = "fixed";
-      ta.style.top = "-1000px";
-      ta.style.opacity = "0";
-      document.body.appendChild(ta);
-      ta.select();
-      document.execCommand("copy");
-      document.body.removeChild(ta);
-    } catch {
-      /* clipboard genuinely unavailable */
-    }
-  };
+async function copyToClipboard(text: string): Promise<boolean> {
+  if (!text) return false;
   try {
     if (navigator.clipboard?.writeText) {
-      navigator.clipboard.writeText(text).catch(fallback);
-      return;
+      await navigator.clipboard.writeText(text);
+      return true;
     }
+  } catch { /* The browser may refuse clipboard access; try the user-gesture fallback. */ }
+  const focused = document.activeElement;
+  const input = document.createElement("textarea");
+  input.value = text;
+  input.setAttribute("readonly", "");
+  input.style.position = "fixed";
+  input.style.top = "-1000px";
+  document.body.appendChild(input);
+  try {
+    input.select();
+    return document.execCommand("copy");
   } catch {
-    /* fall through */
+    return false;
+  } finally {
+    input.remove();
+    if (focused instanceof HTMLElement) focused.focus({ preventScroll: true });
   }
-  fallback();
 }
 
 interface Props {
   name: string;
+  host?: string;
   cmd: string;
   args: string[];
   cwd?: string;
@@ -67,7 +65,9 @@ const snappedLineHeight = (fontSize: number) => Math.round(fontSize * LINE_RATIO
 // One live terminal tile. xterm owns its own WebGL canvas, so it lives outside
 // React's reconcile loop. Transport depends on where the app runs: Rust PTY
 // under Tauri, the devbox WebSocket server in a plain browser.
-export function Terminal({ name, cmd, args, cwd, window: win, active, onStatus }: Props) {
+export function Terminal({ name, host, cmd, args, cwd, window: win, active, onStatus }: Props) {
+  const [hasSelection, setHasSelection] = useState(false);
+  const [pasteStatus, setPasteStatus] = useState<{ error: boolean; message: string } | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<XTerm | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -75,6 +75,7 @@ export function Terminal({ name, cmd, args, cwd, window: win, active, onStatus }
   const flushOutputRef = useRef<(() => void) | null>(null);
   const activeRef = useRef(active);
   const themeId = useStore((s) => s.themeId);
+  const semiTransparent = useStore((s) => s.semiTransparent);
   const fontSize = useStore((s) => s.fontSize);
   const cursorBlink = useStore((s) => s.cursorBlink);
   const refreshNonce = useStore((s) => s.refreshNonce);
@@ -85,6 +86,9 @@ export function Terminal({ name, cmd, args, cwd, window: win, active, onStatus }
 
     const term = new XTerm({
       allowProposedApi: true,
+      // Keep the renderer mounted when appearance toggles at runtime.
+      allowTransparency: true,
+      macOptionClickForcesSelection: true,
       cursorBlink: useStore.getState().cursorBlink,
       // Nerd Fonts first so yazi/btop/lazydocker glyphs render (fall back to a
       // plain monospace for the text if none are installed).
@@ -95,24 +99,38 @@ export function Terminal({ name, cmd, args, cwd, window: win, active, onStatus }
       // tmux keeps the real history on the remote side; a deep local buffer
       // only multiplies memory per tile (each line is a typed-array row).
       scrollback: 3000,
-      theme: themeById(useStore.getState().themeId).terminal,
+      theme: { ...themeById(useStore.getState().themeId).terminal, ...(useStore.getState().semiTransparent ? { background: "#00000000" } : {}) },
     });
     termRef.current = term;
 
-    // Copy the selection on Cmd+C (macOS) or Ctrl+Shift+C, working in insecure
-    // contexts too. Plain Ctrl+C is left alone so it still sends SIGINT.
-    term.attachCustomKeyEventHandler((e) => {
-      if (e.type !== "keydown") return true;
-      const k = e.key.toLowerCase();
-      const isCopy =
-        (e.metaKey && !e.ctrlKey && !e.altKey && k === "c") ||
-        (e.ctrlKey && e.shiftKey && k === "c");
-      if (isCopy && term.hasSelection()) {
-        copyToClipboard(term.getSelection());
-        term.focus();
-        return false;
+    const copySelection = () => {
+      const selected = term.getSelection();
+      if (!selected) return;
+      void copyToClipboard(selected).then((ok) => {
+        if (!ok && !disposed) setPasteStatus({ error: true, message: "Clipboard access failed. Try the Copy selection button again." });
+      });
+    };
+    const selectionListener = term.onSelectionChange(() => setHasSelection(term.hasSelection()));
+    // Native copy events write to the local clipboard even for SSH terminals.
+    const onCopy = (event: ClipboardEvent) => {
+      if (!term.hasSelection() || !event.clipboardData) return;
+      event.clipboardData.setData("text/plain", term.getSelection());
+      event.preventDefault();
+      event.stopPropagation();
+    };
+    container.addEventListener("copy", onCopy, true);
+    term.attachCustomKeyEventHandler((event) => {
+      if (event.type !== "keydown") return true;
+      const copy = event.key.toLowerCase() === "c" && !event.altKey &&
+        ((event.metaKey && !event.ctrlKey) || (event.ctrlKey && event.shiftKey));
+      if (!copy) return true;
+      event.preventDefault();
+      if (term.hasSelection()) copySelection();
+      else {
+        const modifier = /mac/i.test(navigator.platform) ? "Option" : "Shift";
+        setPasteStatus({ error: false, message: `Hold ${modifier} and drag to select terminal text, then copy.` });
       }
-      return true;
+      return false;
     });
 
     // OSC 52 clipboard passthrough: when tmux (set-clipboard on) or a TUI app
@@ -137,7 +155,9 @@ export function Terminal({ name, cmd, args, cwd, window: win, active, onStatus }
         // Strip control characters (keep tab/newline) so a planted escape
         // sequence cannot ride along into whatever the clipboard is pasted into.
         const text = new TextDecoder().decode(bytes).replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "");
-        copyToClipboard(text);
+        void copyToClipboard(text).then((ok) => {
+          if (!ok && !disposed) setPasteStatus({ error: true, message: "Clipboard access failed." });
+        });
       } catch {
         /* malformed base64 - ignore */
       }
@@ -342,52 +362,54 @@ export function Terminal({ name, cmd, args, cwd, window: win, active, onStatus }
           if (!disposed) onStatus?.("failed");
         },
         win,
+        host,
       );
       term.onData((d) => ws?.write(d));
       term.onResize(({ cols, rows }) => ws?.resize(cols, rows));
     }
 
-    // Cmd/Ctrl+V of an image: upload it to the devbox and type the resulting
-    // path into the pty so the agent (Claude/Codex) can read it. Text pastes
-    // fall through to xterm untouched.
-    const sendInput = (text: string) => {
-      if (tauriId !== null) writePty(tauriId, text);
-      else ws?.write(text);
-    };
-    const onPaste = (e: ClipboardEvent) => {
-      const dt = e.clipboardData;
-      if (!dt) return;
-      // An image: upload it to the device and type the resulting path so the
-      // agent can read it (works even over SSH, where a plain paste can't).
-      const imgItem = Array.from(dt.items).find((it) => it.type.startsWith("image/"));
-      if (imgItem) {
-        const blob = imgItem.getAsFile();
-        if (blob) {
-          e.preventDefault();
-          e.stopPropagation();
-          uploadPasteImage(blob)
-            .then((p) => {
-              // Never type an unvalidated server response into the shell: the
-              // path must look like a plain file path (no control chars,
-              // whitespace or quotes), and it is single-quoted regardless.
-              if (!/^[A-Za-z0-9._~/-]{1,512}$/.test(p)) {
-                throw new Error("unexpected path from the agent");
-              }
-              sendInput(`'${p}' `);
-            })
-            .catch((err) => term.writeln(`\r\n[image paste failed] ${err}\r\n`));
-          return;
+    const pasteController = new AbortController();
+    let pasteQueue = Promise.resolve();
+    let pasteNoticeTimer: ReturnType<typeof setTimeout> | undefined;
+    const onPaste = (event: ClipboardEvent) => {
+      const clipboard = event.clipboardData;
+      if (!clipboard) return;
+      const images = Array.from(clipboard.items)
+        .filter((item) => item.type.startsWith("image/"))
+        .map((item) => item.getAsFile())
+        .filter((file): file is File => file !== null);
+      const text = clipboard.getData("text");
+      if (!images.length && !text) return;
+      event.preventDefault();
+      event.stopPropagation();
+      // Keep consecutive image/text pastes ordered while an upload is pending.
+      pasteQueue = pasteQueue.then(async () => {
+        if (disposed) return;
+        if (!images.length) { term.paste(text); return; }
+        clearTimeout(pasteNoticeTimer);
+        try {
+          for (let index = 0; index < images.length; index++) {
+            const image = images[index];
+            if (disposed) return;
+            if (image.size > 20 * 1024 * 1024) throw new Error("Images must be 20 MB or smaller.");
+            setPasteStatus({ error: false, message: `Uploading image ${index + 1}/${images.length} to the terminal device…` });
+            const target = HAS_TAURI ? host ?? "" : host;
+            const imagePath = await uploadPasteImage(image, target, pasteController.signal);
+            if (disposed) return;
+            if (!imagePath.startsWith("/") || imagePath.length > 4096 || /[\x00-\x1f\x7f]/.test(imagePath)) {
+              throw new Error("The device returned an invalid image path.");
+            }
+            if (HAS_TAURI && tauriId === null) throw new Error("Terminal is not connected yet. Paste the image again once it connects.");
+            // Quote paths containing spaces/apostrophes and preserve bracketed paste.
+            const quoted = "'" + imagePath.replace(/'/g, "'\\''") + "' ";
+            term.paste(quoted);
+          }
+          setPasteStatus({ error: false, message: images.length === 1 ? "Image path pasted." : `${images.length} image paths pasted.` });
+          pasteNoticeTimer = setTimeout(() => { if (!disposed) setPasteStatus(null); }, 3000);
+        } catch (error) {
+          if (!disposed) setPasteStatus({ error: true, message: error instanceof Error ? error.message : "Image paste failed." });
         }
-      }
-      // Plain text: paste it ourselves via the pty so it never depends on
-      // xterm's own paste routing or the async clipboard API (which is missing
-      // on a client opened over plain http). term.paste keeps bracketed-paste.
-      const text = dt.getData("text");
-      if (text) {
-        e.preventDefault();
-        e.stopPropagation();
-        term.paste(text);
-      }
+      });
     };
     container.addEventListener("paste", onPaste, true);
 
@@ -409,9 +431,13 @@ export function Terminal({ name, cmd, args, cwd, window: win, active, onStatus }
 
     return () => {
       container.removeEventListener("paste", onPaste, true);
+      container.removeEventListener("copy", onCopy, true);
+      selectionListener.dispose();
       container.removeEventListener("mousedown", onMouseDown);
       container.removeEventListener("wheel", onWheel, { capture: true });
       disposed = true;
+      pasteController.abort();
+      clearTimeout(pasteNoticeTimer);
       cancelAnimationFrame(raf);
       clearTimeout(t1);
       clearTimeout(t2);
@@ -431,8 +457,8 @@ export function Terminal({ name, cmd, args, cwd, window: win, active, onStatus }
 
   useEffect(() => {
     const term = termRef.current;
-    if (term) term.options.theme = themeById(themeId).terminal;
-  }, [themeId]);
+    if (term) term.options.theme = { ...themeById(themeId).terminal, ...(semiTransparent ? { background: "#00000000" } : {}) };
+  }, [themeId, semiTransparent]);
 
   // Track active state for the wheel guard, and focus the terminal when it
   // becomes active (so keyboard tile shortcuts land input in the right pane).
@@ -494,5 +520,19 @@ export function Terminal({ name, cmd, args, cwd, window: win, active, onStatus }
     };
   }, [refreshNonce]);
 
-  return <div ref={containerRef} className="term-surface" />;
+  return <>
+    <div ref={containerRef} className="term-surface" />
+    {hasSelection ? <button className="btn btn-sm term-copy-selection" type="button"
+      onMouseDown={(event) => { event.preventDefault(); event.stopPropagation(); }}
+      onClick={() => {
+        const text = termRef.current?.getSelection();
+        if (text) void copyToClipboard(text).then((ok) => {
+          setPasteStatus({ error: !ok, message: ok ? "Text copied to your clipboard." : "Clipboard access failed. Try copying again." });
+        });
+      }}>Copy selection</button> : null}
+    {pasteStatus ? <div className={`term-paste-status ${pasteStatus.error ? "term-paste-error" : ""}`} role={pasteStatus.error ? "alert" : "status"}>
+      <span>{pasteStatus.message}</span>
+      <button type="button" className="tile-btn" aria-label="Dismiss clipboard message" onClick={() => setPasteStatus(null)}>×</button>
+    </div> : null}
+  </>;
 }

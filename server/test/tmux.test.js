@@ -1,0 +1,222 @@
+import assert from "node:assert/strict";
+import childProcess from "node:child_process";
+import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
+import path from "node:path";
+import { promisify } from "node:util";
+import test from "node:test";
+import { ACTIVITY_PROBE_SCRIPT, detectSessionActivity, interpreterEntrypoint } from "../lib/session-activity.js";
+import { sessionActivity } from "../lib/tmux.js";
+import { shQuote } from "../lib/shell.js";
+
+const pane = (overrides = {}) => ({ session: "renamed session", window: 0, active: true, paneActive: true, pid: 10, tty: "/dev/pts/1", command: "bash", ...overrides });
+const processRow = (overrides = {}) => ({ pid: 10, ppid: 1, pgid: 10, tpgid: 20, tty: "pts/1", command: "bash", executable: "/bin/bash", ...overrides });
+
+test("foreground nested agent detection ignores background jobs, shell text and session names", () => {
+  const processes = [processRow(), processRow({ pid: 20, ppid: 10, pgid: 20 }),
+    processRow({ pid: 21, ppid: 20, pgid: 20, command: "node", executable: "/usr/bin/node", entrypoint: "/opt/node_modules/@anthropic-ai/claude-code/cli.js" }),
+    processRow({ pid: 30, ppid: 10, pgid: 30, command: "codex", executable: "/bin/codex" })];
+  assert.equal(detectSessionActivity([pane()], processes)[0].command, "claude");
+  processes.pop();
+  processes[2].entrypoint = "/project/server.js";
+  processes[2].argv = ["node", "/project/server.js", "codex", "/opt/node_modules/@anthropic-ai/claude-code/cli.js"];
+  assert.equal(detectSessionActivity([pane({ session: "claude codex", command: "bash -c codex" })], processes)[0].command, "");
+  processes[2].entrypoint = "/tmp/@openai/codex/bin/codex.js";
+  assert.equal(detectSessionActivity([pane()], processes)[0].command, "bash");
+});
+
+test("foreground detection is scoped to active pane, window, tty and ancestry", () => {
+  const panes = [pane(), pane({ window: 1, active: false, pid: 40, tty: "/dev/ttys001", command: "zsh" }), pane({ paneActive: false, pid: 70, tty: "/dev/pts/7" })];
+  const processes = [processRow(), processRow({ pid: 20, ppid: 999, pgid: 20, executable: "/bin/claude" }),
+    processRow({ pid: 40, pgid: 40, tpgid: 50, tty: "s001" }),
+    processRow({ pid: 50, ppid: 40, pgid: 50, tty: "ttys001", executable: "/bin/codex" }),
+    processRow({ pid: 22, ppid: 10, pgid: 20, tty: "pts/other", executable: "/bin/claude" })];
+  assert.deepEqual(detectSessionActivity(panes, processes), [
+    { session: "renamed session", window: 0, active: true, command: "bash" },
+    { session: "renamed session", window: 1, active: false, command: "codex" },
+  ]);
+});
+
+test("native installations and exact wrapper entrypoints work without exposing arguments", () => {
+  const native = processRow({ pid: 20, ppid: 10, pgid: 20, executable: "/home/user/.local/share/claude/versions/2.1.10" });
+  assert.equal(detectSessionActivity([pane()], [processRow(), native])[0].command, "claude");
+  native.executable = "/usr/bin/node";
+  native.entrypoint = "/opt/node_modules/@openai/codex/bin/codex.js";
+  native.argv = ["node", native.entrypoint, "private prompt"];
+  const result = detectSessionActivity([pane()], [processRow(), native]);
+  assert.equal(result[0].command, "codex");
+  assert.ok(!JSON.stringify(result).includes("private prompt"));
+  assert.equal(interpreterEntrypoint(["node", "--require", "loader", "--max-old-space-size=8192", native.entrypoint]), native.entrypoint);
+  for (const argv of [["node", "-e", "codex"], ["node", "--eval=code", native.entrypoint], ["node", "-pcode", native.entrypoint]]) {
+    assert.equal(interpreterEntrypoint(argv), "");
+  }
+});
+
+test("fallback accepts only known executable labels and preserves existing tool icons", () => {
+  for (const command of ["btop", "htop", "top", "yazi", "ranger", "nnn", "lf", "docker", "lazydocker", "claude", "codex"]) {
+    assert.equal(detectSessionActivity([pane({ command })], [])[0].command, command);
+  }
+  assert.equal(detectSessionActivity([pane({ command: "arbitrary private command" })], [])[0].command, "");
+  assert.equal(detectSessionActivity([pane({ command: "claude" })], [processRow()])[0].command, "");
+});
+
+test("activity requests deduplicate in flight, refresh afterwards, reject invalid hosts and sanitize output", async (t) => {
+  let calls = 0;
+  const callbacks = [];
+  const mock = t.mock.method(childProcess, "execFile", (command, args, options, callback) => {
+    calls++;
+    assert.equal(command, "ssh");
+    assert.ok(args.includes("ControlPath=~/.ssh/pzza-mux-%C"));
+    assert.ok(options.timeout <= 10_000);
+    callbacks.push(callback);
+  });
+  syncBuiltinESMExports();
+  try {
+    const first = sessionActivity("fixture-device");
+    const same = sessionActivity("fixture-device");
+    assert.equal(first, same);
+    callbacks[0](null, JSON.stringify([{ session: "one", window: 2, active: false, command: "node --private-data" }]));
+    assert.deepEqual(await first, [{ session: "one", window: 2, active: false, command: "" }]);
+    const next = sessionActivity("fixture-device");
+    callbacks[1](null, "one\t2\t0\tcodex\n");
+    assert.equal((await next)[0].command, "codex");
+    assert.equal(calls, 2);
+    await assert.rejects(sessionActivity("-bad host"), /invalid host/);
+    assert.equal(calls, 2);
+  } finally {
+    mock.mock.restore();
+    syncBuiltinESMExports();
+  }
+});
+
+const execute = promisify(childProcess.execFile);
+const run = (command, args, options = {}) => execute(command, args, { timeout: 5_000, ...options });
+
+test("real isolated tmux probe tracks foreground wrapper, background exclusion and return to shell", async (t) => {
+  const root = await mkdtemp("/tmp/pzza-activity-");
+  const socket = path.join(root, "socket");
+  const realTmux = (await run("sh", ["-c", "command -v tmux"])).stdout.trim();
+  const tmux = (...args) => run(realTmux, ["-S", socket, ...args]);
+  t.after(async () => {
+    await tmux("kill-server").catch(() => {});
+    await rm(root, { recursive: true, force: true });
+  });
+  const bin = path.join(root, "bin");
+  await mkdir(bin);
+  await writeFile(path.join(bin, "tmux"), `#!/bin/sh\nexec ${shQuote(realTmux)} -S ${shQuote(socket)} "$@"\n`, { mode: 0o700 });
+  const environment = { ...process.env, PATH: `${bin}:${process.env.PATH}` };
+  const scripts = [];
+  for (const [packageName, filename, signal] of [["@anthropic-ai/claude-code", "cli.js", "foreground-ready"], ["@openai/codex", "bin/codex.js", "background-ready"]]) {
+    const script = path.join(root, "node_modules", packageName, filename);
+    await mkdir(path.dirname(script), { recursive: true });
+    await writeFile(script, `require("node:child_process").execFileSync(${JSON.stringify(realTmux)}, ["-S", ${JSON.stringify(socket)}, "wait-for", "-S", ${JSON.stringify(signal)}]); setInterval(() => {}, 1000);\n`);
+    scripts.push(script);
+  }
+  await tmux("-f", "/dev/null", "new-session", "-d", "-s", "renamed-session", "bash --noprofile --norc");
+  await tmux("send-keys", "-t", "renamed-session:0", `${shQuote(process.execPath)} ${shQuote(scripts[0])}`, "Enter");
+  await tmux("wait-for", "foreground-ready");
+  await tmux("new-window", "-t", "renamed-session", "bash --noprofile --norc");
+  await tmux("send-keys", "-t", "renamed-session:1", `${shQuote(process.execPath)} ${shQuote(scripts[1])} &`, "Enter");
+  await tmux("wait-for", "background-ready");
+  const snapshot = async () => JSON.parse((await run(process.execPath, ["-e", ACTIVITY_PROBE_SCRIPT], { env: environment })).stdout);
+  const rows = await snapshot();
+  assert.equal(rows.find((row) => row.window === 0).command, "claude");
+  assert.equal(rows.find((row) => row.window === 1).command, "bash");
+  assert.deepEqual(rows.map((row) => row.session), ["renamed-session", "renamed-session"]);
+  await tmux("send-keys", "-t", "renamed-session:0", "C-c");
+  await tmux("send-keys", "-t", "renamed-session:0", `${shQuote(realTmux)} -S ${shQuote(socket)} wait-for -S returned`, "Enter");
+  await tmux("wait-for", "returned");
+  assert.equal((await snapshot()).find((row) => row.window === 0).command, "bash");
+});
+
+test("termination closes grouped internal views and preserves unrelated sessions", async () => {
+  const { terminationCommand } = await import("../lib/tmux.js");
+  const socket = `pzza-termination-${process.pid}-${Date.now()}`;
+  const exec = promisify(childProcess.execFile);
+  const tmux = (...args) => exec("tmux", ["-L", socket, ...args]);
+  const terminate = (name, window) => exec("sh", ["-c", terminationCommand(name, window).replaceAll("tmux ", `tmux -L ${socket} `)]);
+  try {
+    await tmux("new-session", "-d", "-s", "work", "sleep 120");
+    await tmux("new-window", "-t", "=work:", "sleep 120");
+    await tmux("new-session", "-d", "-t", "=work", "-s", "pzza-v-test");
+    await tmux("new-session", "-d", "-s", "work-extra", "sleep 120");
+    await tmux("new-session", "-d", "-t", "=work-extra", "-s", "pzza-v-unrelated");
+    await terminate("work", 1);
+    assert.equal((await tmux("list-windows", "-t", "=work", "-F", "#{window_index}")).stdout.trim(), "0");
+    await assert.rejects(terminate("wor"));
+    await tmux("has-session", "-t", "=work");
+    const terminatedWindow = (await tmux("display-message", "-p", "-t", "=work:", "#{window_id}")).stdout.trim();
+    await terminate("work");
+    assert.ok(!(await tmux("list-windows", "-a", "-F", "#{window_id}")).stdout.trim().split("\n").includes(terminatedWindow));
+    await assert.rejects(tmux("has-session", "-t", "=work"));
+    await assert.rejects(tmux("has-session", "-t", "=pzza-v-test"));
+    await tmux("has-session", "-t", "=work-extra");
+    await tmux("has-session", "-t", "=pzza-v-unrelated");
+    await assert.rejects(terminate("work"));
+  } finally {
+    await tmux("kill-server").catch(() => {});
+  }
+});
+
+test("termination preserves device scope and propagates remote failure", async (t) => {
+  const { terminationCommand, terminateSession } = await import("../lib/tmux.js");
+  const requests = [];
+  const mock = t.mock.method(childProcess, "execFile", (command, args, options, callback) => {
+    assert.equal(options.timeout, 15_000);
+    requests.push({ command, args });
+    callback(args.includes("offline-device") ? new Error("unreachable") : null);
+  });
+  syncBuiltinESMExports();
+  try {
+    await terminateSession("same-name", undefined, "fixture-device");
+    assert.equal(requests[0].command, "ssh");
+    assert.equal(requests[0].args.at(-2), "fixture-device");
+    await assert.rejects(terminateSession("same-name", undefined, "offline-device"), /Could not close/);
+    await assert.rejects(terminateSession("same-name", undefined, "-bad-host"), /invalid host/);
+    assert.equal(requests.length, 2);
+    assert.throws(() => terminationCommand("bad\nname"), /invalid session/);
+    assert.throws(() => terminationCommand("valid", -1), /invalid window/);
+  } finally {
+    mock.mock.restore();
+    syncBuiltinESMExports();
+  }
+});
+
+test("receiver scans, icons and termination distinguish explicit local from default and named remote targets", async () => {
+  const exec = promisify(childProcess.execFile);
+  const script = `
+    import childProcess from 'node:child_process';
+    import { syncBuiltinESMExports } from 'node:module';
+    const calls = [];
+    childProcess.execFile = (command, args, options, callback) => {
+      calls.push({ command, host: command === 'ssh' ? args.at(-2) : '', timeout: options.timeout });
+      callback(null);
+    };
+    syncBuiltinESMExports();
+    const { terminateSession, scanSessions, sessionActivity } = await import('./server/lib/tmux.js');
+    await terminateSession('same-name', undefined, '');
+    await terminateSession('same-name');
+    await terminateSession('same-name', undefined, 'other-device');
+    await scanSessions('');
+    await scanSessions();
+    await scanSessions('other-device');
+    await sessionActivity('');
+    await sessionActivity();
+    await sessionActivity('other-device');
+    process.stdout.write(JSON.stringify(calls));
+  `;
+  const { stdout } = await exec(process.execPath, ["--input-type=module", "-e", script], {
+    env: { ...process.env, PZZA_SERVER_HOST: "default-device" }, timeout: 5000,
+  });
+  assert.deepEqual(JSON.parse(stdout), [
+    { command: "sh", host: "", timeout: 15_000 },
+    { command: "ssh", host: "default-device", timeout: 15_000 },
+    { command: "ssh", host: "other-device", timeout: 15_000 },
+    { command: "sh", host: "", timeout: 15_000 },
+    { command: "ssh", host: "default-device", timeout: 15_000 },
+    { command: "ssh", host: "other-device", timeout: 15_000 },
+    { command: process.execPath, host: "", timeout: 9_000 },
+    { command: "ssh", host: "default-device", timeout: 9_000 },
+    { command: "ssh", host: "other-device", timeout: 9_000 },
+  ]);
+});

@@ -40,7 +40,9 @@ const DEVICES_KEY = "pzza.devices";
 const DEVICE_RDP_KEY = "pzza.deviceRdp";
 const TILESPAN_KEY = "pzza.tileSpan";
 const TILETITLES_KEY = "pzza.tileTitles";
+const TILEBROWSER_KEY = "pzza.tileBrowser";
 const TILECODE_KEY = "pzza.tileCode";
+const TRANSPARENCY_KEY = "pzza.semiTransparent";
 const THEME_KEY = "pzza.theme";
 const FONT_KEY = "pzza.fontSize";
 const CURSOR_KEY = "pzza.cursorBlink";
@@ -70,6 +72,10 @@ async function listSessions(conn: Connection): Promise<RemoteSession[]> {
 }
 
 interface ConsoleState {
+  semiTransparent: boolean;
+  setSemiTransparent: (enabled: boolean) => void;
+  transparencyNotice: string | null;
+  setTransparencyNotice: (notice: string | null) => void;
   themeId: string;
   setTheme: (id: string) => void;
 
@@ -160,8 +166,11 @@ interface ConsoleState {
 
   // Each window can flip into an inline code editor rooted at its own folder,
   // keyed by the tile id. The terminal stays alive underneath while it is open.
+  tileBrowser: Record<string, { open: boolean; url?: string; layout?: TileCodeLayout }>;
+  setTileBrowser: (id: string, value: { open?: boolean; url?: string; layout?: TileCodeLayout }) => void;
   tileCode: Record<string, TileCode>;
   toggleTileCode: (id: string, defaultRoot?: string) => void;
+  setTileCodeLayout: (id: string, layout: TileCodeLayout) => void;
   setTileCodeRoot: (id: string, root: string) => void;
   setTileCodePath: (id: string, path: string) => void;
   closeTileFile: (id: string) => void;
@@ -176,13 +185,23 @@ export interface DeviceRdp {
   mode?: string; // "headless" or "session"
 }
 
+export type TileCodeLayout = "full" | "side-by-side" | "stacked";
+
 export interface TileCode {
   open: boolean;
+  layout?: TileCodeLayout;
   root?: string;
   path?: string;
 }
 
 export const useStore = create<ConsoleState>((set, get) => ({
+  semiTransparent: load<unknown>(TRANSPARENCY_KEY, false) === true,
+  setSemiTransparent: (enabled) => {
+    persist(TRANSPARENCY_KEY, enabled);
+    set({ semiTransparent: enabled, transparencyNotice: null });
+  },
+  transparencyNotice: null,
+  setTransparencyNotice: (notice) => set({ transparencyNotice: notice }),
   themeId: load<string>(THEME_KEY, DEFAULT_THEME_ID),
   setTheme: (id) => {
     persist(THEME_KEY, id);
@@ -441,7 +460,7 @@ export const useStore = create<ConsoleState>((set, get) => ({
       // name on two devices never collides on the grid.
       const id = host ? `${host}::${name}` : name;
       if (state.tiles.some((t) => t.id === id)) return { activeId: id };
-      const tile: Session = host ? { id, name, session: name, host } : { id, name, cwd };
+      const tile: Session = host !== undefined ? { id, name, session: name, host, cwd } : { id, name, cwd };
       const tiles = [...state.tiles, tile];
       persist(TILES_KEY, tiles);
       return { tiles, activeId: id, refreshNonce: state.refreshNonce + 1 };
@@ -506,6 +525,13 @@ export const useStore = create<ConsoleState>((set, get) => ({
       activeId: "preview-1",
     })),
 
+  tileBrowser: load<ConsoleState["tileBrowser"]>(TILEBROWSER_KEY, {}),
+  setTileBrowser: (id, value) =>
+    set((state) => {
+      const tileBrowser = { ...state.tileBrowser, [id]: { ...(state.tileBrowser[id] ?? { open: false }), ...value } };
+      persist(TILEBROWSER_KEY, tileBrowser);
+      return { tileBrowser };
+    }),
   tileCode: load<Record<string, TileCode>>(TILECODE_KEY, {}),
   toggleTileCode: (id, defaultRoot) =>
     set((state) => {
@@ -514,11 +540,19 @@ export const useStore = create<ConsoleState>((set, get) => ({
       // Closing the editor also closes the file that was open in it; reopening
       // starts back at the folder tree with nothing selected.
       const next: TileCode = opening
-        ? { open: true, root: cur?.root ?? defaultRoot, path: undefined }
-        : { open: false, root: cur?.root, path: undefined };
+        ? { open: true, layout: cur?.layout ?? "full", root: cur?.root ?? defaultRoot, path: undefined }
+        : { open: false, layout: cur?.layout ?? "full", root: cur?.root, path: undefined };
       const tileCode = { ...state.tileCode, [id]: next };
       persist(TILECODE_KEY, tileCode);
       return { tileCode, activeId: id };
+    }),
+  setTileCodeLayout: (id, layout) =>
+    set((state) => {
+      const cur = state.tileCode[id];
+      if (!cur || cur.layout === layout) return {};
+      const tileCode = { ...state.tileCode, [id]: { ...cur, layout } };
+      persist(TILECODE_KEY, tileCode);
+      return { tileCode };
     }),
   setTileCodeRoot: (id, root) =>
     set((state) => {

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import CodeMirror from "@uiw/react-codemirror";
 import { githubDark } from "@uiw/codemirror-theme-github";
 import { loadLanguage } from "@uiw/codemirror-extensions-langs";
@@ -9,6 +9,9 @@ import { fileRawUrl, readFile, writeFile } from "../serverApi";
 import { useStore } from "../state/store";
 import { FolderTree } from "./FileTree";
 import { FilePicker } from "../panels/FilePicker";
+import { Modal } from "../ui/Modal";
+import { fileMutationPending, onFileMutation, registerEditorDiscard, registerEditorFile, remapFilePath } from "../editorChanges";
+import { CodeLayoutMenu } from "./CodeLayoutMenu";
 
 // file extension -> the key codemirror-extensions-langs' loadLanguage expects.
 // Those keys are extension-style ("ts", "rs", "sh"), not full language names, so
@@ -48,8 +51,8 @@ function extOf(p: string): string {
 }
 
 // The inline code editor for a single terminal window: its own folder root, its
-// own file tree, and the file open in it. Rendered over the tile body while the
-// terminal stays mounted underneath.
+// own file tree, and the file open in it. Layout changes resize the mounted
+// editor and terminal without discarding the editor's unsaved buffer.
 export function TileCodePanel({ tileId }: { tileId: string }) {
   const code = useStore((s) => s.tileCode[tileId]);
   // A remote tile edits files on its own device over ssh.
@@ -68,6 +71,54 @@ export function TileCodePanel({ tileId }: { tileId: string }) {
   const [saving, setSaving] = useState(false);
   const [preview, setPreview] = useState(false);
 
+  const [discardOpen, setDiscardOpen] = useState(false);
+  const discardResolve = useRef<((answer: boolean) => void) | null>(null);
+  const snapshot = useRef({ dirty, saving, content, loaded, path: code?.path });
+  snapshot.current = { dirty, saving, content, loaded, path: code?.path };
+  const preservedPath = useRef<string | null>(null);
+  const answerDiscard = (answer: boolean) => {
+    discardResolve.current?.(answer);
+    discardResolve.current = null;
+    setDiscardOpen(false);
+  };
+  const requestDiscard = useCallback((): Promise<boolean> => {
+    if (!snapshot.current.dirty && !snapshot.current.saving) return Promise.resolve(true);
+    return new Promise((resolve) => {
+      discardResolve.current?.(false);
+      discardResolve.current = resolve;
+      setDiscardOpen(true);
+    });
+  }, []);
+  const navigate = async (action: () => void) => { if (await requestDiscard()) action(); };
+  useEffect(() => registerEditorDiscard(tileId, requestDiscard), [tileId, requestDiscard]);
+  useEffect(() => registerEditorFile(tileId, () => ({ host, path: snapshot.current.path, saving: snapshot.current.saving, dirty: snapshot.current.dirty })), [tileId, host]);
+  useEffect(() => () => { discardResolve.current?.(false); }, []);
+  useEffect(() => {
+    const protect = (event: BeforeUnloadEvent) => {
+      if (snapshot.current.dirty || snapshot.current.saving) { event.preventDefault(); event.returnValue = ""; }
+    };
+    window.addEventListener("beforeunload", protect);
+    return () => window.removeEventListener("beforeunload", protect);
+  }, []);
+  useEffect(() => onFileMutation((mutation) => {
+    if ((mutation.host || "") !== (host || "")) return;
+    const current = useStore.getState().tileCode[tileId];
+    const nextRoot = remapFilePath(current?.root, mutation.path, mutation.destination);
+    const nextPath = remapFilePath(current?.path, mutation.path, mutation.destination);
+    if (nextRoot !== current?.root) setTileCodeRoot(tileId, nextRoot ?? "");
+    if (nextPath !== current?.path) {
+      if (nextPath) {
+        preservedPath.current = snapshot.current.loaded ? nextPath : null;
+        setTileCodePath(tileId, nextPath);
+      } else {
+        closeTileFile(tileId);
+      }
+    } else if (nextRoot !== current?.root && nextPath) {
+      preservedPath.current = snapshot.current.loaded ? nextPath : null;
+      setTileCodePath(tileId, nextPath);
+    }
+  }), [tileId, host, setTileCodeRoot, setTileCodePath, closeTileFile]);
+
   const root = code?.root;
   const path = code?.path;
   const isMd = !!path && /\.(md|markdown)$/i.test(path);
@@ -76,6 +127,11 @@ export function TileCodePanel({ tileId }: { tileId: string }) {
   const isBinary = isImage || isPdf;
 
   useEffect(() => {
+    if (path && preservedPath.current === path) {
+      preservedPath.current = null;
+      return;
+    }
+    preservedPath.current = null;
     if (!path || isBinary) {
       // Binary files are previewed straight from their raw URL - no text load.
       setLoaded(true);
@@ -104,16 +160,18 @@ export function TileCodePanel({ tileId }: { tileId: string }) {
 
   const save = useCallback(async () => {
     if (!path || !dirty || saving) return;
+    if (fileMutationPending(host, path)) { setError("Wait for the file operation to finish before saving."); return; }
+    snapshot.current.saving = true;
     setSaving(true);
     try {
       await writeFile(path, content, host);
-      setDirty(false);
+      if (snapshot.current.path === path && snapshot.current.content === content) setDirty(false);
     } catch (e) {
       setError(String((e as Error)?.message || e));
     } finally {
       setSaving(false);
     }
-  }, [dirty, saving, content, path]);
+  }, [dirty, saving, content, path, host]);
 
   const extensions = useMemo(() => {
     const ext = path ? extOf(path) : "";
@@ -132,6 +190,11 @@ export function TileCodePanel({ tileId }: { tileId: string }) {
   if (!root) {
     return (
       <div className="tile-code">
+        <div className="tile-code-bar">
+          <span className="tile-code-name">Code editor</span>
+          <div className="tile-head-spacer" />
+          <CodeLayoutMenu tileId={tileId} />
+        </div>
         <div className="code-open">
           <FolderOpen size={28} className="code-open-icon" />
           <p className="code-open-title">Open a folder to edit here</p>
@@ -148,7 +211,7 @@ export function TileCodePanel({ tileId }: { tileId: string }) {
           open={pickerOpen}
           mode="folder"
           onClose={() => setPickerOpen(false)}
-          onPick={(p) => setTileCodeRoot(tileId, p)}
+          onPick={(p) => void navigate(() => setTileCodeRoot(tileId, p))}
           host={host}
         />
       </div>
@@ -206,13 +269,15 @@ export function TileCodePanel({ tileId }: { tileId: string }) {
             className="tile-btn"
             title="Close file"
             onMouseDown={(e) => e.stopPropagation()}
-            onClick={() => closeTileFile(tileId)}
+            onClick={() => void navigate(() => closeTileFile(tileId))}
           >
             <X size={14} />
           </button>
         ) : null}
+        <CodeLayoutMenu tileId={tileId} />
       </div>
 
+      {error && dirty ? <div className="code-status code-err" role="alert">{error}</div> : null}
       <div className="code-split">
         {treeOpen ? (
           <div className="code-tile-tree">
@@ -220,7 +285,7 @@ export function TileCodePanel({ tileId }: { tileId: string }) {
               root={root}
               host={host}
               activePath={path}
-              onOpenFile={(p) => setTileCodePath(tileId, p)}
+              onOpenFile={(p) => { if (p !== path) void navigate(() => setTileCodePath(tileId, p)); }}
             />
           </div>
         ) : null}
@@ -245,7 +310,7 @@ export function TileCodePanel({ tileId }: { tileId: string }) {
             <div className="code-status">
               <Loader2 size={16} className="sw-spin" /> Loading…
             </div>
-          ) : error ? (
+          ) : error && !dirty ? (
             <div className="code-status code-err">{error}</div>
           ) : preview && isMd ? (
             <div className="md-preview" dangerouslySetInnerHTML={{ __html: html }} />
@@ -269,8 +334,17 @@ export function TileCodePanel({ tileId }: { tileId: string }) {
         open={pickerOpen}
         mode="folder"
         onClose={() => setPickerOpen(false)}
-        onPick={(p) => setTileCodeRoot(tileId, p)}
+        onPick={(p) => void navigate(() => setTileCodeRoot(tileId, p))}
+        host={host}
       />
+      <Modal open={discardOpen} onClose={() => answerDiscard(false)} title="Discard unsaved changes?" size="sm">
+        <p>Your edits to {baseName(path || root)} have not been saved.</p>
+        {saving ? <p>Wait for the current save to finish before continuing.</p> : null}
+        <div className="modal-actions">
+          <button className="btn" autoFocus onClick={() => answerDiscard(false)}>Keep editing</button>
+          <button className="btn btn-danger" disabled={saving} onClick={() => answerDiscard(true)}>Discard and continue</button>
+        </div>
+      </Modal>
     </div>
   );
 }

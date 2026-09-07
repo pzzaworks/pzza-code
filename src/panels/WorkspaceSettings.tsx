@@ -1,8 +1,10 @@
+import { LiveSessionIcon } from "../ui/LiveSessionIcon";
+import { DeviceIcon } from "../ui/DeviceIcon";
 import { useState } from "react";
 import { Check, Eye, EyeOff, Trash2 } from "lucide-react";
 import { useStore } from "../state/store";
 import { Modal } from "../ui/Modal";
-import { tileTitle, sessionIcon, iconColor } from "../sessionMeta";
+import { sessionDisplayName } from "../sessionMeta";
 import { DEFAULT_WORKSPACE_ID, WORKSPACE_COLORS, wsKeyOf } from "../workspaces";
 import { deviceNameFor } from "../devices";
 import { workspaceIcon } from "../workspaceIcons";
@@ -22,6 +24,7 @@ export function WorkspaceSettings({ id, close }: { id: string; close: () => void
   const unhideTile = useStore((s) => s.unhideTile);
   const sessionWs = useStore((s) => s.sessionWs);
   const tiles = useStore((s) => s.tiles);
+  const tileTitles = useStore((s) => s.tileTitles);
   const devices = useStore((s) => s.devices);
 
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -110,16 +113,14 @@ export function WorkspaceSettings({ id, close }: { id: string; close: () => void
             {sessions.map((t) => {
               const base = t.session ?? t.name;
               const isHidden = hiddenTiles.includes(t.id);
-              const Icon = sessionIcon(base, t.command);
-              const col = iconColor(base, t.command);
               return (
                 <div key={t.id} className={`ws-sess-row ${isHidden ? "hidden" : ""}`}>
-                  <span className="ws-sess-icon" style={col ? { color: col } : undefined}>
-                    <Icon size={14} />
+                  <span className="ws-sess-icon">
+                    <LiveSessionIcon session={base} window={t.window} host={t.host} />
                   </span>
-                  <span className="ws-sess-name">{tileTitle(t.name)}</span>
+                  <span className="ws-sess-name">{sessionDisplayName(t, tileTitles)}</span>
                   <span className="ws-sess-device" title="Running on">
-                    {deviceNameFor(devices, t.host)}
+                    <DeviceIcon host={t.host} size={11} />{deviceNameFor(devices, t.host)}
                   </span>
                   <button
                     className="ws-sess-toggle"

@@ -1,31 +1,38 @@
+import { LiveSessionIcon } from "../ui/LiveSessionIcon";
+import { DeviceIcon } from "../ui/DeviceIcon";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { motion } from "framer-motion";
 import {
+  Columns2,
   EyeOff,
   FileCode,
+  Globe,
   FolderInput,
   Focus,
   LayoutGrid,
   Maximize2,
   Minimize2,
   Moon,
+  Rows2,
+  Square,
+  StretchHorizontal,
   X,
 } from "lucide-react";
 import { useStore } from "../state/store";
 import { deviceNameFor } from "../devices";
 import { Modal } from "../ui/Modal";
 import { Terminal } from "../terminal/Terminal";
+import { TileBrowserPanel } from "./TileBrowserPanel";
 import { TileCodePanel } from "./TileCodePanel";
 import { fetchSessionPath, killSession } from "../serverApi";
-import { HAS_TAURI } from "../tauriEnv";
+import { confirmEditorDiscard } from "../editorChanges";
 import { attachCommand } from "../connection";
 import {
-  sessionIcon,
-  iconColor,
-  tileTitle,
+  sessionDisplayName,
   shortPath,
   SESSION_DND,
+  SESSION_TILE_DND,
   type TileStatus,
 } from "../sessionMeta";
 import { ALL_WORKSPACE_ID, DEFAULT_WORKSPACE_ID, wsKeyOf } from "../workspaces";
@@ -55,6 +62,8 @@ export function Canvas() {
   const tileTitles = useStore((s) => s.tileTitles);
   const renameTile = useStore((s) => s.renameTile);
   const devices = useStore((s) => s.devices);
+  const tileBrowser = useStore((s) => s.tileBrowser);
+  const setTileBrowser = useStore((s) => s.setTileBrowser);
   const tileCode = useStore((s) => s.tileCode);
   const toggleTileCode = useStore((s) => s.toggleTileCode);
 
@@ -65,6 +74,8 @@ export function Canvas() {
   const tileDevice = (host?: string): string => deviceNameFor(devices, host);
 
   const [closing, setClosing] = useState<string | null>(null);
+  const [terminating, setTerminating] = useState(false);
+  const [closeError, setCloseError] = useState<string | null>(null);
   const [layoutFor, setLayoutFor] = useState<{ id: string; x: number; y: number } | null>(
     null,
   );
@@ -93,6 +104,49 @@ export function Canvas() {
       !hiddenTiles.includes(t.id),
   );
 
+  const pointerIntent = useRef<{ id: string; pointer: number; x: number; y: number; started: number; cancelled: boolean } | null>(null);
+  const scrollToTile = useCallback((id: string) => {
+    if (fullId) return;
+    const element = document.querySelector(`[data-tile-id="${CSS.escape(id)}"]`);
+    if (!(element instanceof HTMLElement) || !element.getClientRects().length) return;
+    const rect = element.getBoundingClientRect();
+    if (rect.top < 84 || rect.bottom > window.innerHeight - 8) {
+      element.scrollIntoView({ block: "center", inline: "nearest", behavior: "smooth" });
+    }
+  }, [fullId]);
+  useEffect(() => {
+    const move = (event: PointerEvent) => {
+      const intent = pointerIntent.current;
+      if (intent && event.pointerId === intent.pointer && Math.hypot(event.clientX - intent.x, event.clientY - intent.y) > 6) intent.cancelled = true;
+    };
+    const cancel = () => { if (pointerIntent.current) pointerIntent.current.cancelled = true; };
+    const release = (event: PointerEvent) => {
+      const intent = pointerIntent.current;
+      if (!intent || event.pointerId !== intent.pointer) return;
+      pointerIntent.current = null;
+      const target = event.target instanceof Element ? event.target.closest("[data-tile-id]") : null;
+      if (!intent.cancelled && performance.now() - intent.started < 250 &&
+          target?.getAttribute("data-tile-id") === intent.id && useStore.getState().activeId === intent.id) {
+        scrollToTile(intent.id);
+      }
+    };
+    const abandon = () => { pointerIntent.current = null; };
+    window.addEventListener("pointermove", move, true);
+    window.addEventListener("pointerup", release, true);
+    window.addEventListener("pointercancel", abandon, true);
+    window.addEventListener("dragstart", cancel, true);
+    window.addEventListener("wheel", cancel, true);
+    window.addEventListener("blur", abandon);
+    return () => {
+      window.removeEventListener("pointermove", move, true);
+      window.removeEventListener("pointerup", release, true);
+      window.removeEventListener("pointercancel", abandon, true);
+      window.removeEventListener("dragstart", cancel, true);
+      window.removeEventListener("wheel", cancel, true);
+      window.removeEventListener("blur", abandon);
+    };
+  }, [scrollToTile]);
+
   // Ctrl + number activates the Nth visible tile. Read the current order from a
   // ref so the handler stays valid as tiles come and go.
   const wsTilesRef = useRef(wsTiles);
@@ -108,26 +162,18 @@ export function Canvas() {
       if (!t) return;
       e.preventDefault();
       e.stopPropagation();
+      pointerIntent.current = null;
       setActive(t.id);
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
   }, [setActive]);
 
-  // On selecting a tile, bring it to the center of the screen - but only if it
-  // is not already fully visible, so clicking a tile already on screen does not
-  // yank the view around.
+  // Keyboard/programmatic selection still scrolls immediately. Pointer
+  // selection waits for release so holding or dragging never moves the canvas.
   useEffect(() => {
-    if (!activeId || fullId) return;
-    const el = document.querySelector(`[data-tile-id="${CSS.escape(activeId)}"]`);
-    if (!(el instanceof HTMLElement)) return;
-    const r = el.getBoundingClientRect();
-    const topInset = 84; // under the top bar + workspace tabs
-    const fullyVisible = r.top >= topInset && r.bottom <= window.innerHeight - 8;
-    if (!fullyVisible) {
-      el.scrollIntoView({ block: "center", inline: "nearest", behavior: "smooth" });
-    }
-  }, [activeId, fullId]);
+    if (activeId && !pointerIntent.current) scrollToTile(activeId);
+  }, [activeId, scrollToTile]);
 
   // Every tile stays mounted for the life of the session - switching workspaces,
   // hiding, or maximizing only toggles CSS visibility. Re-mounting would
@@ -150,17 +196,15 @@ export function Canvas() {
     const base = t.session ?? t.name;
     const { cmd, args } = attachCommand(t.host ? { host: t.host } : connection, base, t.cwd, t.window);
     const rs = allSessions.find((s) => s.name === base);
-    const command = t.command ?? rs?.command;
     const fullPath = t.path ?? rs?.path;
     const path = shortPath(fullPath);
+    const browserOpen = tileBrowser[t.id]?.open ?? false;
     const codeOpen = tileCode[t.id]?.open ?? false;
-    const Icon = sessionIcon(base, command);
-    const color = iconColor(base, command);
     const wsColor = workspaces.find(
       (w) => w.id === (sessionWs[wsKeyOf(t)] ?? DEFAULT_WORKSPACE_ID),
     )?.color;
     const status = statuses[t.id] ?? "idle";
-    const displayName = tileTitles[t.id] ?? tileTitle(t.name);
+    const displayName = sessionDisplayName(t, tileTitles);
     const isRenaming = renaming?.id === t.id;
     const shortcutIdx = wsTiles.findIndex((x) => x.id === t.id);
     const isFull = fullId === t.id;
@@ -222,6 +266,13 @@ export function Canvas() {
         initial={isFull ? { opacity: 0, scale: 0.97 } : false}
         animate={isFull ? { opacity: 1, scale: 1 } : {}}
         transition={{ type: "spring", stiffness: 320, damping: 30 }}
+        onPointerDownCapture={(event) => {
+          pointerIntent.current = {
+            id: t.id, pointer: event.pointerId, x: event.clientX, y: event.clientY,
+            started: performance.now(),
+            cancelled: event.button !== 0 || !!(event.target instanceof Element && event.target.closest("button, input, select, a")),
+          };
+        }}
         onMouseDown={() => setActive(t.id)}
         onDragOver={(e) => {
           if (!effFull && dragId && dragId !== t.id) {
@@ -249,6 +300,7 @@ export function Canvas() {
             // Carry the workspace key (host-namespaced), so dropping on a tab
             // assigns exactly the key the grid filters by.
             e.dataTransfer.setData(SESSION_DND, wsKeyOf(t));
+            e.dataTransfer.setData(SESSION_TILE_DND, t.id);
             // Drag a snapshot of the whole tile, not just the header.
             const tileEl = (e.currentTarget as HTMLElement).closest(".tile");
             if (tileEl) {
@@ -262,8 +314,8 @@ export function Canvas() {
           }}
         >
           <span className={`stat stat-${status}`} title={status} />
-          <span className="tile-icon" style={color ? { color } : undefined}>
-            <Icon size={14} />
+          <span className="tile-icon">
+            <LiveSessionIcon session={base} window={t.window} host={t.host} />
           </span>
           {isRenaming ? (
             <input
@@ -306,7 +358,7 @@ export function Canvas() {
             </kbd>
           ) : null}
           <span className="tile-device" title="Running on">
-            {tileDevice(t.host)}
+            <DeviceIcon host={t.host} size={11} />{tileDevice(t.host)}
           </span>
           {path ? (
             <span className="tile-path" title={rs?.path}>
@@ -338,13 +390,17 @@ export function Canvas() {
               <Focus size={13} />
             </button>
             <button
-              className={`tile-btn ${codeOpen ? "tile-btn-on" : ""}`}
+              className={`tile-btn ${codeOpen && !browserOpen ? "tile-btn-on" : ""}`}
               title={codeOpen ? "Back to terminal" : "Code editor"}
               onMouseDown={(e) => e.stopPropagation()}
               onClick={(e) => {
                 e.stopPropagation();
+                if (browserOpen) {
+                  setTileBrowser(t.id, { open: false });
+                  if (codeOpen) return;
+                }
                 if (codeOpen) {
-                  toggleTileCode(t.id);
+                  void confirmEditorDiscard([t.id]).then((confirmed) => { if (confirmed) toggleTileCode(t.id); });
                   return;
                 }
                 // Root the editor at the terminal's live cwd (a fresh session
@@ -355,6 +411,14 @@ export function Canvas() {
               }}
             >
               <FileCode size={13} />
+            </button>
+            <button
+              className={`tile-btn ${browserOpen ? "tile-btn-on" : ""}`}
+              title={browserOpen ? "Close browser" : "Browser"}
+              onMouseDown={(e) => e.stopPropagation()}
+              onClick={(e) => { e.stopPropagation(); setTileBrowser(t.id, { open: !browserOpen }); }}
+            >
+              <Globe size={13} />
             </button>
             <button
               className="tile-btn"
@@ -413,6 +477,7 @@ export function Canvas() {
               onMouseDown={(e) => e.stopPropagation()}
               onClick={(e) => {
                 e.stopPropagation();
+                setCloseError(null);
                 setClosing(t.id);
               }}
             >
@@ -420,9 +485,10 @@ export function Canvas() {
             </button>
           </div>
         </div>
-        <div className="tile-body">
+        <div className={`tile-body ${browserOpen ? `tile-body-code-${tileBrowser[t.id]?.layout ?? "full"} tile-browser-visible` : codeOpen ? `tile-body-code-${tileCode[t.id]?.layout ?? "full"}` : ""}`}>
           <Terminal
             name={base}
+            host={t.host ?? connection.host ?? undefined}
             cmd={cmd}
             args={args}
             cwd={t.cwd}
@@ -431,6 +497,7 @@ export function Canvas() {
             onStatus={(s) => setStatus(t.id, s)}
           />
           {codeOpen ? <TileCodePanel tileId={t.id} /> : null}
+          {tileBrowser[t.id] ? <TileBrowserPanel tileId={t.id} /> : null}
         </div>
         {dimmed ? (
           <div
@@ -480,43 +547,54 @@ export function Canvas() {
         </div>
       ) : null}
 
-      <Modal open={!!closing} onClose={() => setClosing(null)} title="Close session" size="sm">
+      <Modal open={!!closing} onClose={() => { if (!terminating) setClosing(null); }} title="Close session" size="sm">
         <p className="move-q">
-          <b>Close</b> just detaches your view - the session keeps running on the
-          devbox. <b>Terminate</b> ends it and everything running in it.
+          <b>Close</b> detaches this view and keeps the session running on its device.
+          <b> Terminate</b> ends {tiles.find((tile) => tile.id === closing)?.window !== undefined ? "this window" : "the session"} and everything running in it.
         </p>
+        {closeError ? <p className="pj-error" role="alert">{closeError}</p> : null}
         <div className="modal-actions">
-          <button className="btn" onClick={() => setClosing(null)}>
-            Cancel
-          </button>
+          <button className="btn" disabled={terminating} onClick={() => setClosing(null)}>Cancel</button>
           <button
             className="btn btn-danger"
-            onClick={() => {
-              if (closing) {
-                const ct = tiles.find((t) => t.id === closing);
-                if (ct && !HAS_TAURI) killSession(ct.session ?? ct.name, ct.window);
-                if (fullId === closing) setFullId(null);
-                if (focusId === closing) setFocusId(null);
-                closeTile(closing);
+            disabled={terminating}
+            onClick={async () => {
+              const current = tiles.find((tile) => tile.id === closing);
+              if (!current || terminating) return;
+              setTerminating(true);
+              setCloseError(null);
+              try {
+                const affected = tiles.filter((tile) => (tile.host ?? connection.host ?? "") === (current.host ?? connection.host ?? "") &&
+                  (tile.session ?? tile.name) === (current.session ?? current.name) &&
+                  (current.window === undefined || tile.window === current.window));
+                if (!await confirmEditorDiscard(affected.map((tile) => tile.id))) return;
+                await killSession(current.session ?? current.name, current.window, current.host ?? connection.host ?? undefined);
+                for (const tile of affected) {
+                  if (fullId === tile.id) setFullId(null);
+                  if (focusId === tile.id) setFocusId(null);
+                  closeTile(tile.id);
+                }
+                setClosing(null);
+              } catch (error) {
+                setCloseError(error instanceof Error ? error.message : String(error));
+              } finally {
+                setTerminating(false);
               }
-              setClosing(null);
             }}
           >
-            Terminate
+            {terminating ? "Terminating…" : "Terminate"}
           </button>
           <button
             className="btn btn-accent"
-            onClick={() => {
-              if (closing) {
-                if (fullId === closing) setFullId(null);
-                if (focusId === closing) setFocusId(null);
-                closeTile(closing);
-              }
+            disabled={terminating}
+            onClick={async () => {
+              if (!closing || !await confirmEditorDiscard([closing])) return;
+              if (fullId === closing) setFullId(null);
+              if (focusId === closing) setFocusId(null);
+              closeTile(closing);
               setClosing(null);
             }}
-          >
-            Close
-          </button>
+          >Close</button>
         </div>
       </Modal>
 
@@ -560,11 +638,11 @@ export function Canvas() {
                 onMouseDown={(e) => e.stopPropagation()}
               >
                 {[
-                  { label: "Normal", c: 1, r: 1 },
-                  { label: "Wide (2 cols)", c: 2, r: 1 },
-                  { label: "Full width", c: columns, r: 1 },
-                  { label: "Tall (2 rows)", c: 1, r: 2 },
-                  { label: "Big (2×2)", c: 2, r: 2 },
+                  { label: "Normal", Icon: Square, c: 1, r: 1 },
+                  { label: "Wide (2 cols)", Icon: Columns2, c: 2, r: 1 },
+                  { label: "Full width", Icon: StretchHorizontal, c: columns, r: 1 },
+                  { label: "Tall (2 rows)", Icon: Rows2, c: 1, r: 2 },
+                  { label: "Big (2×2)", Icon: LayoutGrid, c: 2, r: 2 },
                 ]
                   .filter((o, i, arr) => {
                     // Drop duplicates (e.g. at 2 columns "Wide" == "Full width").
@@ -585,6 +663,7 @@ export function Canvas() {
                         setLayoutFor(null);
                       }}
                     >
+                      <o.Icon size={16} strokeWidth={1.9} />
                       {o.label}
                     </button>
                   );

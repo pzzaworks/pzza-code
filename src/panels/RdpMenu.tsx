@@ -1,3 +1,4 @@
+import { DeviceIcon } from "../ui/DeviceIcon";
 import { useEffect, useState } from "react";
 import { Loader2, Monitor } from "lucide-react";
 import { useStore } from "../state/store";
@@ -98,7 +99,7 @@ export function RdpMenu({ close }: { close: () => void }) {
         <Select
           value={serverId}
           onChange={pick(setServerId, SERVER_KEY)}
-          options={devices.map((d) => ({ value: d.id, label: d.name, sub: d.host }))}
+          options={devices.map((d) => ({ value: d.id, label: d.name, sub: d.host, icon: <DeviceIcon device={d} /> }))}
         />
       </div>
       <div className="field">
@@ -106,7 +107,7 @@ export function RdpMenu({ close }: { close: () => void }) {
         <Select
           value={clientId}
           onChange={pick(setClientId, CLIENT_KEY)}
-          options={devices.map((d) => ({ value: d.id, label: d.name, sub: d.host }))}
+          options={devices.map((d) => ({ value: d.id, label: d.name, sub: d.host, icon: <DeviceIcon device={d} /> }))}
         />
       </div>
 
