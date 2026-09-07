@@ -79,7 +79,7 @@ export function Select({ value, options, onChange, placeholder }: Props) {
                         <span className="cselect-item-label">{o.label}</span>
                         {o.sub ? <span className="cselect-item-sub">{o.sub}</span> : null}
                       </span>
-                      {o.value === value ? <Check size={14} /> : null}
+                      <span className="cselect-item-check">{o.value === value ? <Check size={14} /> : null}</span>
                     </button>
                   ))}
                 </motion.div>

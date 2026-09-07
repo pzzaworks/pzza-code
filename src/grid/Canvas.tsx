@@ -215,11 +215,11 @@ export function Canvas() {
     const dimmed = !isFull && !isFocus && (!!focusId || isDim);
     // Colored gradient border, darkened while another tile is focused.
     const borderBg = wsColor
-      ? `linear-gradient(var(--bg), var(--bg)) padding-box, linear-gradient(140deg, ${
+      ? `linear-gradient(140deg, ${
           dimmed ? `color-mix(in srgb, ${wsColor} 40%, #000)` : wsColor
         } 0%, ${
           dimmed ? "color-mix(in srgb, var(--border) 40%, #000)" : "var(--border)"
-        } 22%) border-box`
+        } 22%)`
       : undefined;
     const span = tileSpan[t.id] ?? { c: 1, r: 1 };
     const spanStyle = effFull
@@ -259,7 +259,7 @@ export function Canvas() {
         style={{
           ...(spanStyle ?? {}),
           ...(borderBg
-            ? { border: "1px solid transparent", background: borderBg }
+            ? { border: "1px solid transparent" }
             : {}),
         }}
         layout={visible && !effFull ? "position" : false}
@@ -485,6 +485,7 @@ export function Canvas() {
             </button>
           </div>
         </div>
+        {borderBg ? <div className="tile-color-border" aria-hidden="true" style={{ background: borderBg }} /> : null}
         <div className={`tile-body ${browserOpen ? `tile-body-code-${tileBrowser[t.id]?.layout ?? "full"} tile-browser-visible` : codeOpen ? `tile-body-code-${tileCode[t.id]?.layout ?? "full"}` : ""}`}>
           <Terminal
             name={base}

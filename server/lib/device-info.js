@@ -83,11 +83,12 @@ export function deviceInfo(host = "", { fresh = false } = {}) {
   if (pendingInfo.has(host)) return pendingInfo.get(host);
   const started = performance.now();
   const result = (health, info, error) => ({ health, connection: host ? "ssh" : "local", connectionMs: Math.round((performance.now() - started) * 10) / 10, checkedAt: Date.now(), error, info });
-  const request = new Promise((resolve) => {
+  const request = !host ? collectDeviceInfo().then((info) => result("reachable", sanitizedInfo(info), null))
+    .catch(() => result("reachable", null, "Device information probe failed")) : new Promise((resolve) => {
     const command = `if command -v node >/dev/null 2>&1; then node -e ${shQuote(PROBE_SCRIPT)}; else printf '%s' '{"error":"Node.js is required on this device to inspect system details"}'; fi`;
-    const args = host ? ["-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "-o", "StrictHostKeyChecking=yes",
-      "-o", "ControlMaster=auto", "-o", "ControlPath=~/.ssh/pzza-mux-%C", "-o", "ControlPersist=120", host, command] : ["-e", PROBE_SCRIPT];
-    execFile(host ? "ssh" : process.execPath, args,
+    const args = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "-o", "StrictHostKeyChecking=yes",
+      "-o", "ControlMaster=auto", "-o", "ControlPath=~/.ssh/pzza-mux-%C", "-o", "ControlPersist=120", host, command];
+    execFile("ssh", args,
     { timeout: 8_000, maxBuffer: 128 * 1024 }, (error, stdout) => {
       if (error) {
         const unreachable = Boolean(host) && (error.killed || error.code === 255 || typeof error.code === "string");

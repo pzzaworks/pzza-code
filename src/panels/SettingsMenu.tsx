@@ -1,4 +1,5 @@
-import { Download, Loader2, RefreshCw, RotateCw, ServerCog } from "lucide-react";
+import { useState } from "react";
+import { Download, Loader2, RefreshCw, RotateCw, ServerCog, SlidersHorizontal } from "lucide-react";
 import { useStore } from "../state/store";
 import { useUpdates } from "../state/updates";
 import { HAS_TAURI } from "../tauriEnv";
@@ -109,17 +110,37 @@ function Row({ label, hint, children }: { label: string; hint?: string; children
 }
 
 function AppearanceSection() {
+  const [optionsOpen, setOptionsOpen] = useState(false);
   const enabled = useStore((state) => state.semiTransparent);
+  const options = useStore((state) => state.transparencyOptions);
+  const setOptions = useStore((state) => state.setTransparencyOptions);
   const setEnabled = useStore((state) => state.setSemiTransparent);
   const notice = useStore((state) => state.transparencyNotice);
   return <Section title="Appearance">
     <Row label="Semi-transparent mode" hint="Translucent surfaces and a blurred background">
+      <button type="button" className="icon-btn" aria-label="Transparency settings" aria-expanded={optionsOpen}
+        onClick={() => setOptionsOpen(!optionsOpen)}><SlidersHorizontal size={15} /></button>
       <button className={`switch ${enabled ? "switch-on" : ""}`} type="button"
         role="switch" aria-label="Semi-transparent mode" aria-checked={enabled}
         onClick={() => setEnabled(!enabled)}>
         <span className="switch-knob" />
       </button>
     </Row>
+    {optionsOpen ? <div className="transparency-options">
+      <Row label="Background opacity" hint={`${options.opacity}%`}>
+        <input aria-label="Background opacity" type="range" min={15} max={95} value={options.opacity}
+          onChange={(event) => setOptions({ opacity: Number(event.target.value) })} />
+      </Row>
+      <Row label="Surface blur" hint={options.blur ? `${options.blur}px · desktop blur on` : "Blur off"}>
+        <input aria-label="Surface blur" type="range" min={0} max={40} value={options.blur}
+          onChange={(event) => setOptions({ blur: Number(event.target.value) })} />
+      </Row>
+      <Row label="Saturation" hint={`${options.saturation}%`}>
+        <input aria-label="Saturation" type="range" min={50} max={180} value={options.saturation}
+          onChange={(event) => setOptions({ saturation: Number(event.target.value) })} />
+      </Row>
+      <p className="set-note">Desktop blur strength is managed by the operating system. Surface blur controls the app panels.</p>
+    </div> : null}
     {enabled && notice ? <p className="set-note" role="status">{notice}</p> : null}
   </Section>;
 }

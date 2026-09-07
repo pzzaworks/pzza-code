@@ -6,6 +6,18 @@ import { get, post, qs } from "./agent.js";
 
 const TOOLS = [
   {
+    name: "device_info",
+    description: "Inspect operating system, CPU, memory and network addresses on the app host or an SSH device.",
+    inputSchema: { type: "object", properties: { host: { type: "string", description: "SSH alias on the app host; blank for the app host" } } },
+    run: (a) => get(`/device/info${qs({ host: a.host })}`),
+  },
+  {
+    name: "device_ports",
+    description: "List listening ports and their process/project identities on the app host or an SSH device.",
+    inputSchema: { type: "object", properties: { host: { type: "string", description: "SSH alias on the app host; blank for the app host" } } },
+    run: (a) => get(`/ports/details${qs({ host: a.host })}`),
+  },
+  {
     name: "list_sessions",
     description: "List the tmux sessions on this device (name, windows, active command, path).",
     inputSchema: { type: "object", properties: {} },
@@ -180,7 +192,7 @@ const TOOLS = [
   {
     name: "ssh_hosts",
     description:
-      "Auto-discover SSH targets from ~/.ssh/config and private-key identity files in ~/.ssh.",
+      "Discover SSH targets available to the app host. Use their host names in device tools; an empty host selects the app host itself.",
     inputSchema: { type: "object", properties: {} },
     run: () => get("/ssh/hosts"),
   },

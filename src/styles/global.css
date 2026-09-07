@@ -382,14 +382,21 @@ button {
   background: var(--surface-alt);
 }
 .cselect-item-on {
-  color: var(--accent);
+  color: var(--text);
+  background: var(--surface-alt);
 }
 .cselect-item-main {
   display: flex;
+  flex: 1;
+  align-items: flex-end;
+  text-align: right;
   flex-direction: column;
   gap: 1px;
   min-width: 0;
 }
+.cselect-item-check { display: flex; width: 14px; flex: 0 0 14px; }
+.cselect-item > svg { flex-shrink: 0; }
+.cselect-item-label, .cselect-item-sub { max-width: 100%; overflow-wrap: anywhere; }
 .cselect-item-label {
   font-size: 12.5px;
   font-weight: 500;
@@ -3064,6 +3071,10 @@ button {
   padding: 7px 0;
 }
 .set-control {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
   flex-shrink: 0;
 }
 .set-control .btn {
@@ -3072,6 +3083,7 @@ button {
 .set-label {
   display: flex;
   flex-direction: column;
+  min-width: 0;
   gap: 2px;
 }
 .set-label > span:first-child {
@@ -4660,8 +4672,11 @@ button {
 .ft-operation-path { overflow-wrap: anywhere; font-size: 12px; }
 
 .port-identity { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
-.port-project { font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.port-process { margin-left: 8px; color: var(--muted); font-size: 11px; font-weight: 400; overflow: hidden; text-overflow: ellipsis; }
+.port-project { font-size: 13px; font-weight: 600; overflow-wrap: anywhere; line-height: 1.4; }
+.port-process { color: var(--muted); font-size: 11px; font-weight: 400; overflow-wrap: anywhere; line-height: 1.4; }
+.port-process:empty { display: none; }
+.ports-box .port-row { gap: 14px; align-items: center; padding-block: 10px; }
+.port-identity { flex: 1; }
 .port-row > .btn { flex-shrink: 0; }
 
 .term-paste-status {
@@ -4692,7 +4707,7 @@ button {
 }
 
 /* Translucency affects surfaces only; text and controls retain their contrast. */
-html[data-transparency="on"] body { background: transparent; }
+html[data-transparency="on"], html[data-transparency="on"] body, html[data-transparency="on"] #root { background: transparent; }
 html[data-transparency="on"] .app {
   background: var(--bg);
 }
@@ -4703,8 +4718,8 @@ html[data-transparency="on"][data-native="false"] body {
     var(--opaque-bg);
 }
 html[data-transparency="on"] :is(.tile, .menu, .cselect-menu, .modal) {
-  -webkit-backdrop-filter: blur(20px) saturate(115%);
-  backdrop-filter: blur(20px) saturate(115%);
+  -webkit-backdrop-filter: blur(var(--surface-blur)) saturate(var(--surface-saturation));
+  backdrop-filter: blur(var(--surface-blur)) saturate(var(--surface-saturation));
 }
 html[data-transparency="on"] .tile {
   background: color-mix(in srgb, var(--opaque-bg) 24%, transparent);
@@ -4727,11 +4742,10 @@ html[data-transparency="on"] .tile-code { background: transparent; }
 
 .menu-panel:has(.device-info-panel) { max-width: calc(100vw - 32px); }
 .device-info {
-  padding: 14px;
-  margin-bottom: 16px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: var(--surface);
+  padding: 8px 0;
+  margin-bottom: 8px;
+  border: 0;
+  background: transparent;
   color: var(--text);
 }
 .device-info-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
@@ -4739,25 +4753,40 @@ html[data-transparency="on"] .tile-code { background: transparent; }
 .device-info-os > span { display: grid; gap: 3px; min-width: 0; overflow-wrap: anywhere; }
 .device-info-os strong { font-size: 13px; font-weight: 650; }
 .device-info-os > span > span { color: var(--muted); font-size: 11px; }
-.device-info-health { display: flex; flex-wrap: wrap; align-items: center; gap: 7px 12px; margin-top: 14px; font-size: 11px; color: var(--muted); }
+.device-info-health { display: flex; flex-wrap: wrap; align-items: center; gap: 7px 12px; margin-top: 8px; font-size: 11px; color: var(--muted); }
 .device-info-status { font-weight: 600; }
 .device-info-reachable { color: var(--success); }
 .device-info-error { margin: 10px 0 0; color: var(--muted); font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
-.device-info-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px 20px; margin: 18px 0 0; }
+.device-info-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 16px; margin: 12px 0 0; }
 .device-info-item { min-width: 0; }
 .device-info-item dt { color: var(--muted); font-size: 10px; margin-bottom: 5px; }
 .device-info-item dd { margin: 0; font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
 .device-info-item dd small { display: block; color: var(--muted); font-size: 10px; margin-top: 3px; }
 .device-info-wide { grid-column: 1 / -1; }
-.device-info-addresses { display: flex; flex-wrap: wrap; gap: 8px; }
-.device-info-address { min-width: 0; max-width: 100%; padding: 5px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface-alt); }
+.device-info-addresses { display: flex; flex-wrap: wrap; gap: 6px 16px; }
+.device-info-address { min-width: 0; max-width: 100%; padding: 2px 0; }
 .device-info-address code { font-size: 11px; overflow-wrap: anywhere; }
 .device-info-memory { display: block; height: 5px; overflow: hidden; margin-top: 9px; border-radius: 4px; background: var(--surface-alt); }
 .device-info-memory > span { display: block; height: 100%; border-radius: inherit; background: var(--muted); }
-.device-info-updated { margin: 16px 0 0; padding-top: 10px; border-top: 1px solid var(--border); color: var(--muted); font-size: 10px; line-height: 1.5; }
+.device-info-more { margin-top: 8px; }
+.device-info-updated { margin: 10px 0 0; padding-top: 10px; border-top: 1px solid var(--border); color: var(--muted); font-size: 10px; line-height: 1.5; }
 @media (max-width: 480px) {
   .device-info-grid { grid-template-columns: minmax(0, 1fr); gap: 13px; }
-  .device-info { padding: 11px; }
+  .device-info { padding: 8px 0; }
+}
+.transparency-options { border-top: 1px solid var(--border); margin-top: 8px; padding-top: 6px; }
+.transparency-options input[type="range"] { width: 120px; accent-color: var(--text); }
+.tile-color-border {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1px;
+  pointer-events: none;
+  z-index: 6;
+  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  mask-composite: exclude;
 }
 @media (max-width: 1080px) {
   .menu-panel:has(.device-info-panel) {

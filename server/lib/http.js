@@ -71,6 +71,12 @@ export function json(res, code, body) {
   res.end(JSON.stringify(body));
 }
 
+export function ndjson(res) {
+  cors(res);
+  res.writeHead(200, { "Content-Type": "application/x-ndjson", "Cache-Control": "no-store", "X-Accel-Buffering": "no" });
+  return (event) => { if (!res.destroyed) res.write(JSON.stringify(event) + "\n"); };
+}
+
 export function readBody(req) {
   return new Promise((resolve) => {
     let data = "";
