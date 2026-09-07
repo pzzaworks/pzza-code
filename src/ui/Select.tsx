@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState } from "react";
+import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { AnimatePresence, motion } from "framer-motion";
 import { Check, ChevronDown } from "lucide-react";
@@ -7,6 +7,7 @@ export interface Option {
   value: string;
   label: string;
   sub?: string;
+  icon?: ReactNode;
 }
 
 interface Props {
@@ -46,6 +47,7 @@ export function Select({ value, options, onChange, placeholder }: Props) {
         className={`cselect ${open ? "cselect-open" : ""}`}
         onClick={() => setOpen((v) => !v)}
       >
+        {current?.icon}
         <span className="cselect-value">{current?.label ?? placeholder ?? "Select"}</span>
         <ChevronDown size={14} className={`muted-icon ${open ? "flip" : ""}`} />
       </button>
@@ -72,6 +74,7 @@ export function Select({ value, options, onChange, placeholder }: Props) {
                         setOpen(false);
                       }}
                     >
+                      {o.icon}
                       <span className="cselect-item-main">
                         <span className="cselect-item-label">{o.label}</span>
                         {o.sub ? <span className="cselect-item-sub">{o.sub}</span> : null}

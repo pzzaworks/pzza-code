@@ -9,6 +9,7 @@ export function SettingsMenu({ close }: { close?: () => void }) {
     <div className="menu-body">
       <div className="menu-title">Settings</div>
       <AgentSection close={close} />
+      <AppearanceSection />
       <TerminalSection />
       <UpdatesSection />
     </div>
@@ -105,6 +106,22 @@ function Row({ label, hint, children }: { label: string; hint?: string; children
       <div className="set-control">{children}</div>
     </div>
   );
+}
+
+function AppearanceSection() {
+  const enabled = useStore((state) => state.semiTransparent);
+  const setEnabled = useStore((state) => state.setSemiTransparent);
+  const notice = useStore((state) => state.transparencyNotice);
+  return <Section title="Appearance">
+    <Row label="Semi-transparent mode" hint="Translucent surfaces and a blurred background">
+      <button className={`switch ${enabled ? "switch-on" : ""}`} type="button"
+        role="switch" aria-label="Semi-transparent mode" aria-checked={enabled}
+        onClick={() => setEnabled(!enabled)}>
+        <span className="switch-knob" />
+      </button>
+    </Row>
+    {enabled && notice ? <p className="set-note" role="status">{notice}</p> : null}
+  </Section>;
 }
 
 function TerminalSection() {

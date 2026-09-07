@@ -1,4 +1,7 @@
-import { useEffect, useState } from "react";
+import { createContext, useContext, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import { Modal } from "../ui/Modal";
+import { beginFileMutation, notifyFileMutation, onFileMutation } from "../editorChanges";
 import {
   ChevronRight,
   File,
@@ -58,7 +61,7 @@ import {
   siXml,
   siYaml,
 } from "simple-icons";
-import { listDir, type DirEntry } from "../serverApi";
+import { deleteFile, moveFile, listDir, type DirEntry } from "../serverApi";
 
 const join = (dir: string, name: string) => (dir.endsWith("/") ? dir + name : `${dir}/${name}`);
 
@@ -215,136 +218,204 @@ function FileIcon({ spec, size }: { spec: IconSpec; size: number }) {
   return <Ic size={size} className="ft-file" style={{ color: spec.color }} />;
 }
 
-function TreeNode({
-  path,
-  name,
-  isDir,
-  depth,
-  activePath,
-  onOpenFile,
-  host,
-}: {
-  path: string;
-  name: string;
-  isDir: boolean;
-  depth: number;
-  activePath?: string;
-  onOpenFile: (p: string) => void;
-  host?: string;
+interface TreeItem { path: string; name: string; isDir: boolean }
+type Operation = { kind: "rename" | "delete" | "move"; item: TreeItem; destination?: string };
+interface TreeActions {
+  revision: number;
+  busy: boolean;
+  menu: (item: TreeItem, x: number, y: number) => void;
+  drag: (item: TreeItem | null) => void;
+  drop: (directory: string) => void;
+  canDrop: (directory: string) => boolean;
+}
+const TreeContext = createContext<TreeActions | null>(null);
+const FILE_DRAG = "application/x-pzza-file";
+
+function TreeNode({ path, name, isDir, depth, activePath, onOpenFile, host }: {
+  path: string; name: string; isDir: boolean; depth: number; activePath?: string;
+  onOpenFile: (path: string) => void; host?: string;
 }) {
+  const actions = useContext(TreeContext);
   const [expanded, setExpanded] = useState(false);
   const [children, setChildren] = useState<DirEntry[] | null>(null);
-  const [loading, setLoading] = useState(false);
-
-  const toggle = () => {
-    if (!isDir) {
-      onOpenFile(path);
-      return;
-    }
-    if (!expanded && children === null) {
-      setLoading(true);
-      listDir(path, host)
-        .then((r) => setChildren(r.entries))
-        .catch(() => setChildren([]))
-        .finally(() => setLoading(false));
-    }
-    setExpanded((v) => !v);
-  };
-
-  return (
-    <>
-      <button
-        className={`ft-row ${!isDir && activePath === path ? "on" : ""}`}
-        style={{ paddingLeft: 8 + depth * 12 }}
-        onClick={toggle}
-        onMouseDown={(e) => e.stopPropagation()}
-        title={name}
-      >
-        {isDir ? (
-          <ChevronRight size={13} className={`ft-chevron ${expanded ? "open" : ""}`} />
-        ) : (
-          <span className="ft-chevron-spacer" />
-        )}
-        {isDir ? (
-          expanded ? (
-            <FolderOpen size={15} className="ft-folder" />
-          ) : (
-            <Folder size={15} className="ft-folder" />
-          )
-        ) : (
-          <FileIcon spec={fileIcon(name)} size={15} />
-        )}
-        <span className="ft-name">{name}</span>
-      </button>
-      {isDir && expanded
-        ? loading
-          ? (
-            <div className="ft-loading" style={{ paddingLeft: 8 + (depth + 1) * 12 }}>
-              <Loader2 size={12} className="sw-spin" />
-            </div>
-          )
-          : (children ?? []).map((c) => (
-              <TreeNode
-                key={c.name}
-                host={host}
-                path={join(path, c.name)}
-                name={c.name}
-                isDir={c.dir}
-                depth={depth + 1}
-                activePath={activePath}
-                onOpenFile={onOpenFile}
-              />
-            ))
-        : null}
-    </>
-  );
+  const [error, setError] = useState("");
+  const [over, setOver] = useState(false);
+  useEffect(() => {
+    if (!isDir || !expanded) return;
+    let alive = true;
+    setError("");
+    listDir(path, host).then((result) => { if (alive) setChildren(result.entries); })
+      .catch(() => { if (alive) { setError("Could not read this folder."); setChildren([]); } });
+    return () => { alive = false; };
+  }, [path, host, isDir, expanded, actions?.revision]);
+  const item = { path, name, isDir };
+  return <>
+    <button
+      className={`ft-row ${!isDir && activePath === path ? "on" : ""} ${over ? "ft-drop-target" : ""}`}
+      style={{ paddingLeft: 8 + depth * 12 }}
+      title={name}
+      disabled={actions?.busy}
+      aria-expanded={isDir ? expanded : undefined}
+      onClick={() => isDir ? setExpanded((value) => !value) : onOpenFile(path)}
+      onMouseDown={(event) => event.stopPropagation()}
+      onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); actions?.menu(item, event.clientX, event.clientY); }}
+      onKeyDown={(event) => {
+        if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) {
+          event.preventDefault();
+          const rect = event.currentTarget.getBoundingClientRect();
+          actions?.menu(item, rect.left, rect.bottom);
+        }
+      }}
+      draggable={!actions?.busy}
+      onDragStart={(event) => {
+        event.stopPropagation();
+        actions?.drag(item);
+        event.dataTransfer.effectAllowed = "move";
+        event.dataTransfer.setData(FILE_DRAG, path);
+      }}
+      onDragEnd={() => { actions?.drag(null); setOver(false); }}
+      onDragOver={(event) => {
+        if (isDir && actions?.canDrop(path)) {
+          event.preventDefault(); event.stopPropagation(); event.dataTransfer.dropEffect = "move"; setOver(true);
+        }
+      }}
+      onDragLeave={() => setOver(false)}
+      onDrop={(event) => {
+        event.preventDefault(); event.stopPropagation(); setOver(false);
+        if (isDir) actions?.drop(path);
+      }}
+    >
+      {isDir ? <ChevronRight size={13} className={`ft-chevron ${expanded ? "open" : ""}`} /> : <span className="ft-chevron-spacer" />}
+      {isDir ? expanded ? <FolderOpen size={15} className="ft-folder" /> : <Folder size={15} className="ft-folder" /> : <FileIcon spec={fileIcon(name)} size={15} />}
+      <span className="ft-name">{name}</span>
+    </button>
+    {isDir && expanded ? children === null
+      ? <div className="ft-loading"><Loader2 size={12} className="sw-spin" /></div>
+      : error ? <div className="ft-loading" role="alert">{error}</div>
+      : children.map((child) => <TreeNode key={child.name} host={host} path={join(path, child.name)} name={child.name} isDir={child.dir} depth={depth + 1} activePath={activePath} onOpenFile={onOpenFile} />)
+      : null}
+  </>;
 }
 
-// The file tree for a single folder root - lives inside one code tile.
-export function FolderTree({
-  root,
-  activePath,
-  onOpenFile,
-  host,
-}: {
-  root: string;
-  activePath?: string;
-  onOpenFile: (p: string) => void;
-  host?: string; // ssh target when the folder lives on another device
+export function FolderTree({ root, activePath, onOpenFile, host }: {
+  root: string; activePath?: string; onOpenFile: (path: string) => void; host?: string;
 }) {
   const [children, setChildren] = useState<DirEntry[] | null>(null);
+  const [resolvedRoot, setResolvedRoot] = useState(root);
+  const [revision, setRevision] = useState(0);
+  const [listingError, setListingError] = useState("");
+  const [menu, setMenu] = useState<{ item: TreeItem; x: number; y: number } | null>(null);
+  const [operation, setOperation] = useState<Operation | null>(null);
+  const [name, setName] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const dragged = useRef<TreeItem | null>(null);
+  const menuElement = useRef<HTMLDivElement>(null);
+  const listingKey = useRef("");
 
+  useEffect(() => onFileMutation((mutation) => {
+    if ((mutation.host || "") === (host || "")) setRevision((value) => value + 1);
+  }), [host]);
   useEffect(() => {
-    setChildren(null);
-    listDir(root, host)
-      .then((r) => setChildren(r.entries))
-      .catch(() => setChildren([]));
-  }, [root, host]);
-
-  return (
+    let alive = true;
+    const key = JSON.stringify([root, host]);
+    if (listingKey.current !== key) { setChildren(null); listingKey.current = key; }
+    setListingError("");
+    listDir(root, host).then((result) => {
+      if (alive) { setResolvedRoot(result.path); setChildren(result.entries); }
+    }).catch(() => { if (alive) { setChildren([]); setListingError("Could not read this folder."); } });
+    return () => { alive = false; };
+  }, [root, host, revision]);
+  useEffect(() => {
+    if (!menu) return;
+    menuElement.current?.querySelector<HTMLButtonElement>("button")?.focus();
+    const close = () => setMenu(null);
+    window.addEventListener("resize", close);
+    window.addEventListener("scroll", close, true);
+    return () => { window.removeEventListener("resize", close); window.removeEventListener("scroll", close, true); };
+  }, [menu]);
+  const start = (next: Operation) => { setMenu(null); setError(""); setName(next.item.name); setOperation(next); };
+  const canDrop = (directory: string) => {
+    const source = dragged.current;
+    return !!source && !busy && directory !== source.path && !directory.startsWith(source.path + "/") && join(directory, source.name) !== source.path;
+  };
+  const actions: TreeActions = {
+    revision, busy,
+    menu: (item, x, y) => { if (!busy) setMenu({ item, x, y }); },
+    drag: (item) => { dragged.current = item; setMenu(null); },
+    canDrop,
+    drop: (directory) => {
+      if (canDrop(directory) && dragged.current) start({ kind: "move", item: dragged.current, destination: join(directory, dragged.current.name) });
+      dragged.current = null;
+    },
+  };
+  const submit = async () => {
+    if (!operation || busy) return;
+    const destination = operation.kind === "rename" ? join(operation.item.path.slice(0, operation.item.path.lastIndexOf("/")), name) : operation.destination;
+    if (operation.kind === "rename" && (!name.trim() || name === "." || name === ".." || /[/\\\x00-\x1f]/.test(name))) {
+      setError("Enter a single file or folder name without path separators."); return;
+    }
+    if (destination === operation.item.path) { setOperation(null); return; }
+    setBusy(true); setError("");
+    let release: (() => void) | undefined;
+    try {
+      release = beginFileMutation({ host, path: operation.item.path });
+      if (operation.kind === "delete") {
+        await deleteFile(resolvedRoot, operation.item.path, host);
+        notifyFileMutation({ host, path: operation.item.path });
+      } else if (destination) {
+        const result = await moveFile(resolvedRoot, operation.item.path, destination, host);
+        notifyFileMutation({ host, path: operation.item.path, destination: result.path });
+      }
+      setOperation(null);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "File operation failed.");
+      setRevision((value) => value + 1);
+    }
+    finally { release?.(); setBusy(false); }
+  };
+  return <TreeContext.Provider value={actions}>
     <div className="ft-body">
-      {children === null ? (
-        <div className="ft-loading" style={{ paddingLeft: 12 }}>
-          <Loader2 size={12} className="sw-spin" />
-        </div>
-      ) : children.length === 0 ? (
-        <div className="ft-loading" style={{ paddingLeft: 12 }}>
-          empty
-        </div>
-      ) : (
-        children.map((c) => (
-          <TreeNode
-            key={c.name}
-            host={host}
-            path={join(root, c.name)}
-            name={c.name}
-            isDir={c.dir}
-            depth={0}
-            activePath={activePath}
-            onOpenFile={onOpenFile}
-          />
-        ))
-      )}
+      <button className="ft-row ft-root" title="Drop here to move into the root folder" disabled={busy}
+        onClick={() => setRevision((value) => value + 1)}
+        onDragOver={(event) => { if (canDrop(resolvedRoot)) { event.preventDefault(); event.stopPropagation(); event.dataTransfer.dropEffect = "move"; } }}
+        onDrop={(event) => { event.preventDefault(); event.stopPropagation(); actions.drop(resolvedRoot); }}>
+        <FolderOpen size={15} /><span className="ft-name">{resolvedRoot.split("/").pop() || resolvedRoot}</span>
+      </button>
+      {children === null ? <div className="ft-loading"><Loader2 size={12} className="sw-spin" /></div>
+        : listingError ? <div className="ft-loading" role="alert">{listingError}</div>
+        : !children.length ? <div className="ft-loading">empty</div>
+        : children.map((child) => <TreeNode key={child.name} host={host} path={join(resolvedRoot, child.name)} name={child.name} isDir={child.dir} depth={0} activePath={activePath} onOpenFile={onOpenFile} />)}
     </div>
-  );
+    {menu ? createPortal(<div className="cselect-backdrop pzza-portal" onMouseDown={() => setMenu(null)} onContextMenu={(event) => { event.preventDefault(); setMenu(null); }}>
+      <div ref={menuElement} className="menu ft-context-menu" role="menu" aria-label="File actions"
+        style={{ left: Math.max(8, Math.min(menu.x, window.innerWidth - 188)), top: Math.max(8, Math.min(menu.y, window.innerHeight - 112)) }}
+        onMouseDown={(event) => event.stopPropagation()}
+        onKeyDown={(event) => {
+          if (event.key === "Escape" || event.key === "Tab") { setMenu(null); return; }
+          if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+            event.preventDefault();
+            const items = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>("button"));
+            const index = items.indexOf(document.activeElement as HTMLButtonElement);
+            items[(index + (event.key === "ArrowDown" ? 1 : items.length - 1)) % items.length]?.focus();
+          }
+        }}>
+        <button className="menu-item" role="menuitem" onClick={() => start({ kind: "rename", item: menu.item })}>Rename…</button>
+        <button className="menu-item" role="menuitem" onClick={() => start({ kind: "delete", item: menu.item })}>Delete…</button>
+      </div>
+    </div>, document.body) : null}
+    <Modal open={!!operation} onClose={() => { if (!busy) setOperation(null); }} title={operation?.kind === "delete" ? "Delete permanently?" : operation?.kind === "move" ? "Move item?" : "Rename item"} size="sm">
+      <form onSubmit={(event) => { event.preventDefault(); void submit(); }}>
+        <p className="ft-operation-path">{operation?.item.path}</p>
+        {operation?.kind === "rename" ? <label>New name<input className="input" aria-label="New name" autoFocus value={name} disabled={busy} onChange={(event) => setName(event.target.value)} /></label>
+          : operation?.kind === "move" ? <p className="ft-operation-path">Move to: {operation.destination}</p>
+          : <p>This permanently deletes {operation?.item.isDir ? "this folder and everything inside it" : "this file"}, including unsaved editor changes. This cannot be undone.</p>}
+        {error ? <p role="alert">{error}</p> : null}
+        <div className="modal-actions">
+          <button className="btn" type="button" disabled={busy} onClick={() => setOperation(null)}>Cancel</button>
+          <button className={`btn ${operation?.kind === "delete" ? "btn-danger" : "btn-accent"}`} type="submit" disabled={busy}>{busy ? "Working…" : operation?.kind === "delete" ? "Delete permanently" : operation?.kind === "move" ? "Move" : "Rename"}</button>
+        </div>
+      </form>
+    </Modal>
+  </TreeContext.Provider>;
 }

@@ -31,6 +31,8 @@ import { UsageMenu } from "./panels/UsageMenu";
 import { ProjectsMenu } from "./panels/ProjectsMenu";
 import { HAS_TAURI } from "./tauriEnv";
 import { UpdateBanner } from "./panels/UpdateBanner";
+import { Modal } from "./ui/Modal";
+import { confirmEditorDiscard, hasUnsavedEditors } from "./editorChanges";
 
 export default function App() {
   const loadSessions = useStore((s) => s.loadSessions);
@@ -40,6 +42,41 @@ export default function App() {
   const setWizardOpen = useStore((s) => s.setWizardOpen);
 
   const [helpOpen, setHelpOpen] = useState(false);
+  const [nativeCloseError, setNativeCloseError] = useState<string | null>(null);
+  useEffect(() => {
+    if (!HAS_TAURI) return;
+    let disposed = false;
+    let confirming = false;
+    let unlisten: (() => void) | undefined;
+    const reportError = (error: unknown) => {
+      const message = error instanceof Error ? error.message : String(error);
+      if (!disposed) setNativeCloseError(message);
+      else console.error("Could not finish removing the window close listener.", message);
+    };
+    void import("@tauri-apps/api/window").then(async ({ getCurrentWindow }) => {
+      if (disposed) return;
+      const appWindow = getCurrentWindow();
+      const stop = await appWindow.onCloseRequested(async (event) => {
+        if (!hasUnsavedEditors() && !confirming) return;
+        event.preventDefault();
+        if (confirming || disposed) return;
+        confirming = true;
+        try {
+          if (await confirmEditorDiscard() && !disposed) await appWindow.destroy();
+        } catch (error) {
+          reportError(error);
+        } finally {
+          confirming = false;
+        }
+      });
+      if (disposed) stop();
+      else unlisten = stop;
+    }).catch(reportError);
+    return () => {
+      disposed = true;
+      try { unlisten?.(); } catch (error) { reportError(error); }
+    };
+  }, []);
   // On narrow windows the tool buttons collapse behind a menu button and open
   // as a bar under the top bar; close that bar on an outside click or Escape.
   const [toolsOpen, setToolsOpen] = useState(false);
@@ -90,6 +127,11 @@ export default function App() {
   return (
     <ThemeProvider>
       <Tooltip />
+      <Modal open={nativeCloseError !== null} onClose={() => setNativeCloseError(null)} title="Window close protection" size="sm">
+        <p className="move-q" role="alert">{nativeCloseError}</p>
+        <p className="set-note">Save your editor changes before closing the window again.</p>
+        <div className="modal-actions"><button className="btn" onClick={() => setNativeCloseError(null)}>Dismiss</button></div>
+      </Modal>
       <div className="app">
         <header className="topbar" data-tauri-drag-region>
           <div className="brand">
@@ -127,7 +169,7 @@ export default function App() {
                 <Dropdown icon={EthernetPort} title="Port forwarding" width={320}>
                   <PortsMenu />
                 </Dropdown>
-                <Dropdown icon={HardDrive} title="Devices" width={380}>
+                <Dropdown icon={HardDrive} title="Devices" width={540}>
                   <DevicesMenu />
                 </Dropdown>
                 <Dropdown icon={Blocks} title="MCP" width={320}>

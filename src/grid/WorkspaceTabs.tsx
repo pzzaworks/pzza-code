@@ -8,11 +8,12 @@ import { ALL_WORKSPACE_ID, WORKSPACE_COLORS } from "../workspaces";
 import { altBadge, digitFromCode } from "../shortcuts";
 import { workspaceIcon, DEFAULT_WORKSPACE_ICON } from "../workspaceIcons";
 import { IconPicker } from "../ui/IconPicker";
-import { SESSION_DND, tileTitle } from "../sessionMeta";
+import { SESSION_DND, SESSION_TILE_DND, sessionDisplayName } from "../sessionMeta";
 import { WorkspaceSettings } from "../panels/WorkspaceSettings";
 
 interface PendingMove {
   session: string;
+  tileId: string;
   wsId: string;
 }
 
@@ -23,6 +24,8 @@ export function WorkspaceTabs() {
   const addWorkspace = useStore((s) => s.addWorkspace);
   const assignSession = useStore((s) => s.assignSession);
   const sessionWs = useStore((s) => s.sessionWs);
+  const tiles = useStore((s) => s.tiles);
+  const tileTitles = useStore((s) => s.tileTitles);
 
   const [settingsFor, setSettingsFor] = useState<string | null>(null);
   const [settingsRect, setSettingsRect] = useState<DOMRect | null>(null);
@@ -134,7 +137,7 @@ export function WorkspaceTabs() {
     if (!session) return;
     const current = sessionWs[session] ?? workspaces[0]?.id;
     if (current === wsId) return;
-    setPending({ session, wsId });
+    setPending({ session, tileId: e.dataTransfer.getData(SESSION_TILE_DND) || session, wsId });
   };
 
   const confirmMove = () => {
@@ -304,7 +307,7 @@ export function WorkspaceTabs() {
         {pending ? (
           <>
             <p className="move-q">
-              Move <b>{tileTitle(pending.session.split("::").pop() ?? pending.session)}</b> to{" "}
+              Move <b>{sessionDisplayName(tiles.find((t) => t.id === pending.tileId) ?? { id: pending.session, name: pending.session }, tileTitles)}</b> to{" "}
               <b>{targetWs?.name ?? "workspace"}</b>?
             </p>
             <div className="modal-actions">

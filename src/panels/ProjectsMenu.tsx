@@ -1,4 +1,7 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { Modal } from "../ui/Modal";
+import { confirmEditorDiscard } from "../editorChanges";
+import { DeviceIcon } from "../ui/DeviceIcon";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ChevronRight, FolderSync, Loader2, RefreshCw, Settings2 } from "lucide-react";
 import { useStore } from "../state/store";
 import { THIS_MAC, type Device } from "../devices";
@@ -12,10 +15,31 @@ import {
   type ProjectDeviceRef,
   type ProjectRepo,
   type ProjectScan,
+  type ProjectScanProgress,
   type EnvSyncResult,
   type ProjectSync,
   type ProjectSyncResult,
 } from "../serverApi";
+
+function ScanProgress({ progress }: { progress: ProjectScanProgress | null }) {
+  const [started] = useState(() => Date.now());
+  const [elapsed, setElapsed] = useState(0);
+  useEffect(() => {
+    const timer = window.setInterval(() => setElapsed(Math.floor((Date.now() - started) / 1000)), 1000);
+    return () => window.clearInterval(timer);
+  }, [started]);
+  const failed = progress?.finished.filter((device) => device.error).length ?? 0;
+  return (
+    <div className="pj-scan-progress">
+      <div className="pj-scan-progress-label" role="status">
+        <span>Scanning · {progress ? `${progress.completed}/${progress.total} devices checked · ${progress.repos} repos found` : "Connecting to devices…"}{failed ? ` · ${failed} failed` : ""}</span>
+        <span>{elapsed < 60 ? `${elapsed}s` : `${Math.floor(elapsed / 60)}m ${elapsed % 60}s`} elapsed</span>
+      </div>
+      <progress aria-label="Devices scanned" max={progress?.total || 1} value={progress ? progress.completed : undefined} />
+      <span className="pj-scan-progress-hint">Devices scan in parallel; progress reflects completed devices, not remaining time.</span>
+    </div>
+  );
+}
 
 // Project sync dashboard. One card per git repo found under the projects root
 // on ANY device; inside it one line per device: what is checked out, how far
@@ -98,71 +122,74 @@ interface EnvStatus {
   hashes: Map<string, string>; // deviceId -> hash
 }
 
-// Identity of a repo across devices: its origin, normalized so that scp-style,
-// ssh:// and https:// spellings of the same remote collapse to one key. Mirrors
-// originKey in the agent.
-function originKey(url: string | null): string | null {
-  if (!url) return null;
-  let u = url.trim().replace(/\/+$/, "").replace(/\.git$/i, "");
-  const scp = u.match(/^(?:[^@\s]+@)?([^:/\s]+):(.+)$/);
-  if (scp && !/^\w+:\/\//.test(u)) u = `${scp[1]}/${scp[2]}`;
-  else u = u.replace(/^\w+:\/\/(?:[^@/]+@)?/, "");
-  return u.toLowerCase();
-}
-
 interface Row {
-  rel: string; // display path: where the first device that has it keeps it
-  rels: Set<string>; // every path it lives at across devices (for result lookup)
+  projectId: string;
+  rel: string;
   origin: string | null;
-  origins: string[]; // every distinct origin seen (a moved remote shows two)
-  defaultBranch: string | null; // best guess across devices
+  origins: string[];
+  defaultBranch: string | null;
   byDevice: Map<string, ProjectRepo>;
+  duplicates: Map<string, ProjectRepo[]>;
+  canClone: boolean;
+  cloneBlocks: Map<string, string>;
   envs: EnvStatus[];
   attention: boolean;
 }
 
-// Merge the per-device scans into one row per repo, with cross-device env state.
-// Same grouping as the agent: one project per origin OR path. The path rule
-// catches a remote that moved (berkekiran/x -> pzzaworks/x), the origin rule
-// catches the same repo kept at different paths.
-function groupProjects(scan: ProjectScan): Map<string, ProjectRepo>[] {
-  interface Group {
-    keys: Set<string>;
-    members: Map<string, ProjectRepo>;
-  }
-  const groups: Group[] = [];
-  const byKey = new Map<string, Group>();
-  for (const d of scan.devices) {
-    for (const r of d.repos) {
-      const keys = [`path:${r.rel}`];
-      const ok = originKey(r.origin);
-      if (ok) keys.push(`origin:${ok}`);
-      const hits = [...new Set(keys.map((k) => byKey.get(k)).filter((g): g is Group => Boolean(g)))];
-      let g = hits[0];
-      if (!g) groups.push((g = { keys: new Set(), members: new Map() }));
-      for (const other of hits.slice(1)) {
-        for (const [id, rep] of other.members) if (!g.members.has(id)) g.members.set(id, rep);
-        for (const k of other.keys) g.keys.add(k);
-        groups.splice(groups.indexOf(other), 1);
-      }
-      for (const k of keys) {
-        g.keys.add(k);
-        byKey.set(k, g);
-      }
-      if (!g.members.has(d.id)) g.members.set(d.id, r);
+function groupProjects(scan: ProjectScan): Map<string, Map<string, ProjectRepo[]>> {
+  const groups = new Map<string, Map<string, ProjectRepo[]>>();
+  for (const device of scan.devices) {
+    for (const repo of device.repos) {
+      let group = groups.get(repo.projectId);
+      if (!group) groups.set(repo.projectId, (group = new Map()));
+      const copies = group.get(device.id) ?? [];
+      copies.push(repo);
+      group.set(device.id, copies);
     }
   }
-  return groups.map((g) => g.members);
+  return groups;
 }
 
-function buildRows(scan: ProjectScan): Row[] {
+// Migrate stored path overrides once their repositories have been identified.
+// Restrictions from every copy survive, including paths shared by distinct projects.
+function migrateRepoOptions(options: SyncOptions, scan: ProjectScan): SyncOptions {
+  const repos = { ...options.repos };
+  const consumed = new Set<string>();
+  const groups = groupProjects(scan);
+  for (const [projectId, members] of groups) {
+    const paths = new Set([...members.values()].flat().map((repo) => repo.rel));
+    const overrides = [options.repos[projectId]];
+    for (const path of paths) {
+      if (path === projectId || groups.has(path) || !Object.hasOwn(options.repos, path)) continue;
+      overrides.push(options.repos[path]);
+      consumed.add(path);
+    }
+    const present = overrides.filter((value) => value !== undefined);
+    if (present.length) {
+      repos[projectId] = {
+        enabled: present.every((value) => value.enabled !== false),
+        env: present.every((value) => value.env !== false),
+      };
+    }
+  }
+  if (consumed.size === 0) return options;
+  for (const path of consumed) delete repos[path];
+  return { ...options, repos };
+}
+
+function buildRows(scan: ProjectScan, options: SyncOptions, excludedDevices: string[]): Row[] {
   const okDevices = scan.devices.filter((d) => !d.error);
   const rows: Row[] = [];
-  for (const byDevice of groupProjects(scan)) {
-    const present = [...byDevice.values()];
-    const rel = present[0].rel;
-    const rels = new Set(present.map((r) => r.rel));
-    const origin = present.find((r) => r.origin)?.origin ?? null;
+  for (const [projectId, members] of groupProjects(scan)) {
+    const byDevice = new Map([...members].map(([id, copies]) => [id, copies[0]]));
+    const duplicates = new Map([...members].filter(([, copies]) => copies.length > 1));
+    const present = [...members.values()].flat();
+    const source = [...members].find(([id, copies]) => copies.length === 1 &&
+      !excludedDevices.includes(id) && okDevices.some((device) => device.id === id),
+    )?.[1][0];
+    const rel = (source ?? present[0]).rel;
+    const origin = source?.origin ?? present.find((repo) => repo.origin)?.origin ?? null;
+    const canClone = Boolean(source && projectId.startsWith("origin:"));
     const origins = [...new Set(present.map((r) => r.origin).filter((o): o is string => Boolean(o)))];
     const defaultBranch = present.find((r) => r.defaultBranch)?.defaultBranch ?? null;
 
@@ -171,6 +198,7 @@ function buildRows(scan: ProjectScan): Row[] {
     const envs: EnvStatus[] = [...envNames].sort().map((name) => {
       const hashes = new Map<string, string>();
       for (const [id, r] of byDevice) {
+        if (duplicates.has(id)) continue;
         const e = r.envs.find((x) => x.name === name);
         if (e) hashes.set(id, e.hash);
       }
@@ -192,15 +220,42 @@ function buildRows(scan: ProjectScan): Row[] {
     const behind = present.some((r) => (r.behind ?? 0) > 0);
     const envDrift = envs.some((e) => e.state === "differs" || e.state === "partial");
     rows.push({
+      projectId,
       rel,
-      rels,
       origin,
       origins,
       defaultBranch,
       byDevice,
+      duplicates,
+      canClone,
+      cloneBlocks: new Map(),
       envs,
-      attention: missingSomewhere || offDefault || dirty || behind || envDrift,
+      attention: duplicates.size > 0 || missingSomewhere || offDefault || dirty || behind || envDrift,
     });
+  }
+  for (const device of okDevices) {
+    if (excludedDevices.includes(device.id)) continue;
+    const targets = new Map<string, Row[]>();
+    for (const row of rows) {
+      if (!options.cloneMissing || !row.canClone || row.byDevice.has(device.id) ||
+        options.repos[row.projectId]?.enabled === false) continue;
+      const conflict = device.repos.find((repo) => repo.rel === row.rel && repo.projectId !== row.projectId);
+      if (conflict) {
+        row.cloneBlocks.set(device.id, `clone blocked: ${row.rel} belongs to another project`);
+        row.attention = true;
+        continue;
+      }
+      const planned = targets.get(row.rel) ?? [];
+      planned.push(row);
+      targets.set(row.rel, planned);
+    }
+    for (const [path, planned] of targets) {
+      if (planned.length < 2) continue;
+      for (const row of planned) {
+        row.cloneBlocks.set(device.id, `clone blocked: multiple projects need ${path}`);
+        row.attention = true;
+      }
+    }
   }
   return rows.sort((a, b) => a.rel.localeCompare(b.rel));
 }
@@ -270,6 +325,9 @@ function DeviceLine({
   result,
   envResults,
   deviceError,
+  duplicates,
+  canClone,
+  cloneBlock,
 }: {
   device: ProjectDeviceRef;
   repo: ProjectRepo | undefined;
@@ -278,6 +336,9 @@ function DeviceLine({
   result: ProjectSyncResult | undefined;
   envResults: EnvSyncResult[];
   deviceError: string | null;
+  duplicates: ProjectRepo[] | undefined;
+  canClone: boolean;
+  cloneBlock: string | undefined;
 }) {
   const outcome =
     result || envResults.length ? (
@@ -308,10 +369,18 @@ function DeviceLine({
         unreachable
       </span>
     );
+  } else if (duplicates) {
+    body = (
+      <span className="pj-bad" title="Sync skips this device until only one copy of this project remains under the root">
+        duplicate copies: {duplicates.map((copy) => copy.rel).join(", ")} · sync blocked
+      </span>
+    );
+  } else if (!repo && cloneBlock) {
+    body = <span className="pj-bad">{cloneBlock}</span>;
   } else if (!repo) {
     body = (
       <span className="pj-missing">
-        missing<span className="pj-missing-hint">sync will clone it</span>
+        missing<span className="pj-missing-hint">{canClone ? "sync will clone it" : "no unambiguous source to clone"}</span>
       </span>
     );
   } else {
@@ -344,7 +413,7 @@ function DeviceLine({
 
   return (
     <div className="pj-line">
-      <span className="pj-line-device">{device.name}</span>
+      <span className="pj-line-device"><DeviceIcon host={device.host} />{device.name}</span>
       <span className="pj-line-body">
         {repo && repo.rel !== displayRel ? (
           <span className="pj-line-path" title={`On this device the repo lives at ${repo.rel}`}>
@@ -380,7 +449,7 @@ function RowDetails({ row, devices }: { row: Row; devices: ProjectDeviceRef[] })
         if (!r) return null;
         return (
           <div key={d.id} className="pj-detail-line">
-            <span className="pj-k">{d.name}</span>
+            <span className="pj-k"><DeviceIcon host={d.host} />{d.name}</span>
             <span className="pj-v">
               {r.lastCommitTs ? `last commit ${ago(r.lastCommitTs)}` : "no commits"}
               {r.envs.length ? ` · ${r.envs.map((e) => `${e.name} ${e.hash.slice(0, 7)}`).join(", ")}` : " · no env files"}
@@ -410,8 +479,8 @@ function ProjectCard({
   scan: ProjectScan | null;
   open: boolean;
   onToggle: () => void;
-  resultFor: (deviceId: string, rels: Set<string>) => ProjectSyncResult | undefined;
-  envsFor: (deviceId: string, rels: Set<string>) => EnvSyncResult[];
+  resultFor: (deviceId: string, projectId: string) => ProjectSyncResult | undefined;
+  envsFor: (deviceId: string, projectId: string) => EnvSyncResult[];
   enabled: boolean;
   envOn: boolean;
   envsGlobal: boolean;
@@ -449,9 +518,12 @@ function ProjectCard({
             repo={row.byDevice.get(d.id)}
             displayRel={row.rel}
             defaultBranch={row.defaultBranch}
-            result={resultFor(d.id, row.rels)}
-            envResults={envsFor(d.id, row.rels)}
+            result={resultFor(d.id, row.projectId)}
+            envResults={envsFor(d.id, row.projectId)}
             deviceError={errorOf(d.id)}
+            duplicates={row.duplicates.get(d.id)}
+            canClone={row.canClone}
+            cloneBlock={row.cloneBlocks.get(d.id)}
           />
         ))}
       </div>
@@ -480,7 +552,10 @@ export function ProjectsMenu() {
   const [scan, setScan] = useState<ProjectScan | null>(null);
   const [sync, setSync] = useState<ProjectSync | null>(null);
   const [scanning, setScanning] = useState(false);
+  const [scanProgress, setScanProgress] = useState<ProjectScanProgress | null>(null);
+  const scanController = useRef<AbortController | null>(null);
   const [syncing, setSyncing] = useState(false);
+  const [confirmSync, setConfirmSync] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<Filter>("all");
   const [open, setOpen] = useState<Set<string>>(() => new Set());
@@ -495,8 +570,8 @@ export function ProjectsMenu() {
       saveJson(OPTS_KEY, next);
       return next;
     });
-  const setRepo = (rel: string, patch: { enabled?: boolean; env?: boolean }) =>
-    patchOpts({ repos: { ...opts.repos, [rel]: { ...(opts.repos[rel] ?? { enabled: true, env: true }), ...patch } } });
+  const setRepo = (projectId: string, patch: { enabled?: boolean; env?: boolean }) =>
+    patchOpts({ repos: { ...opts.repos, [projectId]: { ...(opts.repos[projectId] ?? { enabled: true, env: true }), ...patch } } });
   const toggleDevice = (id: string) =>
     setDevicesOff((list) => {
       const next = list.includes(id) ? list.filter((x) => x !== id) : [...list, id];
@@ -506,21 +581,38 @@ export function ProjectsMenu() {
   const syncRefs = refs.filter((r) => !devicesOff.includes(r.id));
 
   const runScan = useCallback(async () => {
+    scanController.current?.abort();
+    const controller = new AbortController();
+    scanController.current = controller;
     setScanning(true);
+    setScanProgress(null);
     setError(null);
     try {
-      setScan(await scanProjects(root, refs));
+      const result = await scanProjects(root, refs, (progress) => {
+        if (!controller.signal.aborted) setScanProgress(progress);
+      }, controller.signal);
+      if (!controller.signal.aborted) setScan(result);
     } catch (e) {
-      setError(explainError(String((e as Error)?.message || e)));
+      if (!controller.signal.aborted) setError(explainError(String((e as Error)?.message || e)));
     } finally {
-      setScanning(false);
+      if (!controller.signal.aborted) setScanning(false);
     }
   }, [root, refs]);
 
   // The dropdown mounts on open, so this is "scan when opened".
   useEffect(() => {
     void runScan();
+    return () => scanController.current?.abort();
   }, [runScan]);
+
+  useEffect(() => {
+    if (!scan) return;
+    setOpts((current) => {
+      const next = migrateRepoOptions(current, scan);
+      if (next !== current) saveJson(OPTS_KEY, next);
+      return next;
+    });
+  }, [scan]);
 
   // The root is the same folder relative to home on every device, so a picked
   // absolute path is stored as ~/... using the browsed device's home.
@@ -545,9 +637,12 @@ export function ProjectsMenu() {
     setError(null);
     setSync(null);
     try {
-      setSync(await syncProjects(root, syncRefs, opts));
+      if (!await confirmEditorDiscard()) return;
+      setConfirmSync(false);
+      const migrated = scan ? migrateRepoOptions(opts, scan) : opts;
+      setSync(await syncProjects(root, syncRefs, migrated));
       // Refresh so branches/behind counts reflect the new state.
-      setScan(await scanProjects(root, refs));
+      await runScan();
     } catch (e) {
       setError(explainError(String((e as Error)?.message || e)));
     } finally {
@@ -555,26 +650,28 @@ export function ProjectsMenu() {
     }
   };
 
-  const rows = useMemo(() => (scan ? buildRows(scan) : []), [scan]);
-  const resultFor = (deviceId: string, rels: Set<string>) =>
-    sync?.devices.find((d) => d.id === deviceId)?.results.find((r) => rels.has(r.rel));
-  const envsFor = (deviceId: string, rels: Set<string>) =>
-    sync?.devices.find((d) => d.id === deviceId)?.envs.filter((e) => rels.has(e.rel)) ?? [];
+  const rows = useMemo(() => scan
+    ? buildRows(scan, migrateRepoOptions(opts, scan), devicesOff)
+    : [], [scan, opts, devicesOff]);
+  const resultFor = (deviceId: string, projectId: string) =>
+    sync?.devices.find((d) => d.id === deviceId)?.results.find((r) => r.projectId === projectId);
+  const envsFor = (deviceId: string, projectId: string) =>
+    sync?.devices.find((d) => d.id === deviceId)?.envs.filter((e) => e.projectId === projectId) ?? [];
   // After a sync, anything that failed on any device needs attention too.
   const failedRow = (r: Row) =>
     refs.some(
-      (d) => resultFor(d.id, r.rels)?.status === "failed" || envsFor(d.id, r.rels).some((e) => e.status === "failed"),
+      (d) => resultFor(d.id, r.projectId)?.status === "failed" || envsFor(d.id, r.projectId).some((e) => e.status === "failed"),
     );
   const needsAttention = (r: Row) => r.attention || failedRow(r);
   const shown = filter === "attention" ? rows.filter(needsAttention) : rows;
   const attention = rows.filter(needsAttention).length;
 
   const busy = scanning || syncing;
-  const toggle = (rel: string) =>
+  const toggle = (projectId: string) =>
     setOpen((s) => {
       const n = new Set(s);
-      if (n.has(rel)) n.delete(rel);
-      else n.add(rel);
+      if (n.has(projectId)) n.delete(projectId);
+      else n.add(projectId);
       return n;
     });
 
@@ -608,7 +705,7 @@ export function ProjectsMenu() {
           </button>
           <button
             className="btn btn-sm btn-accent"
-            onClick={() => void runSync()}
+            onClick={() => setConfirmSync(true)}
             disabled={busy || !scan || syncRefs.length < 1}
             title="Run the sync with the settings below"
           >
@@ -642,6 +739,7 @@ export function ProjectsMenu() {
                     title={on ? "Click to exclude from sync (still scanned)" : "Click to include in sync"}
                   >
                     <span className={`dot ${on ? "dot-up" : ""}`} />
+                    <DeviceIcon host={r.host} />
                     {r.name}
                   </button>
                 );
@@ -705,6 +803,7 @@ export function ProjectsMenu() {
         </div>
       ) : null}
 
+      {scanning ? <ScanProgress key={root} progress={scanProgress} /> : null}
       <div className="pj-devices">
         {deviceStrip.map((d) => (
           <div
@@ -713,9 +812,13 @@ export function ProjectsMenu() {
             title={d.error ?? `${d.host || "local"}${d.root ? ` · ${d.root}` : ""}`}
           >
             <span className={`dot ${d.error ? "dot-down" : "dot-up"}`} />
-            <span className="pj-device-name">{d.name}</span>
+            <span className="pj-device-name"><DeviceIcon host={d.host} />{d.name}</span>
             <span className="pj-device-n">
-              {d.error ? d.error : scan ? `${d.repos.length} repos` : "scanning…"}
+              {scanning
+                ? scanProgress?.finished.find((device) => device.id === d.id)?.error
+                  ? "scan failed"
+                  : scanProgress?.finished.some((device) => device.id === d.id) ? "checked" : "scanning…"
+                : d.error ? d.error : scan ? `${d.repos.length} repos` : "not scanned"}
               {devicesOff.includes(d.id) ? " · sync off" : ""}
             </span>
           </div>
@@ -750,7 +853,7 @@ export function ProjectsMenu() {
             ].filter((p) => p.count > 0);
             return (
               <span key={d.id} className="pj-summary-dev">
-                <b>{d.name}</b>
+                <b><DeviceIcon host={refs.find((ref) => ref.id === d.id)?.host} />{d.name}</b>
                 {d.error ? (
                   <span className="pj-bad">{d.error}</span>
                 ) : parts.length === 0 ? (
@@ -780,18 +883,18 @@ export function ProjectsMenu() {
         ) : (
           shown.map((row) => (
             <ProjectCard
-              key={row.rel}
+              key={row.projectId}
               row={row}
               devices={refs}
               scan={scan}
-              open={open.has(row.rel)}
-              onToggle={() => toggle(row.rel)}
+              open={open.has(row.projectId)}
+              onToggle={() => toggle(row.projectId)}
               resultFor={resultFor}
               envsFor={envsFor}
-              enabled={opts.repos[row.rel]?.enabled !== false}
-              envOn={opts.repos[row.rel]?.env !== false}
+              enabled={opts.repos[row.projectId]?.enabled !== false}
+              envOn={opts.repos[row.projectId]?.env !== false}
               envsGlobal={opts.syncEnvs}
-              onSetRepo={(patch) => setRepo(row.rel, patch)}
+              onSetRepo={(patch) => setRepo(row.projectId, patch)}
             />
           ))
         )}
@@ -801,6 +904,19 @@ export function ProjectsMenu() {
         back), switch to the default branch and fast-forward, then copy the newest env files around. Every project
         can opt out on its card.
       </p>
+      <Modal open={confirmSync} onClose={() => { if (!syncing) setConfirmSync(false); }} title="Sync projects" size="sm">
+        <p className="move-q">Sync enabled projects under <b>{root}</b> on {syncRefs.map((device) => device.name).join(", ")}?</p>
+        <p className="set-note">
+          This updates Git working files{opts.cloneMissing ? ", clones missing projects" : ""}
+          {opts.switchToDefault ? ", switches to the default branch" : ""}
+          {opts.stashDirty ? ", and stashes tracked local changes" : "; dirty projects are skipped"}.
+          {opts.syncEnvs ? " Environment files can be overwritten by newer copies from other devices. These copies cannot be undone through the app." : " Environment file copying is disabled."}
+        </p>
+        <div className="modal-actions">
+          <button className="btn" disabled={syncing} onClick={() => setConfirmSync(false)}>Cancel</button>
+          <button className="btn btn-danger" disabled={syncing} onClick={() => void runSync()}>{syncing ? "Preparing…" : "Sync projects"}</button>
+        </div>
+      </Modal>
     </div>
   );
 }

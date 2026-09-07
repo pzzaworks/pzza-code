@@ -1,9 +1,49 @@
 // tmux session and window listing on the connected device (or over ssh to a
 // named host, for the multi-device scan).
-import { sh, shOn } from "./shell.js";
+import { execFile } from "node:child_process";
+import { DEVBOX, IS_CLIENT } from "./config.js";
+import { sh, shQuote, SSH_TOKEN } from "./shell.js";
+import { ACTIVITY_PROBE_SCRIPT, detectSessionActivity } from "./session-activity.js";
 
 const SESSIONS_CMD =
   "tmux list-sessions -F '#{session_name}\t#{session_windows}\t#{session_attached}\t#{pane_current_command}\t#{pane_current_path}'";
+
+// Resolve an exact session before modifying it. Internal grouped views retain
+// the parent's windows and processes unless they are closed with the parent.
+export function terminationCommand(name, window) {
+  if (typeof name !== "string" || !name.trim() || /[\x00-\x1f\x7f]/.test(name)) throw new Error("invalid session");
+  if (window !== undefined && (!Number.isInteger(window) || window < 0)) throw new Error("invalid window");
+  const target = shQuote("=" + name + ":");
+  if (window !== undefined) return `tmux kill-window -t ${shQuote("=" + name + ":" + window)}`;
+  return `session_id=$(tmux display-message -p -t ${target} '#{session_id}') || exit 1
+[ -n "$session_id" ] || exit 1
+group=$(tmux display-message -p -t "$session_id:" '#{session_group}') || exit 1
+if [ -n "$group" ]; then
+  views=$(tmux list-sessions -F '#{session_id}\t#{session_group}\t#{session_name}') || exit 1
+  printf '%s\n' "$views" | while IFS="$(printf '\t')" read -r view_id view_group view_name; do
+    [ "$view_group" = "$group" ] || continue
+    [ "$view_id" != "$session_id" ] || continue
+    case "$view_name" in pzza-v-*) tmux kill-session -t "$view_id" || exit 1 ;; esac
+  done || exit 1
+fi
+tmux kill-session -t "$session_id"`;
+}
+
+export function terminateSession(name, window, host) {
+  if (host !== undefined && (typeof host !== "string" || (host && !SSH_TOKEN.test(host)))) return Promise.reject(new Error("invalid host"));
+  const command = terminationCommand(name, window);
+  const targetHost = host === undefined ? (IS_CLIENT ? DEVBOX : "") : host;
+  const executable = targetHost ? "ssh" : "sh";
+  const args = targetHost
+    ? ["-o", "BatchMode=yes", "-o", "ConnectTimeout=8", "-o", "StrictHostKeyChecking=accept-new", targetHost, command]
+    : ["-c", command];
+  return new Promise((resolve, reject) => {
+    execFile(executable, args, { timeout: 15_000 }, (error) => {
+      if (error) reject(new Error("Could not close the session on this device"));
+      else resolve();
+    });
+  });
+}
 
 export function parseSessions(out) {
   const sessions = [];
@@ -31,8 +71,15 @@ export function listSessions() {
 
 // Scan every tmux session on a device (including ones the app never opened).
 export function scanSessions(host) {
-  return new Promise((resolve) => {
-    shOn(host, SESSIONS_CMD, (err, out) => resolve(err ? [] : parseSessions(out)));
+  if (host !== undefined && (typeof host !== "string" || (host && !SSH_TOKEN.test(host)))) return Promise.reject(new Error("invalid host"));
+  const targetHost = host === undefined ? (IS_CLIENT ? DEVBOX : "") : host;
+  return new Promise((resolve, reject) => {
+    execFile(targetHost ? "ssh" : "sh", targetHost
+      ? ["-o", "BatchMode=yes", "-o", "ConnectTimeout=8", "-o", "StrictHostKeyChecking=accept-new", targetHost, SESSIONS_CMD]
+      : ["-c", SESSIONS_CMD], { timeout: 15000 }, (error, output, stderr) => {
+      if (error && !/no server running|no sessions|error connecting.*No such file/.test(stderr || "")) return reject(new Error("Could not scan sessions on this device"));
+      resolve(error ? [] : parseSessions(output));
+    });
   });
 }
 
@@ -61,4 +108,38 @@ export function listWindows() {
       },
     );
   });
+}
+
+
+const pendingActivity = new Map();
+const ACTIVITY_FALLBACK = `tmux list-panes -a -F '#{session_name}\t#{window_index}\t#{window_active}\t#{pane_active}\t#{pane_current_command}' | while IFS="$(printf '\\t')" read -r session window active pane_active command; do [ "$pane_active" = 1 ] || continue; case "$command" in claude|codex|bash|zsh|fish|sh|dash|node|nodejs|bun|deno|python|python3|git|vim|nvim|less|ssh|tmux|btop|htop|top|yazi|ranger|nnn|lf|docker|lazydocker) ;; *) command=;; esac; printf '%s\\t%s\\t%s\\t%s\\n' "$session" "$window" "$active" "$command"; done`;
+
+export function sessionActivity(host) {
+  if (host !== undefined && (typeof host !== "string" || (host && !SSH_TOKEN.test(host)))) return Promise.reject(new Error("invalid host"));
+  const target = host === undefined ? (IS_CLIENT ? DEVBOX : "") : host;
+  if (pendingActivity.has(target)) return pendingActivity.get(target);
+  const request = new Promise((resolve) => {
+    const command = target ? "ssh" : process.execPath;
+    const args = target
+      ? ["-o", "BatchMode=yes", "-o", "ConnectTimeout=3", "-o", "StrictHostKeyChecking=accept-new",
+        "-o", "ControlMaster=auto", "-o", "ControlPath=~/.ssh/pzza-mux-%C", "-o", "ControlPersist=120", target,
+        `if command -v node >/dev/null 2>&1; then node -e ${shQuote(ACTIVITY_PROBE_SCRIPT)}; else ${ACTIVITY_FALLBACK}; fi`]
+      : ["-e", ACTIVITY_PROBE_SCRIPT];
+    execFile(command, args, { timeout: 9_000, maxBuffer: 1024 * 1024 }, (error, stdout) => {
+      if (error) return resolve([]);
+      try {
+        const rows = JSON.parse(stdout);
+        if (!Array.isArray(rows)) return resolve([]);
+        return resolve(detectSessionActivity(rows.map((row) => ({ ...row, paneActive: true })), []));
+      } catch {
+        const panes = String(stdout).split("\n").filter(Boolean).map((line) => {
+          const [session, window, active, command] = line.split("\t");
+          return { session, window: Number(window), active: active === "1", paneActive: true, command };
+        }).filter((pane) => pane.session && Number.isInteger(pane.window));
+        return resolve(detectSessionActivity(panes, []));
+      }
+    });
+  }).finally(() => pendingActivity.delete(target));
+  pendingActivity.set(target, request);
+  return request;
 }
