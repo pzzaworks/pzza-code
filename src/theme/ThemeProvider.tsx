@@ -15,7 +15,7 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
   const themeId = useStore((s) => s.themeId);
   const transparent = useStore((s) => s.semiTransparent);
   const options = useStore((s) => s.transparencyOptions);
-  const nativeBlur = transparent && options.blur > 0;
+  const nativeBlur = transparent && options.desktopBlur;
 
   useEffect(() => {
     let alive = true;
@@ -44,8 +44,9 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
     root.style.setProperty("--terminal-bg", transparent ? "transparent" : theme.terminal.background);
     root.style.setProperty("--surface-blur", `${options.blur}px`);
     root.style.setProperty("--surface-saturation", `${options.saturation}%`);
-    const opacity = options.opacity / 100;
-    const alpha: Record<string, number> = { "--bg": opacity, "--surface": Math.min(0.98, opacity + 0.16), "--surface-alt": Math.min(0.98, opacity + 0.2) };
+    root.style.setProperty("--app-bg", transparent ? `color-mix(in srgb, ${chrome.bg} ${options.opacity}%, transparent)` : chrome.bg);
+    const opacity = options.surfaceOpacity / 100;
+    const alpha: Record<string, number> = { "--bg": opacity, "--surface": opacity, "--surface-alt": Math.min(1, opacity + 0.06) };
     for (const [key, value] of Object.entries(vars)) {
       root.style.setProperty(key, transparent && alpha[key] ? `color-mix(in srgb, ${value} ${alpha[key] * 100}%, transparent)` : value);
     }

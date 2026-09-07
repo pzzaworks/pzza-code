@@ -161,9 +161,20 @@ export function rootExpr(root) {
 // match, and prints the resolved path (fails if a segment matches nothing).
 const ROOT_FUNC =
   `pz_root() { cur=$1; shift; for seg in "$@"; do ` +
-  `if [ -d "$cur/$seg" ]; then cur="$cur/$seg"; ` +
+  `if [ -d "\${cur%/}/$seg" ]; then cur="\${cur%/}/$seg"; ` +
   `else m=$(find "$cur" -mindepth 1 -maxdepth 1 -type d -iname "$seg" 2>/dev/null | head -n 1); [ -n "$m" ] || return 1; cur=$m; fi; done; ` +
   `printf '%s\\n' "$cur"; }; `;
+
+// Linked worktrees have a per-worktree Git directory pointing at a separate
+// common directory. Submodules and separate-git-dir clones use .git files too,
+// but do not have this split, so they remain independent project candidates.
+const WORKTREE_FUNC =
+  `pz_linked_worktree() ( cd "$1" 2>/dev/null || exit 1; ` +
+  `gd=$(git rev-parse --git-dir 2>/dev/null) || exit 1; ` +
+  `common=$(git rev-parse --git-common-dir 2>/dev/null) || exit 1; ` +
+  `gd=$(cd "$gd" 2>/dev/null && pwd -P) || exit 1; ` +
+  `common=$(cd "$common" 2>/dev/null && pwd -P) || exit 1; ` +
+  `[ "$gd" != "$common" ]; ); `;
 
 // Run a script on a device: locally for "" (or via the configured devbox when
 // this agent is a receiver), else over ssh.
@@ -202,7 +213,7 @@ function runOn(host, script, timeout) {
 function prelude(rootE) {
   return (
     `h=$(cd ~ && pwd -P); ` +
-    ROOT_FUNC +
+    ROOT_FUNC + WORKTREE_FUNC +
     `root=$(r=$(${rootE}) && cd "$r" 2>/dev/null && pwd -P) || { echo PZZA_NOROOT; exit 0; }; ` +
     `case "$root" in "$h"|"$h"/*) ;; *) echo PZZA_DENIED; exit 3;; esac; ` +
     `command -v git >/dev/null 2>&1 || { echo PZZA_NOGIT; exit 0; }; `
@@ -225,7 +236,7 @@ function scanScript(rootE) {
   return (
     prelude(rootE) +
     `printf 'PZZA_ROOT\\t%s\\n' "$root"; ` +
-    `pz_scan() { d=$1; ` +
+    `pz_scan() { d=$1; pz_linked_worktree "$d" && return; ` +
     `rel="\${d#"$root"/}"; ` +
     `origin=$(git -C "$d" remote get-url origin 2>/dev/null || echo -); ` +
     `def=$(git -C "$d" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null); def="\${def#origin/}"; [ -n "$def" ] || def=-; ` +
@@ -257,11 +268,12 @@ function scanScript(rootE) {
 const SYNC_FUNCS =
   `pz_r() { printf 'PZZA_R\\t%s\\t%s\\t%s\\n' "$1" "$2" "$3"; }; ` +
   `pz_tail() { printf '%s' "$1" | grep -v '^hint:' | tail -n 3 | tr '\\n' ' '; }; ` +
-  `pz_clone() { if mkdir -p "$(dirname "$2")" && out=$(git clone --quiet "$1" "$2" 2>&1); then pz_r "$2" cloned ""; else pz_r "$2" failed "$(pz_tail "$out")"; fi; }; ` +
+  `pz_clone() { if pz_linked_worktree "$2"; then pz_r "$2" skipped "linked worktree; left alone"; return; fi; if mkdir -p "$(dirname "$2")" && out=$(git clone --quiet "$1" "$2" 2>&1); then pz_r "$2" cloned ""; else pz_r "$2" failed "$(pz_tail "$out")"; fi; }; ` +
   // pz_update REL STASH SWITCH: STASH=1 stashes modified tracked files (else a
   // dirty tree is reported and left alone); SWITCH=1 moves to origin's default
   // branch (else the current branch is fast-forwarded in place).
   `pz_update() { d=$1; do_stash=$2; do_switch=$3; expected=$4; ` +
+  `if pz_linked_worktree "$d"; then pz_r "$d" skipped "linked worktree; left alone"; return; fi; ` +
   `actual=$(git -C "$d" remote get-url origin 2>/dev/null); ` +
   `[ "$actual" = "$expected" ] || { pz_r "$d" failed "origin changed since scan; left alone"; return; }; ` +
   `if ! out=$(git -C "$d" fetch --quiet --prune origin 2>&1); then pz_r "$d" failed "fetch: $(pz_tail "$out")"; return; fi; ` +
@@ -326,11 +338,11 @@ async function mapConcurrent(items, limit, work) {
 async function copyEnv(rootE, src, dst, srcRel, rel, name) {
   const file = `${shQuote(rel)}/${shQuote(name)}`;
   const srcFile = `${shQuote(srcRel)}/${shQuote(name)}`;
-  const read = await runOn(src, prelude(rootE) + `cd "$root" && cat ${srcFile}`, SCAN_TIMEOUT_MS);
+  const read = await runOn(src, prelude(rootE) + `cd "$root" && ! pz_linked_worktree ${shQuote(srcRel)} && cat ${srcFile}`, SCAN_TIMEOUT_MS);
   if (!read.ok || deviceError(read)) return deviceError(read) || read.stderr.trim() || "read failed";
   // A newest-but-empty file must not wipe a populated copy elsewhere.
   if (read.stdout.trim() === "") return "source file is empty, not copied";
-  const script = prelude(rootE) + `cd "$root" && [ -d ${shQuote(rel)} ] && umask 077 && cat > ${file}.pzza-tmp && mv -f ${file}.pzza-tmp ${file}`;
+  const script = prelude(rootE) + `cd "$root" && [ -d ${shQuote(rel)} ] && ! pz_linked_worktree ${shQuote(rel)} && umask 077 && cat > ${file}.pzza-tmp && mv -f ${file}.pzza-tmp ${file}`;
   return new Promise((resolve) => {
     const useSsh = dst || IS_CLIENT;
     const child = useSsh

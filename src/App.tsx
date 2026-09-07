@@ -169,7 +169,7 @@ export default function App() {
                 <Dropdown icon={EthernetPort} title="Port forwarding" width={320}>
                   <PortsMenu />
                 </Dropdown>
-                <Dropdown icon={HardDrive} title="Devices" width={540}>
+                <Dropdown icon={HardDrive} title="Devices" width={380}>
                   <DevicesMenu />
                 </Dropdown>
                 <Dropdown icon={Blocks} title="MCP" width={320}>

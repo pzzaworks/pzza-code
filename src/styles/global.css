@@ -1286,7 +1286,7 @@ button {
 }
 .tile-focused {
   border-color: var(--accent);
-  box-shadow: 0 0 0 1px var(--accent), 0 8px 30px rgba(0, 0, 0, 0.35);
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.35);
   z-index: 2;
 }
 .tile-dimmed {
@@ -4635,36 +4635,18 @@ button {
   border-top: 1px solid var(--border);
 }
 
-.pj-scan-progress {
-  padding: 12px 16px;
-  border-bottom: 1px solid var(--border);
-}
-.pj-scan-progress-label {
+.pj-scan-status {
   display: flex;
-  justify-content: space-between;
+  align-items: center;
   flex-wrap: wrap;
   gap: 8px;
-  font-size: 12px;
-}
-.pj-scan-progress progress {
-  display: block;
-  width: 100%;
-  height: 7px;
-  margin: 9px 0 6px;
-  appearance: none;
-  border: 0;
-  border-radius: 5px;
-  overflow: hidden;
-  background: var(--border);
-  accent-color: var(--accent);
-}
-.pj-scan-progress progress::-webkit-progress-bar { background: var(--border); }
-.pj-scan-progress progress::-webkit-progress-value { background: var(--accent); }
-.pj-scan-progress progress::-moz-progress-bar { background: var(--accent); }
-.pj-scan-progress-hint {
-  font-size: 11px;
+  padding: 8px 0 12px;
   color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
 }
+.pj-scan-status > svg { flex: 0 0 auto; }
+.pj-scan-time { margin-left: auto; font-variant-numeric: tabular-nums; }
 
 .ft-drop-target { background: color-mix(in srgb, var(--accent) 20%, var(--bg)); outline: 1px solid var(--accent); outline-offset: -1px; }
 .ft-root { border-bottom: 1px solid var(--border); font-weight: 600; }
@@ -4709,7 +4691,7 @@ button {
 /* Translucency affects surfaces only; text and controls retain their contrast. */
 html[data-transparency="on"], html[data-transparency="on"] body, html[data-transparency="on"] #root { background: transparent; }
 html[data-transparency="on"] .app {
-  background: var(--bg);
+  background: var(--app-bg);
 }
 html[data-transparency="on"][data-native="false"] body {
   background:
@@ -4722,7 +4704,7 @@ html[data-transparency="on"] :is(.tile, .menu, .cselect-menu, .modal) {
   backdrop-filter: blur(var(--surface-blur)) saturate(var(--surface-saturation));
 }
 html[data-transparency="on"] .tile {
-  background: color-mix(in srgb, var(--opaque-bg) 24%, transparent);
+  background: var(--surface);
 }
 html[data-transparency="on"] .modal-backdrop {
   background: rgb(0 0 0 / 28%);
