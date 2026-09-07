@@ -200,6 +200,12 @@ export function UsageMenu() {
                 <div className="usage-err">{acc.error}</div>
               ) : (
                 <>
+                  {acc.usage?.stale && (
+                    <div className="muted" role="status">
+                      Showing last successful usage{acc.usage.updatedAt ? ` from ${new Date(acc.usage.updatedAt).toLocaleTimeString()}` : ""}.
+                      {acc.usage.retryAt ? ` Retrying after ${new Date(acc.usage.retryAt).toLocaleTimeString()}.` : ""}
+                    </div>
+                  )}
                   <Bar label="5h" w={acc.usage?.five_hour ?? null} mode={mode} />
                   <Bar label="Weekly" w={acc.usage?.seven_day ?? null} mode={mode} />
                   {acc.usage?.scoped.map((s) => (

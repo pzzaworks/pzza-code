@@ -1,5 +1,4 @@
 import { HAS_TAURI } from "./tauriEnv";
-import { fetchDeviceOs } from "./serverApi";
 
 export interface NativeTransparencyResult {
   blur: boolean;
@@ -8,18 +7,26 @@ export interface NativeTransparencyResult {
 
 let pending: Promise<void> = Promise.resolve();
 
-async function applyTransparency(enabled: boolean): Promise<NativeTransparencyResult> {
+async function applyTransparency(enabled: boolean, blur: boolean): Promise<NativeTransparencyResult> {
   if (!HAS_TAURI) {
     return { blur: false, ...(enabled ? { reason: "Desktop blur is available in the desktop app on macOS and Windows." } : {}) };
   }
   try {
     const { Effect, EffectState, getCurrentWindow } = await import("@tauri-apps/api/window");
     const window = getCurrentWindow();
-    if (!enabled) {
+    // Window effects belong to this client, never to the selected remote agent.
+    const platform = navigator.platform || navigator.userAgent;
+    const os = /mac/i.test(platform) ? "macos" : /win/i.test(platform) ? "windows" : "linux";
+    if (os === "macos") {
+      await window.setBackgroundColor("#00000000");
+    } else {
+      const { getCurrentWebview } = await import("@tauri-apps/api/webview");
+      await getCurrentWebview().setBackgroundColor(enabled ? "#00000000" : null);
+    }
+    if (!enabled || !blur) {
       await window.clearEffects();
       return { blur: false };
     }
-    const os = await fetchDeviceOs("");
     if (os !== "macos" && os !== "windows") {
       return { blur: false, reason: "Desktop blur is unavailable on this operating system; translucent app surfaces remain available." };
     }
@@ -32,8 +39,8 @@ async function applyTransparency(enabled: boolean): Promise<NativeTransparencyRe
   }
 }
 
-export function setNativeTransparency(enabled: boolean): Promise<NativeTransparencyResult> {
-  const result = pending.then(() => applyTransparency(enabled));
+export function setNativeTransparency(enabled: boolean, blur = true): Promise<NativeTransparencyResult> {
+  const result = pending.then(() => applyTransparency(enabled, blur));
   pending = result.then(() => undefined);
   return result;
 }

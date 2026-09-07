@@ -43,6 +43,13 @@ const TILETITLES_KEY = "pzza.tileTitles";
 const TILEBROWSER_KEY = "pzza.tileBrowser";
 const TILECODE_KEY = "pzza.tileCode";
 const TRANSPARENCY_KEY = "pzza.semiTransparent";
+const TRANSPARENCY_OPTIONS_KEY = "pzza.transparencyOptions";
+export interface TransparencyOptions { opacity: number; blur: number; saturation: number }
+function transparencyOptions(value: Partial<TransparencyOptions>): TransparencyOptions {
+  const bound = (value: unknown, fallback: number, min: number, max: number) =>
+    typeof value === "number" && Number.isFinite(value) ? Math.min(max, Math.max(min, value)) : fallback;
+  return { opacity: bound(value?.opacity, 55, 15, 95), blur: bound(value?.blur, 20, 0, 40), saturation: bound(value?.saturation, 115, 50, 180) };
+}
 const THEME_KEY = "pzza.theme";
 const FONT_KEY = "pzza.fontSize";
 const CURSOR_KEY = "pzza.cursorBlink";
@@ -74,6 +81,8 @@ async function listSessions(conn: Connection): Promise<RemoteSession[]> {
 interface ConsoleState {
   semiTransparent: boolean;
   setSemiTransparent: (enabled: boolean) => void;
+  transparencyOptions: TransparencyOptions;
+  setTransparencyOptions: (options: Partial<TransparencyOptions>) => void;
   transparencyNotice: string | null;
   setTransparencyNotice: (notice: string | null) => void;
   themeId: string;
@@ -201,6 +210,12 @@ export const useStore = create<ConsoleState>((set, get) => ({
     set({ semiTransparent: enabled, transparencyNotice: null });
   },
   transparencyNotice: null,
+  transparencyOptions: transparencyOptions(load<Partial<TransparencyOptions>>(TRANSPARENCY_OPTIONS_KEY, {})),
+  setTransparencyOptions: (options) => {
+    const next = transparencyOptions({ ...get().transparencyOptions, ...options });
+    persist(TRANSPARENCY_OPTIONS_KEY, next);
+    set({ transparencyOptions: next });
+  },
   setTransparencyNotice: (notice) => set({ transparencyNotice: notice }),
   themeId: load<string>(THEME_KEY, DEFAULT_THEME_ID),
   setTheme: (id) => {

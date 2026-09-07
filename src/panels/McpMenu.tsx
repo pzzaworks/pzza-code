@@ -17,10 +17,19 @@ export function McpMenu() {
   });
   const [note, setNote] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState<string | null>(null);
+  const [agentHost, setAgentHost] = useState("");
+  const [mcpPath, setMcpPath] = useState("");
+  const [configError, setConfigError] = useState<string | null>(null);
 
   useEffect(() => {
-    fetchMcpConfig().then(setCfg).catch(() => setCfg(null));
-  }, []);
+    let disposed = false;
+    const timer = setTimeout(() => {
+      fetchMcpConfig(agentHost.trim(), mcpPath.trim()).then((value) => {
+        if (!disposed) { setCfg(value); setConfigError(null); }
+      }).catch(() => { if (!disposed) { setCfg(null); setConfigError("Check the SSH host and MCP script path."); } });
+    }, 200);
+    return () => { disposed = true; clearTimeout(timer); };
+  }, [agentHost, mcpPath]);
 
   const toggle = () => {
     const next = !enabled;
@@ -79,6 +88,17 @@ export function McpMenu() {
         forwarding. Add it to your agent, then it can drive the server.
       </p>
 
+      <label className="field"> <span className="field-label">App SSH host (optional)</span>
+        <input className="field-input" value={agentHost} onChange={(event) => setAgentHost(event.target.value)} placeholder="user@app-host" spellCheck={false} />
+      </label>
+      {agentHost.trim() ? <>
+        <label className="field"><span className="field-label">MCP script path on the agent's device</span>
+          <input className="field-input" value={mcpPath} onChange={(event) => setMcpPath(event.target.value)} placeholder="/absolute/path/to/mcp/server.js" spellCheck={false} />
+        </label>
+        <p className="set-note">Copy this configuration into the agent on another device. That device needs Node.js, the installed MCP package, and key-based SSH access to the app host with its host key already trusted. The app must be running. Credentials stay on the app host; no public port is opened. Tools use the app host's device names and SSH access.</p>
+      </> : null}
+      {configError ? <p className="set-note">{configError}</p> : null}
+
       <div className="mcp-list">
         {frameworks.length === 0 ? (
           <p className="muted small pad">Server unreachable.</p>
@@ -88,7 +108,7 @@ export function McpMenu() {
               <span className="mcp-name">{fw.label}</span>
               <div className="mcp-actions">
                 {note[key] ? <span className="mcp-note">{note[key]}</span> : null}
-                {fw.cli ? (
+                {fw.cli && !agentHost.trim() ? (
                   <button
                     className="btn btn-accent btn-sm"
                     onClick={() => add(key)}
@@ -101,6 +121,7 @@ export function McpMenu() {
                 <button
                   className="btn btn-sm"
                   onClick={() => copy(key, fw.config)}
+                  disabled={Boolean(agentHost.trim()) && !mcpPath.trim().startsWith("/")}
                   title="Copy config"
                 >
                   <Copy size={13} strokeWidth={2} />

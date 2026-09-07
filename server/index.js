@@ -17,6 +17,7 @@ import {
   cors,
   hostOk,
   json,
+  ndjson,
   readBody,
   requestToken,
   tokenOk,
@@ -158,8 +159,7 @@ const server = http.createServer(async (req, res) => {
   if (url.pathname === "/projects/scan" && req.method === "POST") {
     const body = await readBody(req);
     if (req.headers.accept === "application/x-ndjson") {
-      res.writeHead(200, { "Content-Type": "application/x-ndjson", "Cache-Control": "no-store", "X-Accel-Buffering": "no" });
-      const send = (event) => { if (!res.destroyed) res.write(JSON.stringify(event) + "\n"); };
+      const send = ndjson(res);
       try {
         const result = await scanProjects(body, {
           redact: true,
@@ -178,7 +178,13 @@ const server = http.createServer(async (req, res) => {
     const out = await syncProjects(await readBody(req));
     return json(res, out.error ? 400 : 200, out);
   }
-  if (url.pathname === "/mcp/config") return json(res, 200, { path: MCP_PATH, ...mcpConfigs(MCP_PATH) });
+  if (url.pathname === "/mcp/config") {
+    const agentHost = url.searchParams.get("agentHost") || "";
+    const mcpPath = url.searchParams.get("mcpPath") || MCP_PATH;
+    if (mcpPath.length > 4096 || /[\x00-\x1f]/.test(mcpPath)) return json(res, 400, { error: "Invalid MCP path" });
+    try { return json(res, 200, { path: mcpPath, ...mcpConfigs(mcpPath, { agentHost }) }); }
+    catch { return json(res, 400, { error: "Invalid SSH agent host" }); }
+  }
   if (url.pathname === "/mcp/install" && req.method === "POST") {
     const body = await readBody(req);
     return json(res, 200, await mcpInstall(String(body.framework || ""), MCP_PATH));

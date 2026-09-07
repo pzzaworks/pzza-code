@@ -5,8 +5,47 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { execFile } from "node:child_process";
 
 const BASE = process.env.PZZA_SERVER_URL || "http://127.0.0.1:5190";
+
+// Execute inside the destination account: its credential never leaves that host.
+async function remoteRequest() {
+  const fs = await import("node:fs");
+  const os = await import("node:os");
+  const path = await import("node:path");
+  let input = "";
+  for await (const chunk of process.stdin) input += chunk;
+  const { endpoint, options } = JSON.parse(input);
+  const dir = process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config");
+  const token = fs.readFileSync(path.join(dir, "pzzacode", "agent-token"), "utf8").trim();
+  const response = await fetch(`http://127.0.0.1:5190${endpoint}`, {
+    ...options, redirect: "error", signal: AbortSignal.timeout(25000),
+    headers: { ...options.headers, Authorization: `Bearer ${token}` },
+  });
+  process.stdout.write(JSON.stringify({ status: response.status, body: await response.text() }));
+}
+
+export function sshApi(host, endpoint, options = {}) {
+  if (!/^[A-Za-z0-9._][A-Za-z0-9._@-]{0,127}$/.test(host)) return Promise.reject(new Error("Invalid SSH agent host"));
+  if (!endpoint.startsWith("/") || endpoint.startsWith("//")) return Promise.reject(new Error("Invalid agent endpoint"));
+  const script = `(${remoteRequest.toString()})().catch(() => { process.stderr.write("Remote agent request failed"); process.exitCode = 1; });`;
+  const quoted = `'${script.replace(/'/g, `'\\''`)}'`;
+  return new Promise((resolve, reject) => {
+    const child = execFile("ssh", ["-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "-o", "StrictHostKeyChecking=yes",
+      "-o", "ControlMaster=auto", "-o", "ControlPath=~/.ssh/pzza-mux-%C", "-o", "ControlPersist=120", host, `node -e ${quoted}`],
+    { timeout: 30000, maxBuffer: 8 * 1024 * 1024 }, (error, stdout) => {
+      if (error) return reject(new Error("Cannot reach the app agent over SSH. Check SSH access, Node.js and that the app is running."));
+      try {
+        const result = JSON.parse(stdout);
+        if (result.status < 200 || result.status >= 300) return reject(new Error(`${endpoint} -> ${result.status}`));
+        try { resolve(JSON.parse(result.body)); } catch { resolve(result.body); }
+      } catch { reject(new Error("Invalid response from the remote agent")); }
+    });
+    child.stdin?.on("error", () => {});
+    child.stdin?.end(JSON.stringify({ endpoint, options }));
+  });
+}
 
 function agentToken() {
   const env = (process.env.PZZA_AGENT_TOKEN || "").trim();
@@ -20,10 +59,12 @@ function agentToken() {
 }
 
 async function api(p, opts) {
+  const host = (process.env.PZZA_AGENT_HOST || "").trim();
+  if (host) return sshApi(host, p, opts);
   const token = agentToken();
   const headers = { ...(opts && opts.headers ? opts.headers : {}) };
   if (token) headers.Authorization = `Bearer ${token}`;
-  const res = await fetch(`${BASE}${p}`, { ...(opts || {}), headers });
+  const res = await fetch(`${BASE}${p}`, { ...(opts || {}), headers, redirect: "error", signal: AbortSignal.timeout(30000) });
   if (!res.ok) throw new Error(`${p} -> ${res.status}`);
   const text = await res.text();
   try {

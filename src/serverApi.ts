@@ -169,8 +169,9 @@ export interface McpConfig {
   path: string;
   frameworks: Record<string, McpFramework>;
 }
-export async function fetchMcpConfig(): Promise<McpConfig> {
-  const res = await agentFetch(`${SERVER_HTTP}/mcp/config`);
+export async function fetchMcpConfig(agentHost = "", mcpPath = ""): Promise<McpConfig> {
+  const params = new URLSearchParams({ agentHost, mcpPath });
+  const res = await agentFetch(`${SERVER_HTTP}/mcp/config?${params}`);
   if (!res.ok) throw new Error(`mcp config ${res.status}`);
   return res.json();
 }
@@ -280,11 +281,14 @@ export interface AccountUsage {
     five_hour: UsageWindow | null;
     seven_day: UsageWindow | null;
     scoped: UsageScoped[];
+    updatedAt?: number;
+    stale?: boolean;
+    retryAt?: number | null;
   } | null;
   error: string | null;
 }
 // Claude/Codex account usage on the connected device (5h + weekly windows).
-// `fresh` bypasses the agent's cache and waits for a real provider round-trip.
+// `fresh` re-reads accounts; provider cooldowns still apply.
 export async function fetchUsage(fresh = false): Promise<AccountUsage[]> {
   const res = await agentFetch(`${SERVER_HTTP}/usage${fresh ? "?fresh=1" : ""}`);
   if (!res.ok) throw new Error(`usage ${res.status}`);
