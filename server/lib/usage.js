@@ -3,6 +3,7 @@
 // panel is instant and the provider endpoints are not polled too hard.
 import fs from "node:fs";
 import path from "node:path";
+import crypto from "node:crypto";
 import { discoverAccounts, readClaudeOAuth, readClaudeIdentity, readCodexCreds } from "./accounts.js";
 
 export const USAGE_FRESH_MS = 5 * 60 * 1000; // the endpoints 429 if polled harder
@@ -11,6 +12,57 @@ export const USAGE_FRESH_MS = 5 * 60 * 1000; // the endpoints 429 if polled hard
 // stale failure for the whole cache window.
 const USAGE_RETRY_MS = 30 * 1000;
 let usageCache = { at: 0, data: null, failed: false };
+
+export function usageResponseError(res, now = Date.now()) {
+  const error = new Error(res.status === 429 ? "Usage rate limited; retrying automatically after cooldown." : `usage ${res.status}`);
+  error.status = res.status;
+  const retry = res.headers.get("retry-after");
+  const seconds = retry === null ? NaN : Number(retry);
+  error.retryAfterMs = Number.isFinite(seconds)
+    ? Math.max(0, seconds * 1000)
+    : Math.max(0, (Date.parse(retry || "") || now) - now);
+  return error;
+}
+
+// Share calls across duplicate account directories and enforce provider cooldowns
+// even when the UI requests a refresh. Keep the last successful sample on outages.
+export function createUsageLimiter(now = Date.now) {
+  const entries = new Map();
+  return function limitedUsage(key, fetchUsage) {
+    let entry = entries.get(key);
+    if (!entry) {
+      entry = { value: null, error: null, nextAt: 0, failures: 0, pending: null };
+      entries.set(key, entry);
+    }
+    const cached = () => entry.value
+      ? { ...entry.value, stale: !!entry.error, retryAt: entry.error ? entry.nextAt : null }
+      : Promise.reject(entry.error);
+    if (entry.pending) return entry.pending;
+    if (now() < entry.nextAt) return Promise.resolve(cached());
+    entry.pending = Promise.resolve().then(fetchUsage).then((value) => {
+      entry.value = { ...value, updatedAt: now() };
+      entry.error = null;
+      entry.failures = 0;
+      entry.nextAt = now() + USAGE_FRESH_MS;
+      return cached();
+    }).catch((error) => {
+      entry.error = error;
+      entry.failures++;
+      const backoff = error.status === 429
+        ? Math.max(error.retryAfterMs || 0, Math.min(60 * 60 * 1000, USAGE_FRESH_MS * 2 ** Math.min(entry.failures - 1, 4)))
+        : USAGE_RETRY_MS;
+      entry.nextAt = now() + backoff;
+      // Rejected credentials must not appear signed in using an old sample.
+      if (error.status === 401 || error.status === 403) entry.value = null;
+      return cached();
+    }).finally(() => { entry.pending = null; });
+    return entry.pending;
+  };
+}
+
+const limitedUsage = createUsageLimiter();
+const credentialKey = (provider, token, accountId = "") =>
+  crypto.createHash("sha256").update(`${provider}\0${token}\0${accountId}`).digest("hex");
 
 const winShape = (w) =>
   w && (w.utilization != null || w.used_percent != null)
@@ -26,7 +78,7 @@ async function fetchClaudeUsage(accessToken) {
     },
     signal: AbortSignal.timeout(8000),
   });
-  if (!res.ok) throw new Error(`usage ${res.status}`);
+  if (!res.ok) throw usageResponseError(res);
   const j = await res.json();
   const scoped = (j.limits || [])
     .filter((l) => l.kind === "weekly_scoped")
@@ -45,7 +97,7 @@ async function fetchCodexUsage(creds) {
     headers,
     signal: AbortSignal.timeout(8000),
   });
-  if (!res.ok) throw new Error(`usage ${res.status}`);
+  if (!res.ok) throw usageResponseError(res);
   const j = await res.json();
   const rl = j.rate_limit || j;
   const iso = (unix) => (unix ? new Date(unix * 1000).toISOString() : null);
@@ -80,14 +132,14 @@ async function claudeAccountUsage(acc) {
     return { ...entry, error: `Session token expired - ${CLAUDE_SIGNIN_HINT}` };
   }
   try {
-    return { ...entry, usage: await fetchClaudeUsage(oauth.accessToken) };
+    return { ...entry, usage: await limitedUsage(credentialKey("claude", oauth.accessToken), () => fetchClaudeUsage(oauth.accessToken)) };
   } catch (e) {
     if (!/\b401\b/.test(String(e.message))) throw e;
     // The CLI may have rotated the token between our read and the call: re-read
     // once and retry with the new one before giving up.
     const again = readClaudeOAuth(acc.dir);
     if (again?.accessToken && again.accessToken !== oauth.accessToken) {
-      return { ...entry, usage: await fetchClaudeUsage(again.accessToken) };
+      return { ...entry, usage: await limitedUsage(credentialKey("claude", again.accessToken), () => fetchClaudeUsage(again.accessToken)) };
     }
     return { ...entry, error: `Session token rejected - ${CLAUDE_SIGNIN_HINT}` };
   }
@@ -104,7 +156,7 @@ async function refreshUsage() {
           if (!fs.existsSync(path.join(acc.dir, "auth.json"))) return null;
           const creds = readCodexCreds(acc.dir);
           if (!creds.accessToken) return null;
-          const usage = await fetchCodexUsage(creds);
+          const usage = await limitedUsage(credentialKey("codex", creds.accessToken, creds.accountId), () => fetchCodexUsage(creds));
           return { provider: "codex", label: acc.label, email: creds.email, plan: creds.plan, usage, error: null };
         } catch (e) {
           return { provider: acc.provider, label: acc.label, usage: null, error: String(e.message || e) };
@@ -112,7 +164,7 @@ async function refreshUsage() {
       }),
     )
   ).filter(Boolean);
-  usageCache = { at: Date.now(), data, failed: data.some((a) => a.error) };
+  usageCache = { at: Date.now(), data, failed: data.some((a) => a.error || a.usage?.stale) };
   return data;
 }
 
@@ -128,7 +180,7 @@ function startScan() {
 // returned as-is, a stale one is returned immediately and refreshed in the
 // background, and only a cold start waits for the first fetch (sharing one
 // in-flight scan). The cache is warmed at boot, so the menu is instant. `fresh`
-// (the panel's refresh button) skips the cache and waits for a real fetch.
+// (the panel's refresh button) re-reads credentials, respecting provider cooldowns.
 export function collectUsage({ fresh = false } = {}) {
   if (fresh || !usageCache.data) {
     return (usageScan ?? startScan()).catch(() => usageCache.data ?? Promise.reject(new Error("usage unavailable")));

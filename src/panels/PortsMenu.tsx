@@ -181,7 +181,8 @@ function PortIdentity({ port, details, live }: { port: number; details: PortDeta
   const info = processes.map((process) => `${process.name} · ${process.source === "package" ? "project name" : process.source === "folder" ? "working folder" : "process name"} · ${process.process} · PID ${process.pid}`).join("\n");
   return <div className="port-identity" title={info || "The source device has not provided a readable process identity."}>
     <span className="port-project">{names.join(", ") || "Name unavailable"}</span>
-    <span className="port-num">{port}{live ? <span className="port-state on">live</span> : null}<span className="port-process">{[...new Set(processes.map((process) => process.process))].join(", ")}</span></span>
+    <span className="port-num">{port}{live ? <span className="port-state on">live</span> : null}</span>
+    <span className="port-process">{[...new Set(processes.map((process) => process.process))].join(", ")}</span>
   </div>;
 }
 

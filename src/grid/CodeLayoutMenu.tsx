@@ -52,7 +52,12 @@ export function CodeLayoutMenu({ tileId, browser = false }: { tileId: string; br
             role="menu"
             aria-label={title}
             style={{ left: Math.max(8, Math.min(rect.right - 196, window.innerWidth - 204)), top: Math.max(8, Math.min(rect.bottom + 5, window.innerHeight - 140)) }}
-            onMouseDown={(event) => event.stopPropagation()}
+            onMouseDown={(event) => {
+              // Keep focus inside the menu until click selects an item. WebKit
+              // blurs buttons on mouse down without focusing the next button.
+              event.preventDefault();
+              event.stopPropagation();
+            }}
             onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setRect(null); }}
             onKeyDown={(event) => {
               if (event.key === "Escape") { event.stopPropagation(); close(); return; }
