@@ -6,6 +6,12 @@ export function detectSessionActivity(panes, processes) {
   const label = (value) => known.has(basename(value)) ? basename(value) : "";
   const tty = (value) => String(value || "").replace(/^\/dev\//, "").replace(/^tty/, "");
   const byPid = new Map(processes.map((process) => [process.pid, process]));
+  const byGroup = new Map();
+  for (const process of processes) {
+    const key = `${process.pgid}:${tty(process.tty)}`;
+    if (!byGroup.has(key)) byGroup.set(key, []);
+    byGroup.get(key).push(process);
+  }
   const ancestry = (process, panePid) => {
     let depth = 0;
     const seen = new Set();
@@ -32,8 +38,8 @@ export function detectSessionActivity(panes, processes) {
   return panes.filter((pane) => pane.paneActive).map((pane) => {
     const root = byPid.get(pane.pid);
     let best = null;
-    for (const process of processes) {
-      if (!root || root.tpgid <= 0 || process.pgid !== root.tpgid || tty(process.tty) !== tty(pane.tty)) continue;
+    const candidates = root?.tpgid > 0 ? byGroup.get(`${root.tpgid}:${tty(pane.tty)}`) || [] : [];
+    for (const process of candidates) {
       const depth = ancestry(process, pane.pid);
       if (depth < 0) continue;
       const command = agent(process);
@@ -64,7 +70,7 @@ export async function probeSessionActivity() {
   const fs = await import("node:fs/promises");
   const path = await import("node:path");
   const execute = (command, args) => new Promise((resolve) => {
-    execFile(command, args, { timeout: 3_000, maxBuffer: 4 * 1024 * 1024 }, (error, stdout) => resolve(error ? "" : stdout));
+    execFile(command, args, { timeout: 3_000, maxBuffer: 4 * 1024 * 1024 }, (error, stdout) => resolve(error ? "" : stdout || ""));
   });
   const format = "#{session_name}\t#{window_index}\t#{window_active}\t#{pane_active}\t#{pane_pid}\t#{pane_tty}\t#{pane_current_command}";
   const [paneText, processText] = await Promise.all([
@@ -79,7 +85,8 @@ export async function probeSessionActivity() {
     const fields = line.trim().match(/^(\d+)\s+(\d+)\s+(\d+)\s+(-?\d+)\s+(\S+)\s+(.+)$/);
     return fields ? { pid: Number(fields[1]), ppid: Number(fields[2]), pgid: Number(fields[3]), tpgid: Number(fields[4]), tty: fields[5], command: fields[6] } : null;
   }).filter(Boolean);
-  const paneGroups = new Set(panes.filter((pane) => pane.paneActive).map((pane) => processes.find((process) => process.pid === pane.pid)?.tpgid).filter((group) => group > 0));
+  const byPid = new Map(processes.map((process) => [process.pid, process]));
+  const paneGroups = new Set(panes.filter((pane) => pane.paneActive).map((pane) => byPid.get(pane.pid)?.tpgid).filter((group) => group > 0));
   const candidates = processes.filter((process) => paneGroups.has(process.pgid));
   // Linux exposes exact argv boundaries without terminal text. Other Unix
   // devices use ps only for interpreter candidates, never for shell matching.
@@ -101,9 +108,10 @@ export async function probeSessionActivity() {
   }
   if (macCandidates.length) {
     const argumentsText = await execute("ps", ["-ww", "-p", macCandidates.map((process) => process.pid).join(","), "-o", "pid=,args="]);
+    const byCandidatePid = new Map(macCandidates.map((process) => [process.pid, process]));
     for (const line of argumentsText.split("\n")) {
       const match = line.trim().match(/^(\d+)\s+(.*)$/);
-      const process = match && macCandidates.find((candidate) => candidate.pid === Number(match[1]));
+      const process = match && byCandidatePid.get(Number(match[1]));
       if (!process) continue;
       // ps does not preserve argv boundaries on macOS. Accept only a simple,
       // explicit interpreter + absolute entrypoint, never arbitrary shell text.

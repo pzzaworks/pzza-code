@@ -1,9 +1,11 @@
+import { AsyncButton } from "../ui/AsyncButton";
+import { notify } from "../state/notifications";
 import { Modal } from "../ui/Modal";
 import { deviceExclusions, projectSettings } from "../projectSettings";
 import { confirmEditorDiscard } from "../editorChanges";
 import { DeviceIcon } from "../ui/DeviceIcon";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { ChevronRight, FolderSync, Loader2, RefreshCw, Settings2 } from "lucide-react";
+import { ChevronRight, Folder, FolderSync, Loader2, RefreshCw, Settings2 } from "lucide-react";
 import { useStore } from "../state/store";
 import { THIS_MAC, type Device } from "../devices";
 import { PathField } from "../ui/PathField";
@@ -42,7 +44,7 @@ function ScanProgress({ progress }: { progress: ProjectScanProgress | null }) {
 // Project sync dashboard. One card per git repo found under the projects root
 // on ANY device; inside it one line per device: what is checked out, how far
 // from origin, what is uncommitted, and whether the .env files match across
-// devices. "Sync all" clones what is missing, stashes local edits, fast-forwards
+// devices. "Sync all" clones what is missing, stashes local edits, updates
 // every repo to origin's default branch and copies the newest env files around;
 // the outcome lands back on the same lines.
 
@@ -134,6 +136,45 @@ interface Row {
   attention: boolean;
 }
 
+interface ProjectFolder {
+  name: string;
+  path: string;
+  folders: Map<string, ProjectFolder>;
+  rows: Row[];
+  count: number;
+}
+
+function projectTree(rows: Row[]): ProjectFolder {
+  const root: ProjectFolder = { name: "", path: "", folders: new Map(), rows: [], count: rows.length };
+  for (const row of rows) {
+    const segments = row.rel.split("/").slice(0, -1);
+    let parent = root;
+    for (const name of segments) {
+      let folder = parent.folders.get(name);
+      if (!folder) {
+        folder = { name, path: `${parent.path}/${name}`, folders: new Map(), rows: [], count: 0 };
+        parent.folders.set(name, folder);
+      }
+      folder.count++;
+      parent = folder;
+    }
+    parent.rows.push(row);
+  }
+  return root;
+}
+
+function ProjectTree({ folder, renderRow }: { folder: ProjectFolder; renderRow: (row: Row) => ReactNode }) {
+  return <>
+    {[...folder.folders.values()].sort((a, b) => a.name.localeCompare(b.name)).map((child) => (
+      <details className="pj-folder" key={child.path} open>
+        <summary><ChevronRight size={13} className="pj-chev" /><Folder size={14} /><span>{child.name}</span><small>{child.count}</small></summary>
+        <div className="pj-folder-content"><ProjectTree folder={child} renderRow={renderRow} /></div>
+      </details>
+    ))}
+    {folder.rows.map(renderRow)}
+  </>;
+}
+
 function groupProjects(scan: ProjectScan): Map<string, Map<string, ProjectRepo[]>> {
   const groups = new Map<string, Map<string, ProjectRepo[]>>();
   for (const device of scan.devices) {
@@ -156,6 +197,9 @@ function migrateRepoOptions(options: SyncOptions, scan: ProjectScan): SyncOption
   const groups = groupProjects(scan);
   for (const [projectId, members] of groups) {
     const paths = new Set([...members.values()].flat().map((repo) => repo.rel));
+    for (const repo of [...members.values()].flat()) {
+      if (repo.originalProjectId) paths.add(repo.originalProjectId);
+    }
     const overrides = [options.repos[projectId]];
     for (const path of paths) {
       if (path === projectId || groups.has(path) || !Object.hasOwn(options.repos, path)) continue;
@@ -186,7 +230,7 @@ function buildRows(scan: ProjectScan, options: SyncOptions, excludedDevices: str
       !excludedDevices.includes(id) && okDevices.some((device) => device.id === id),
     )?.[1][0];
     const rel = (source ?? present[0]).rel;
-    const origin = source?.origin ?? present.find((repo) => repo.origin)?.origin ?? null;
+    const origin = source?.canonicalOrigin ?? source?.origin ?? present.find((repo) => repo.origin)?.origin ?? null;
     const canClone = Boolean(source && projectId.startsWith("origin:"));
     const origins = [...new Set(present.map((r) => r.origin).filter((o): o is string => Boolean(o)))];
     const defaultBranch = present.find((r) => r.defaultBranch)?.defaultBranch ?? null;
@@ -490,8 +534,7 @@ function ProjectCard({
     <div className={`pj-card ${enabled ? "" : "pj-card-off"}`}>
       <div className="pj-card-head" role="button" tabIndex={0} onClick={onToggle} onKeyDown={(e) => e.key === "Enter" && onToggle()}>
         <ChevronRight size={13} className={`muted-icon pj-chev ${open ? "flip" : ""}`} />
-        <span className="pj-rel">
-          {slash >= 0 ? <span className="pj-rel-dir">{row.rel.slice(0, slash + 1)}</span> : null}
+        <span className="pj-rel" title={row.rel}>
           {row.rel.slice(slash + 1)}
         </span>
         <EnvChips envs={row.envs} devices={devices.filter((d) => row.byDevice.has(d.id))} />
@@ -597,7 +640,8 @@ export function ProjectsMenu() {
     }
   }, [root, refs]);
 
-  // The dropdown mounts on open, so this is "scan when opened".
+  // The sync panel stays mounted after its first open, retaining the operation
+  // and results while hidden. Only root/device changes start another scan.
   useEffect(() => {
     void runScan();
     return () => scanController.current?.abort();
@@ -638,10 +682,14 @@ export function ProjectsMenu() {
       if (!await confirmEditorDiscard()) return;
       setConfirmSync(false);
       const migrated = scan ? migrateRepoOptions(opts, scan) : opts;
-      setSync(await syncProjects(root, syncRefs, migrated));
+      const result = await syncProjects(root, syncRefs, migrated);
+      setSync(result);
+      const failures = result.devices.reduce((count, device) => count + (device.error ? 1 : 0) + device.results.filter(item => item.status === "failed").length + device.envs.filter(item => item.status === "failed").length, 0);
+      notify({ category: "sync", event: failures ? "sync-error" : "sync-completed", title: failures ? "Sync needs attention" : "Sync completed", body: failures ? `${failures} errors across ${result.devices.length} devices. Open Sync to review.` : `Finished syncing ${result.devices.length} devices.`, target: { section: "sync" } });
       // Refresh so branches/behind counts reflect the new state.
       await runScan();
     } catch (e) {
+      notify({ category: "sync", event: "sync-error", title: "Sync failed", body: "Open Sync to review the error and retry.", target: { section: "sync" } });
       setError(explainError(String((e as Error)?.message || e)));
     } finally {
       setSyncing(false);
@@ -662,6 +710,7 @@ export function ProjectsMenu() {
     );
   const needsAttention = (r: Row) => r.attention || failedRow(r);
   const shown = filter === "attention" ? rows.filter(needsAttention) : rows;
+  const tree = projectTree(shown);
   const attention = rows.filter(needsAttention).length;
 
   const busy = scanning || syncing;
@@ -684,32 +733,27 @@ export function ProjectsMenu() {
           </div>
           <div className="pj-subtitle">
             <span className="muted">root</span>
-            <PathField
-              value={root}
-              mode="folder"
-              hosts={refs.map((r) => ({ label: r.name, host: r.host }))}
-              placeholder={DEFAULT_ROOT}
-              title="Projects root: the same folder, relative to home, on every device"
-              pickerTitle="Projects root"
-              className="pj-root"
-              onChange={(path, host) => void pickRoot(path, host)}
-            />
+            <fieldset className="pj-root-field" disabled={busy}>
+              <PathField
+                value={root}
+                mode="folder"
+                hosts={refs.map((r) => ({ label: r.name, host: r.host }))}
+                placeholder={DEFAULT_ROOT}
+                title="Projects root: the same folder, relative to home, on every device"
+                pickerTitle="Projects root"
+                className="pj-root"
+                onChange={(path, host) => void pickRoot(path, host)}
+              />
+            </fieldset>
           </div>
         </div>
         <div className="pj-actions">
-          <button className="btn btn-sm" onClick={() => void runScan()} disabled={busy} title="Rescan every device">
-            {scanning ? <Loader2 size={13} className="sw-spin" /> : <RefreshCw size={13} strokeWidth={2} />}
+          <AsyncButton className="btn btn-sm" onClick={() => void runScan()} loading={scanning} icon={RefreshCw} iconSize={13} disabled={busy} title="Rescan every device">
             Rescan
-          </button>
-          <button
-            className="btn btn-sm btn-accent"
-            onClick={() => setConfirmSync(true)}
-            disabled={busy || !scan || syncRefs.length < 1}
-            title="Run the sync with the settings below"
-          >
-            {syncing ? <Loader2 size={13} className="sw-spin" /> : <FolderSync size={13} strokeWidth={2} />}
-            {syncing ? "Syncing…" : "Sync all"}
-          </button>
+          </AsyncButton>
+          <AsyncButton className="btn btn-sm btn-accent" onClick={() => setConfirmSync(true)} loading={syncing} icon={FolderSync} iconSize={13} disabled={busy || !scan || syncRefs.length < 1} title="Run the sync with the settings below">
+            Sync all
+          </AsyncButton>
           <button
             type="button"
             className={`btn btn-sm btn-icon ${settingsOpen ? "btn-on" : ""}`}
@@ -756,7 +800,7 @@ export function ProjectsMenu() {
             <label className="pj-set-row">
               <span>
                 Switch to the default branch
-                <small>Off: the current branch is fast-forwarded in place</small>
+                <small>Off: upstream commits are integrated into the current branch</small>
               </span>
               <Switch on={opts.switchToDefault} onToggle={() => patchOpts({ switchToDefault: !opts.switchToDefault })} title="Switch to default branch" />
             </label>
@@ -875,7 +919,7 @@ export function ProjectsMenu() {
             {rows.length === 0 ? `No git repos under ${root} on any device.` : "Everything is in sync."}
           </p>
         ) : (
-          shown.map((row) => (
+          <ProjectTree folder={tree} renderRow={(row) => (
             <ProjectCard
               key={row.projectId}
               row={row}
@@ -890,12 +934,13 @@ export function ProjectsMenu() {
               envsGlobal={opts.syncEnvs}
               onSetRepo={(patch) => setRepo(row.projectId, patch)}
             />
-          ))
+          )} />
         )}
       </div>
       <p className="set-note pj-note">
         What a sync does is up to the settings: clone missing repos, stash local edits (git stash pop brings them
-        back), switch to the default branch and fast-forward, then copy the newest env files around. Every project
+        back), switch to the default branch and integrate upstream commits, then copy the newest env files around. Diverged
+        branches are merged while preserving local commits; conflicting merges are aborted. Every project
         can opt out on its card.
       </p>
       <Modal open={confirmSync} onClose={() => { if (!syncing) setConfirmSync(false); }} title="Sync projects" size="sm">
@@ -908,7 +953,7 @@ export function ProjectsMenu() {
         </p>
         <div className="modal-actions">
           <button className="btn" disabled={syncing} onClick={() => setConfirmSync(false)}>Cancel</button>
-          <button className="btn btn-danger" disabled={syncing} onClick={() => void runSync()}>{syncing ? "Preparing…" : "Sync projects"}</button>
+          <AsyncButton className="btn btn-danger" loading={syncing} icon={FolderSync} onClick={() => void runSync()}>Sync projects</AsyncButton>
         </div>
       </Modal>
     </div>

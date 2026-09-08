@@ -9,8 +9,9 @@
 // connected backend can actually forward. This file is the composition root: it
 // wires the HTTP routes to the focused modules in ./lib and boots the server.
 import http from "node:http";
+import { quickChatRouter } from "./lib/quick-chat.js";
 
-import { DEVBOX, IS_CLIENT, MCP_PATH, PORT } from "./lib/config.js";
+import { DEVBOX, IS_CLIENT, MCP_PATH, PORT, STATE_DIR } from "./lib/config.js";
 import { SSH_TOKEN, sh, shOn, shQuote } from "./lib/shell.js";
 import {
   AGENT_ID,
@@ -23,7 +24,7 @@ import {
   tokenOk,
 } from "./lib/http.js";
 import { listPorts, listPortDetails } from "./lib/ports.js";
-import { listSessions, listWindows, scanSessions, sessionActivity, terminateSession } from "./lib/tmux.js";
+import { listSessions, listWindows, scanSessions, sessionActivity, terminateSession, duplicateSession } from "./lib/tmux.js";
 import { forwardStatus, setForwardEnabled, startForwardLoop } from "./lib/forward.js";
 import { accountEnvArg, listAccounts } from "./lib/accounts.js";
 import { USAGE_FRESH_MS, collectUsage } from "./lib/usage.js";
@@ -31,7 +32,9 @@ import { SPEND_FRESH_MS, computeSpend } from "./lib/spend.js";
 import { deviceInfo } from "./lib/device-info.js";
 import { deviceOs, doctor, sshHosts } from "./lib/system.js";
 import { mcpConfigs, mcpInstall } from "./lib/mcp.js";
-import { createAppControlRouter } from "./lib/app-control.js";
+import { createAppControl, createAppControlRouter } from "./lib/app-control.js";
+import { createBridge, createBridgeRouter } from "./lib/bridge.js";
+import { createAgentsHub, createAgentsHubRouter } from "./lib/agents-hub.js";
 import { installAgent } from "./lib/install.js";
 import { filesRouter } from "./lib/files.js";
 import { startPtyBridge, sweepOrphanViews } from "./lib/pty.js";
@@ -43,7 +46,11 @@ const queryHost = (url) => {
   return SSH_TOKEN.test(h) ? h : "";
 };
 
-const appControlRouter = createAppControlRouter(undefined, json);
+const appControl = createAppControl();
+const appControlRouter = createAppControlRouter(appControl, json);
+const bridge = createBridge({ stateDir: STATE_DIR, appControl });
+const bridgeRouter = createBridgeRouter(bridge, json);
+const agentsHubRouter = createAgentsHubRouter(createAgentsHub({ stateDir: STATE_DIR }), json);
 const server = http.createServer(async (req, res) => {
   // Defeat DNS rebinding: only a loopback Host on our port is served at all.
   if (!hostOk(req)) {
@@ -56,11 +63,16 @@ const server = http.createServer(async (req, res) => {
     return res.end();
   }
   const url = new URL(req.url, `http://${req.headers.host}`);
+  // Signed bridge requests authenticate independently and never receive the local token.
+  if (await bridgeRouter(req, res, url, true)) return;
   // Everything except the liveness probe needs the per-launch token.
   if (url.pathname !== "/health" && !tokenOk(requestToken(req, url))) {
     return json(res, 401, { error: "unauthorized" });
   }
+  if (await bridgeRouter(req, res, url)) return;
+  if (await agentsHubRouter(req, res, url)) return;
   if (await appControlRouter(req, res, url)) return;
+  if (await quickChatRouter(req, res, url, json)) return;
 
   if (url.pathname === "/capabilities") {
     return json(res, 200, { role: IS_CLIENT ? "client" : "source", forward: IS_CLIENT, host: DEVBOX || null });
@@ -70,7 +82,7 @@ const server = http.createServer(async (req, res) => {
     return json(res, 200, await collectUsage({ fresh: url.searchParams.get("fresh") === "1" }));
   }
   if (url.pathname === "/accounts") return json(res, 200, listAccounts());
-  if (url.pathname === "/spend") return json(res, 200, await computeSpend());
+  if (url.pathname === "/spend") return json(res, 200, await computeSpend({ fresh: url.searchParams.get("fresh") === "1" }));
 
   // File access (local + ssh-proxied): /fs/list, /file/read|raw|write, /paste-image.
   if (await filesRouter(req, res, url)) return;
@@ -117,7 +129,7 @@ const server = http.createServer(async (req, res) => {
   if (url.pathname === "/ssh/hosts") return json(res, 200, sshHosts());
   if (url.pathname === "/windows") return json(res, 200, await listWindows());
   if (url.pathname === "/ports/details") {
-    const host = url.searchParams.get("host") || "";
+    const host = url.searchParams.has("host") ? url.searchParams.get("host") : undefined;
     if (host && !SSH_TOKEN.test(host)) return json(res, 400, { error: "invalid host" });
     try { return json(res, 200, await listPortDetails(host)); }
     catch (error) { return json(res, 503, { error: error.message }); }
@@ -143,6 +155,17 @@ const server = http.createServer(async (req, res) => {
       json(res, 500, { error: "Could not close the session on this device" });
     }
     return;
+  }
+  if (url.pathname === "/sessions/duplicate" && req.method === "POST") {
+    const body = await readBody(req);
+    if (!body || typeof body !== "object" || Array.isArray(body) ||
+        typeof body.name !== "string" || !body.name.trim() || /[\x00-\x1f\x7f]/.test(body.name) ||
+        (body.window !== undefined && (!Number.isInteger(body.window) || body.window < 0)) ||
+        (body.host !== undefined && (typeof body.host !== "string" || (body.host && !SSH_TOKEN.test(body.host))))) {
+      return json(res, 400, { error: "Invalid source session, window, or device" });
+    }
+    try { return json(res, 200, await duplicateSession(body.name, body.window, body.host)); }
+    catch { return json(res, 500, { error: "Could not duplicate the session on this device. Check that the source window is still running." }); }
   }
   if (url.pathname === "/forward/toggle" && req.method === "POST") {
     const body = await readBody(req);
@@ -220,3 +243,14 @@ server.listen(PORT, "127.0.0.1", () => {
   setTimeout(warmUsage, 800);
   setInterval(warmUsage, USAGE_FRESH_MS);
 });
+
+
+// Cancel owned bridge jobs before the device agent exits normally.
+for (const signal of ["SIGTERM", "SIGINT"]) {
+  process.once(signal, () => {
+    server.close();
+    const timeout = setTimeout(() => process.exit(1), 20_000);
+    timeout.unref();
+    void bridge.close().then(() => process.exit(0), () => process.exit(1));
+  });
+}

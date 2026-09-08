@@ -28,7 +28,7 @@ export function usageResponseError(res, now = Date.now()) {
 // even when the UI requests a refresh. Keep the last successful sample on outages.
 export function createUsageLimiter(now = Date.now) {
   const entries = new Map();
-  return function limitedUsage(key, fetchUsage) {
+  return function limitedUsage(key, fetchUsage, { fresh = false } = {}) {
     let entry = entries.get(key);
     if (!entry) {
       entry = { value: null, error: null, nextAt: 0, failures: 0, pending: null };
@@ -38,7 +38,7 @@ export function createUsageLimiter(now = Date.now) {
       ? { ...entry.value, stale: !!entry.error, retryAt: entry.error ? entry.nextAt : null }
       : Promise.reject(entry.error);
     if (entry.pending) return entry.pending;
-    if (now() < entry.nextAt) return Promise.resolve(cached());
+    if (now() < entry.nextAt && (!fresh || entry.error)) return Promise.resolve(cached());
     entry.pending = Promise.resolve().then(fetchUsage).then((value) => {
       entry.value = { ...value, updatedAt: now() };
       entry.error = null;
@@ -122,7 +122,7 @@ const CLAUDE_SIGNIN_HINT = "run claude once in a terminal to refresh it";
 // whenever it runs and the agent never refreshes on its behalf (a refresh
 // rotates the token and could sign the CLI out), so an expired or rejected
 // token is reported as exactly that instead of a bare "usage 401".
-async function claudeAccountUsage(acc) {
+async function claudeAccountUsage(acc, fresh) {
   const oauth = readClaudeOAuth(acc.dir);
   // No usable creds on this device (e.g. a devbox-only account seen from the
   // Mac): hide it rather than showing a "not signed in" row.
@@ -132,31 +132,31 @@ async function claudeAccountUsage(acc) {
     return { ...entry, error: `Session token expired - ${CLAUDE_SIGNIN_HINT}` };
   }
   try {
-    return { ...entry, usage: await limitedUsage(credentialKey("claude", oauth.accessToken), () => fetchClaudeUsage(oauth.accessToken)) };
+    return { ...entry, usage: await limitedUsage(credentialKey("claude", oauth.accessToken), () => fetchClaudeUsage(oauth.accessToken), { fresh }) };
   } catch (e) {
     if (!/\b401\b/.test(String(e.message))) throw e;
     // The CLI may have rotated the token between our read and the call: re-read
     // once and retry with the new one before giving up.
     const again = readClaudeOAuth(acc.dir);
     if (again?.accessToken && again.accessToken !== oauth.accessToken) {
-      return { ...entry, usage: await limitedUsage(credentialKey("claude", again.accessToken), () => fetchClaudeUsage(again.accessToken)) };
+      return { ...entry, usage: await limitedUsage(credentialKey("claude", again.accessToken), () => fetchClaudeUsage(again.accessToken), { fresh }) };
     }
     return { ...entry, error: `Session token rejected - ${CLAUDE_SIGNIN_HINT}` };
   }
 }
 
 // Fetch every account's usage from the provider APIs (in parallel) and cache it.
-async function refreshUsage() {
+async function refreshUsage(fresh) {
   const accounts = discoverAccounts();
   const data = (
     await Promise.all(
       accounts.map(async (acc) => {
         try {
-          if (acc.provider === "claude") return await claudeAccountUsage(acc);
+          if (acc.provider === "claude") return await claudeAccountUsage(acc, fresh);
           if (!fs.existsSync(path.join(acc.dir, "auth.json"))) return null;
           const creds = readCodexCreds(acc.dir);
           if (!creds.accessToken) return null;
-          const usage = await limitedUsage(credentialKey("codex", creds.accessToken, creds.accountId), () => fetchCodexUsage(creds));
+          const usage = await limitedUsage(credentialKey("codex", creds.accessToken, creds.accountId), () => fetchCodexUsage(creds), { fresh });
           return { provider: "codex", label: acc.label, email: creds.email, plan: creds.plan, usage, error: null };
         } catch (e) {
           return { provider: acc.provider, label: acc.label, usage: null, error: String(e.message || e) };
@@ -169,8 +169,8 @@ async function refreshUsage() {
 }
 
 let usageScan = null;
-function startScan() {
-  usageScan = refreshUsage().finally(() => {
+function startScan(fresh = false) {
+  usageScan = refreshUsage(fresh).finally(() => {
     usageScan = null;
   });
   return usageScan;
@@ -183,7 +183,7 @@ function startScan() {
 // (the panel's refresh button) re-reads credentials, respecting provider cooldowns.
 export function collectUsage({ fresh = false } = {}) {
   if (fresh || !usageCache.data) {
-    return (usageScan ?? startScan()).catch(() => usageCache.data ?? Promise.reject(new Error("usage unavailable")));
+    return (usageScan ?? startScan(fresh)).catch(() => usageCache.data ?? Promise.reject(new Error("usage unavailable")));
   }
   const ttl = usageCache.failed ? USAGE_RETRY_MS : USAGE_FRESH_MS;
   if (Date.now() - usageCache.at >= ttl && !usageScan) startScan().catch(() => undefined);

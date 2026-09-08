@@ -1,3 +1,4 @@
+import { AsyncButton } from "../ui/AsyncButton";
 import { createContext, useContext, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Modal } from "../ui/Modal";
@@ -413,7 +414,7 @@ export function FolderTree({ root, activePath, onOpenFile, host }: {
         {error ? <p role="alert">{error}</p> : null}
         <div className="modal-actions">
           <button className="btn" type="button" disabled={busy} onClick={() => setOperation(null)}>Cancel</button>
-          <button className={`btn ${operation?.kind === "delete" ? "btn-danger" : "btn-accent"}`} type="submit" disabled={busy}>{busy ? "Working…" : operation?.kind === "delete" ? "Delete permanently" : operation?.kind === "move" ? "Move" : "Rename"}</button>
+          <AsyncButton className={`btn ${operation?.kind === "delete" ? "btn-danger" : "btn-accent"}`} type="submit" loading={busy}>{operation?.kind === "delete" ? "Delete permanently" : operation?.kind === "move" ? "Move" : "Rename"}</AsyncButton>
         </div>
       </form>
     </Modal>

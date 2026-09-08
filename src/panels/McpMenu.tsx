@@ -1,3 +1,4 @@
+import { AsyncButton } from "../ui/AsyncButton";
 import { useEffect, useState } from "react";
 import { Check, Copy, Download } from "lucide-react";
 import { fetchMcpConfig, mcpInstall, type McpConfig } from "../serverApi";
@@ -71,13 +72,14 @@ export function McpMenu() {
 
       <div className="mcp-toggle">
         <div className="set-label">
-          <span>Allow app control</span>
+          <span>Allow app window control</span>
           <span className="set-hint">let connected agents control this app window</span>
         </div>
         <button
           className={`switch ${enabled ? "switch-on" : ""}`}
           onClick={toggle}
           role="switch"
+          aria-label="Allow app window control"
           aria-checked={enabled}
         >
           <span className="switch-knob" />
@@ -110,14 +112,9 @@ export function McpMenu() {
               <div className="mcp-actions">
                 {note[key] ? <span className="mcp-note">{note[key]}</span> : null}
                 {fw.cli && !agentHost.trim() ? (
-                  <button
-                    className="btn btn-accent btn-sm"
-                    onClick={() => add(key)}
-                    disabled={busy === key || !enabled}
-                  >
-                    {busy === key ? "…" : <Download size={13} strokeWidth={2} />}
+                  <AsyncButton className="btn btn-accent btn-sm" onClick={() => add(key)} loading={busy === key} disabled={busy !== null || !enabled} icon={Download} iconSize={13}>
                     Add
-                  </button>
+                  </AsyncButton>
                 ) : null}
                 <button
                   className="btn btn-sm"

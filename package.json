@@ -1,7 +1,7 @@
 {
   "name": "pzza-code",
   "private": true,
-  "version": "0.2.29",
+  "version": "0.2.30",
   "author": "Berke (pzzaworks)",
   "description": "Every terminal, every agent, one grid. A grid terminal manager for agentic coding - run, watch and orchestrate many terminals and AI coding agents across your machines.",
   "license": "MIT",
@@ -25,6 +25,7 @@
     "@xterm/addon-web-links": "^0.11.0",
     "@xterm/addon-webgl": "^0.18.0",
     "@xterm/xterm": "^5.5.0",
+    "country-flag-icons": "^1.6.20",
     "dompurify": "^3.4.14",
     "framer-motion": "^13.2.0",
     "lucide-react": "^1.40.0",

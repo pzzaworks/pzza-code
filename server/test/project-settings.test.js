@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { deviceExclusions, projectSettings } from "../../src/projectSettings.ts";
+import { fileURLToPath } from "node:url";
+import { build } from "esbuild";
+
+const { outputFiles } = await build({
+  entryPoints: [fileURLToPath(new URL("../../src/projectSettings.ts", import.meta.url))],
+  bundle: true, write: false, format: "esm", platform: "node", logLevel: "silent",
+});
+const { deviceExclusions, projectSettings } = await import(`data:text/javascript;base64,${Buffer.from(outputFiles[0].contents).toString("base64")}`);
 
 const defaults = { cloneMissing: true, switchToDefault: true, stashDirty: true, syncEnvs: true, envExclude: [], repos: {} };
 

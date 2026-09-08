@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import type { LucideIcon } from "lucide-react";
+import { Loader2, type LucideIcon } from "lucide-react";
 import { IconButton } from "./IconButton";
+import { useDelayedLoading } from "./useDelayedLoading";
 import { useExclusiveMenu } from "./menuBus";
 
 interface Props {
@@ -9,17 +10,26 @@ interface Props {
   label?: string;
   accent?: boolean;
   width?: number;
+  keepMounted?: boolean;
+  loading?: boolean;
   children: ReactNode | ((close: () => void) => ReactNode);
 }
 
 // A top-bar icon button that opens an anchored dropdown panel (replaces modals
 // for the top-right controls). Handles open/close, click-outside and animation.
-export function Dropdown({ icon: Icon, title, label, accent, width = 300, children }: Props) {
+export function Dropdown({ icon: Icon, title, label, accent, width = 300, keepMounted = false, loading = false, children }: Props) {
   const [open, setOpen] = useState(false);
+  const [visited, setVisited] = useState(false);
+  const showSpinner = useDelayedLoading(loading);
   const ref = useRef<HTMLDivElement>(null);
   const close = useCallback(() => setOpen(false), []);
 
   useExclusiveMenu(title, open, close);
+
+  const toggle = () => {
+    setVisited(true);
+    setOpen((value) => !value);
+  };
 
   useEffect(() => {
     if (!open) return;
@@ -44,23 +54,26 @@ export function Dropdown({ icon: Icon, title, label, accent, width = 300, childr
         <button
           type="button"
           className={`btn ${accent ? "btn-accent" : ""} ${open ? "btn-on" : ""} dropdown-label-btn`}
-          onClick={() => setOpen((v) => !v)}
+          onClick={toggle}
           title={title}
+          aria-busy={loading}
         >
-          <Icon size={15} strokeWidth={2} />
+          {showSpinner ? <Loader2 size={15} className="async-spinner" aria-hidden="true" /> : <Icon size={15} strokeWidth={2} />}
           {label}
         </button>
       ) : (
         <IconButton
           icon={Icon}
-          onClick={() => setOpen((v) => !v)}
+          onClick={toggle}
           title={title}
           accent={accent}
           active={open}
+          loading={loading}
+          allowWhileLoading
         />
       )}
-      {open ? (
-        <div className="menu menu-panel" style={{ width }}>
+      {open || (keepMounted && visited) ? (
+        <div className="menu menu-panel" style={{ width, display: open ? undefined : "none" }}>
           {typeof children === "function" ? children(close) : children}
         </div>
       ) : null}

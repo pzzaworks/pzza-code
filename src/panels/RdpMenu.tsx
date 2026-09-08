@@ -1,6 +1,7 @@
+import { AsyncButton } from "../ui/AsyncButton";
 import { DeviceIcon } from "../ui/DeviceIcon";
 import { useEffect, useState } from "react";
-import { Loader2, Monitor } from "lucide-react";
+import { Monitor } from "lucide-react";
 import { useStore } from "../state/store";
 import { rdpIsOpen, rdpLaunch } from "../rdp";
 import { HAS_TAURI } from "../tauriEnv";
@@ -111,14 +112,9 @@ export function RdpMenu({ close }: { close: () => void }) {
         />
       </div>
 
-      <button
-        className="btn btn-accent rdp-open"
-        onClick={launch}
-        disabled={!remote || busy || alreadyOpen}
-      >
-        {busy ? <Loader2 size={14} className="sw-spin" /> : <Monitor size={14} strokeWidth={2} />}
-        {busy ? "Opening…" : alreadyOpen ? "Desktop open" : "Open desktop"}
-      </button>
+      <AsyncButton className="btn btn-accent rdp-open" onClick={launch} loading={busy} icon={Monitor} disabled={!remote || alreadyOpen}>
+        {alreadyOpen ? "Desktop open" : "Open desktop"}
+      </AsyncButton>
       {!remote ? (
         <p className="set-note">Pick a remote device as the server.</p>
       ) : busy ? null : msg ? (

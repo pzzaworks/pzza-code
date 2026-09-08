@@ -7,7 +7,7 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
-import { groupProjects, migrateProjectOptions, normalizeOptions, originKey, planEnvSync, planSync, projectIdFor, rootExpr, scanProjects, syncScript } from "../lib/projects.js";
+import { reconcileGithubOrigins, groupProjects, migrateProjectOptions, normalizeOptions, originKey, planEnvSync, planSync, projectIdFor, rootExpr, scanProjects, syncScript } from "../lib/projects.js";
 
 const exec = promisify(execFile);
 const run = (command, args, options = {}) => exec(command, args, { timeout: 20_000, ...options });
@@ -455,4 +455,61 @@ test("scan progress counts failed devices and does not fabricate repositories", 
   assert.deepEqual(updates.at(-1), {
     completed: 1, total: 1, repos: 0, finished: [{ id: "local", error: true }],
   });
+});
+
+
+test("sync merges divergence preserving both histories and aborts conflicting merges", async (t) => {
+  for (const conflict of [false, true]) {
+    const { projects, origin, plan } = await fixture(t, 1);
+    const repo = path.join(projects, plan[0].rel);
+    await git(repo, "config", "user.name", "Sync Test");
+    await git(repo, "config", "user.email", "sync-test@example.invalid");
+    await writeFile(path.join(repo, conflict ? "tracked.txt" : "local.txt"), "local change\n");
+    await git(repo, "add", ".");
+    await git(repo, "commit", "-m", "Local change");
+    const local = (await git(repo, "rev-parse", "HEAD")).stdout.trim();
+    await writeFile(path.join(origin, "tracked.txt"), "remote change\n");
+    await git(origin, "add", ".");
+    await git(origin, "commit", "-m", "Remote change");
+    const remote = (await git(origin, "rev-parse", "HEAD")).stdout.trim();
+    await writeFile(path.join(repo, "untracked.txt"), "keep\n");
+    if (conflict) await writeFile(path.join(repo, "tracked.txt"), "uncommitted edit\n");
+    const { stdout } = await run("sh", ["-c", syncScript(rootExpr(projects), plan, normalizeOptions())]);
+    const row = results(stdout)[0];
+    assert.equal(row[2], conflict ? "failed" : "updated");
+    await git(repo, "merge-base", "--is-ancestor", local, "HEAD");
+    if (conflict) {
+      assert.match(row[3], /merge aborted and local commits preserved/);
+      assert.match(row[3], /git stash pop to restore/);
+      assert.match((await git(repo, "stash", "show", "-p")).stdout, /uncommitted edit/);
+      assert.equal((await git(repo, "rev-parse", "HEAD")).stdout.trim(), local);
+      assert.equal((await git(repo, "ls-files", "--unmerged")).stdout, "");
+    } else await git(repo, "merge-base", "--is-ancestor", remote, "HEAD");
+    assert.equal(await readFile(path.join(repo, "untracked.txt"), "utf8"), "keep\n");
+  }
+});
+
+test("transferred GitHub origins reconcile only with immutable identity proof and retain exclusions", async () => {
+  const makeScan = () => ({ devices: [
+    deviceMetadata("a", [repoMetadata("same", "git@github.com:old-owner/app.git")]),
+    deviceMetadata("b", [repoMetadata("same", "https://github.com/pzzaworks/app.git")]),
+  ] });
+  const scan = makeScan();
+  const oldId = projectIdFor("a", scan.devices[0].repos[0]);
+  await reconcileGithubOrigins(scan, async () => ({ id: 123, fullName: "pzzaworks/app" }));
+  assert.equal(scan.devices[0].repos[0].originalProjectId, oldId);
+  assert.equal(originKey("git@github.com:PzzaWorks/App.git"), "github.com/pzzaworks/app");
+  assert.equal(groupProjects(scan).length, 1);
+  assert.ok(planSync(scan).every((device) => device.plan.length === 1 && device.skipped.length === 0));
+  const migrated = migrateProjectOptions({ repos: { [oldId]: { enabled: false, env: false } } }, scan);
+  assert.deepEqual(migrated.repos[scan.devices[0].repos[0].projectId], { enabled: false, env: false });
+  for (const resolver of [
+    async (name) => ({ id: name.startsWith("old-owner") ? 123 : 456, fullName: "pzzaworks/app" }),
+    async () => null,
+    async () => { throw new Error("unavailable"); },
+  ]) {
+    const unverified = await reconcileGithubOrigins(makeScan(), resolver);
+    assert.equal(groupProjects(unverified).length, 2);
+    assert.ok(planSync(unverified).every((device) => device.skipped.length === 1));
+  }
 });

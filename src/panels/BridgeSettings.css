@@ -1,0 +1,45 @@
+.bridge-settings { margin-top: 24px; border-top: 1px solid var(--border); padding-top: 24px; }
+.bridge-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.bridge-heading h3 { display: flex; align-items: center; gap: 8px; margin: 0; font-size: 16px; }
+.bridge-settings p { color: var(--muted); font-size: 12px; line-height: 1.6; margin: 8px 0 12px; }
+.bridge-notice { border-left: 2px solid var(--accent); padding-left: 12px; }
+.bridge-card { padding: 18px; margin-top: 16px; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; }
+.bridge-card h4 { margin: 0 0 10px; font-size: 13px; }
+.bridge-fingerprint { display: block; overflow-wrap: anywhere; color: var(--muted); font-size: 11px; line-height: 1.6; user-select: text; }
+.bridge-form { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 12px 0; }
+.bridge-form label, .bridge-field { display: flex; flex-direction: column; gap: 6px; font-size: 12px; color: var(--muted); min-width: 0; }
+.bridge-settings input:not([type="checkbox"]), .bridge-settings textarea, .bridge-settings select { width: 100%; box-sizing: border-box; padding: 8px 10px; border: 1px solid var(--border); background: var(--bg); border-radius: 7px; color: var(--text); font: inherit; }
+.bridge-settings textarea { resize: vertical; font-family: ui-monospace, monospace; font-size: 11px; }
+.bridge-settings fieldset { border: 0; padding: 0; margin: 16px 0; }
+.bridge-settings legend { font-size: 12px; color: var(--muted); margin-bottom: 8px; }
+.bridge-check { display: flex; align-items: center; gap: 8px; font-size: 12px; line-height: 1.5; }
+.bridge-check input { accent-color: var(--accent); flex-shrink: 0; }
+.bridge-permissions { display: grid; grid-template-columns: 1fr 1fr; gap: 9px 16px; }
+.bridge-project { display: flex; justify-content: space-between; gap: 12px; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--border); font-size: 12px; }
+.bridge-project > div { min-width: 0; }
+.bridge-project code { display: block; color: var(--muted); font-size: 11px; overflow-wrap: anywhere; margin-top: 5px; }
+.bridge-expiry { display: flex; align-items: center; gap: 12px; font-size: 11px; color: var(--muted); }
+.bridge-expiry select { width: auto; }
+.bridge-save { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 16px; }
+.bridge-save > span { color: var(--muted); font-size: 11px; }
+.bridge-job { border-top: 1px solid var(--border); padding: 14px 0; }
+.bridge-job > div:first-child { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 12px; }
+.bridge-job > code { font-size: 11px; color: var(--muted); overflow-wrap: anywhere; }
+.bridge-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.bridge-settings .bridge-error { color: var(--danger, #f07178); }
+.bridge-settings .bridge-note { color: var(--success, #70c69e); }
+@media (max-width: 720px) {
+  .bridge-form, .bridge-permissions { grid-template-columns: 1fr; }
+  .bridge-heading, .bridge-save, .bridge-expiry { align-items: flex-start; flex-wrap: wrap; }
+  .bridge-card { padding: 12px; }
+}
+.bridge-job-log { font-size: 11px; color: var(--muted); margin: 10px 0; }
+.bridge-job-log summary { cursor: pointer; }
+.bridge-job-log ol { list-style: none; padding: 0; max-height: 180px; overflow: auto; }
+.bridge-job-log li { padding: 4px 0; overflow-wrap: anywhere; }
+.bridge-job-log time { font-variant-numeric: tabular-nums; }
+.bridge-approval { padding: 10px; margin: 8px 0; border: 1px solid var(--border); border-radius: 8px; }
+.bridge-audit { list-style: none; padding: 0; margin: 0; }
+.bridge-audit li { padding: 10px 0; border-top: 1px solid var(--border); }
+.bridge-audit li > div { display: flex; justify-content: space-between; gap: 12px; font-size: 12px; }
+.bridge-audit small { display: block; color: var(--muted); margin-top: 5px; font-size: 11px; overflow-wrap: anywhere; }

@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import {
+  Bot,
+  Bell,
   Blocks,
   HardDrive,
   Monitor,
@@ -11,39 +13,86 @@ import {
   Gauge,
   Menu,
 } from "lucide-react";
+import { AgentsHub } from "./panels/AgentsHub";
+import { QuickChat } from "./panels/QuickChat";
+import { LatestNotifications, NotificationBanners } from "./panels/Notifications";
+import { useNotifications } from "./state/notifications";
+import { useBridgeNotifications } from "./notificationEvents";
+import { ContextMenu } from "./ui/ContextMenu";
 import { ThemeProvider } from "./theme/ThemeProvider";
 import { useStore } from "./state/store";
 import { Canvas } from "./grid/Canvas";
 import { WorkspaceTabs } from "./grid/WorkspaceTabs";
 import { LayoutMenu } from "./grid/LayoutMenu";
-import { SettingsMenu } from "./panels/SettingsMenu";
+import { SettingsHub, type SettingsSection } from "./panels/SettingsHub";
 import { PortsMenu } from "./panels/PortsMenu";
 import { SessionMenu } from "./panels/SessionMenu";
-import { RdpMenu } from "./panels/RdpMenu";
-import { DevicesMenu } from "./panels/DevicesMenu";
-import { McpMenu } from "./panels/McpMenu";
 import { Dropdown } from "./ui/Dropdown";
 import { IconButton } from "./ui/IconButton";
 import { Tooltip } from "./ui/Tooltip";
 import { SetupWizard } from "./panels/SetupWizard";
-import { HelpModal } from "./panels/HelpModal";
 import { UsageMenu } from "./panels/UsageMenu";
-import { ProjectsMenu } from "./panels/ProjectsMenu";
 import { HAS_TAURI } from "./tauriEnv";
 import { UpdateBanner } from "./panels/UpdateBanner";
 import { Modal } from "./ui/Modal";
 import { confirmEditorDiscard, hasUnsavedEditors } from "./editorChanges";
 import { useAppControl } from "./appControl";
+import { initializeDictation } from "./state/dictation";
 
 export default function App() {
   useAppControl();
+  useBridgeNotifications();
+  const unreadNotifications = useNotifications(state => state.items.filter(item => !item.read).length);
+  useEffect(() => { void initializeDictation().catch(() => {}); }, []);
   const loadSessions = useStore((s) => s.loadSessions);
   const seedPreview = useStore((s) => s.seedPreview);
 
   const wizardOpen = useStore((s) => s.wizardOpen);
   const setWizardOpen = useStore((s) => s.setWizardOpen);
 
-  const [helpOpen, setHelpOpen] = useState(false);
+  const [agentsHubOpen, setAgentsHubOpen] = useState(false);
+  const [sessionDialogOpen, setSessionDialogOpen] = useState(false);
+  const [portsLoading, setPortsLoading] = useState(false);
+  const [menuError, setMenuError] = useState<string | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsSection, setSettingsSection] = useState<SettingsSection>("general");
+  const openSettings = (section: SettingsSection) => {
+    setAgentsHubOpen(false);
+    setSettingsSection(section);
+    setSettingsOpen(true);
+    setToolsOpen(false);
+  };
+  useEffect(() => {
+    if (!HAS_TAURI) return;
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void import("@tauri-apps/api/event").then(({ listen }) => listen<string>("app-menu-action", ({ payload }) => {
+      if (disposed) return;
+      if (payload === "agents-hub") { setSettingsOpen(false); setAgentsHubOpen(true); return; }
+      if (payload === "new-session") { setSettingsOpen(false); setSessionDialogOpen(true); return; }
+      if (["general", "themes", "about", "notifications", "devices", "sync", "remote", "mcp", "help"].includes(payload)) {
+        setSessionDialogOpen(false);
+        openSettings(payload as SettingsSection);
+      } else if (payload === "font-increase" || payload === "font-decrease") {
+        const state = useStore.getState();
+        state.setFontSize(state.fontSize + (payload === "font-increase" ? 1 : -1));
+      }
+    })).then((stop) => { if (disposed) stop(); else unlisten = stop; }).catch((error: unknown) => {
+      if (!disposed) setMenuError(error instanceof Error ? error.message : "Could not connect the application menu.");
+    });
+    return () => { disposed = true; unlisten?.(); };
+  }, []);
+  useEffect(() => {
+    const section = (event: Event) => {
+      const value: unknown = (event as CustomEvent).detail;
+      if (value === "agents-hub") { setSettingsOpen(false); setAgentsHubOpen(true); }
+      if (value === "sync" || value === "mcp" || value === "devices" || value === "general") openSettings(value);
+    };
+    const terminal = () => setSettingsOpen(false);
+    window.addEventListener("pzza-notification-section", section);
+    window.addEventListener("pzza-notification-terminal", terminal);
+    return () => { window.removeEventListener("pzza-notification-section", section); window.removeEventListener("pzza-notification-terminal", terminal); };
+  }, []);
   const [nativeCloseError, setNativeCloseError] = useState<string | null>(null);
   useEffect(() => {
     if (!HAS_TAURI) return;
@@ -128,6 +177,15 @@ export default function App() {
 
   return (
     <ThemeProvider>
+      <ContextMenu />
+      <AgentsHub open={agentsHubOpen} onClose={() => setAgentsHubOpen(false)} />
+      <NotificationBanners />
+      <Modal open={menuError !== null} onClose={() => setMenuError(null)} title="Application menu" size="sm">
+        <p role="alert">{menuError}</p>
+      </Modal>
+      <Modal open={sessionDialogOpen} onClose={() => setSessionDialogOpen(false)} title="New session" size="sm">
+        <SessionMenu close={() => setSessionDialogOpen(false)} />
+      </Modal>
       <Tooltip />
       <Modal open={nativeCloseError !== null} onClose={() => setNativeCloseError(null)} title="Window close protection" size="sm">
         <p className="move-q" role="alert">{nativeCloseError}</p>
@@ -161,33 +219,31 @@ export default function App() {
                 onClick={() => setToolsOpen((v) => !v)}
               />
               <div className={`topbar-tools ${toolsOpen ? "open" : ""}`}>
+                <div className="notification-toolbar">
+                  <Dropdown icon={Bell} title="Notifications" width={380}>
+                    {(close) => <LatestNotifications viewAll={() => { close(); openSettings("notifications"); }} />}
+                  </Dropdown>
+                  {unreadNotifications ? <span className="notification-badge" aria-label={`${unreadNotifications} unread notifications`}>{unreadNotifications > 99 ? "99+" : unreadNotifications}</span> : null}
+                </div>
+                <IconButton icon={Bot} title="Agents Hub" onClick={() => { setSettingsOpen(false); setAgentsHubOpen(true); }} />
+                <QuickChat />
                 <LayoutMenu />
-                <Dropdown icon={FolderSync} title="Sync projects" width={680}>
-                  <ProjectsMenu />
+                <IconButton icon={FolderSync} title="Sync projects" onClick={() => openSettings("sync")} />
+                <IconButton icon={Monitor} title="Remote desktop" onClick={() => openSettings("remote")} />
+                <Dropdown icon={EthernetPort} title="Port forwarding" width={320} loading={portsLoading}>
+                  <PortsMenu onLoadingChange={setPortsLoading} />
                 </Dropdown>
-                <Dropdown icon={Monitor} title="Linux desktop (RDP)" width={300}>
-                  {(close) => <RdpMenu close={close} />}
-                </Dropdown>
-                <Dropdown icon={EthernetPort} title="Port forwarding" width={320}>
-                  <PortsMenu />
-                </Dropdown>
-                <Dropdown icon={HardDrive} title="Devices" width={380}>
-                  <DevicesMenu />
-                </Dropdown>
-                <Dropdown icon={Blocks} title="MCP" width={320}>
-                  <McpMenu />
-                </Dropdown>
+                <IconButton icon={HardDrive} title="Devices" onClick={() => openSettings("devices")} />
+                <IconButton icon={Blocks} title="MCP & connections" onClick={() => openSettings("mcp")} />
                 <Dropdown icon={Gauge} title="Agent usage" width={320}>
                   <UsageMenu />
                 </Dropdown>
                 <IconButton
                   icon={CircleQuestionMark}
                   title="Help & docs"
-                  onClick={() => setHelpOpen(true)}
+                  onClick={() => openSettings("help")}
                 />
-                <Dropdown icon={SettingsIcon} title="Settings" width={320}>
-                  {(close) => <SettingsMenu close={close} />}
-                </Dropdown>
+                <IconButton icon={SettingsIcon} title="Settings" onClick={() => openSettings("general")} />
                 <Dropdown icon={Plus} title="New session" label="New session" width={340}>
                   {(close) => <SessionMenu close={close} />}
                 </Dropdown>
@@ -216,7 +272,7 @@ export default function App() {
           }
         }}
       />
-      <HelpModal open={helpOpen} onClose={() => setHelpOpen(false)} />
+      <SettingsHub open={settingsOpen} section={settingsSection} onSectionChange={setSettingsSection} onClose={() => setSettingsOpen(false)} />
     </ThemeProvider>
   );
 }
