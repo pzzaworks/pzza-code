@@ -5,6 +5,7 @@
 import type { RemoteSession } from "./connection";
 import type { DeviceOs } from "./devices";
 import { HAS_TAURI } from "./tauriEnv";
+import { createAgentConnection } from "./agentConnection";
 
 function serverPort(): number {
   try {
@@ -28,57 +29,39 @@ const HOST = HAS_TAURI
 export const SERVER_HTTP = `http://${HOST}:${serverPort()}`;
 export const SERVER_WS = `ws://${HOST}:${serverPort()}/pty`;
 
-// The agent refuses every request without its per-launch bearer token. In the
-// app the token comes from the Rust side that spawned the agent; the browser
-// build reads it from localStorage (paste it from the agent's
-// ~/.config/pzzacode/agent-token). Cached once resolved so URL builders that
-// must be synchronous (raw file src, WebSocket) can append it too.
-let agentToken = "";
-// Set when whatever answers on the agent port is NOT the agent this app
-// launched (its /health instance id does not match). The bearer token only
-// protects the agent from callers; this check protects the app from an
-// impostor on the port, so every call then fails closed instead of handing
-// the token - and typed-back responses - to a stranger.
-let agentImpostor = false;
-const tokenReady: Promise<string> = (async () => {
-  try {
-    if (HAS_TAURI) {
-      const { invoke } = await import("@tauri-apps/api/core");
-      agentToken = await invoke<string>("agent_token");
-      const expected = await invoke<string>("agent_instance");
-      if (expected) {
-        // Give the freshly spawned agent a moment to bind before judging.
-        for (let attempt = 0; attempt < 30; attempt++) {
-          try {
-            const r = await globalThis.fetch(`${SERVER_HTTP}/health`);
-            if (r.ok) {
-              const h = (await r.json()) as { id?: string };
-              agentImpostor = h.id !== expected;
-              break;
-            }
-          } catch {
-            /* not up yet */
-          }
-          await new Promise((res) => setTimeout(res, 300));
-        }
-      }
-    } else {
-      agentToken = localStorage.getItem("pzza.agentToken") ?? "";
-    }
-  } catch {
-    agentToken = "";
-  }
-  return agentToken;
-})();
+const connection = createAgentConnection({
+  credentials: async () => {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const [token, instance] = await Promise.all([
+      invoke<string>("agent_token"), invoke<string>("agent_instance"),
+    ]);
+    return { token, instance };
+  },
+  health: async () => {
+    const response = await globalThis.fetch(`${SERVER_HTTP}/health`, { signal: AbortSignal.timeout(1000) });
+    if (!response.ok) throw new Error("Agent health check failed");
+    return response.json() as Promise<unknown>;
+  },
+  pause: () => new Promise(resolve => setTimeout(resolve, 300)),
+});
+function browserToken(): string {
+  try { return localStorage.getItem("pzza.agentToken") ?? ""; } catch { return ""; }
+}
+// Warm synchronous URL builders, but failed verification is retryable.
+if (HAS_TAURI) void connection.ready().catch(() => undefined);
 
 async function agentFetch(input: string, init?: RequestInit): Promise<Response> {
-  const token = agentToken || (await tokenReady);
-  if (agentImpostor) {
-    throw new Error("another process owns the agent port (127.0.0.1:5190); refusing to talk to it");
-  }
+  const token = HAS_TAURI ? await connection.ready() : browserToken();
   const headers = new Headers(init?.headers);
   if (token) headers.set("Authorization", `Bearer ${token}`);
-  return globalThis.fetch(input, { ...init, headers });
+  try {
+    const response = await globalThis.fetch(input, { ...init, headers });
+    if (HAS_TAURI && response.status === 401) connection.invalidate();
+    return response;
+  } catch (error) {
+    if (HAS_TAURI && !init?.signal?.aborted) connection.invalidate();
+    throw error;
+  }
 }
 
 export interface AppControlCommand { id: string; action: string; args: Record<string, unknown>; expiresAt: number }
@@ -119,7 +102,10 @@ export const reportAppControl = (clientId: string, id: string, outcome: AppContr
 export const unregisterAppControl = (clientId: string) =>
   appControlRequest(`client?clientId=${encodeURIComponent(clientId)}`, { method: "DELETE", keepalive: true });
 
-const tokenQ = () => (agentToken ? `token=${encodeURIComponent(agentToken)}` : "");
+const tokenQ = () => {
+  const token = HAS_TAURI ? connection.token() : browserToken();
+  return token ? `token=${encodeURIComponent(token)}` : "";
+};
 
 // WebSocket URL for the browser build's PTY bridge, carrying the token as a
 // query parameter since the upgrade request cannot set headers.
@@ -321,6 +307,18 @@ export async function openQuickChat(host: string, agent: "claude" | "codex"): Pr
     throw new Error("Invalid Quick Chat response.");
   }
   return { session: value.session, host, agent: value.agent };
+}
+
+export async function closeQuickChat(host: string): Promise<void> {
+  const response = await agentFetch(`${SERVER_HTTP}/quick-chat/close`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ host }),
+    signal: AbortSignal.timeout(20000),
+  });
+  const value: unknown = await response.json();
+  if (!response.ok) throw new Error(value && typeof value === "object" && "error" in value && typeof value.error === "string" ? value.error : "Could not close Quick Chat.");
+  if (!value || typeof value !== "object" || !("closed" in value) || value.closed !== true) throw new Error("Invalid Quick Chat response.");
 }
 
 // Scan every tmux session on a device (host empty = the connected device).

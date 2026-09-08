@@ -5,6 +5,8 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
+  Bell,
+  FolderSync,
   CircleQuestionMark,
   Columns2,
   Columns3,
@@ -126,10 +128,9 @@ const Step = ({ children }: { children: ReactNode }) => <li>{children}</li>;
 // top-bar button opens, built from the app's own classes so the docs show the
 // real thing (contents and all), not just an icon -----------------------------
 const Panel = ({ children, caption }: { children: ReactNode; caption: string }) => (
-  <div className="doc-panelwrap">
+  <details className="doc-panelwrap"><summary>View controls <span>{caption}</span></summary>
     <div className="doc-panel">{children}</div>
-    <span className="doc-hero-cap">{caption}</span>
-  </div>
+  </details>
 );
 
 const Switch = ({ on }: { on?: boolean }) => (
@@ -139,7 +140,7 @@ const Switch = ({ on }: { on?: boolean }) => (
 );
 
 const McpDemo = () => (
-  <Panel caption="Settings · MCP & connections">
+  <Panel caption="Settings · Connections">
     <div className="menu-body">
       <div className="menu-title">MCP</div>
       <div className="mcp-toggle">
@@ -257,7 +258,7 @@ const UsageDemo = () => (
 );
 
 const DevicesDemo = () => (
-  <Panel caption="Top bar · Devices">
+  <Panel caption="Settings · Devices">
     <div className="menu-body">
       <div className="menu-title">Devices</div>
       <div className="device-list">
@@ -368,13 +369,24 @@ interface Group {
   sections: Sec[];
 }
 
+export const HELP_SECTIONS = [
+  { id: "getting-started", label: "Getting started", topics: ["start", "topbar", "agent-tools"] },
+  { id: "workspace", label: "Workspace", topics: ["tiles", "controls", "focus", "workspaces", "layout", "shortcuts"] },
+  { id: "agents", label: "Agents", topics: ["usage", "multiaccount", "paste"] },
+  { id: "connections", label: "Connections", topics: ["devices", "ports", "rdp", "mcp"] },
+  { id: "tips", label: "Tips", topics: ["tips"] },
+] as const;
+export type HelpSection = typeof HELP_SECTIONS[number]["id"];
+
 export function HelpModal({ open, onClose }: { open: boolean; onClose: () => void }) {
-  return <Modal open={open} onClose={onClose} title="Help & docs" icon={CircleQuestionMark} size="xl"><HelpContent /></Modal>;
+  const [section, setSection] = useState<HelpSection>("getting-started");
+  return <Modal open={open} onClose={onClose} title="Help & docs" icon={CircleQuestionMark} size="xl">
+    <nav className="help-topics" aria-label="Help topics">{HELP_SECTIONS.map((entry) => <button type="button" key={entry.id} className={section === entry.id ? "active" : ""} onClick={() => setSection(entry.id)}>{entry.label}</button>)}</nav>
+    <HelpContent section={section} />
+  </Modal>;
 }
 
-export function HelpContent() {
-  const [active, setActive] = useState("start");
-
+export function HelpContent({ section }: { section: HelpSection }) {
   const groups: Group[] = [
     {
       title: "Basics",
@@ -434,13 +446,11 @@ export function HelpContent() {
               <Hero caption="Top bar · tools (right side)">
                 <span className="doc-hero-cluster">
                   <IB icon={LayoutGrid} />
+                  <IB icon={FolderSync} />
                   <IB icon={Monitor} />
-                  <IB icon={EthernetPort} />
-                  <IB icon={HardDrive} />
-                  <IB icon={Blocks} />
                   <IB icon={Gauge} />
-                  <IB icon={CircleQuestionMark} />
                   <IB icon={SettingsIcon} />
+                  <IB icon={Bell} />
                 </span>
               </Hero>
               <H>Left to right</H>
@@ -452,32 +462,38 @@ export function HelpContent() {
                 Grid columns (2 / 3 / 4) for the <i>active</i> workspace - each workspace keeps its
                 own; the menu header shows which one you're changing.
               </Row>
+              <Row ui={<IB icon={FolderSync} />} name="Sync">
+                Sync your project repositories immediately using your saved preferences. A small indicator shows progress.
+              </Row>
               <Row ui={<IB icon={Monitor} />} name="Remote desktop">
                 Open the device's Linux desktop over an SSH-tunneled RDP session.
-              </Row>
-              <Row ui={<IB icon={EthernetPort} />} name="Ports">
-                The device's listening ports, mirrored to your machine.
-              </Row>
-              <Row ui={<IB icon={HardDrive} />} name="Devices">
-                Your machines and their agents; click one to scan its live sessions.
-              </Row>
-              <Row ui={<IB icon={Blocks} />} name="MCP">
-                Expose your sessions and ports to AI agents.
               </Row>
               <Row ui={<IB icon={Gauge} />} name="Agent usage">
                 Live Claude / Codex usage and estimated spend.
               </Row>
-              <Row ui={<IB icon={CircleQuestionMark} />} name="Help">
-                This page.
-              </Row>
               <Row ui={<IB icon={SettingsIcon} />} name="Settings">
                 Open the settings sidebar for preferences, devices, sync, remote desktop, connections and help.
+              </Row>
+              <Row ui={<IB icon={Bell} />} name="Notifications">
+                Read recent activity beside Settings in the toolbar.
               </Row>
               <Row ui={<IB icon={Plus} />} name="New session">
                 Open a new terminal - pick the device, workspace and (optionally) which account.
               </Row>
             </>
           ),
+        },
+        {
+          id: "agent-tools",
+          label: "Agent tools",
+          icon: Sparkles,
+          body: <>
+            <H>Quick Chat</H>
+            <P>Open <b>Quick Chat</b> in the top bar to chat in a dropdown. It opens your saved agent immediately. Choose the agent and device in <b>Settings → Agents Hub → Quick Chat</b>.</P>
+            <P>Click outside or use <b>Hide chat</b> to dismiss the dropdown while the chat keeps running. <b>Close chat</b> ends that chat session.</P>
+            <H>Agents Hub</H>
+            <P>Open <b>Settings → Agents Hub</b> to manage your agent tools. Use the submenus to browse configuration and open an item to edit it.</P>
+          </>,
         },
       ],
     },
@@ -873,7 +889,7 @@ export function HelpContent() {
               <H>How to</H>
               <Steps>
                 <Step>
-                  Open <IB icon={HardDrive} /> <b>Devices</b> from the top bar.
+                  Open <b>Settings</b> and choose <IB icon={HardDrive} /> <b>Devices</b>.
                 </Step>
                 <Step>Click a device to expand it and scan its live tmux sessions.</Step>
                 <Step>Add a session to a workspace, move it, or terminate a stale one.</Step>
@@ -890,7 +906,7 @@ export function HelpContent() {
               </P>
               <H>Add a device</H>
               <P>
-                The setup wizard (<IB icon={CircleQuestionMark} />-adjacent, and on first run) takes
+                The setup wizard in <b>Settings → Devices</b> takes
                 the SSH details of a machine you can already reach and installs the agent on it{" "}
                 <i>over that connection</i> - you set up SSH, PzzaCode drives the rest.
               </P>
@@ -943,7 +959,7 @@ export function HelpContent() {
               <Steps>
                 <Step>Start a server on the device (say a dev server on port 5173).</Step>
                 <Step>
-                  Open <IB icon={EthernetPort} /> <b>Ports</b> - the port shows up in the list.
+                  Open <b>Settings → Connections → Port forwarding</b> - the port shows up in the list.
                 </Step>
                 <Step>
                   On a client machine, flip the switch <b>on</b> to mirror it to your{" "}
@@ -979,11 +995,11 @@ export function HelpContent() {
               <H>How to</H>
               <Steps>
                 <Step>
-                  Open <IB icon={Monitor} /> <b>Remote desktop</b> from the top bar.
+                  Choose your server in <b>Settings → Connections → Remote desktop</b>.
                 </Step>
-                <Step>Pick the server (the device) and the client (this machine).</Step>
+                <Step>The desktop viewer runs on this device.</Step>
                 <Step>
-                  Click <b>Open desktop</b> - the password is read from your OS keychain at launch.
+                  Click <b>Remote desktop</b> in the toolbar to connect immediately. The password is read from your OS keychain at launch.
                 </Step>
               </Steps>
               <H>Linux desktop (RDP)</H>
@@ -1005,7 +1021,7 @@ export function HelpContent() {
               <H>How to</H>
               <Steps>
                 <Step>
-                  Open <IB icon={Blocks} /> <b>MCP & connections</b> from the top bar or the settings sidebar.
+                  Open <IB icon={Blocks} /> <b>Connections</b> in Settings.
                 </Step>
                 <Step>
                   Turn <b>Allow app window control</b> on if you want agents to control this window. This does not disable independent session, file or device tools.
@@ -1019,7 +1035,7 @@ export function HelpContent() {
               </Steps>
               <H>Device bridge</H>
               <P>
-                In <b>MCP & connections</b>, the <b>Device bridge</b> starts disabled.
+                In <b>Connections</b>, the <b>Device bridge</b> starts disabled.
                 Use <b>Copy pairing identity</b> and <b>Add paired device</b> to explicitly pair devices,
                 choose <b>Approved projects on this device</b>, and save the permissions you intend to grant.
                 <b> Allow incoming requests</b> controls each paired device; <b>Revoke device now</b> removes its access.
@@ -1048,7 +1064,7 @@ export function HelpContent() {
           icon: Lightbulb,
           body: (
             <>
-              <Hero caption="Help · top bar">
+              <Hero caption="Settings · Help & docs">
                 <IB icon={CircleQuestionMark} />
               </Hero>
               <H>Handy to know</H>
@@ -1072,35 +1088,17 @@ export function HelpContent() {
     },
   ];
 
-  const all = groups.flatMap((g) => g.sections);
-  const current = all.find((s) => s.id === active) ?? all[0];
-
-  return (
-    <div className="doc-layout">
-        <nav className="doc-nav">
-          {groups.map((g) => (
-            <div className="doc-nav-group" key={g.title}>
-              <div className="doc-nav-group-title">{g.title}</div>
-              {g.sections.map((s) => {
-                const Icon = s.icon;
-                return (
-                  <button
-                    key={s.id}
-                    className={`doc-nav-item ${active === s.id ? "on" : ""}`}
-                    onClick={() => setActive(s.id)}
-                  >
-                    <Icon size={16} />
-                    {s.label}
-                  </button>
-                );
-              })}
-            </div>
-          ))}
-        </nav>
-        <div className="doc-content" key={current.id}>
-          <div className="doc-title">{current.label}</div>
-          {current.body}
-        </div>
-    </div>
-  );
+  const current = HELP_SECTIONS.find((entry) => entry.id === section) ?? HELP_SECTIONS[0];
+  const topics = groups.flatMap((group) => group.sections);
+  return <div className="settings-page help-page"><div className="doc-content" key={current.id}>
+    {current.topics.map((id) => {
+      const topic = topics.find((entry) => entry.id === id);
+      if (!topic) return null;
+      const Icon = topic.icon;
+      return <details className="help-topic" key={topic.id}>
+        <summary><Icon size={16} /><span>{topic.label}</span><ChevronDown size={14} /></summary>
+        <div className="help-topic-body">{topic.body}</div>
+      </details>;
+    })}
+  </div></div>;
 }

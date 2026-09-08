@@ -41,22 +41,41 @@ mod macos {
         if pointer.is_null() {
             return Err("Native window is unavailable".into());
         }
-        // Transparent content needs its own clip: an opaque window background
-        // normally hides the webview's square corners. Keep full screen edge-to-edge.
+        // Clip the native frame as well as the content. With a transparent
+        // background, the frame can otherwise paint outside the content's corners.
+        // Keep full screen edge-to-edge.
         let native = unsafe { &*pointer.cast::<objc2::runtime::AnyObject>() };
         let number: isize = unsafe {
-            let content: *mut objc2::runtime::AnyObject = objc2::msg_send![native, contentView];
-            if !content.is_null() {
-                let content = &*content;
-                let _: () = objc2::msg_send![content, setWantsLayer: true];
-                let layer: *mut objc2::runtime::AnyObject = objc2::msg_send![content, layer];
+            let style: usize = objc2::msg_send![native, styleMask];
+            let corner_radius: f64 = if !rounded || style & (1 << 14) != 0 {
+                0.0
+            } else {
+                12.0
+            };
+            // The compositor's background blur uses the window silhouette, not
+            // the content layer's mask. Update both so blur cannot fill the corners.
+            let supports_radius: bool = objc2::msg_send![
+                native,
+                respondsToSelector: objc2::sel!(_setCornerRadius:)
+            ];
+            if !supports_radius {
+                return Err(
+                    "Native window corner clipping is unavailable on this macOS version".into(),
+                );
+            }
+            let _: () = objc2::msg_send![native, _setCornerRadius: corner_radius];
+            let mut view: *mut objc2::runtime::AnyObject = objc2::msg_send![native, contentView];
+            while !view.is_null() {
+                let current = &*view;
+                let _: () = objc2::msg_send![current, setWantsLayer: true];
+                let layer: *mut objc2::runtime::AnyObject = objc2::msg_send![current, layer];
                 if !layer.is_null() {
-                    let style: usize = objc2::msg_send![native, styleMask];
-                    let corner_radius: f64 = if !rounded || style & (1 << 14) != 0 { 0.0 } else { 12.0 };
                     let _: () = objc2::msg_send![&*layer, setCornerRadius: corner_radius];
                     let _: () = objc2::msg_send![&*layer, setMasksToBounds: true];
                 }
+                view = objc2::msg_send![current, superview];
             }
+            let _: () = objc2::msg_send![native, invalidateShadow];
             objc2::msg_send![native, windowNumber]
         };
         let (connection, blur) = functions()?;

@@ -3,7 +3,7 @@
 // server-backed panel (sessions, ports, usage, accounts, forwarding, MCP, the
 // setup wizard) and any external MCP client then talk to this one local backend.
 use std::path::PathBuf;
-use std::process::{Child, Command, ExitStatus};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -250,7 +250,11 @@ fn spawn_agent_process(
         .env("PZZA_AGENT_TOKEN", token)
         .env("PZZA_AGENT_ID", instance)
         // Empty server host = source role: tmux/ports are local to this machine.
-        .env("PZZA_SERVER_HOST", "");
+        .env("PZZA_SERVER_HOST", "")
+        // Keep the write end in Child. Process exit closes it even when Rust
+        // cleanup cannot run, so the agent also exits after a force-quit.
+        .env("PZZA_MANAGED_AGENT", "1")
+        .stdin(Stdio::piped());
     // So the tmux servers and shells the agent starts render UTF-8.
     if let Some((k, v)) = utf8_locale_env() {
         cmd.env(k, v);
@@ -268,6 +272,7 @@ pub fn stop(app: &AppHandle) {
         state.shutting_down.store(true, Ordering::SeqCst);
         let child = state.child.lock().unwrap().take();
         if let Some(mut child) = child {
+            drop(child.stdin.take());
             let _ = terminate_agent(&mut child, Duration::from_secs(5));
         }
     }

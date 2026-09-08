@@ -1,6 +1,6 @@
 import { notify } from "./notifications";
 import { create } from "zustand";
-import { DEFAULT_THEME_ID, themeById } from "../theme/themes";
+import { DEFAULT_THEME_ID, migrateThemeId, themeById } from "../theme/themes";
 import {
   loadConnection,
   saveConnection,
@@ -17,7 +17,7 @@ import {
   type Workspace,
 } from "../workspaces";
 import { DEFAULT_DEVICES, THIS_MAC, type Device } from "../devices";
-import { tileTitle } from "../sessionMeta";
+import { QUICK_CHAT_SESSION, tileTitle } from "../sessionMeta";
 
 // A tile open on the canvas. id === tmux session name. Tile order IS the grid
 // arrangement - the canvas is a uniform N-column grid, never free-floating.
@@ -228,7 +228,12 @@ export const useStore = create<ConsoleState>((set, get) => ({
     set({ transparencyOptions: next });
   },
   setTransparencyNotice: (notice) => set({ transparencyNotice: notice }),
-  themeId: themeById(load<string>(THEME_KEY, DEFAULT_THEME_ID)).id,
+  themeId: (() => {
+    const saved = load<string>(THEME_KEY, DEFAULT_THEME_ID);
+    const mode = migrateThemeId(saved);
+    if (mode !== saved) persist(THEME_KEY, mode);
+    return mode;
+  })(),
   setTheme: (id) => {
     const selected = themeById(id).id;
     persist(THEME_KEY, selected);
@@ -414,7 +419,7 @@ export const useStore = create<ConsoleState>((set, get) => ({
 
   allSessions: [],
   allWindows: [],
-  tiles: load<Session[]>(TILES_KEY, []),
+  tiles: load<Session[]>(TILES_KEY, []).filter(tile => (tile.session ?? tile.name) !== QUICK_CHAT_SESSION),
   activeId: null,
   refreshing: false,
   refreshNonce: 0,
@@ -436,11 +441,13 @@ export const useStore = create<ConsoleState>((set, get) => ({
       }
       if (all === null) return; // keep whatever was shown before
 
+      // Quick Chat owns its terminal in the dropdown, outside the workspace grid.
+      all = all.filter(session => session.name !== QUICK_CHAT_SESSION);
       set({ allSessions: all });
 
       if (!HAS_TAURI) {
         try {
-          const wins = await fetchWindows();
+          const wins = (await fetchWindows()).filter(window => window.session !== QUICK_CHAT_SESSION);
           set({ allWindows: wins });
 
           // One-time: surface the extra windows of multi-window sessions
@@ -487,6 +494,7 @@ export const useStore = create<ConsoleState>((set, get) => ({
 
   openSession: (name, cwd, host) =>
     set((state) => {
+      if (name === QUICK_CHAT_SESSION) return state;
       // A remote session's tile id is namespaced by host so the same session
       // name on two devices never collides on the grid.
       const id = host ? `${host}::${name}` : name;
@@ -499,6 +507,7 @@ export const useStore = create<ConsoleState>((set, get) => ({
 
   openWindow: (w, displayName) =>
     set((state) => {
+      if (w.session === QUICK_CHAT_SESSION) return state;
       const id = `${w.session}::w::${w.window}`;
       if (state.tiles.some((t) => t.id === id)) return { activeId: id };
       const tile: Session = {

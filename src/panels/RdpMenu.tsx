@@ -1,131 +1,83 @@
 import { AsyncButton } from "../ui/AsyncButton";
 import { DeviceIcon } from "../ui/DeviceIcon";
 import { useEffect, useState } from "react";
+import { create } from "zustand";
 import { Monitor } from "lucide-react";
 import { useStore } from "../state/store";
+import { notify } from "../state/notifications";
+import { THIS_MAC, deviceHost } from "../devices";
 import { rdpIsOpen, rdpLaunch } from "../rdp";
 import { HAS_TAURI } from "../tauriEnv";
 import { Select } from "../ui/Select";
 
 const SERVER_KEY = "pzza.rdp.serverDev";
-const CLIENT_KEY = "pzza.rdp.clientDev";
 const RDP_USER = "pzzacode";
+function savedServer() {
+  try { return localStorage.getItem(SERVER_KEY) ?? ""; } catch { return ""; }
+}
+const useRdpConnection = create<{ serverId: string; busy: boolean }>(() => ({ serverId: savedServer(), busy: false }));
 
-function loadKey(key: string, fallback: string) {
-  try {
-    return localStorage.getItem(key) ?? fallback;
-  } catch {
-    return fallback;
+async function openSaved(): Promise<boolean> {
+  if (useRdpConnection.getState().busy) return false;
+  const { devices, deviceRdp, setDeviceRdp } = useStore.getState();
+  const server = devices.find(device => device.id === useRdpConnection.getState().serverId);
+  if (!HAS_TAURI || !server || server.id === THIS_MAC.id || !server.host.trim()) {
+    notify({ category: "app", title: "Remote desktop unavailable", body: !HAS_TAURI ? "Open the desktop app to launch remote desktop." : "Choose a remote server in Settings → Connections → Remote desktop, then click Remote desktop again." });
+    return false;
   }
+  useRdpConnection.setState({ busy: true });
+  try {
+    const config = deviceRdp[server.id];
+    const user = config?.user ?? RDP_USER;
+    const keychainService = config?.keychainService ?? `pzzacode-rdp-${server.id}`;
+    if (await rdpIsOpen(keychainService)) {
+      notify({ category: "app", title: "Remote desktop is already open", body: `Switch to the existing desktop window for ${server.name}.` });
+      return true;
+    }
+    const result = await rdpLaunch({ host: deviceHost(server), user, keychainService });
+    setDeviceRdp(server.id, { user, keychainService, port: result.port, mode: result.mode });
+    return true;
+  } catch (error) {
+    notify({ category: "app", title: "Could not open remote desktop", body: `Check the server in Settings → Connections → Remote desktop and its SSH connection. ${String(error)}` });
+    return false;
+  } finally { useRdpConnection.setState({ busy: false }); }
 }
 
-// RDP dropdown: both ends are picked from the managed device list. Server is
-// the device whose desktop opens; client is where the viewer runs. "Open
-// desktop" is the only step: the first launch creates the RDP account and its
-// Keychain password, and every launch re-syncs the device before connecting.
+export function useRemoteDesktop() {
+  const busy = useRdpConnection(state => state.busy);
+  return { busy, openSaved };
+}
+
 export function RdpMenu({ close }: { close: () => void }) {
-  const devices = useStore((s) => s.devices);
-  const deviceRdp = useStore((s) => s.deviceRdp);
-  const setDeviceRdp = useStore((s) => s.setDeviceRdp);
-  const [serverId, setServerId] = useState(() =>
-    loadKey(SERVER_KEY, devices.find((d) => d.id !== "this-mac")?.id ?? devices[0]?.id ?? ""),
-  );
-  const [clientId, setClientId] = useState(() =>
-    loadKey(CLIENT_KEY, devices.find((d) => d.id === "this-mac")?.id ?? devices[0]?.id ?? ""),
-  );
-  const [msg, setMsg] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
+  const devices = useStore(state => state.devices);
+  const deviceRdp = useStore(state => state.deviceRdp);
+  const serverId = useRdpConnection(state => state.serverId);
+  const { busy, openSaved: launch } = useRemoteDesktop();
   const [alreadyOpen, setAlreadyOpen] = useState(false);
-
-  const server = devices.find((d) => d.id === serverId) ?? devices[0];
-  const client = devices.find((d) => d.id === clientId);
-  const rdp = server ? deviceRdp[server.id] : undefined;
-  const remote = !!server && server.id !== "this-mac";
-  const keychainService = server ? (rdp?.keychainService ?? `pzzacode-rdp-${server.id}`) : "";
-
-  // Reflect whether this device's desktop is already open, so the button
-  // becomes a no-op "Desktop open" instead of stacking a second window.
+  const server = devices.find(device => device.id === serverId);
+  const config = server ? deviceRdp[server.id] : undefined;
+  const remote = !!server && server.id !== THIS_MAC.id;
+  const keychainService = server ? config?.keychainService ?? `pzzacode-rdp-${server.id}` : "";
   useEffect(() => {
-    if (!remote || !HAS_TAURI || !keychainService) {
-      setAlreadyOpen(false);
-      return;
-    }
+    setAlreadyOpen(false);
+    if (!remote || !HAS_TAURI) return;
     let alive = true;
-    rdpIsOpen(keychainService)
-      .then((v) => alive && setAlreadyOpen(v))
-      .catch(() => undefined);
-    return () => {
-      alive = false;
-    };
-  }, [remote, keychainService]);
+    void rdpIsOpen(keychainService).then(value => { if (alive) setAlreadyOpen(value); }).catch(() => undefined);
+    return () => { alive = false; };
+  }, [remote, keychainService, busy]);
 
-  const pick = (setter: (v: string) => void, key: string) => (id: string) => {
-    setter(id);
-    try {
-      localStorage.setItem(key, id);
-    } catch {
-      /* ignore */
-    }
+  const pickServer = (id: string) => {
+    useRdpConnection.setState({ serverId: id });
+    try { localStorage.setItem(SERVER_KEY, id); } catch { /* Keep this connection for the current app session. */ }
   };
-
-  const launch = async () => {
-    if (!server || !remote || busy || alreadyOpen) return;
-    setBusy(true);
-    setMsg(null);
-    try {
-      const user = rdp?.user ?? RDP_USER;
-      const r = await rdpLaunch({
-        host: server.user ? `${server.user}@${server.host}` : server.host,
-        user,
-        keychainService,
-      });
-      setDeviceRdp(server.id, { user, keychainService, port: r.port, mode: r.mode });
-      close();
-    } catch (e) {
-      setMsg(HAS_TAURI ? String(e) : "Runs in the native app - it launches FreeRDP on the client.");
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <div className="menu-body">
-      <div className="menu-title">{server?.name ?? "device"} · desktop</div>
-      <p className="set-note" style={{ marginTop: 0 }}>
-        Opens {server?.name ?? "the server"}'s Linux desktop on {client?.name ?? "the client"} over ssh-tunneled RDP.
-      </p>
-
-      <div className="field" style={{ marginTop: 12 }}>
-        <span className="field-label">Server</span>
-        <Select
-          value={serverId}
-          onChange={pick(setServerId, SERVER_KEY)}
-          options={devices.map((d) => ({ value: d.id, label: d.name, sub: d.host, icon: <DeviceIcon device={d} /> }))}
-        />
+  return <div className="settings-page remote-settings">
+    <section className="settings-section" aria-label="Saved connection">
+      <div className="settings-form">
+        <div className="settings-field"><span>Remote server</span><Select value={serverId} onChange={pickServer} placeholder="Choose a remote server" options={devices.filter(device => device.id !== THIS_MAC.id).map(device => ({ value: device.id, label: device.name, sub: device.host, icon: <DeviceIcon device={device} /> }))} /><small>Used by the Remote desktop toolbar button.</small></div>
       </div>
-      <div className="field">
-        <span className="field-label">Client</span>
-        <Select
-          value={clientId}
-          onChange={pick(setClientId, CLIENT_KEY)}
-          options={devices.map((d) => ({ value: d.id, label: d.name, sub: d.host, icon: <DeviceIcon device={d} /> }))}
-        />
-      </div>
-
-      <AsyncButton className="btn btn-accent rdp-open" onClick={launch} loading={busy} icon={Monitor} disabled={!remote || alreadyOpen}>
-        {alreadyOpen ? "Desktop open" : "Open desktop"}
-      </AsyncButton>
-      {!remote ? (
-        <p className="set-note">Pick a remote device as the server.</p>
-      ) : busy ? null : msg ? (
-        <p className="set-note">{msg}</p>
-      ) : alreadyOpen ? (
-        <p className="set-note">The desktop is already open for {server?.name}.</p>
-      ) : rdp?.mode ? (
-        <p className="set-note">
-          Remote desktop ready on {server?.name} ({rdp.mode}, port {rdp.port}).
-        </p>
-      ) : null}
-    </div>
-  );
+      <div className="settings-row"><div className="settings-row-copy"><span>Desktop viewer</span><small>Always opens on this device.</small></div><span>{devices.find(device => device.id === THIS_MAC.id)?.name ?? THIS_MAC.name}</span></div>
+      <div className="settings-actions"><AsyncButton className="btn btn-accent btn-sm" loading={busy} icon={Monitor} disabled={!remote || alreadyOpen} onClick={async () => { if (await launch()) close(); }}>{alreadyOpen ? "Desktop open" : "Open desktop"}</AsyncButton><span className="set-hint">SSH-tunneled RDP</span></div>
+    </section>
+    {!remote ? <p className="settings-empty">{devices.some(device => device.id !== THIS_MAC.id) ? "Choose a remote server to save this connection." : "Add a remote device in Settings → Devices first."}</p> : config?.mode ? <div className="settings-row"><div className="settings-row-copy"><span>{server.name}</span><small>Configured · {config.mode} · Port {config.port}</small></div></div> : null}
+  </div>;
 }

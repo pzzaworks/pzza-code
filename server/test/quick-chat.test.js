@@ -5,7 +5,7 @@ import { promisify } from "node:util";
 import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { openQuickChat } from "../lib/quick-chat.js";
+import { closeQuickChat, openQuickChat } from "../lib/quick-chat.js";
 
 test("rejects invalid agents and SSH targets before executing anything", async () => {
   for (const body of [null, {}, { agent: "claude" }, { host: "-oProxyCommand=bad", agent: "claude" },
@@ -55,13 +55,29 @@ test("real isolated tmux: concurrent opens reuse one process, preserve agent, an
     assert.equal((await tmux("display-message", "-p", "-t", "=pzza-quick-chat:", "#{pane_pid}")).stdout, before);
     const sessions = (await tmux("list-sessions", "-F", "#{session_name}")).stdout.trim().split("\n");
     assert.equal(sessions.filter(name => name === "pzza-quick-chat").length, 1);
-    await tmux("kill-session", "-t", "=pzza-quick-chat");
+    await closeQuickChat({ host: "" }, run);
+    await assert.rejects(tmux("has-session", "-t", "=pzza-quick-chat"));
+    await closeQuickChat({ host: "" }, run);
     assert.equal((await openQuickChat({ host: "", agent: "codex" }, run)).agent, "codex");
-    await tmux("kill-session", "-t", "=pzza-quick-chat");
+    await closeQuickChat({ host: "" }, run);
     await tmux("new-session", "-d", "-s", "pzza-quick-chat");
     await assert.rejects(openQuickChat({ host: "", agent: "claude" }, run), /not a managed/);
+    await assert.rejects(closeQuickChat({ host: "" }, run), /not a managed/);
+    await tmux("has-session", "-t", "=pzza-quick-chat");
   } finally {
     await tmux("kill-server").catch(() => {});
     await rm(root, { recursive: true, force: true });
   }
+});
+
+
+test("close rejects arbitrary targets and is idempotent when no chat exists", async () => {
+  for (const body of [null, {}, { host: "-bad" }, { host: "", session: "other" }, { host: "", agent: "claude" }]) {
+    await assert.rejects(closeQuickChat(body, () => assert.fail("must not execute")), { status: 400 });
+  }
+  assert.deepEqual(await closeQuickChat({ host: "" }, (_command, args, _options, callback) => {
+    assert.match(args.at(-1), /PZZA_QUICK_CHAT_AGENT/);
+    assert.match(args.at(-1), /kill-session -t '=pzza-quick-chat'/);
+    callback(null, "");
+  }), { closed: true });
 });

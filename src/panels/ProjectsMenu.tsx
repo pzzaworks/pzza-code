@@ -2,10 +2,10 @@ import { AsyncButton } from "../ui/AsyncButton";
 import { notify } from "../state/notifications";
 import { Modal } from "../ui/Modal";
 import { deviceExclusions, projectSettings } from "../projectSettings";
-import { confirmEditorDiscard } from "../editorChanges";
+import { confirmEditorDiscard, hasUnsavedEditors } from "../editorChanges";
 import { DeviceIcon } from "../ui/DeviceIcon";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { ChevronRight, Folder, FolderSync, Loader2, RefreshCw, Settings2 } from "lucide-react";
+import { ChevronRight, Folder, FolderSync, Loader2, RefreshCw } from "lucide-react";
 import { useStore } from "../state/store";
 import { THIS_MAC, type Device } from "../devices";
 import { PathField } from "../ui/PathField";
@@ -585,7 +585,13 @@ function explainError(msg: string): string {
   return msg;
 }
 
-export function ProjectsMenu() {
+interface ProjectsMenuProps {
+  page?: "repositories" | "preferences";
+  syncRequest?: number;
+  onSyncingChange?: (syncing: boolean) => void;
+}
+
+export function ProjectsMenu({ page = "repositories", syncRequest = 0, onSyncingChange }: ProjectsMenuProps) {
   const devices = useStore((s) => s.devices);
   const refs = useMemo(() => devices.map(toRef), [devices]);
 
@@ -597,13 +603,17 @@ export function ProjectsMenu() {
   const scanController = useRef<AbortController | null>(null);
   const [syncing, setSyncing] = useState(false);
   const [confirmSync, setConfirmSync] = useState(false);
+  const syncInFlight = useRef(false);
+  const handledRequest = useRef(0);
+  const [pendingDirectSync, setPendingDirectSync] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<Filter>("all");
   const [open, setOpen] = useState<Set<string>>(() => new Set());
   const [opts, setOpts] = useState<SyncOptions>(() => projectSettings(loadJson(OPTS_KEY), DEFAULT_SYNC_OPTIONS));
   const [devicesOff, setDevicesOff] = useState<string[]>(() => deviceExclusions(loadJson(DEVICES_OFF_KEY)));
-  const [settingsOpen, setSettingsOpen] = useState(false);
   const [excludeText, setExcludeText] = useState(() => opts.envExclude.join(", "));
+
+  useEffect(() => { onSyncingChange?.(syncing || pendingDirectSync); }, [syncing, pendingDirectSync, onSyncingChange]);
 
   const patchOpts = (patch: Partial<SyncOptions>) =>
     setOpts((o) => {
@@ -626,6 +636,7 @@ export function ProjectsMenu() {
     const controller = new AbortController();
     scanController.current = controller;
     setScanning(true);
+    setScan(null);
     setScanProgress(null);
     setError(null);
     try {
@@ -641,11 +652,15 @@ export function ProjectsMenu() {
   }, [root, refs]);
 
   // The sync panel stays mounted after its first open, retaining the operation
-  // and results while hidden. Only root/device changes start another scan.
+  // and results while hidden. Toolbar requests scan again before syncing.
   useEffect(() => {
-    void runScan();
+    if (syncRequest > handledRequest.current) {
+      handledRequest.current = syncRequest;
+      if (!syncInFlight.current) setPendingDirectSync(true);
+    }
+    if (!syncInFlight.current) void runScan();
     return () => scanController.current?.abort();
-  }, [runScan]);
+  }, [runScan, syncRequest]);
 
   useEffect(() => {
     if (!scan) return;
@@ -674,12 +689,15 @@ export function ProjectsMenu() {
     saveRoot(next);
   };
 
-  const runSync = async () => {
+  const runSync = async (direct = false) => {
+    if (syncInFlight.current || scanning || !scan || syncRefs.length === 0) return;
+    syncInFlight.current = true;
     setSyncing(true);
     setError(null);
     setSync(null);
     try {
-      if (!await confirmEditorDiscard()) return;
+      if (direct && hasUnsavedEditors()) throw new Error("Save your open editor changes before syncing.");
+      if (!direct && !await confirmEditorDiscard()) return;
       setConfirmSync(false);
       const migrated = scan ? migrateRepoOptions(opts, scan) : opts;
       const result = await syncProjects(root, syncRefs, migrated);
@@ -689,12 +707,26 @@ export function ProjectsMenu() {
       // Refresh so branches/behind counts reflect the new state.
       await runScan();
     } catch (e) {
-      notify({ category: "sync", event: "sync-error", title: "Sync failed", body: "Open Sync to review the error and retry.", target: { section: "sync" } });
+      notify({ category: "sync", event: "sync-error", title: "Sync failed", body: explainError(String((e as Error)?.message || e)), target: { section: "sync" } });
       setError(explainError(String((e as Error)?.message || e)));
     } finally {
+      syncInFlight.current = false;
       setSyncing(false);
     }
   };
+
+  const directSync = useRef(runSync);
+  directSync.current = runSync;
+  useEffect(() => {
+    if (!pendingDirectSync || scanning) return;
+    if (!scan && !error) return;
+    setPendingDirectSync(false);
+    if (error || syncRefs.length === 0) {
+      notify({ category: "sync", event: "sync-error", title: "Sync could not start", body: error ?? "Enable a device in Settings → Sync & repositories.", target: { section: "sync" } });
+      return;
+    }
+    void directSync.current(true);
+  }, [pendingDirectSync, scanning, scan, error, syncRefs.length]);
 
   const rows = useMemo(() => scan
     ? buildRows(scan, migrateRepoOptions(opts, scan), devicesOff)
@@ -725,125 +757,26 @@ export function ProjectsMenu() {
   const deviceStrip = scan?.devices ?? refs.map((r) => ({ ...r, error: null, root: null, repos: [] }));
 
   return (
-    <div className="menu-body pj">
-      <div className="pj-head">
-        <div className="pj-title">
-          <div className="menu-title" style={{ margin: 0 }}>
-            Projects
-          </div>
-          <div className="pj-subtitle">
-            <span className="muted">root</span>
-            <fieldset className="pj-root-field" disabled={busy}>
-              <PathField
-                value={root}
-                mode="folder"
-                hosts={refs.map((r) => ({ label: r.name, host: r.host }))}
-                placeholder={DEFAULT_ROOT}
-                title="Projects root: the same folder, relative to home, on every device"
-                pickerTitle="Projects root"
-                className="pj-root"
-                onChange={(path, host) => void pickRoot(path, host)}
-              />
-            </fieldset>
-          </div>
-        </div>
-        <div className="pj-actions">
+    <div className="settings-page pj">
+      <div hidden={page !== "repositories"}>
+      <section className="settings-section">
+        <label className="settings-field">
+          <span>Projects folder</span>
+          <fieldset className="pj-root-field" disabled={busy}>
+            <PathField value={root} mode="folder" hosts={refs.map((r) => ({ label: r.name, host: r.host }))}
+              placeholder={DEFAULT_ROOT} title="Projects root: the same folder, relative to home, on every device"
+              pickerTitle="Projects root" className="pj-root" onChange={(path, host) => void pickRoot(path, host)} />
+          </fieldset>
+        </label>
+        <div className="settings-actions">
           <AsyncButton className="btn btn-sm" onClick={() => void runScan()} loading={scanning} icon={RefreshCw} iconSize={13} disabled={busy} title="Rescan every device">
             Rescan
           </AsyncButton>
-          <AsyncButton className="btn btn-sm btn-accent" onClick={() => setConfirmSync(true)} loading={syncing} icon={FolderSync} iconSize={13} disabled={busy || !scan || syncRefs.length < 1} title="Run the sync with the settings below">
+          <AsyncButton className="btn btn-sm btn-accent" onClick={() => setConfirmSync(true)} loading={syncing} icon={FolderSync} iconSize={13} disabled={busy || !scan || syncRefs.length < 1} title="Run sync with your saved preferences">
             Sync all
           </AsyncButton>
-          <button
-            type="button"
-            className={`btn btn-sm btn-icon ${settingsOpen ? "btn-on" : ""}`}
-            onClick={() => setSettingsOpen((v) => !v)}
-            title="Sync settings"
-          >
-            <Settings2 size={14} />
-          </button>
         </div>
-      </div>
-
-      {settingsOpen ? (
-        <div className="pj-settings">
-          <div className="pj-set-group">
-            <div className="pj-set-title">Devices in sync</div>
-            <div className="pj-set-chips">
-              {refs.map((r) => {
-                const on = !devicesOff.includes(r.id);
-                return (
-                  <button
-                    key={r.id}
-                    type="button"
-                    className={`pj-set-chip ${on ? "on" : ""}`}
-                    onClick={() => toggleDevice(r.id)}
-                    title={on ? "Click to exclude from sync (still scanned)" : "Click to include in sync"}
-                  >
-                    <span className={`dot ${on ? "dot-up" : ""}`} />
-                    <DeviceIcon host={r.host} />
-                    {r.name}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-          <div className="pj-set-group">
-            <div className="pj-set-title">Repositories</div>
-            <label className="pj-set-row">
-              <span>
-                Clone missing projects
-                <small>A repo found on one device is cloned onto the others</small>
-              </span>
-              <Switch on={opts.cloneMissing} onToggle={() => patchOpts({ cloneMissing: !opts.cloneMissing })} title="Clone missing projects" />
-            </label>
-            <label className="pj-set-row">
-              <span>
-                Switch to the default branch
-                <small>Off: upstream commits are integrated into the current branch</small>
-              </span>
-              <Switch on={opts.switchToDefault} onToggle={() => patchOpts({ switchToDefault: !opts.switchToDefault })} title="Switch to default branch" />
-            </label>
-            <label className="pj-set-row">
-              <span>
-                Stash uncommitted changes
-                <small>Off: a dirty repo is reported and left alone</small>
-              </span>
-              <Switch on={opts.stashDirty} onToggle={() => patchOpts({ stashDirty: !opts.stashDirty })} title="Stash uncommitted changes" />
-            </label>
-          </div>
-          <div className="pj-set-group">
-            <div className="pj-set-title">Env files</div>
-            <label className="pj-set-row">
-              <span>
-                Sync env files
-                <small>The newest copy of each .env / .env.* wins</small>
-              </span>
-              <Switch on={opts.syncEnvs} onToggle={() => patchOpts({ syncEnvs: !opts.syncEnvs })} title="Sync env files" />
-            </label>
-            <label className={`pj-set-row ${opts.syncEnvs ? "" : "pj-set-row-off"}`}>
-              <span>
-                Never copy
-                <small>File name patterns, comma separated, * matches anything</small>
-              </span>
-              <input
-                className="pj-set-input"
-                value={excludeText}
-                placeholder=".env.local, *.test"
-                spellCheck={false}
-                disabled={!opts.syncEnvs}
-                onChange={(e) => setExcludeText(e.target.value)}
-                onBlur={() =>
-                  patchOpts({ envExclude: excludeText.split(",").map((x) => x.trim()).filter(Boolean) })
-                }
-              />
-            </label>
-          </div>
-          <p className="set-note" style={{ margin: 0 }}>
-            Each project card also has its own sync and env switches. Settings are saved on this device.
-          </p>
-        </div>
-      ) : null}
+      </section>
 
       <div className="pj-devices">
         {deviceStrip.map((d) => (
@@ -879,7 +812,7 @@ export function ProjectsMenu() {
       </div>
 
       {error ? <div className="pj-error">{error}</div> : null}
-      {sync ? (
+      {sync && sync.devices.length > 0 ? (
         <div className="pj-summary">
           {sync.devices.map((d) => {
             const n = (s: string) => d.results.filter((r) => r.status === s).length;
@@ -915,7 +848,7 @@ export function ProjectsMenu() {
       <div className="pj-list">
         {scanning ? <ScanProgress key={root} progress={scanProgress} /> : null}
         {!scan ? null : shown.length === 0 && !scanning ? (
-          <p className="muted small pad pj-empty">
+          <p className="settings-empty">
             {rows.length === 0 ? `No git repos under ${root} on any device.` : "Everything is in sync."}
           </p>
         ) : (
@@ -943,8 +876,78 @@ export function ProjectsMenu() {
         branches are merged while preserving local commits; conflicting merges are aborted. Every project
         can opt out on its card.
       </p>
+      </div>
+      <div hidden={page !== "preferences"}>
+          <section className="settings-section">
+            <h3>Devices in sync</h3>
+            {refs.map((device) => {
+              const included = !devicesOff.includes(device.id);
+              return <div className="settings-row" key={device.id}>
+                <div className="settings-row-copy"><span><DeviceIcon host={device.host} /> {device.name}</span><small>{device.host || "This device"}</small></div>
+                <Switch on={included} onToggle={() => toggleDevice(device.id)} title={`Include ${device.name} in sync`} />
+              </div>;
+            })}
+          </section>
+          <section className="settings-section">
+            <h3>Update behavior</h3>
+            <label className="settings-row">
+              <span className="settings-row-copy">
+                Clone missing projects
+                <small>A repo found on one device is cloned onto the others</small>
+              </span>
+              <Switch on={opts.cloneMissing} onToggle={() => patchOpts({ cloneMissing: !opts.cloneMissing })} title="Clone missing projects" />
+            </label>
+            <label className="settings-row">
+              <span className="settings-row-copy">
+                Switch to the default branch
+                <small>Off: upstream commits are integrated into the current branch</small>
+              </span>
+              <Switch on={opts.switchToDefault} onToggle={() => patchOpts({ switchToDefault: !opts.switchToDefault })} title="Switch to default branch" />
+            </label>
+            <label className="settings-row">
+              <span className="settings-row-copy">
+                Stash uncommitted changes
+                <small>Off: a dirty repo is reported and left alone</small>
+              </span>
+              <Switch on={opts.stashDirty} onToggle={() => patchOpts({ stashDirty: !opts.stashDirty })} title="Stash uncommitted changes" />
+            </label>
+          </section>
+          <section className="settings-section">
+            <h3>Environment files</h3>
+            <label className="settings-row">
+              <span className="settings-row-copy">
+                Sync env files
+                <small>The newest copy of each .env / .env.* wins</small>
+              </span>
+              <Switch on={opts.syncEnvs} onToggle={() => patchOpts({ syncEnvs: !opts.syncEnvs })} title="Sync env files" />
+            </label>
+            <label className="settings-field">
+              <span className="settings-row-copy">
+                Never copy
+                <small>File name patterns, comma separated, * matches anything</small>
+              </span>
+              <input
+                className="input"
+                value={excludeText}
+                placeholder=".env.local, *.test"
+                spellCheck={false}
+                disabled={!opts.syncEnvs}
+                onChange={(e) => setExcludeText(e.target.value)}
+                onBlur={() =>
+                  patchOpts({ envExclude: excludeText.split(",").map((x) => x.trim()).filter(Boolean) })
+                }
+              />
+            </label>
+          </section>
+          <p className="set-note">Each repository has its own sync and environment switches on the Repositories page.</p>
+
+      </div>
       <Modal open={confirmSync} onClose={() => { if (!syncing) setConfirmSync(false); }} title="Sync projects" size="sm">
-        <p className="move-q">Sync enabled projects under <b>{root}</b> on {syncRefs.map((device) => device.name).join(", ")}?</p>
+        <p className="move-q">Sync enabled projects under <b>{root}</b>?</p>
+        <p className="set-note">{syncRefs.length ? syncRefs.map((device) => device.name).join(", ") : "No devices are enabled. Choose devices in Settings → Sync & repositories."}</p>
+        {scanning ? <ScanProgress progress={scanProgress} /> : null}
+        {!scanning && scan ? <p className="set-note">{rows.filter(row => opts.repos[row.projectId]?.enabled !== false).length} enabled projects · {syncRefs.length} devices</p> : null}
+        {error ? <p className="set-note" role="alert">{error}</p> : null}
         <p className="set-note">
           This updates Git working files{opts.cloneMissing ? ", clones missing projects" : ""}
           {opts.switchToDefault ? ", switches to the default branch" : ""}
@@ -953,7 +956,8 @@ export function ProjectsMenu() {
         </p>
         <div className="modal-actions">
           <button className="btn" disabled={syncing} onClick={() => setConfirmSync(false)}>Cancel</button>
-          <AsyncButton className="btn btn-danger" loading={syncing} icon={FolderSync} onClick={() => void runSync()}>Sync projects</AsyncButton>
+          {!scan && !scanning ? <AsyncButton className="btn" loading={scanning} icon={RefreshCw} onClick={() => void runScan()}>Retry scan</AsyncButton> : null}
+          <AsyncButton className="btn btn-danger" loading={syncing} disabled={scanning || !scan || syncRefs.length === 0} icon={FolderSync} onClick={() => void runSync()}>Sync projects</AsyncButton>
         </div>
       </Modal>
     </div>
