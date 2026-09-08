@@ -222,7 +222,7 @@ export function createAgentsHub({ stateDir, target = runHubTarget, inspectSkill 
     return summary();
   };
   const discover = async (input) => {
-    if (!keys(input, ["root", "devices"]) || typeof input.root !== "string" || input.root.length > 4096 || !Array.isArray(input.devices) || !input.devices.length || input.devices.length > 20) throw fail("Choose configured devices and a project root");
+    if (!keys(input, ["devices"]) || !Array.isArray(input.devices) || !input.devices.length || input.devices.length > 20) throw fail("Choose configured devices");
     const seen = new Set();
     const devices = input.devices.map(device => {
       if (!keys(device, ["host", "name"]) || typeof device.host !== "string" || (device.host && !HOST.test(device.host)) || typeof device.name !== "string") throw fail("Invalid discovery device");
@@ -230,13 +230,28 @@ export function createAgentsHub({ stateDir, target = runHubTarget, inspectSkill 
       seen.add(device.host);
       return device;
     });
-    return { devices: await Promise.all(devices.map(async device => {
+    const discovered = await Promise.all(devices.map(async device => {
       try {
-        const result = await target(device.host, { operation: "discover", root: input.root });
+        const result = await target(device.host, { operation: "discover" });
         if (!result.ok) throw fail(result.error, result.status);
-        return { ...device, root: result.root, files: result.files, truncated: result.truncated };
+        return { ...device, root: result.root, files: result.files, error: result.error };
       } catch (error) { return { ...device, files: [], error: error.status ? error.message : "Device discovery failed" }; }
-    })) };
+    }));
+    const current = load();
+    const documents = [...current.documents];
+    for (const device of discovered) {
+      for (const file of device.files) {
+        const id = `global-${hash(JSON.stringify([device.host, file.path])).slice(0, 32)}`;
+        if (documents.some(document => document.id === id)) continue;
+        if (documents.length >= 100) { device.error = "Instruction library is full."; break; }
+        documents.push({ id, name: `${device.name} · ~/${file.path}`.slice(0, 120), framework: file.framework, content: file.content });
+      }
+    }
+    if (documents.length !== current.documents.length) {
+      const { deployments, ...library } = current;
+      save({ ...library, documents });
+    }
+    return { devices: discovered.map(device => ({ ...device, files: device.files.map(({ content, ...file }) => file) })), state: state() };
   };
   const readInstruction = async input => {
     if (!keys(input, ["host", "root", "path", "sha256"]) || typeof input.host !== "string" || (input.host && !HOST.test(input.host)) || typeof input.root !== "string" || typeof input.path !== "string" || !/^[a-f0-9]{64}$/.test(input.sha256)) throw fail("Invalid discovered instruction");

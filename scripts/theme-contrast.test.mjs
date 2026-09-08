@@ -7,7 +7,7 @@ const moduleUrl = source => 'data:text/javascript;base64,' + Buffer.from(ts.tran
 const typesUrl = moduleUrl(readFileSync(new URL('../src/theme/types.ts', import.meta.url), 'utf8'));
 const { deriveChrome, contrastRatio } = await import(typesUrl);
 const themesSource = readFileSync(new URL('../src/theme/themes.ts', import.meta.url), 'utf8').replaceAll('"./types"', JSON.stringify(typesUrl));
-const { BUILTIN_THEMES } = await import(moduleUrl(themesSource));
+const { BUILTIN_THEMES, terminalPalette } = await import(moduleUrl(themesSource));
 const light = BUILTIN_THEMES.find(theme => theme.appearance === 'light');
 const chrome = deriveChrome(light.terminal, 'light');
 
@@ -40,4 +40,14 @@ test('native Help and in-app topics stay in sync', () => {
   const sections = [...ui.matchAll(/id: "([\w-]+)",\s*label: "([^"]+)",\s*icon:/g)];
   assert.equal(sections.length, 17);
   for (const [, id, label] of sections) assert.ok(native.includes(`("${id}", "${label}")`), `Missing native Help topic: ${id}`);
+});
+
+test('transparent terminals preserve the appearance used for contrast and color queries', () => {
+  for (const theme of BUILTIN_THEMES) {
+    const glass = terminalPalette(theme.id, true);
+    assert.equal(glass.background, theme.terminal.background + '00');
+    assert.equal(glass.foreground, theme.terminal.foreground);
+    assert.deepEqual(terminalPalette(theme.id, false), theme.terminal);
+  }
+  assert.equal(terminalPalette('light', true).background, '#ffffff00');
 });

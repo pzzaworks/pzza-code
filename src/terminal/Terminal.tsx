@@ -6,7 +6,7 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import "@xterm/xterm/css/xterm.css";
 import { useStore } from "../state/store";
-import { themeById } from "../theme/themes";
+import { themeById, terminalPalette } from "../theme/themes";
 import { killPty, resizePty, spawnPty, writePty } from "./ptyBridge";
 import { openWsPty, type WsPtyHandle } from "./wsPty";
 import { runBrowserPreview } from "./browserPreview";
@@ -117,7 +117,7 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
         // tmux keeps the real history on the remote side; a deep local buffer
         // only multiplies memory per tile (each line is a typed-array row).
         scrollback: 3000,
-        theme: { ...themeById(useStore.getState().themeId).terminal, ...(useStore.getState().semiTransparent ? { background: "#00000000" } : {}) },
+        theme: terminalPalette(useStore.getState().themeId, useStore.getState().semiTransparent),
       });
       termRef.current = term;
 
@@ -569,7 +569,7 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
       // Theme assignment invalidates the WebGL background model as well as
       // glyph colors, so an opacity change repaints existing cells immediately.
       term.options.minimumContrastRatio = themeById(themeId).appearance === "light" ? 4.5 : 1;
-      term.options.theme = { ...themeById(themeId).terminal, ...(semiTransparent ? { background: "#00000000" } : {}) };
+      term.options.theme = terminalPalette(themeId, semiTransparent);
     }
   }, [themeId, semiTransparent, surfaceOpacity]);
 

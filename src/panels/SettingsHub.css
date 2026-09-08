@@ -111,7 +111,6 @@
 .settings-hub-content .notification-content { padding: 13px 0; gap: 4px; }
 .settings-hub-content .notification-title strong { color: var(--text); font-size: 12px; font-weight: 550; }
 .settings-hub-content .notification-content > span:not(.notification-title) { font-size: 11px; line-height: 1.5; }
-.settings-hub-content .notification-dismiss { margin: 8px 0 0 8px; flex-shrink: 0; }
 .notification-event-options { display: grid; gap: 12px; }
 .notification-event-options label { display: flex; align-items: center; gap: 9px; font-size: 11px; }
 
@@ -215,8 +214,6 @@
 .settings-hub-content .dictation-language-setting > .settings-row-copy { margin: 0; text-align: left; }
 .settings-hub-content .dictation-language-setting > .cselect { flex: 0 1 210px; width: 210px; margin-left: auto; }
 .settings-hub-content .notification-content { padding: 13px 10px; }
-.settings-hub-content .notification-dismiss { margin: 8px 6px 0 0; }
-.settings-hub-content .notification-open { align-self: center; flex-shrink: 0; margin-right: 6px; }
 .settings-hub-content .port-row { padding: 12px 10px; border-bottom: 1px solid var(--border); border-radius: 6px; }
 .notification-event-groups { display: grid; gap: 18px; }
 .notification-event-group { margin: 0; padding: 0; min-width: 0; border: 0; }
@@ -238,14 +235,17 @@
 .managed-device-details .scan-head { padding: 0 0 10px; }
 .managed-session { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; padding: 11px 8px; border-top: 1px solid var(--border); }
 .managed-session:hover { background: var(--hover); }
-:root[data-appearance="light"] .modal.settings-hub { --muted: #515b69; }
-:root[data-appearance="light"] .settings-hub-content :is(input.input, textarea.input, .field-input, .set-input, .cselect) { background: var(--input); border-color: var(--control-border); }
+:root[data-appearance="light"] .modal.settings-hub { --muted: #59636e; }
+:root[data-appearance="light"] .settings-hub-content :is(input.input, textarea.input, .field-input, .set-input, .cselect) { background: var(--input); border-color: var(--border); }
 :root[data-appearance="light"] .settings-hub-content .switch { border-color: var(--control-border); }
 :root[data-appearance="light"] .settings-hub-content .switch-on { background: var(--accent); border-color: var(--accent); }
 :root[data-appearance="light"] .settings-hub-content .switch-knob { background: var(--muted); }
 :root[data-appearance="light"] .settings-hub-content .switch-on .switch-knob { background: #ffffff; }
-:root[data-appearance="light"] .settings-hub-nav { background: #f5f6f8; }
+:root[data-appearance="light"] .settings-hub-nav { background: var(--bg); }
 :root[data-appearance="light"] .settings-hub-content .btn-on { background: var(--selected); color: var(--selected-text); }
 @container (max-width: 430px) {
   .settings-hub-content .dictation-language-setting > .cselect { flex-basis: 180px; }
 }
+
+:root[data-appearance="light"] .settings-hub-content :is(input.input, textarea.input, .field-input, .set-input, .cselect):hover { border-color: #b6bec8; }
+:root[data-appearance="light"] .settings-hub-content :is(input.input, textarea.input, .field-input, .set-input, .cselect):focus-visible { border-color: var(--focus-ring); outline-color: var(--focus-ring); }

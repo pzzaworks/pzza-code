@@ -14,6 +14,7 @@
 
 :root {
   --topbar-h: 42px;
+  --popover-shadow: 0 3px 12px rgb(0 0 0 / 20%), 0 1px 3px rgb(0 0 0 / 12%);
   color-scheme: dark;
 }
 
@@ -128,7 +129,7 @@ button {
     background: var(--surface);
     border: 1px solid var(--border);
     border-radius: 13px;
-    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+    box-shadow: var(--popover-shadow);
     animation: menu-in 0.12s ease-out;
   }
   .topbar-tools.open {
@@ -366,7 +367,7 @@ button {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 12px;
-  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.5);
+  box-shadow: var(--popover-shadow);
 }
 .cselect-item {
   display: flex;
@@ -529,7 +530,7 @@ button {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 13px;
-  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+  box-shadow: var(--popover-shadow);
   /* CSS (not JS) entrance: a rAF-driven animation can stall mid-frame with many
      WebGL terminals on screen and leave the panel translucent. Opacity only,
      never a transform and never will-change: an absolutely positioned panel
@@ -2368,7 +2369,7 @@ button {
   white-space: normal;
   width: max-content;
   pointer-events: none;
-  box-shadow: 0 6px 22px rgba(0, 0, 0, 0.45);
+  box-shadow: var(--popover-shadow);
   animation: pzza-tip-in 0.1s ease-out;
 }
 .pzza-tooltip.flip {
@@ -4821,7 +4822,7 @@ html[data-transparency="on"] .tile-code { background: transparent; }
 .about-links { display: flex; justify-content: center; gap: 10px; flex-wrap: wrap; margin-top: 24px; }
 .appearance-modes { display: inline-flex; gap: 4px; padding: 4px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-alt); }
 .appearance-modes .btn { width: auto; min-width: 96px; justify-content: center; }
-:root[data-appearance="light"] .menu { box-shadow: 0 12px 32px rgb(30 40 55 / 16%); }
+:root[data-appearance="light"] { --popover-shadow: 0 3px 12px rgb(31 35 40 / 8%), 0 1px 3px rgb(31 35 40 / 5%); }
 :root[data-appearance="light"] .modal { box-shadow: 0 24px 64px rgb(30 40 55 / 20%); }
 
 /* Keep native checkbox semantics with consistent, visible controls. */
@@ -4847,7 +4848,8 @@ input[type="checkbox"]:disabled { opacity: .45; cursor: not-allowed; }
 .dismiss-btn:hover { color: var(--text); background: var(--surface-alt); border-color: var(--border); }
 .dismiss-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; color: var(--text); }
 .dismiss-btn svg { flex-shrink: 0; pointer-events: none; }
-.notification-dismiss { margin: 4px; }
+.notification-row-actions { display: flex; align-items: center; gap: 4px; flex: 0 0 auto; padding: 8px 8px 8px 0; }
+.notification-row-actions > button { width: 28px; height: 28px; margin: 0; flex-shrink: 0; }
 .modal-head > .icon-btn { width: 30px; height: 30px; flex-shrink: 0; }
 .modal-head > .icon-btn svg { width: 16px; height: 16px; }
 
@@ -4867,7 +4869,7 @@ input[type="checkbox"]:disabled { opacity: .45; cursor: not-allowed; }
 :is(.menu, .menu-panel, .menu-item, .cselect, .cselect-item, .cselect-value) { text-align: left; }
 .cselect-item-main { align-items: flex-start; text-align: left; }
 :root[data-appearance="light"] :is(.brand-logo, .about-logo) { filter: brightness(0); opacity: .85; }
-:root[data-appearance="light"] :is(.field-input, .set-input, input.input, textarea.input, .cselect, .fp-search, .ns-name) { color: var(--text); background: var(--input); border-color: var(--control-border); }
+:root[data-appearance="light"] :is(.field-input, .set-input, input.input, textarea.input, .cselect, .fp-search, .ns-name) { color: var(--text); background: var(--input); border-color: var(--border); }
 :root[data-appearance="light"] :is(input, textarea)::placeholder { color: var(--muted); opacity: 1; }
 :root[data-appearance="light"] :is(.menu-item-on, .cselect-item-on, .btn-on, .settings-hub-sublink.active, .settings-hub-link.active:not([aria-expanded])) { color: var(--selected-text); background: var(--selected); }
 :root[data-appearance="light"] :is(.menu-item-on, .cselect-item-on, .btn-on):hover { background: var(--selected); }
@@ -4879,6 +4881,38 @@ input[type="checkbox"]:disabled { opacity: .45; cursor: not-allowed; }
 :root[data-appearance="light"] .switch-on { background: var(--accent); box-shadow: none; }
 :root[data-appearance="light"] .switch-knob { background: #ffffff; box-shadow: 0 1px 3px rgb(30 40 55 / 25%); }
 :root[data-appearance="light"] .modal-backdrop { background: rgb(35 46 63 / 28%); }
-:root[data-appearance="light"] :is(.topbar-tools, .pzza-tooltip, .ws-menu) { box-shadow: 0 8px 24px rgb(30 40 55 / 14%); }
-:root[data-appearance="light"] .tile { box-shadow: 0 1px 3px rgb(30 40 55 / 6%); }
-:root[data-appearance="light"] .tile-focused { border-color: #7c8fa7; box-shadow: 0 0 0 1px #7c8fa7; }
+:root[data-appearance="light"] :is(.pzza-tooltip, .ws-menu) { box-shadow: var(--popover-shadow); }
+:root[data-appearance="light"] .tile { box-shadow: none; }
+:root[data-appearance="light"] .tile-focused { border-color: var(--focus-ring); box-shadow: 0 0 0 1px var(--focus-ring); }
+
+/* Keep the toolbar part of the window chrome, including its compact menu. */
+.topbar-tools { box-shadow: none; }
+:root[data-appearance="light"] .topbar { background: var(--bg); }
+:root[data-appearance="light"] .tile-head { background: var(--bg); }
+:root[data-appearance="light"] .ws-tab-active { background: var(--surface); }
+:root[data-appearance="light"] .kbd { background: transparent; border-color: var(--border); box-shadow: none; font-weight: 500; }
+:root[data-appearance="light"] .btn { background: var(--bg); border-color: var(--border); border-radius: 7px; }
+:root[data-appearance="light"] .btn:hover:not(:disabled) { background: var(--hover); border-color: #b6bec8; }
+:root[data-appearance="light"] .btn-accent { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+:root[data-appearance="light"] .btn-accent:hover:not(:disabled) { background: #0550ae; border-color: #0550ae; }
+:root[data-appearance="light"] .btn-on { background: var(--selected); border-color: var(--focus-ring); color: var(--selected-text); }
+:root[data-appearance="light"] .btn-danger { background: var(--surface); border-color: var(--border); color: var(--danger); }
+:root[data-appearance="light"] .btn-danger:hover:not(:disabled) { background: #fff1f1; border-color: var(--danger); }
+:root[data-appearance="light"] :is(.icon-btn, .dismiss-btn) { color: var(--muted); }
+:root[data-appearance="light"] :is(.icon-btn, .dismiss-btn):hover { color: var(--text); }
+:root[data-appearance="light"] .dropdown-label-btn { background: var(--surface); border-radius: 8px; }
+:root[data-appearance="light"] .appearance-modes .btn:not(.btn-on) { border-color: transparent; background: transparent; }
+
+:root[data-appearance="light"] :is(.field-input, .set-input, input.input, textarea.input, .cselect, .fp-search, .ns-name):hover { border-color: #b6bec8; }
+:root[data-appearance="light"] :is(.field-input, .set-input, input.input, textarea.input, .cselect, .fp-search, .ns-name):focus-visible { border-color: var(--focus-ring); outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+
+/* A white glass backing keeps light surfaces from taking on a muddy desktop tint. */
+html[data-transparency="on"][data-appearance="light"] .app {
+  background: linear-gradient(rgb(255 255 255 / 35%), rgb(255 255 255 / 35%)), var(--app-bg);
+}
+html[data-transparency="on"][data-appearance="light"] .term-surface {
+  background: rgb(255 255 255 / 55%);
+}
+@media (prefers-reduced-transparency: reduce) {
+  html[data-transparency="on"][data-appearance="light"] .app { background: var(--opaque-bg); }
+}

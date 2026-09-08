@@ -27,8 +27,10 @@ function Rows({ items, readOnly = false }: { items: Notice[]; readOnly?: boolean
       <span className="notification-title"><strong>{item.title}</strong>{!item.read ? <span className="notification-new">New</span> : null}</span><span>{item.body}</span>
       <small>{item.category} · <time dateTime={new Date(item.createdAt).toISOString()}>{new Date(item.createdAt).toLocaleString()}</time></small>
     </button>
+    <div className="notification-row-actions">
     {readOnly && (item.target?.section || item.target?.tileId) ? <button type="button" className="icon-btn notification-open" aria-label={`Open target for ${item.title}`} title="Open related activity" onClick={() => openNotice(item)}><ArrowUpRight size={15} /></button> : null}
     <button type="button" className="dismiss-btn notification-dismiss" aria-label={`Dismiss ${item.title}`} onClick={() => remove(item.id)}><X size={16} /></button>
+    </div>
   </article>) : <p className="set-note">You’re all caught up. New activity will appear here.</p>}</div>;
 }
 export function LatestNotifications({ viewAll }: { viewAll(): void }) {
