@@ -7,7 +7,6 @@ import {
   Columns2,
   EyeOff,
   FileCode,
-  Globe,
   FolderInput,
   Focus,
   LayoutGrid,
@@ -23,7 +22,6 @@ import { useStore } from "../state/store";
 import { deviceNameFor } from "../devices";
 import { Modal } from "../ui/Modal";
 import { Terminal } from "../terminal/Terminal";
-import { TileBrowserPanel } from "./TileBrowserPanel";
 import { TileCodePanel } from "./TileCodePanel";
 import { fetchSessionPath, killSession } from "../serverApi";
 import { confirmEditorDiscard } from "../editorChanges";
@@ -62,8 +60,6 @@ export function Canvas() {
   const tileTitles = useStore((s) => s.tileTitles);
   const renameTile = useStore((s) => s.renameTile);
   const devices = useStore((s) => s.devices);
-  const tileBrowser = useStore((s) => s.tileBrowser);
-  const setTileBrowser = useStore((s) => s.setTileBrowser);
   const tileCode = useStore((s) => s.tileCode);
   const toggleTileCode = useStore((s) => s.toggleTileCode);
 
@@ -92,6 +88,12 @@ export function Canvas() {
 
   const [fullId, setFullId] = useState<string | null>(null);
   const [focusId, setFocusId] = useState<string | null>(null);
+  useEffect(() => {
+    // Programmatic tile focus must reveal the target even if another tile was
+    // maximized or isolated locally in the canvas.
+    if (activeId && fullId && activeId !== fullId) setFullId(null);
+    if (activeId && focusId && activeId !== focusId) setFocusId(null);
+  }, [activeId, fullId, focusId]);
   const [renaming, setRenaming] = useState<{ id: string; val: string } | null>(null);
   const [manualDim, setManualDim] = useState<Record<string, boolean>>({});
   const [dragId, setDragId] = useState<string | null>(null);
@@ -198,7 +200,6 @@ export function Canvas() {
     const rs = allSessions.find((s) => s.name === base);
     const fullPath = t.path ?? rs?.path;
     const path = shortPath(fullPath);
-    const browserOpen = tileBrowser[t.id]?.open ?? false;
     const codeOpen = tileCode[t.id]?.open ?? false;
     const wsColor = workspaces.find(
       (w) => w.id === (sessionWs[wsKeyOf(t)] ?? DEFAULT_WORKSPACE_ID),
@@ -384,21 +385,18 @@ export function Canvas() {
               onMouseDown={(e) => e.stopPropagation()}
               onClick={(e) => {
                 e.stopPropagation();
+                setActive(t.id);
                 setFocusId(isFocus ? null : t.id);
               }}
             >
               <Focus size={13} />
             </button>
             <button
-              className={`tile-btn ${codeOpen && !browserOpen ? "tile-btn-on" : ""}`}
+              className={`tile-btn ${codeOpen ? "tile-btn-on" : ""}`}
               title={codeOpen ? "Back to terminal" : "Code editor"}
               onMouseDown={(e) => e.stopPropagation()}
               onClick={(e) => {
                 e.stopPropagation();
-                if (browserOpen) {
-                  setTileBrowser(t.id, { open: false });
-                  if (codeOpen) return;
-                }
                 if (codeOpen) {
                   void confirmEditorDiscard([t.id]).then((confirmed) => { if (confirmed) toggleTileCode(t.id); });
                   return;
@@ -411,14 +409,6 @@ export function Canvas() {
               }}
             >
               <FileCode size={13} />
-            </button>
-            <button
-              className={`tile-btn ${browserOpen ? "tile-btn-on" : ""}`}
-              title={browserOpen ? "Close browser" : "Browser"}
-              onMouseDown={(e) => e.stopPropagation()}
-              onClick={(e) => { e.stopPropagation(); setTileBrowser(t.id, { open: !browserOpen }); }}
-            >
-              <Globe size={13} />
             </button>
             <button
               className="tile-btn"
@@ -452,6 +442,7 @@ export function Canvas() {
               onMouseDown={(e) => e.stopPropagation()}
               onClick={(e) => {
                 e.stopPropagation();
+                setActive(t.id);
                 setFullId(isFull ? null : t.id);
               }}
             >
@@ -486,7 +477,7 @@ export function Canvas() {
           </div>
         </div>
         {borderBg ? <div className="tile-color-border" aria-hidden="true" style={{ background: borderBg }} /> : null}
-        <div className={`tile-body ${browserOpen ? `tile-body-code-${tileBrowser[t.id]?.layout ?? "full"} tile-browser-visible` : codeOpen ? `tile-body-code-${tileCode[t.id]?.layout ?? "full"}` : ""}`}>
+        <div className={`tile-body ${codeOpen ? `tile-body-code-${tileCode[t.id]?.layout ?? "full"}` : ""}`}>
           <Terminal
             name={base}
             host={t.host ?? connection.host ?? undefined}
@@ -498,7 +489,6 @@ export function Canvas() {
             onStatus={(s) => setStatus(t.id, s)}
           />
           {codeOpen ? <TileCodePanel tileId={t.id} /> : null}
-          {tileBrowser[t.id] ? <TileBrowserPanel tileId={t.id} /> : null}
         </div>
         {dimmed ? (
           <div

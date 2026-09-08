@@ -54,6 +54,10 @@ export function fileMutationPending(host: string | undefined, path: string): boo
   return [...mutations].some((mutation) => affects(mutation, { host, path, saving: false }));
 }
 
-export function hasUnsavedEditors(): boolean {
-  return [...files.values()].some((read) => { const file = read(); return file.dirty || file.saving; });
+export function hasUnsavedEditors(ids?: readonly string[]): boolean {
+  return [...files.entries()].some(([id, read]) => {
+    if (ids && !ids.includes(id)) return false;
+    const file = read();
+    return file.dirty || file.saving;
+  });
 }

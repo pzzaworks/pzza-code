@@ -40,16 +40,20 @@ const DEVICES_KEY = "pzza.devices";
 const DEVICE_RDP_KEY = "pzza.deviceRdp";
 const TILESPAN_KEY = "pzza.tileSpan";
 const TILETITLES_KEY = "pzza.tileTitles";
-const TILEBROWSER_KEY = "pzza.tileBrowser";
 const TILECODE_KEY = "pzza.tileCode";
 const TRANSPARENCY_KEY = "pzza.semiTransparent";
 const TRANSPARENCY_OPTIONS_KEY = "pzza.transparencyOptions";
-export interface TransparencyOptions { opacity: number; blur: number; saturation: number; surfaceOpacity: number; desktopBlur: boolean }
+export interface TransparencyOptions { opacity: number; blur: number; saturation: number; surfaceOpacity: number; desktopBlur: boolean; desktopBlurRadius: number }
+export const DEFAULT_TRANSPARENCY_OPTIONS: Readonly<TransparencyOptions> = {
+  opacity: 55, surfaceOpacity: 50, blur: 20, saturation: 116, desktopBlur: true, desktopBlurRadius: 20,
+};
 function transparencyOptions(value: Partial<TransparencyOptions>): TransparencyOptions {
+  const defaults = DEFAULT_TRANSPARENCY_OPTIONS;
   const bound = (value: unknown, fallback: number, min: number, max: number) =>
     typeof value === "number" && Number.isFinite(value) ? Math.min(max, Math.max(min, value)) : fallback;
-  return { opacity: bound(value?.opacity, 55, 5, 95), blur: bound(value?.blur, 20, 0, 40), saturation: bound(value?.saturation, 115, 50, 180),
-    surfaceOpacity: bound(value?.surfaceOpacity, 65, 5, 100), desktopBlur: typeof value?.desktopBlur === "boolean" ? value.desktopBlur : true };
+  return { opacity: bound(value?.opacity, defaults.opacity, 5, 95), blur: bound(value?.blur, defaults.blur, 0, 40), saturation: bound(value?.saturation, defaults.saturation, 50, 180),
+    surfaceOpacity: bound(value?.surfaceOpacity, defaults.surfaceOpacity, 5, 100), desktopBlur: typeof value?.desktopBlur === "boolean" ? value.desktopBlur : defaults.desktopBlur,
+    desktopBlurRadius: Math.round(bound(value?.desktopBlurRadius, defaults.desktopBlurRadius, 0, 64)) };
 }
 const THEME_KEY = "pzza.theme";
 const FONT_KEY = "pzza.fontSize";
@@ -176,8 +180,6 @@ interface ConsoleState {
 
   // Each window can flip into an inline code editor rooted at its own folder,
   // keyed by the tile id. The terminal stays alive underneath while it is open.
-  tileBrowser: Record<string, { open: boolean; url?: string; layout?: TileCodeLayout }>;
-  setTileBrowser: (id: string, value: { open?: boolean; url?: string; layout?: TileCodeLayout }) => void;
   tileCode: Record<string, TileCode>;
   toggleTileCode: (id: string, defaultRoot?: string) => void;
   setTileCodeLayout: (id: string, layout: TileCodeLayout) => void;
@@ -541,13 +543,6 @@ export const useStore = create<ConsoleState>((set, get) => ({
       activeId: "preview-1",
     })),
 
-  tileBrowser: load<ConsoleState["tileBrowser"]>(TILEBROWSER_KEY, {}),
-  setTileBrowser: (id, value) =>
-    set((state) => {
-      const tileBrowser = { ...state.tileBrowser, [id]: { ...(state.tileBrowser[id] ?? { open: false }), ...value } };
-      persist(TILEBROWSER_KEY, tileBrowser);
-      return { tileBrowser };
-    }),
   tileCode: load<Record<string, TileCode>>(TILECODE_KEY, {}),
   toggleTileCode: (id, defaultRoot) =>
     set((state) => {

@@ -39,6 +39,7 @@ export function McpMenu() {
     } catch {
       /* ignore */
     }
+    window.dispatchEvent(new CustomEvent("pzza:mcp-enabled-changed", { detail: { enabled: next } }));
   };
 
   const add = async (fw: string) => {
@@ -70,8 +71,8 @@ export function McpMenu() {
 
       <div className="mcp-toggle">
         <div className="set-label">
-          <span>Expose to agents</span>
-          <span className="set-hint">let Claude / Codex control the app safely</span>
+          <span>Allow app control</span>
+          <span className="set-hint">let connected agents control this app window</span>
         </div>
         <button
           className={`switch ${enabled ? "switch-on" : ""}`}
@@ -84,8 +85,8 @@ export function McpMenu() {
       </div>
 
       <p className="set-note" style={{ marginTop: 0 }}>
-        Tools: list/create/kill sessions & windows, list ports, toggle
-        forwarding. Add it to your agent, then it can drive the server.
+        Control editor panels, tile focus and layouts. Session,
+        file and device tools remain available independently of this switch.
       </p>
 
       <label className="field"> <span className="field-label">App SSH host (optional)</span>

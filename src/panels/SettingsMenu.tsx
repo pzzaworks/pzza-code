@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { Download, Loader2, RefreshCw, RotateCw, ServerCog, SlidersHorizontal } from "lucide-react";
-import { useStore } from "../state/store";
+import { DEFAULT_TRANSPARENCY_OPTIONS, useStore } from "../state/store";
 import { useUpdates } from "../state/updates";
 import { HAS_TAURI } from "../tauriEnv";
 
@@ -111,6 +112,24 @@ function Row({ label, hint, children }: { label: string; hint?: string; children
 
 function AppearanceSection() {
   const [optionsOpen, setOptionsOpen] = useState(false);
+  const optionsButton = useRef<HTMLButtonElement>(null);
+  const optionsMenu = useRef<HTMLDivElement>(null);
+  const [position, setPosition] = useState({ left: 0, top: 0 });
+  const closeOptions = () => { setOptionsOpen(false); optionsButton.current?.focus(); };
+  useLayoutEffect(() => {
+    if (!optionsOpen) return;
+    const place = () => {
+      const button = optionsButton.current?.getBoundingClientRect();
+      const menu = optionsMenu.current?.getBoundingClientRect();
+      if (!button || !menu) return;
+      setPosition({ left: Math.max(12, Math.min(button.right - menu.width, window.innerWidth - menu.width - 12)),
+        top: Math.max(12, Math.min(button.bottom + 6, window.innerHeight - menu.height - 12)) });
+    };
+    place();
+    optionsMenu.current?.focus();
+    window.addEventListener("resize", place);
+    return () => window.removeEventListener("resize", place);
+  }, [optionsOpen]);
   const enabled = useStore((state) => state.semiTransparent);
   const options = useStore((state) => state.transparencyOptions);
   const setOptions = useStore((state) => state.setTransparencyOptions);
@@ -118,7 +137,7 @@ function AppearanceSection() {
   const notice = useStore((state) => state.transparencyNotice);
   return <Section title="Appearance">
     <Row label="Semi-transparent mode" hint="Translucent surfaces and a blurred background">
-      <button type="button" className="icon-btn" aria-label="Transparency settings" aria-expanded={optionsOpen}
+      <button ref={optionsButton} type="button" className={`btn btn-icon btn-sm ${optionsOpen ? "btn-on" : ""}`} title="Transparency settings" aria-label="Transparency settings" aria-haspopup="dialog" aria-expanded={optionsOpen}
         onClick={() => setOptionsOpen(!optionsOpen)}><SlidersHorizontal size={15} /></button>
       <button className={`switch ${enabled ? "switch-on" : ""}`} type="button"
         role="switch" aria-label="Semi-transparent mode" aria-checked={enabled}
@@ -126,7 +145,11 @@ function AppearanceSection() {
         <span className="switch-knob" />
       </button>
     </Row>
-    {optionsOpen ? <div className="transparency-options">
+    {optionsOpen ? createPortal(<div className="cselect-backdrop pzza-portal" onMouseDown={closeOptions}>
+      <div ref={optionsMenu} className="menu transparency-options" style={position} role="dialog" aria-label="Transparency settings" tabIndex={-1}
+        onMouseDown={(event) => event.stopPropagation()}
+        onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); closeOptions(); } }}>
+      <div className="menu-title">Transparency</div>
       <Row label="App background opacity" hint={`${options.opacity}%`}>
         <input aria-label="App background opacity" type="range" min={5} max={95} value={options.opacity}
           onChange={(event) => setOptions({ opacity: Number(event.target.value) })} />
@@ -141,6 +164,10 @@ function AppearanceSection() {
         <input aria-label="Panel background opacity" type="range" min={5} max={100} value={options.surfaceOpacity}
           onChange={(event) => setOptions({ surfaceOpacity: Number(event.target.value) })} />
       </Row>
+      {/mac/i.test(navigator.platform || navigator.userAgent) ? <Row label="Desktop blur strength" hint={`${options.desktopBlurRadius}px · macOS window background`}>
+        <input aria-label="Desktop blur strength" type="range" min={0} max={64} value={options.desktopBlurRadius}
+          disabled={!options.desktopBlur} onChange={(event) => setOptions({ desktopBlurRadius: Number(event.target.value) })} />
+      </Row> : null}
       <Row label="Panel backdrop blur" hint={options.blur ? `${options.blur}px` : "Blur off"}>
         <input aria-label="Panel backdrop blur" type="range" min={0} max={40} value={options.blur}
           onChange={(event) => setOptions({ blur: Number(event.target.value) })} />
@@ -149,8 +176,13 @@ function AppearanceSection() {
         <input aria-label="Saturation" type="range" min={50} max={180} value={options.saturation}
           onChange={(event) => setOptions({ saturation: Number(event.target.value) })} />
       </Row>
-      <p className="set-note">macOS controls desktop blur strength. Panel blur affects content behind panels, not the desktop or text inside them.</p>
-    </div> : null}
+      <div className="set-control">
+        <button type="button" className="btn btn-sm" onClick={() => setOptions(DEFAULT_TRANSPARENCY_OPTIONS)}>
+          <RotateCw size={13} /> Reset to defaults
+        </button>
+      </div>
+      </div>
+    </div>, document.body) : null}
     {enabled && notice ? <p className="set-note" role="status">{notice}</p> : null}
   </Section>;
 }

@@ -2574,8 +2574,10 @@ dependencies = [
 
 [[package]]
 name = "pzzacode"
-version = "0.2.28"
+version = "0.2.29"
 dependencies = [
+ "libc",
+ "objc2",
  "portable-pty",
  "serde",
  "serde_json",

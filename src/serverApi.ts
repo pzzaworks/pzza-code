@@ -81,6 +81,44 @@ async function agentFetch(input: string, init?: RequestInit): Promise<Response> 
   return globalThis.fetch(input, { ...init, headers });
 }
 
+export interface AppControlCommand { id: string; action: string; args: Record<string, unknown>; expiresAt: number }
+export interface AppControlOutcome { result?: unknown; error?: string }
+
+async function appControlRequest(path: string, init: RequestInit, signal?: AbortSignal, timeout = 5000): Promise<unknown> {
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  signal?.addEventListener("abort", abort, { once: true });
+  if (signal?.aborted) controller.abort();
+  const timer = setTimeout(abort, timeout);
+  try {
+    const response = await agentFetch(`${SERVER_HTTP}/app/control/${path}`, { ...init, signal: controller.signal });
+    if (!response.ok) throw new Error(`App control request failed (${response.status}).`);
+    return response.status === 204 ? null : await response.json();
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener("abort", abort);
+  }
+}
+export const registerAppControl = (clientId: string, label: string, signal: AbortSignal) =>
+  appControlRequest("register", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ clientId, label }) }, signal);
+
+export async function pollAppControl(clientId: string, signal: AbortSignal): Promise<AppControlCommand | null> {
+  const value = await appControlRequest(`poll?clientId=${encodeURIComponent(clientId)}`, {}, signal, 18000);
+  if (!value || typeof value !== "object" || !("command" in value)) throw new Error("Invalid app control response.");
+  if (value.command === null) return null;
+  const command = value.command;
+  if (!command || typeof command !== "object" || !("id" in command) || typeof command.id !== "string" ||
+    !("action" in command) || typeof command.action !== "string" || !("args" in command) ||
+    !command.args || typeof command.args !== "object" || Array.isArray(command.args) ||
+    !("expiresAt" in command) || typeof command.expiresAt !== "number" || !Number.isFinite(command.expiresAt)) throw new Error("Invalid app control command.");
+  return { id: command.id, action: command.action, args: command.args as Record<string, unknown>, expiresAt: command.expiresAt };
+}
+export const reportAppControl = (clientId: string, id: string, outcome: AppControlOutcome, signal: AbortSignal) =>
+  appControlRequest("result", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ clientId, id, ...outcome }) }, signal);
+
+export const unregisterAppControl = (clientId: string) =>
+  appControlRequest(`client?clientId=${encodeURIComponent(clientId)}`, { method: "DELETE", keepalive: true });
+
 const tokenQ = () => (agentToken ? `token=${encodeURIComponent(agentToken)}` : "");
 
 // WebSocket URL for the browser build's PTY bridge, carrying the token as a

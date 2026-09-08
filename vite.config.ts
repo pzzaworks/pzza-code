@@ -1,13 +1,15 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import pkg from "./package.json";
+import { terminalRendererPatch, terminalRendererOptimizerPatch } from "./scripts/terminal-renderer-patch.mjs";
 
 // Tauri expects a fixed dev server on a known port and must not clear the
 // screen so Rust compiler output stays visible.
 const host = process.env.TAURI_DEV_HOST;
 
 export default defineConfig({
-  plugins: [react()],
+  plugins: [terminalRendererPatch(), react()],
+  optimizeDeps: { esbuildOptions: { plugins: [terminalRendererOptimizerPatch()] } },
   clearScreen: false,
   define: { __APP_VERSION__: JSON.stringify(pkg.version) },
   server: {

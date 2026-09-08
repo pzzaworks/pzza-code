@@ -1,4 +1,5 @@
 mod agent;
+mod appearance;
 mod forward;
 mod pty;
 mod rdp;
@@ -39,6 +40,7 @@ pub fn run() {
             agent::agent_token,
             agent::agent_instance,
             sys::open_url,
+            appearance::set_desktop_blur,
         ])
         .build(tauri::generate_context!())
         .expect("error while building pzza console")
