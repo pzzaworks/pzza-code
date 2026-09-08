@@ -76,6 +76,7 @@ export function Terminal({ name, host, cmd, args, cwd, window: win, active, onSt
   const activeRef = useRef(active);
   const themeId = useStore((s) => s.themeId);
   const semiTransparent = useStore((s) => s.semiTransparent);
+  const surfaceOpacity = useStore((s) => s.transparencyOptions.surfaceOpacity);
   const fontSize = useStore((s) => s.fontSize);
   const cursorBlink = useStore((s) => s.cursorBlink);
   const refreshNonce = useStore((s) => s.refreshNonce);
@@ -172,6 +173,9 @@ export function Terminal({ name, host, cmd, args, cwd, window: win, active, onSt
     term.unicode.activeVersion = "11";
 
     term.open(container);
+    term.element?.style.setProperty("--pzza-cell-background-opacity", String(
+      useStore.getState().semiTransparent ? useStore.getState().transparencyOptions.surfaceOpacity / 100 : 1,
+    ));
     let webgl: WebglAddon | null = null;
     try {
       webgl = new WebglAddon();
@@ -457,8 +461,13 @@ export function Terminal({ name, host, cmd, args, cwd, window: win, active, onSt
 
   useEffect(() => {
     const term = termRef.current;
-    if (term) term.options.theme = { ...themeById(themeId).terminal, ...(semiTransparent ? { background: "#00000000" } : {}) };
-  }, [themeId, semiTransparent]);
+    if (term) {
+      term.element?.style.setProperty("--pzza-cell-background-opacity", String(semiTransparent ? surfaceOpacity / 100 : 1));
+      // Theme assignment invalidates the WebGL background model as well as
+      // glyph colors, so an opacity change repaints existing cells immediately.
+      term.options.theme = { ...themeById(themeId).terminal, ...(semiTransparent ? { background: "#00000000" } : {}) };
+    }
+  }, [themeId, semiTransparent, surfaceOpacity]);
 
   // Track active state for the wheel guard, and focus the terminal when it
   // becomes active (so keyboard tile shortcuts land input in the right pane).

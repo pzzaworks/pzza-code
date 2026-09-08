@@ -36,3 +36,14 @@ test("SSH transport uses trusted host keys and sends request body only through s
     assert.equal(transport.mock.callCount(), 1);
   } finally { transport.mock.restore(); syncBuiltinESMExports(); }
 });
+
+test("SSH transport preserves actionable app-control failures", async (t) => {
+  const transport = t.mock.method(childProcess, "execFile", (_command, _args, _options, callback) => {
+    queueMicrotask(() => callback(null, JSON.stringify({ status: 422, body: JSON.stringify({ error: "Save unsaved changes before closing the editor" }) })));
+    return { stdin: { on() {}, end() {} } };
+  });
+  syncBuiltinESMExports();
+  try {
+    await assert.rejects(sshApi("user@app", "/app/control/command", { method: "POST" }), /422.*Save unsaved changes/);
+  } finally { transport.mock.restore(); syncBuiltinESMExports(); }
+});

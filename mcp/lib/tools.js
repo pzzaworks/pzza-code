@@ -1,10 +1,32 @@
 // MCP tool definitions. Each maps one-to-one onto the local device agent's
-// HTTP API, so an MCP client (Claude, Codex, Zed, ...) can drive everything
-// PzzaCode itself does: terminals, ports, forwarding, accounts/usage/spend,
-// files, MCP wiring, and installing the agent onto another device.
+// HTTP API. UI commands wait for an acknowledgement from the explicitly
+// selected app window; device tools use the guarded backend directly.
 import { get, post, qs } from "./agent.js";
 
+const clientId = { type: "string", description: "Explicit app client ID from app_list_clients" };
+const tileId = { type: "string", description: "Tile ID from app_get_state" };
+const layout = { type: "string", enum: ["full", "side-by-side", "stacked"] };
+function appTool(name, description, action, properties = {}, required = []) {
+  return {
+    name, description,
+    inputSchema: { type: "object", properties: { clientId, ...properties }, required: ["clientId", ...required], additionalProperties: false },
+    run: ({ clientId: selectedClient, ...args }) => post("/app/control/command", { clientId: selectedClient, action, args }),
+  };
+}
+
 const TOOLS = [
+  {
+    name: "app_list_clients",
+    description: "List live app windows that enabled agent control. Select an explicit clientId for UI commands.",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+    run: () => get("/app/control/clients"),
+  },
+  appTool("app_get_state", "Read the selected app window's workspace, tiles and panel state.", "get_state"),
+  appTool("app_focus_tile", "Focus an existing tile in the selected app window.", "focus_tile", { tileId }, ["tileId"]),
+  appTool("app_open_editor", "Open a tile editor, optionally selecting its root and file path.", "open_editor", { tileId, path: { type: "string" }, root: { type: "string" }, layout }, ["tileId"]),
+  appTool("app_close_editor", "Close a tile's editor panel.", "close_editor", { tileId }, ["tileId"]),
+  appTool("app_set_layout", "Set the editor layout in an existing tile.", "set_layout", { tileId, layout }, ["tileId", "layout"]),
+  appTool("app_set_columns", "Set the workspace grid column count.", "set_columns", { columns: { type: "integer", minimum: 1, maximum: 8 } }, ["columns"]),
   {
     name: "device_info",
     description: "Inspect operating system, CPU, memory and network addresses on the app host or an SSH device.",

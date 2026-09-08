@@ -9,12 +9,10 @@ const OPTIONS = [
   { value: "stacked", label: "Stacked", Icon: Rows2 },
 ] satisfies Array<{ value: TileCodeLayout; label: string; Icon: typeof Square }>;
 
-export function CodeLayoutMenu({ tileId, browser = false }: { tileId: string; browser?: boolean }) {
-  const layout = useStore((s) => (browser ? s.tileBrowser : s.tileCode)[tileId]?.layout ?? "full");
-  const setCodeLayout = useStore((s) => s.setTileCodeLayout);
-  const setBrowser = useStore((s) => s.setTileBrowser);
-  const setLayout = (id: string, value: TileCodeLayout) => browser ? setBrowser(id, { layout: value }) : setCodeLayout(id, value);
-  const title = browser ? "Browser layout" : "Editor layout";
+export function CodeLayoutMenu({ tileId }: { tileId: string }) {
+  const layout = useStore((s) => s.tileCode[tileId]?.layout ?? "full");
+  const setLayout = useStore((s) => s.setTileCodeLayout);
+  const title = "Editor layout";
   const button = useRef<HTMLButtonElement>(null);
   const [rect, setRect] = useState<DOMRect | null>(null);
   const close = () => { setRect(null); button.current?.focus(); };
@@ -80,7 +78,7 @@ export function CodeLayoutMenu({ tileId, browser = false }: { tileId: string; br
                 className={`menu-item ${layout === value ? "menu-item-on" : ""}`}
                 onClick={() => { setLayout(tileId, value); close(); }}
               >
-                <Icon size={16} strokeWidth={1.9} />{browser && value === "full" ? "Full browser" : label}
+                <Icon size={16} strokeWidth={1.9} />{label}
                 {layout === value ? <Check size={13} className="code-layout-check" /> : null}
               </button>
             ))}
