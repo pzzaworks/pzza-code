@@ -1,21 +1,15 @@
 import { useEffect, useRef, useState } from "react";
 import {
-  Bot,
   Bell,
-  Blocks,
-  HardDrive,
   Monitor,
   Plus,
   Settings as SettingsIcon,
-  EthernetPort,
   FolderSync,
-  CircleQuestionMark,
   Gauge,
   Menu,
 } from "lucide-react";
-import { AgentsHub } from "./panels/AgentsHub";
 import { QuickChat } from "./panels/QuickChat";
-import { LatestNotifications, NotificationBanners } from "./panels/Notifications";
+import { LatestNotifications } from "./panels/Notifications";
 import { useNotifications } from "./state/notifications";
 import { useBridgeNotifications } from "./notificationEvents";
 import { ContextMenu } from "./ui/ContextMenu";
@@ -25,7 +19,7 @@ import { Canvas } from "./grid/Canvas";
 import { WorkspaceTabs } from "./grid/WorkspaceTabs";
 import { LayoutMenu } from "./grid/LayoutMenu";
 import { SettingsHub, type SettingsSection } from "./panels/SettingsHub";
-import { PortsMenu } from "./panels/PortsMenu";
+import { useRemoteDesktop } from "./panels/RdpMenu";
 import { SessionMenu } from "./panels/SessionMenu";
 import { Dropdown } from "./ui/Dropdown";
 import { IconButton } from "./ui/IconButton";
@@ -33,13 +27,14 @@ import { Tooltip } from "./ui/Tooltip";
 import { SetupWizard } from "./panels/SetupWizard";
 import { UsageMenu } from "./panels/UsageMenu";
 import { HAS_TAURI } from "./tauriEnv";
-import { UpdateBanner } from "./panels/UpdateBanner";
+import { startUpdateChecks } from "./state/updates";
 import { Modal } from "./ui/Modal";
 import { confirmEditorDiscard, hasUnsavedEditors } from "./editorChanges";
 import { useAppControl } from "./appControl";
 import { initializeDictation } from "./state/dictation";
 
 export default function App() {
+  useEffect(() => startUpdateChecks(), []);
   useAppControl();
   useBridgeNotifications();
   const unreadNotifications = useNotifications(state => state.items.filter(item => !item.read).length);
@@ -50,14 +45,14 @@ export default function App() {
   const wizardOpen = useStore((s) => s.wizardOpen);
   const setWizardOpen = useStore((s) => s.setWizardOpen);
 
-  const [agentsHubOpen, setAgentsHubOpen] = useState(false);
+  const [syncRequest, setSyncRequest] = useState(0);
+  const [syncing, setSyncing] = useState(false);
   const [sessionDialogOpen, setSessionDialogOpen] = useState(false);
-  const [portsLoading, setPortsLoading] = useState(false);
+  const remoteDesktop = useRemoteDesktop();
   const [menuError, setMenuError] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsSection, setSettingsSection] = useState<SettingsSection>("general");
   const openSettings = (section: SettingsSection) => {
-    setAgentsHubOpen(false);
     setSettingsSection(section);
     setSettingsOpen(true);
     setToolsOpen(false);
@@ -68,9 +63,8 @@ export default function App() {
     let unlisten: (() => void) | undefined;
     void import("@tauri-apps/api/event").then(({ listen }) => listen<string>("app-menu-action", ({ payload }) => {
       if (disposed) return;
-      if (payload === "agents-hub") { setSettingsOpen(false); setAgentsHubOpen(true); return; }
       if (payload === "new-session") { setSettingsOpen(false); setSessionDialogOpen(true); return; }
-      if (["general", "themes", "about", "notifications", "devices", "sync", "remote", "mcp", "help"].includes(payload)) {
+      if (["general", "about", "notifications", "devices", "sync", "remote", "mcp", "help", "agents-hub"].includes(payload)) {
         setSessionDialogOpen(false);
         openSettings(payload as SettingsSection);
       } else if (payload === "font-increase" || payload === "font-decrease") {
@@ -85,8 +79,7 @@ export default function App() {
   useEffect(() => {
     const section = (event: Event) => {
       const value: unknown = (event as CustomEvent).detail;
-      if (value === "agents-hub") { setSettingsOpen(false); setAgentsHubOpen(true); }
-      if (value === "sync" || value === "mcp" || value === "devices" || value === "general") openSettings(value);
+      if (value === "agents-hub" || value === "sync" || value === "mcp" || value === "devices" || value === "general") openSettings(value);
     };
     const terminal = () => setSettingsOpen(false);
     window.addEventListener("pzza-notification-section", section);
@@ -178,8 +171,6 @@ export default function App() {
   return (
     <ThemeProvider>
       <ContextMenu />
-      <AgentsHub open={agentsHubOpen} onClose={() => setAgentsHubOpen(false)} />
-      <NotificationBanners />
       <Modal open={menuError !== null} onClose={() => setMenuError(null)} title="Application menu" size="sm">
         <p role="alert">{menuError}</p>
       </Modal>
@@ -219,40 +210,35 @@ export default function App() {
                 onClick={() => setToolsOpen((v) => !v)}
               />
               <div className={`topbar-tools ${toolsOpen ? "open" : ""}`}>
-                <div className="notification-toolbar">
-                  <Dropdown icon={Bell} title="Notifications" width={380}>
-                    {(close) => <LatestNotifications viewAll={() => { close(); openSettings("notifications"); }} />}
-                  </Dropdown>
-                  {unreadNotifications ? <span className="notification-badge" aria-label={`${unreadNotifications} unread notifications`}>{unreadNotifications > 99 ? "99+" : unreadNotifications}</span> : null}
-                </div>
-                <IconButton icon={Bot} title="Agents Hub" onClick={() => { setSettingsOpen(false); setAgentsHubOpen(true); }} />
-                <QuickChat />
+                <QuickChat onOpenSettings={() => openSettings("quick-chat")} />
                 <LayoutMenu />
-                <IconButton icon={FolderSync} title="Sync projects" onClick={() => openSettings("sync")} />
-                <IconButton icon={Monitor} title="Remote desktop" onClick={() => openSettings("remote")} />
-                <Dropdown icon={EthernetPort} title="Port forwarding" width={320} loading={portsLoading}>
-                  <PortsMenu onLoadingChange={setPortsLoading} />
-                </Dropdown>
-                <IconButton icon={HardDrive} title="Devices" onClick={() => openSettings("devices")} />
-                <IconButton icon={Blocks} title="MCP & connections" onClick={() => openSettings("mcp")} />
+                <div className="toolbar-action-status">
+                  <IconButton icon={FolderSync} title="Sync projects" disabled={syncing} onClick={() => {
+                    setToolsOpen(false);
+                    setSyncRequest(value => value + 1);
+                  }} />
+                  {syncing ? <span className="toolbar-sync-indicator" role="status" aria-label="Sync in progress" /> : null}
+                </div>
+                <IconButton icon={Monitor} title="Remote desktop" loading={remoteDesktop.busy} onClick={() => { void remoteDesktop.openSaved(); }} />
                 <Dropdown icon={Gauge} title="Agent usage" width={320}>
                   <UsageMenu />
                 </Dropdown>
-                <IconButton
-                  icon={CircleQuestionMark}
-                  title="Help & docs"
-                  onClick={() => openSettings("help")}
-                />
+                <div className="notification-toolbar">
+                  <Dropdown icon={Bell} title="Notifications" width={380} panelClassName="notifications-panel">
+                    {(close) => <LatestNotifications viewAll={() => { close(); openSettings("notifications"); }} />}
+                  </Dropdown>
+                  {unreadNotifications ? <span className="notification-badge" aria-label={`${unreadNotifications} unread notifications`} /> : null}
+                </div>
                 <IconButton icon={SettingsIcon} title="Settings" onClick={() => openSettings("general")} />
                 <Dropdown icon={Plus} title="New session" label="New session" width={340}>
                   {(close) => <SessionMenu close={close} />}
                 </Dropdown>
               </div>
             </div>
+
           </div>
         </header>
 
-        <UpdateBanner />
 
         <div className="body">
           <main className="canvas">
@@ -272,7 +258,7 @@ export default function App() {
           }
         }}
       />
-      <SettingsHub open={settingsOpen} section={settingsSection} onSectionChange={setSettingsSection} onClose={() => setSettingsOpen(false)} />
+      <SettingsHub open={settingsOpen} section={settingsSection} onSectionChange={setSettingsSection} onClose={() => setSettingsOpen(false)} syncRequest={syncRequest} onSyncingChange={setSyncing} />
     </ThemeProvider>
   );
 }

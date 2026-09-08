@@ -1,18 +1,21 @@
 import { AsyncButton } from "../ui/AsyncButton";
 import { useRef, useState } from "react";
-import { ChevronDown, MessageSquare } from "lucide-react";
-import { deviceHost } from "../devices";
-import { openQuickChat } from "../serverApi";
+import { MessageSquare, RotateCw, X } from "lucide-react";
+import { create } from "zustand";
+import { deviceHost, THIS_MAC } from "../devices";
+import { attachCommand } from "../connection";
+import { closeQuickChat, openQuickChat } from "../serverApi";
 import { useStore } from "../state/store";
-import { DEFAULT_WORKSPACE_ID } from "../workspaces";
+import { Terminal } from "../terminal/Terminal";
 import { DeviceIcon } from "../ui/DeviceIcon";
+import { Dropdown } from "../ui/Dropdown";
 import { IconButton } from "../ui/IconButton";
-import { Modal } from "../ui/Modal";
 import { Select } from "../ui/Select";
+import "./QuickChat.css";
 
 interface Defaults { deviceId: string; agent: "claude" | "codex" }
 const KEY = "pzza.quickChat.defaults";
-function readDefaults(): Defaults | null {
+function readDefaults(): Defaults {
   try {
     const value: unknown = JSON.parse(localStorage.getItem(KEY) ?? "null");
     if (value && typeof value === "object" && "deviceId" in value && typeof value.deviceId === "string" &&
@@ -20,28 +23,65 @@ function readDefaults(): Defaults | null {
       return { deviceId: value.deviceId, agent: value.agent };
     }
   } catch { /* Storage can be unavailable in private browsing. */ }
-  return null;
+  return { deviceId: THIS_MAC.id, agent: "claude" };
 }
 
-export function QuickChat() {
+interface QuickChatPreferences {
+  defaults: Defaults;
+  notice: string;
+  update: (change: Partial<Defaults>) => void;
+}
+
+const useQuickChatPreferences = create<QuickChatPreferences>((set, get) => ({
+  defaults: readDefaults(),
+  notice: "",
+  update: change => {
+    const defaults = { ...get().defaults, ...change };
+    let notice = "";
+    try { localStorage.setItem(KEY, JSON.stringify(defaults)); }
+    catch { notice = "Your choice applies now, but could not be saved on this device."; }
+    set({ defaults, notice });
+  },
+}));
+
+export function QuickChatSettings() {
   const devices = useStore(state => state.devices);
-  const [defaults, setDefaults] = useState(readDefaults);
-  const [deviceId, setDeviceId] = useState(defaults?.deviceId ?? devices[0]?.id ?? "");
-  const [agent, setAgent] = useState<Defaults["agent"]>(defaults?.agent ?? "claude");
-  const [remember, setRemember] = useState(true);
-  const [open, setOpen] = useState(false);
+  const { defaults, notice, update } = useQuickChatPreferences();
+  const deviceAvailable = devices.some(device => device.id === defaults.deviceId);
+  return <div className="quick-chat-settings">
+    <section className="settings-section">
+      <div className="settings-form">
+        <label className="settings-field"><span>Agent</span><Select value={defaults.agent} options={[{ value: "claude", label: "Claude" }, { value: "codex", label: "Codex" }]}
+          onChange={value => { if (value === "claude" || value === "codex") update({ agent: value }); }} /></label>
+        <label className="settings-field"><span>Device</span><Select value={defaults.deviceId} placeholder="Choose a device"
+          options={devices.map(device => ({ value: device.id, label: device.name, icon: <DeviceIcon device={device} /> }))}
+          onChange={deviceId => update({ deviceId })} /></label>
+      </div>
+      <p className="set-note">Uses the agent installed and signed in on this device.</p>
+      {!deviceAvailable && <p className="set-note" role="status">Your saved device is unavailable. Choose another device.</p>}
+      {notice && <p className="set-note" role="status">{notice}</p>}
+    </section>
+    <section className="settings-section">
+      <div className="settings-row-copy"><span>Keep your conversation</span><small>Hiding the dropdown keeps your chat running. Close chat ends it and applies your choices to the next chat.</small></div>
+    </section>
+  </div>;
+}
+
+type Chat = Awaited<ReturnType<typeof openQuickChat>> & { deviceName: string };
+
+export function QuickChat({ onOpenSettings }: { onOpenSettings?: () => void }) {
+  const devices = useStore(state => state.devices);
+  const [chat, setChat] = useState<Chat | null>(null);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const inflight = useRef(false);
 
-  const launch = async (choice: Defaults, save: boolean) => {
+  const launch = async () => {
+    const choice = useQuickChatPreferences.getState().defaults;
     if (inflight.current) return;
-    setDeviceId(choice.deviceId);
-    setAgent(choice.agent);
     const device = devices.find(item => item.id === choice.deviceId);
     if (!device) {
-      setMessage("Your saved device is no longer available. Choose another device.");
-      setOpen(true);
+      setMessage("Choose an available device to open your chat.");
       return;
     }
     inflight.current = true;
@@ -49,61 +89,57 @@ export function QuickChat() {
     setMessage("");
     try {
       const result = await openQuickChat(deviceHost(device), choice.agent);
-      const store = useStore.getState();
       const id = result.host ? `${result.host}::${result.session}` : result.session;
-      store.unhideTile(id);
-      store.setWorkspace(store.sessionWs[id] ?? DEFAULT_WORKSPACE_ID);
-      store.openSession(result.session, undefined, result.host);
-      if (save) {
-        setDefaults(choice);
-        try { localStorage.setItem(KEY, JSON.stringify(choice)); }
-        catch { setMessage("Quick Chat opened, but your default could not be saved in browser storage."); setOpen(true); return; }
-      }
+      useStore.getState().hideTile(id);
+      setChat({ ...result, deviceName: device.name });
       if (result.agent !== choice.agent) {
-        setMessage(`Reopened the existing ${result.agent === "claude" ? "Claude" : "Codex"} session. Terminate that session before starting a different agent on this device.`);
-        setOpen(true);
-      } else setOpen(false);
+        setMessage("Reopened the existing agent. Close this chat before changing its agent.");
+      }
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Could not open Quick Chat. Choose another device or retry.");
-      setRemember(false);
-      setOpen(true);
+      setMessage(error instanceof Error ? error.message : "Could not open Quick Chat. Retry or choose another device.");
     } finally { inflight.current = false; setBusy(false); }
   };
 
-  return <>
-    <div style={{ display: "flex", alignItems: "center", gap: 0 }}>
-      <IconButton icon={MessageSquare} title="Quick Chat" loading={busy}
-        onClick={() => {
-          if (defaults) void launch(defaults, false);
-          else { setMessage(""); setRemember(true); setOpen(true); }
-        }} />
-      <IconButton icon={ChevronDown} size={12} title="Quick Chat settings" disabled={busy}
-        onClick={() => { setMessage(""); setRemember(true); setOpen(true); }} />
-    </div>
-    <Modal open={open} onClose={() => setOpen(false)} title="Quick Chat" icon={MessageSquare} size="sm">
-      <div className="menu-body">
-        <p className="muted">One reusable terminal per device. Choose your default for one-click access.</p>
-        <div className="ns-row">
-          <span className="ns-row-label">Agent</span>
-          <div className="ns-row-control"><Select value={agent} options={[{ value: "claude", label: "Claude" }, { value: "codex", label: "Codex" }]}
-            onChange={value => { if (!inflight.current && (value === "claude" || value === "codex")) setAgent(value); }} /></div>
+  const terminate = async () => {
+    if (!chat || inflight.current) return;
+    inflight.current = true;
+    setBusy(true);
+    setMessage("");
+    try {
+      await closeQuickChat(chat.host);
+      setChat(null);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Could not close this chat. Retry when the device is available.");
+    } finally { inflight.current = false; setBusy(false); }
+  };
+
+  const command = chat ? attachCommand({ host: chat.host || null }, chat.session) : null;
+  return <Dropdown icon={MessageSquare} title="Quick Chat" width={620} keepMounted loading={busy}
+    panelClassName="quick-chat-panel" onOpen={() => {
+      if (!chat) void launch();
+    }}>
+    {(dismiss, open) => <>
+      <div className="quick-chat-header">
+        <div><strong>Quick Chat</strong><span className="muted">{chat ? `${chat.deviceName} · ${chat.agent === "claude" ? "Claude" : "Codex"}` : busy ? "Opening your chat…" : "Your conversation"}</span></div>
+        <div className="quick-chat-actions">
+          <IconButton icon={X} title="Hide chat" onClick={dismiss} />
         </div>
-        <div className="ns-row">
-          <span className="ns-row-label">Device</span>
-          <div className="ns-row-control"><Select value={deviceId} placeholder="Choose a device"
-            options={devices.map(device => ({ value: device.id, label: device.name, icon: <DeviceIcon device={device} /> }))}
-            onChange={value => { if (!inflight.current) setDeviceId(value); }} /></div>
-        </div>
-        <label style={{ display: "flex", alignItems: "center", gap: 8, margin: "12px 0" }}>
-          <input type="checkbox" checked={remember} disabled={busy} onChange={event => setRemember(event.target.checked)} />
-          Use this agent and device by default
-        </label>
-        <p className="muted">Starts in the device’s home folder using its installed agent and login. Closing the terminal window keeps the session running.</p>
-        <p className="muted">Switching devices does not transfer the conversation or stop a session on an unreachable device. An existing session keeps its current agent until terminated.</p>
-        {message && <p role="status">{message}</p>}
-        <AsyncButton className="btn btn-accent" loading={busy} icon={MessageSquare} disabled={!devices.some(device => device.id === deviceId)}
-          onClick={() => void launch({ deviceId, agent }, remember)}>Open Quick Chat</AsyncButton>
       </div>
-    </Modal>
-  </>;
+      {!chat && <div className="quick-chat-empty">
+        {busy ? <p className="muted" role="status">Connecting to your agent…</p> : <div className="quick-chat-actions">
+          <AsyncButton loading={busy} icon={RotateCw} onClick={() => void launch()}>{message ? "Retry" : "Open chat"}</AsyncButton>
+          {onOpenSettings && <button type="button" className="btn" onClick={() => { dismiss(); onOpenSettings(); }}>Open settings</button>}
+        </div>}
+      </div>}
+      {message && <p className="quick-chat-message" role="status">{message}</p>}
+      {chat && command && <div className="quick-chat-terminal">
+        <Terminal key={`${chat.host}::${chat.session}`} tileId={`quick-chat:${chat.host}`} name={chat.session} host={chat.host}
+          cmd={command.cmd} args={command.args} active={open} />
+      </div>}
+      {chat && <div className="quick-chat-footer">
+        <span className="muted">Hiding keeps your chat running.</span>
+        <AsyncButton className="btn btn-sm btn-danger" loading={busy} icon={X} onClick={() => void terminate()}>Close chat</AsyncButton>
+      </div>}
+    </>}
+  </Dropdown>;
 }

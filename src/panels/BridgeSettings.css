@@ -1,9 +1,9 @@
-.bridge-settings { margin-top: 24px; border-top: 1px solid var(--border); padding-top: 24px; }
+.bridge-settings { margin: 0; padding: 0; }
 .bridge-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 .bridge-heading h3 { display: flex; align-items: center; gap: 8px; margin: 0; font-size: 16px; }
 .bridge-settings p { color: var(--muted); font-size: 12px; line-height: 1.6; margin: 8px 0 12px; }
-.bridge-notice { border-left: 2px solid var(--accent); padding-left: 12px; }
-.bridge-card { padding: 18px; margin-top: 16px; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; }
+.bridge-notice { padding: 8px 0; }
+.bridge-card { padding: 22px 0; margin: 0; border-bottom: 1px solid var(--border); }
 .bridge-card h4 { margin: 0 0 10px; font-size: 13px; }
 .bridge-fingerprint { display: block; overflow-wrap: anywhere; color: var(--muted); font-size: 11px; line-height: 1.6; user-select: text; }
 .bridge-form { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 12px 0; }
@@ -31,7 +31,7 @@
 @media (max-width: 720px) {
   .bridge-form, .bridge-permissions { grid-template-columns: 1fr; }
   .bridge-heading, .bridge-save, .bridge-expiry { align-items: flex-start; flex-wrap: wrap; }
-  .bridge-card { padding: 12px; }
+  .bridge-card { padding: 16px 0; }
 }
 .bridge-job-log { font-size: 11px; color: var(--muted); margin: 10px 0; }
 .bridge-job-log summary { cursor: pointer; }
@@ -43,3 +43,23 @@
 .bridge-audit li { padding: 10px 0; border-top: 1px solid var(--border); }
 .bridge-audit li > div { display: flex; justify-content: space-between; gap: 12px; font-size: 12px; }
 .bridge-audit small { display: block; color: var(--muted); margin-top: 5px; font-size: 11px; overflow-wrap: anywhere; }
+
+.bridge-settings .bridge-card { padding: 14px 0; }
+.bridge-settings .bridge-card h4 { margin: 0 0 10px; font-size: 12px; font-weight: 600; }
+.bridge-settings p { font-size: 11px; line-height: 1.55; margin: 6px 0 10px; }
+.bridge-settings .bridge-form { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); margin: 10px 0; gap: 10px; }
+.bridge-settings .bridge-form label, .bridge-settings .bridge-field { font-size: 12px; gap: 5px; }
+.bridge-settings input:not([type="checkbox"]), .bridge-settings select { height: 32px; padding: 6px 9px; font-size: 12px; }
+.bridge-settings textarea { padding: 8px 9px; min-height: 68px; font-size: 11px; }
+.bridge-disclosure { font-size: 11px; color: var(--muted); margin: 8px 0; }
+.bridge-disclosure summary { cursor: pointer; padding: 3px 0; }
+.bridge-disclosure[open] summary { margin-bottom: 6px; }
+.bridge-count { font-size: 11px; font-weight: 400; color: var(--muted); margin-left: 5px; }
+.bridge-peer > summary { cursor: pointer; font-size: 12px; font-weight: 600; }
+.bridge-peer-status { color: var(--muted); font-size: 11px; font-weight: 400; margin-left: 12px; }
+.bridge-peer[open] > summary { margin-bottom: 12px; }
+.bridge-settings .bridge-permissions { gap: 8px 12px; }
+.bridge-settings .bridge-check { font-size: 11px; }
+.bridge-settings .bridge-save { justify-content: space-between; align-items: center; padding: 12px 0; margin: 0; }
+.bridge-settings .bridge-expiry { flex-wrap: wrap; gap: 8px; }
+.bridge-settings .bridge-expiry select { min-width: 120px; }

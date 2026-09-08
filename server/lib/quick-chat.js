@@ -21,13 +21,27 @@ esac`;
 }
 
 export function openQuickChat(body, run = execFile) {
+  return runQuickChat(body, false, run);
+}
+
+export function closeQuickChat(body, run = execFile) {
+  return runQuickChat(body, true, run);
+}
+
+function runQuickChat(body, closing, run) {
   if (!body || typeof body !== "object" || Array.isArray(body) ||
-      Object.keys(body).some(key => key !== "host" && key !== "agent") ||
+      Object.keys(body).some(key => key !== "host" && (closing || key !== "agent")) ||
       typeof body.host !== "string" || (body.host && !SSH_TOKEN.test(body.host)) ||
-      (body.agent !== "claude" && body.agent !== "codex")) {
+      (!closing && body.agent !== "claude" && body.agent !== "codex")) {
     return Promise.reject(Object.assign(new Error("Choose a valid device and agent."), { status: 400 }));
   }
-  const command = quickChatCommand(body.agent);
+  const command = closing ? `command -v tmux >/dev/null 2>&1 || exit 41
+if ! tmux has-session -t '=pzza-quick-chat' 2>/dev/null; then exit 0; fi
+owner=$(tmux show-environment -t '=pzza-quick-chat' PZZA_QUICK_CHAT_AGENT 2>/dev/null) || exit 44
+case "$owner" in
+  PZZA_QUICK_CHAT_AGENT=claude|PZZA_QUICK_CHAT_AGENT=codex) tmux kill-session -t '=pzza-quick-chat' ;;
+  *) exit 44 ;;
+esac` : quickChatCommand(body.agent);
   // Explicit empty host always means this device, including receiver mode.
   const args = body.host ? ["-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5",
     "-o", "StrictHostKeyChecking=yes", "-o", "ForwardAgent=no", "-o", "ClearAllForwardings=yes",
@@ -44,6 +58,7 @@ export function openQuickChat(body, run = execFile) {
         reject(Object.assign(new Error(message), { status: 503 }));
         return;
       }
+      if (closing) { resolve({ closed: true }); return; }
       const agent = String(stdout).trim();
       if (agent !== "claude" && agent !== "codex") {
         reject(Object.assign(new Error("The device returned an invalid Quick Chat response."), { status: 502 }));
@@ -55,7 +70,7 @@ export function openQuickChat(body, run = execFile) {
 }
 
 export async function quickChatRouter(req, res, url, json) {
-  if (url.pathname !== "/quick-chat/open") return false;
+  if (url.pathname !== "/quick-chat/open" && url.pathname !== "/quick-chat/close") return false;
   if (req.method !== "POST") { json(res, 405, { error: "Use POST." }); return true; }
   const timer = setTimeout(() => req.destroy(), 5000);
   try {
@@ -71,7 +86,7 @@ export async function quickChatRouter(req, res, url, json) {
     let value;
     try { value = JSON.parse(body); }
     catch { json(res, 400, { error: "Invalid request." }); return true; }
-    json(res, 200, await openQuickChat(value));
+    json(res, 200, await (url.pathname === "/quick-chat/close" ? closeQuickChat(value) : openQuickChat(value)));
   } catch (error) {
     if (!res.destroyed) json(res, error.status ?? 503, { error: error.message });
   } finally { clearTimeout(timer); }

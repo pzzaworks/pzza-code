@@ -17,7 +17,7 @@ export interface Notice {
   createdAt: number; read: boolean; target?: NotificationTarget; dedupeKey?: string;
 }
 interface Preferences {
-  enabled: boolean; banners: boolean; desktop: boolean;
+  enabled: boolean; desktop: boolean;
   events: Partial<Record<NotificationEvent, boolean>>;
   categories: Record<NotificationCategory, boolean>; mutedUntil: number;
 }
@@ -27,7 +27,7 @@ interface NotificationState {
   configure(patch: Partial<Preferences>): void;
 }
 const key = "pzza.notifications.v1";
-const defaults: Preferences = { enabled: true, banners: true, desktop: false, events: {}, categories: { sync: true, terminal: true, bridge: true, devices: true, app: true }, mutedUntil: 0 };
+const defaults: Preferences = { enabled: true, desktop: false, events: {}, categories: { sync: true, terminal: true, bridge: true, devices: true, app: true }, mutedUntil: 0 };
 const categories = ["sync", "terminal", "bridge", "devices", "app"];
 function initial(): { items: Notice[]; preferences: Preferences } {
   try {
@@ -51,7 +51,7 @@ function initial(): { items: Notice[]; preferences: Preferences } {
     const preferences = { ...defaults, categories: { ...defaults.categories } };
     if (raw.preferences && typeof raw.preferences === "object") {
       const value = raw.preferences as Record<string, unknown>;
-      for (const field of ["enabled", "banners", "desktop"] as const) if (typeof value[field] === "boolean") preferences[field] = value[field];
+      for (const field of ["enabled", "desktop"] as const) if (typeof value[field] === "boolean") preferences[field] = value[field];
       if (typeof value.mutedUntil === "number" && Number.isFinite(value.mutedUntil)) preferences.mutedUntil = value.mutedUntil;
       if (value.events && typeof value.events === "object") {
         preferences.events = {};
@@ -86,7 +86,6 @@ export function notify(input: Omit<Notice, "id" | "createdAt" | "read">): void {
   const notice: Notice = { ...input, title: input.title.slice(0, 160), body: input.body.slice(0, 400), id: crypto.randomUUID(), createdAt: now, read: false };
   useNotifications.setState({ items: [notice, ...items.filter(item => now - item.createdAt < 30 * 86400000)].slice(0, 300) });
   if (preferences.mutedUntil > now) return;
-  if (preferences.banners) window.dispatchEvent(new CustomEvent<Notice>("pzza-notification", { detail: notice }));
   if (preferences.desktop && !document.hasFocus() && typeof Notification !== "undefined" && Notification.permission === "granted") {
     // Desktop alerts omit project names, paths, and terminal text for privacy.
     try { const alert = new Notification("PzzaCode", { body: "New activity is available in your notification center.", tag: input.category }); alert.onclick = () => { window.focus(); alert.close(); }; } catch { /* In-app history remains available when the OS rejects an alert. */ }

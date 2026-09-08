@@ -67,13 +67,12 @@ export function McpMenu() {
   const frameworks = cfg ? Object.entries(cfg.frameworks) : [];
 
   return (
-    <div className="menu-body">
-      <div className="menu-title">MCP</div>
+    <div className="settings-page mcp-settings">
 
-      <div className="mcp-toggle">
-        <div className="set-label">
+      <div className="settings-row">
+        <div className="settings-row-copy">
           <span>Allow app window control</span>
-          <span className="set-hint">let connected agents control this app window</span>
+          <small>Control editor panels, tile focus and layouts.</small>
         </div>
         <button
           className={`switch ${enabled ? "switch-on" : ""}`}
@@ -86,31 +85,32 @@ export function McpMenu() {
         </button>
       </div>
 
-      <p className="set-note" style={{ marginTop: 0 }}>
-        Control editor panels, tile focus and layouts. Session,
-        file and device tools remain available independently of this switch.
-      </p>
-
-      <label className="field"> <span className="field-label">App SSH host (optional)</span>
-        <input className="field-input" value={agentHost} onChange={(event) => setAgentHost(event.target.value)} placeholder="user@app-host" spellCheck={false} />
+      <p className="set-note">Session, file and device tools remain available when window control is off.</p>
+      <section className="settings-section" aria-label="Connection">
+      <div className="settings-form">
+      <label className="settings-field"><span>App SSH host</span>
+        <input className="field-input" value={agentHost} onChange={(event) => setAgentHost(event.target.value)} placeholder="Local app (default)" spellCheck={false} /><small>Optional SSH target for an app on another device.</small>
       </label>
       {agentHost.trim() ? <>
-        <label className="field"><span className="field-label">MCP script path on the agent's device</span>
+        <label className="settings-field"><span>MCP script path</span>
           <input className="field-input" value={mcpPath} onChange={(event) => setMcpPath(event.target.value)} placeholder="/absolute/path/to/mcp/server.js" spellCheck={false} />
         </label>
         <p className="set-note">Copy this configuration into the agent on another device. That device needs Node.js, the installed MCP package, and key-based SSH access to the app host with its host key already trusted. The app must be running. Credentials stay on the app host; no public port is opened. Tools use the app host's device names and SSH access.</p>
       </> : null}
-      {configError ? <p className="set-note">{configError}</p> : null}
+      </div>
+      {configError ? <p className="set-note" role="alert">{configError}</p> : null}
 
+      </section>
+      <section className="settings-section" aria-label="Integrations">
+      <h3 className="set-title">Integrations</h3>
       <div className="mcp-list">
         {frameworks.length === 0 ? (
-          <p className="muted small pad">Server unreachable.</p>
+          <p className="settings-empty">Server unreachable.</p>
         ) : (
           frameworks.map(([key, fw]) => (
-            <div key={key} className="mcp-row">
-              <span className="mcp-name">{fw.label}</span>
-              <div className="mcp-actions">
-                {note[key] ? <span className="mcp-note">{note[key]}</span> : null}
+            <div key={key} className="settings-row mcp-row">
+              <div className="settings-row-copy"><span>{fw.label}</span>{note[key] ? <small role="status">{note[key]}</small> : null}</div>
+              <div className="settings-actions">
                 {fw.cli && !agentHost.trim() ? (
                   <AsyncButton className="btn btn-accent btn-sm" onClick={() => add(key)} loading={busy === key} disabled={busy !== null || !enabled} icon={Download} iconSize={13}>
                     Add
@@ -120,9 +120,9 @@ export function McpMenu() {
                   className="btn btn-sm"
                   onClick={() => copy(key, fw.config)}
                   disabled={Boolean(agentHost.trim()) && !mcpPath.trim().startsWith("/")}
-                  title="Copy config"
+                  title="Copy configuration" aria-label={`Copy ${fw.label} configuration`}
                 >
-                  <Copy size={13} strokeWidth={2} />
+                  <Copy size={13} strokeWidth={2} /> Copy
                 </button>
               </div>
             </div>
@@ -130,6 +130,7 @@ export function McpMenu() {
         )}
       </div>
 
+      </section>
       {cfg ? (
         <p className="set-note mcp-path" title={cfg.path}>
           <Check size={11} strokeWidth={2.5} /> server: {cfg.path}

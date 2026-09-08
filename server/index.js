@@ -9,6 +9,7 @@
 // connected backend can actually forward. This file is the composition root: it
 // wires the HTTP routes to the focused modules in ./lib and boots the server.
 import http from "node:http";
+import { watchDesktopLifetime } from "./lib/agent-lifecycle.js";
 import { quickChatRouter } from "./lib/quick-chat.js";
 
 import { DEVBOX, IS_CLIENT, MCP_PATH, PORT, STATE_DIR } from "./lib/config.js";
@@ -219,9 +220,17 @@ const server = http.createServer(async (req, res) => {
   json(res, 404, { error: "not found" });
 });
 
-// Fail loudly if the port is already taken (another process must not silently
-// become "the agent" the app talks to); the app verifies /health's id as well.
+// If the port is already taken, a previous agent that has not yet noticed its
+// own parent died may still hold it, so retry the bind for a few seconds to let
+// that stale sibling self-exit. Past that window the occupant is not a
+// self-releasing agent, so fail loudly - another process must not silently
+// become "the agent" the app talks to (the app also verifies /health's id).
+const BIND_DEADLINE = Date.now() + 8000;
 server.on("error", (e) => {
+  if (e && e.code === "EADDRINUSE" && Date.now() < BIND_DEADLINE) {
+    setTimeout(() => server.listen(PORT, "127.0.0.1"), 500).unref();
+    return;
+  }
   console.error(`PzzaCode agent: cannot listen on 127.0.0.1:${PORT} (${e && e.code ? e.code : e})`);
   process.exit(2);
 });
@@ -246,11 +255,17 @@ server.listen(PORT, "127.0.0.1", () => {
 
 
 // Cancel owned bridge jobs before the device agent exits normally.
-for (const signal of ["SIGTERM", "SIGINT"]) {
-  process.once(signal, () => {
-    server.close();
-    const timeout = setTimeout(() => process.exit(1), 20_000);
-    timeout.unref();
-    void bridge.close().then(() => process.exit(0), () => process.exit(1));
-  });
+let stopping = false;
+function shutdown() {
+  if (stopping) return;
+  stopping = true;
+  server.close();
+  // Bound cleanup even when bridge jobs or sockets have not settled.
+  const timeout = setTimeout(() => process.exit(1), 3000);
+  void bridge.close().then(() => {
+    clearTimeout(timeout);
+    process.exit(0);
+  }, () => process.exit(1));
 }
+for (const signal of ["SIGTERM", "SIGINT"]) process.once(signal, shutdown);
+watchDesktopLifetime(shutdown);

@@ -33,6 +33,7 @@ yarn-debug.log*
 yarn-error.log*
 
 # Caches
+.playwright-cli/
 .cache/
 .vite/
 .eslintcache

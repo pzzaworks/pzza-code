@@ -11,6 +11,7 @@ export type IconType = ComponentType<{
 // dataTransfer type used when dragging a tile onto a workspace tab.
 export const SESSION_DND = "application/pzza-session";
 export const SESSION_TILE_DND = "application/pzza-tile";
+export const QUICK_CHAT_SESSION = "pzza-quick-chat";
 
 // Tile display name: drop a leading machine prefix like "Devbox - " so the tile
 // reads "Work Agent", not "Devbox - Work Agent". The machine is shown by

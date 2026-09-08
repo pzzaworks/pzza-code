@@ -44,6 +44,7 @@ export function IconButton({
       } ${danger ? "icon-btn-danger" : ""} ${className}`}
       onClick={() => { if (!blocked) onClick?.(); }}
       title={title}
+      aria-label={title}
       disabled={blocked}
       aria-busy={loading}
       whileTap={blocked ? undefined : { scale: 0.86 }}
