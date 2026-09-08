@@ -2,6 +2,8 @@
 // HTTP API. UI commands wait for an acknowledgement from the explicitly
 // selected app window; device tools use the guarded backend directly.
 import { get, post, qs } from "./agent.js";
+import { BRIDGE_TOOLS } from "./bridge-tools.js";
+import { AGENTS_HUB_TOOLS } from "./agents-hub-tools.js";
 
 const clientId = { type: "string", description: "Explicit app client ID from app_list_clients" };
 const tileId = { type: "string", description: "Tile ID from app_get_state" };
@@ -15,6 +17,8 @@ function appTool(name, description, action, properties = {}, required = []) {
 }
 
 const TOOLS = [
+  ...BRIDGE_TOOLS,
+  ...AGENTS_HUB_TOOLS,
   {
     name: "app_list_clients",
     description: "List live app windows that enabled agent control. Select an explicit clientId for UI commands.",

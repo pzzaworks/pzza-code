@@ -1,3 +1,4 @@
+import { useDelayedLoading } from "../ui/useDelayedLoading";
 import { useCallback, useEffect, useState } from "react";
 import { AlertTriangle, Loader2, RefreshCw } from "lucide-react";
 import {
@@ -116,6 +117,9 @@ function loadMode(): Mode {
 // Agent usage for the connected device's Claude / Codex accounts.
 export function UsageMenu() {
   const [loading, setLoading] = useState(true);
+  const [spinning, setSpinning] = useState(false);
+  const showSpinner = useDelayedLoading(loading);
+  useEffect(() => { if (showSpinner) setSpinning(true); }, [showSpinner]);
   const [accounts, setAccounts] = useState<AccountUsage[]>([]);
   const [failed, setFailed] = useState(false);
   const [mode, setMode] = useState<Mode>(loadMode);
@@ -132,21 +136,24 @@ export function UsageMenu() {
 
   const load = useCallback((fresh = false) => {
     setLoading(true);
-    fetchUsage(fresh)
+    const usageRequest = fetchUsage(fresh)
       .then((a) => {
         setAccounts(a);
         setFailed(false);
       })
-      .catch(() => setFailed(true))
-      .finally(() => setLoading(false));
+      .catch(() => setFailed(true));
     // Spend resolves separately (a slower local scan) so it never holds up usage.
-    fetchSpend()
+    const spendRequest = fetchSpend(fresh)
       .then((s) => {
         const map: Record<string, AccountSpend> = {};
         for (const e of s) map[`${e.provider}:${e.label}`] = e;
         setSpend(map);
       })
       .catch(() => undefined);
+    void Promise.allSettled([usageRequest, spendRequest]).then(() => {
+      setLoading(false);
+      if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) setSpinning(false);
+    });
   }, []);
   useEffect(() => load(false), [load]);
 
@@ -169,15 +176,15 @@ export function UsageMenu() {
               Used
             </button>
           </div>
-          <button className="usage-refresh" onClick={() => load(true)} title="Refresh" disabled={loading}>
-            <RefreshCw size={13} className={loading ? "sw-spin" : ""} />
+          <button className="usage-refresh" onClick={() => load(true)} title="Refresh" disabled={loading || spinning} aria-busy={loading}>
+            <RefreshCw size={13} className={spinning ? "sw-spin" : ""} onAnimationIteration={() => { if (!loading) setSpinning(false); }} />
           </button>
         </div>
       </div>
 
       {loading && accounts.length === 0 ? (
         <div className="usage-empty">
-          <Loader2 size={15} className="sw-spin" /> Loading...
+          {showSpinner ? <Loader2 size={15} className="sw-spin" /> : null} Loading...
         </div>
       ) : failed ? (
         <div className="usage-empty">

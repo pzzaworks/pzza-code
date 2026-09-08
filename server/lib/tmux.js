@@ -1,9 +1,10 @@
 // tmux session and window listing on the connected device (or over ssh to a
 // named host, for the multi-device scan).
 import { execFile } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { DEVBOX, IS_CLIENT } from "./config.js";
 import { sh, shQuote, SSH_TOKEN } from "./shell.js";
-import { ACTIVITY_PROBE_SCRIPT, detectSessionActivity } from "./session-activity.js";
+import { ACTIVITY_PROBE_SCRIPT, detectSessionActivity, probeSessionActivity } from "./session-activity.js";
 
 const SESSIONS_CMD =
   "tmux list-sessions -F '#{session_name}\t#{session_windows}\t#{session_attached}\t#{pane_current_command}\t#{pane_current_path}'";
@@ -41,6 +42,35 @@ export function terminateSession(name, window, host) {
     execFile(executable, args, { timeout: 15_000 }, (error) => {
       if (error) reject(new Error("Could not close the session on this device"));
       else resolve();
+    });
+  });
+}
+
+// Resolve the source's live pane rather than a cached path from the UI. A copy
+// starts a separate shell, so terminating it cannot affect the original pane.
+export function duplicationCommand(name, window, copyName) {
+  if (typeof name !== "string" || !name.trim() || /[\x00-\x1f\x7f]/.test(name)) throw new Error("invalid session");
+  if (window !== undefined && (!Number.isInteger(window) || window < 0)) throw new Error("invalid window");
+  if (typeof copyName !== "string" || !/^[A-Za-z0-9_-]+$/.test(copyName)) throw new Error("invalid copy name");
+  const target = shQuote(`=${name}:${window ?? ""}`);
+  return `cwd=$(tmux display-message -p -t ${target} '#{pane_current_path}') || exit 1
+[ -n "$cwd" ] && [ -d "$cwd" ] || exit 1
+tmux new-session -d -s ${shQuote(copyName)} -c "$cwd" || exit 1
+printf '%s' "$cwd"`;
+}
+
+export function duplicateSession(name, window, host) {
+  if (host !== undefined && (typeof host !== "string" || (host && !SSH_TOKEN.test(host)))) return Promise.reject(new Error("invalid host"));
+  const prefix = typeof name === "string" ? name.replace(/[^A-Za-z0-9_-]/g, "-").slice(0, 60) : "";
+  const copyName = `${prefix || "session"}-copy-${randomUUID()}`;
+  const command = duplicationCommand(name, window, copyName);
+  const targetHost = host === undefined ? (IS_CLIENT ? DEVBOX : "") : host;
+  return new Promise((resolve, reject) => {
+    execFile(targetHost ? "ssh" : "sh", targetHost
+      ? ["-o", "BatchMode=yes", "-o", "ConnectTimeout=8", "-o", "StrictHostKeyChecking=accept-new", targetHost, command]
+      : ["-c", command], { timeout: 15_000, maxBuffer: 64 * 1024 }, (error, cwd) => {
+      if (error) reject(new Error("Could not duplicate the session on this device. Check that the source window is still running."));
+      else resolve({ name: copyName, cwd });
     });
   });
 }
@@ -112,19 +142,21 @@ export function listWindows() {
 
 
 const pendingActivity = new Map();
+const activityCache = new Map();
+const ACTIVITY_FRESH_MS = 1_000;
 const ACTIVITY_FALLBACK = `tmux list-panes -a -F '#{session_name}\t#{window_index}\t#{window_active}\t#{pane_active}\t#{pane_current_command}' | while IFS="$(printf '\\t')" read -r session window active pane_active command; do [ "$pane_active" = 1 ] || continue; case "$command" in claude|codex|bash|zsh|fish|sh|dash|node|nodejs|bun|deno|python|python3|git|vim|nvim|less|ssh|tmux|btop|htop|top|yazi|ranger|nnn|lf|docker|lazydocker) ;; *) command=;; esac; printf '%s\\t%s\\t%s\\t%s\\n' "$session" "$window" "$active" "$command"; done`;
 
 export function sessionActivity(host) {
   if (host !== undefined && (typeof host !== "string" || (host && !SSH_TOKEN.test(host)))) return Promise.reject(new Error("invalid host"));
   const target = host === undefined ? (IS_CLIENT ? DEVBOX : "") : host;
+  const cached = activityCache.get(target);
+  if (cached && Date.now() - cached.at < ACTIVITY_FRESH_MS) return Promise.resolve(cached.rows);
   if (pendingActivity.has(target)) return pendingActivity.get(target);
-  const request = new Promise((resolve) => {
-    const command = target ? "ssh" : process.execPath;
-    const args = target
-      ? ["-o", "BatchMode=yes", "-o", "ConnectTimeout=3", "-o", "StrictHostKeyChecking=accept-new",
+  const request = (target ? new Promise((resolve) => {
+    const command = "ssh";
+    const args = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=3", "-o", "StrictHostKeyChecking=accept-new",
         "-o", "ControlMaster=auto", "-o", "ControlPath=~/.ssh/pzza-mux-%C", "-o", "ControlPersist=120", target,
-        `if command -v node >/dev/null 2>&1; then node -e ${shQuote(ACTIVITY_PROBE_SCRIPT)}; else ${ACTIVITY_FALLBACK}; fi`]
-      : ["-e", ACTIVITY_PROBE_SCRIPT];
+        `if command -v node >/dev/null 2>&1; then node -e ${shQuote(ACTIVITY_PROBE_SCRIPT)}; else ${ACTIVITY_FALLBACK}; fi`];
     execFile(command, args, { timeout: 9_000, maxBuffer: 1024 * 1024 }, (error, stdout) => {
       if (error) return resolve([]);
       try {
@@ -139,6 +171,12 @@ export function sessionActivity(host) {
         return resolve(detectSessionActivity(panes, []));
       }
     });
+  }) : probeSessionActivity()).then((rows) => {
+    for (const [key, value] of activityCache) {
+      if (Date.now() - value.at >= ACTIVITY_FRESH_MS) activityCache.delete(key);
+    }
+    activityCache.set(target, { at: Date.now(), rows });
+    return rows;
   }).finally(() => pendingActivity.delete(target));
   pendingActivity.set(target, request);
   return request;

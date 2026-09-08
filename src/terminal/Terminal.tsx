@@ -10,9 +10,14 @@ import { themeById } from "../theme/themes";
 import { killPty, resizePty, spawnPty, writePty } from "./ptyBridge";
 import { openWsPty, type WsPtyHandle } from "./wsPty";
 import { runBrowserPreview } from "./browserPreview";
+import { createOutputScheduler } from "./outputScheduler";
 import { HAS_TAURI } from "../tauriEnv";
 import { uploadPasteImage } from "../serverApi";
-import type { TileStatus } from "../sessionMeta";
+import { sessionDisplayName, type TileStatus } from "../sessionMeta";
+import { registerContextMenu, clipboardPaste } from "../ui/ContextMenu";
+import { registerDictationTarget } from "../state/dictation";
+import { notify } from "../state/notifications";
+import { createTerminalSignals } from "./notificationSignals";
 
 // Copy text to the OS clipboard. navigator.clipboard only exists in a secure
 // context (https or localhost), so on a client that opened the app over plain
@@ -45,6 +50,7 @@ async function copyToClipboard(text: string): Promise<boolean> {
 }
 
 interface Props {
+  tileId: string;
   name: string;
   host?: string;
   cmd: string;
@@ -59,13 +65,18 @@ interface Props {
 // fontSize * lineHeight lands on a whole CSS pixel: with a fractional cell
 // height the FitAddon's row count and the renderer's real cell height drift
 // apart over many rows, pushing the last line past the tile's clipped edge.
+// Cap simultaneous GPU contexts; additional visible terminals use xterm's DOM renderer.
+const MAX_WEBGL_TERMINALS = 8;
+let liveWebglTerminals = 0;
 const LINE_RATIO = 1.15;
 const snappedLineHeight = (fontSize: number) => Math.round(fontSize * LINE_RATIO) / fontSize;
 
 // One live terminal tile. xterm owns its own WebGL canvas, so it lives outside
 // React's reconcile loop. Transport depends on where the app runs: Rust PTY
 // under Tauri, the devbox WebSocket server in a plain browser.
-export function Terminal({ name, host, cmd, args, cwd, window: win, active, onStatus }: Props) {
+export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, active, onStatus }: Props) {
+  const [selecting, setSelecting] = useState(false);
+  const selectingRef = useRef(false);
   const [hasSelection, setHasSelection] = useState(false);
   const [pasteStatus, setPasteStatus] = useState<{ error: boolean; message: string } | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -111,6 +122,15 @@ export function Terminal({ name, host, cmd, args, cwd, window: win, active, onSt
         if (!ok && !disposed) setPasteStatus({ error: true, message: "Clipboard access failed. Try the Copy selection button again." });
       });
     };
+    const unregisterMenu = registerContextMenu(container, () => [
+      { label: "Copy text", disabled: !term.hasSelection(), run: async () => {
+        if (!await copyToClipboard(term.getSelection())) throw new Error("Clipboard access failed. Try the keyboard copy shortcut.");
+      } },
+      { label: "Paste text or image", run: () => clipboardPaste(term.textarea ?? container) },
+      { label: "Select text", run: () => { selectingRef.current = true; setSelecting(true); term.focus(); } },
+      { label: "Select all", run: () => { term.selectAll(); term.focus(); } },
+      { label: "Clear selection", disabled: !term.hasSelection(), run: () => term.clearSelection() },
+    ]);
     const selectionListener = term.onSelectionChange(() => setHasSelection(term.hasSelection()));
     // Native copy events write to the local clipboard even for SSH terminals.
     const onCopy = (event: ClipboardEvent) => {
@@ -120,16 +140,65 @@ export function Terminal({ name, host, cmd, args, cwd, window: win, active, onSt
       event.stopPropagation();
     };
     container.addEventListener("copy", onCopy, true);
+    // Explicit local selection bypasses mouse reporting from full-screen apps.
+    let selectionStart: number | null = null;
+    const cellAt = (event: MouseEvent) => {
+      const screen = container.querySelector(".xterm-screen");
+      if (!screen) return null;
+      const rect = screen.getBoundingClientRect();
+      if (!rect.width || !rect.height) return null;
+      const col = Math.max(0, Math.min(term.cols, Math.round((event.clientX - rect.left) / rect.width * term.cols)));
+      const row = Math.max(0, Math.min(term.rows - 1, Math.floor((event.clientY - rect.top) / rect.height * term.rows)));
+      return (term.buffer.active.viewportY + row) * term.cols + col;
+    };
+    const selectDown = (event: MouseEvent) => {
+      if (!selectingRef.current || event.button !== 0) return;
+      selectionStart = cellAt(event);
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      term.clearSelection();
+      term.focus();
+    };
+    const selectMove = (event: MouseEvent) => {
+      if (selectionStart === null) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      const end = cellAt(event);
+      if (end === null) return;
+      const start = Math.min(selectionStart, end);
+      term.select(start % term.cols, Math.floor(start / term.cols), Math.abs(end - selectionStart));
+    };
+    const selectUp = (event: MouseEvent) => {
+      if (selectionStart === null) return;
+      selectMove(event);
+      selectionStart = null;
+      selectingRef.current = false;
+      setSelecting(false);
+      setPasteStatus(null);
+    };
+    container.addEventListener("mousedown", selectDown, true);
+    document.addEventListener("mousemove", selectMove, true);
+    document.addEventListener("mouseup", selectUp, true);
+
     term.attachCustomKeyEventHandler((event) => {
       if (event.type !== "keydown") return true;
+      if (event.key === "Escape" && selectingRef.current) {
+        selectingRef.current = false;
+        selectionStart = null;
+        setSelecting(false);
+        setPasteStatus(null);
+        event.preventDefault();
+        return false;
+      }
       const copy = event.key.toLowerCase() === "c" && !event.altKey &&
         ((event.metaKey && !event.ctrlKey) || (event.ctrlKey && event.shiftKey));
       if (!copy) return true;
       event.preventDefault();
       if (term.hasSelection()) copySelection();
       else {
-        const modifier = /mac/i.test(navigator.platform) ? "Option" : "Shift";
-        setPasteStatus({ error: false, message: `Hold ${modifier} and drag to select terminal text, then copy.` });
+        selectingRef.current = true;
+        setSelecting(true);
+        setPasteStatus({ error: false, message: "Drag over terminal text, then copy. Press Escape to cancel selection mode." });
       }
       return false;
     });
@@ -177,33 +246,35 @@ export function Terminal({ name, host, cmd, args, cwd, window: win, active, onSt
       useStore.getState().semiTransparent ? useStore.getState().transparencyOptions.surfaceOpacity / 100 : 1,
     ));
     let webgl: WebglAddon | null = null;
-    try {
-      webgl = new WebglAddon();
-      // Browsers cap concurrent WebGL contexts (~16). With several tiles - and
-      // churn from hide/show creating new contexts - the browser evicts an older
-      // context, blanking that terminal (selection still draws, but glyphs are
-      // gone with the texture atlas). Handle the loss: drop the WebGL addon so
-      // xterm falls back to its DOM renderer, then repaint from the buffer.
-      webgl.onContextLoss(() => {
-        try {
-          webgl?.dispose();
-        } catch {
-          /* already gone */
-        }
-        webgl = null;
-        try {
+    let rendererReleaseTimer: ReturnType<typeof setTimeout> | undefined;
+    const releaseRenderer = () => {
+      if (!webgl) return;
+      const renderer = webgl;
+      webgl = null;
+      liveWebglTerminals--;
+      try { renderer.dispose(); } catch { /* Context may already be lost. */ }
+    };
+    const acquireRenderer = () => {
+      if (webgl || liveWebglTerminals >= MAX_WEBGL_TERMINALS) return;
+      const renderer = new WebglAddon();
+      try {
+        term.loadAddon(renderer);
+        webgl = renderer;
+        liveWebglTerminals++;
+        renderer.onContextLoss(() => {
+          releaseRenderer();
           term.refresh(0, term.rows - 1);
-        } catch {
-          /* term disposed */
-        }
-      });
-      term.loadAddon(webgl);
-    } catch {
-      /* canvas fallback */
-    }
-    // Fit once now, then again on the next frame once the grid item has its
-    // final size, so the PTY is spawned with correct cols/rows and TUIs render
-    // at the right dimensions rather than a stale default.
+        });
+      } catch {
+        try { renderer.dispose(); } catch { /* DOM rendering remains available. */ }
+      }
+    };
+    const updateRendererVisibility = () => {
+      clearTimeout(rendererReleaseTimer);
+      if (tileVisible && document.visibilityState === "visible") acquireRenderer();
+      else rendererReleaseTimer = setTimeout(releaseRenderer, 5000);
+    };
+
     const safeFit = () => {
       // Compute the target size WITHOUT resizing first (fit.fit() would resize to
       // its own row count, then our correction would resize again - that R -> R-1
@@ -258,6 +329,17 @@ export function Terminal({ name, host, cmd, args, cwd, window: win, active, onSt
     let ws: WsPtyHandle | null = null;
     let previewDispose: (() => void) | null = null;
     let gotData = false;
+    // Current tiles attach to persistent tmux sessions rather than owning their commands.
+    const notificationSignals = createTerminalSignals(tileId, (notification) => {
+      const state = useStore.getState();
+      const tile = state.tiles.find((candidate) => candidate.id === tileId);
+      const label = sessionDisplayName(tile ?? { id: tileId, name, session: name, host, window: win }, state.tileTitles)
+        .replace(/[\x00-\x1f\x7f-\x9f]/g, "").slice(0, 100);
+      const device = (tile?.host ?? host ?? "This device").replace(/[\x00-\x1f\x7f-\x9f]/g, "").slice(0, 100) || "This device";
+      notify({ ...notification, body: `${label || "Terminal"} (${device}): ${notification.body}` });
+    }, { attachment: true });
+    const bellListener = term.onBell(() => notificationSignals.bell());
+    const completionListener = term.parser.registerOscHandler(133, (data) => notificationSignals.osc133(data));
 
     // The bundled Nerd Font symbols load asynchronously. Because the @font-face
     // has a restricted unicode-range, we must ask for it with actual icon glyphs
@@ -295,55 +377,65 @@ export function Terminal({ name, host, cmd, args, cwd, window: win, active, onSt
     const t1 = setTimeout(safeFit, 80);
     const t2 = setTimeout(safeFit, 250);
 
-    // Output scheduling. The focused tile writes straight through so typing
-    // stays instant. Every other tile batches its output: a TUI that redraws
-    // continuously (a spinner, btop) would otherwise force a full WebGL repaint
-    // per burst in a pane nobody is looking at closely. Batches flush at a fixed
-    // cadence (slower still while the window is hidden or another app has
-    // focus) and immediately once they grow large, so a flood of output never
-    // piles up in memory.
-    const BACKGROUND_FLUSH_MS = 50; // ~20 fps for visible, unfocused tiles
-    const HIDDEN_FLUSH_MS = 250; // window hidden or in the background
-    const MAX_PENDING_BYTES = 256 * 1024;
-    let pending: Uint8Array[] = [];
-    let pendingBytes = 0;
-    let flushTimer: ReturnType<typeof setTimeout> | undefined;
-    const flushOutput = () => {
-      clearTimeout(flushTimer);
-      flushTimer = undefined;
-      const chunks = pending;
-      pending = [];
-      pendingBytes = 0;
-      for (const chunk of chunks) term.write(chunk);
-    };
-    flushOutputRef.current = flushOutput;
-    const windowFocused = () => document.visibilityState === "visible" && document.hasFocus();
-    const writeOutput = (bytes: Uint8Array) => {
+    let tileVisible = container.getClientRects().length > 0;
+    const output = createOutputScheduler({
+      write: (bytes, consumed) => term.write(bytes, consumed),
+      delay: () => {
+        if (!tileVisible || document.visibilityState !== "visible") return 250;
+        if (!document.hasFocus()) return 100;
+        return activeRef.current ? 0 : 50;
+      },
+    });
+    flushOutputRef.current = output.flush;
+    const writeOutput = (bytes: Uint8Array, consumed: () => void) => {
+      if (disposed) return;
       markActive();
-      if (activeRef.current && windowFocused()) {
-        if (pending.length) flushOutput();
-        term.write(bytes);
-        return;
-      }
-      pending.push(bytes);
-      pendingBytes += bytes.length;
-      if (pendingBytes >= MAX_PENDING_BYTES) {
-        flushOutput();
-        return;
-      }
-      if (flushTimer === undefined) {
-        const delay = document.visibilityState === "visible" ? BACKGROUND_FLUSH_MS : HIDDEN_FLUSH_MS;
-        flushTimer = setTimeout(flushOutput, delay);
-      }
+      output.push(bytes, consumed);
     };
+    const visibilityObserver = new IntersectionObserver(([entry]) => {
+      tileVisible = entry.isIntersecting;
+      updateRendererVisibility();
+      if (tileVisible) {
+        output.flush();
+        safeFit();
+      }
+    });
+    visibilityObserver.observe(container);
+    const onVisibilityChange = () => updateRendererVisibility();
+    document.addEventListener("visibilitychange", onVisibilityChange);
 
+    let exited = false;
+    let unregisterDictation: (() => void) | undefined;
     if (HAS_TAURI) {
-      spawnPty({ cmd, args, cwd, cols: term.cols, rows: term.rows }, writeOutput)
+      spawnPty({ cmd, args, cwd, cols: term.cols, rows: term.rows }, writeOutput, (code) => {
+        if (disposed) return;
+        notificationSignals.processExit(code);
+        exited = true;
+        tauriId = null;
+        unregisterDictation?.();
+        clearTimeout(idleTimer);
+        onStatus?.(code === 0 ? "idle" : "failed");
+      })
         .then((id) => {
           if (disposed) return killPty(id);
+          if (exited) return;
           tauriId = id;
-          term.onData((d) => writePty(id, d));
-          term.onResize(({ cols, rows }) => resizePty(id, cols, rows));
+          let lastWrite = Promise.resolve();
+          term.onData((d) => {
+            if (exited || disposed) return;
+            lastWrite = writePty(id, d);
+            void lastWrite.catch((error: unknown) => {
+              if (!disposed) setPasteStatus({ error: true, message: error instanceof Error ? error.message : "Terminal input failed." });
+            });
+          });
+          unregisterDictation = registerDictationTarget(tileId, async (text) => {
+            if (disposed || tauriId === null) return false;
+            term.paste(text);
+            await lastWrite;
+            term.focus();
+            return true;
+          });
+          term.onResize(({ cols, rows }) => { if (!exited && !disposed) void resizePty(id, cols, rows).catch(() => {}); });
         })
         .catch((err) => term.writeln(`\r\n[pty spawn failed] ${err}\r\n`));
     } else {
@@ -352,11 +444,15 @@ export function Terminal({ name, host, cmd, args, cwd, window: win, active, onSt
         term.cols,
         term.rows,
         cwd,
-        (bytes) => {
+        (bytes, consumed) => {
           gotData = true;
-          writeOutput(bytes);
+          writeOutput(bytes, consumed);
         },
-        () => {
+        (message) => {
+          if (!disposed) {
+            setPasteStatus({ error: true, message });
+            onStatus?.("failed");
+          }
           // Server unreachable and nothing streamed yet: show the preview so the
           // tile is not a dead black box.
           if (!gotData && !previewDispose) previewDispose = runBrowserPreview(term);
@@ -389,9 +485,10 @@ export function Terminal({ name, host, cmd, args, cwd, window: win, active, onSt
       // Keep consecutive image/text pastes ordered while an upload is pending.
       pasteQueue = pasteQueue.then(async () => {
         if (disposed) return;
-        if (!images.length) { term.paste(text); return; }
         clearTimeout(pasteNoticeTimer);
         try {
+          if (HAS_TAURI && tauriId === null) throw new Error("Terminal is not connected yet. Paste again once it connects.");
+          if (!images.length) { term.paste(text); return; }
           for (let index = 0; index < images.length; index++) {
             const image = images[index];
             if (disposed) return;
@@ -434,19 +531,31 @@ export function Terminal({ name, host, cmd, args, cwd, window: win, active, onSt
     resizeObserver.observe(container);
 
     return () => {
+      unregisterDictation?.();
       container.removeEventListener("paste", onPaste, true);
       container.removeEventListener("copy", onCopy, true);
+      container.removeEventListener("mousedown", selectDown, true);
+      document.removeEventListener("mousemove", selectMove, true);
+      document.removeEventListener("mouseup", selectUp, true);
       selectionListener.dispose();
+      unregisterMenu();
       container.removeEventListener("mousedown", onMouseDown);
       container.removeEventListener("wheel", onWheel, { capture: true });
       disposed = true;
+      notificationSignals.dispose();
+      bellListener.dispose();
+      completionListener.dispose();
       pasteController.abort();
       clearTimeout(pasteNoticeTimer);
       cancelAnimationFrame(raf);
       clearTimeout(t1);
       clearTimeout(t2);
       clearTimeout(idleTimer);
-      clearTimeout(flushTimer);
+      output.dispose();
+      visibilityObserver.disconnect();
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      clearTimeout(rendererReleaseTimer);
+      releaseRenderer();
       flushOutputRef.current = null;
       resizeObserver.disconnect();
       previewDispose?.();
@@ -503,7 +612,7 @@ export function Terminal({ name, host, cmd, args, cwd, window: win, active, onSt
     if (refreshNonce === 0) return;
     const hardRefresh = () => {
       const term = termRef.current;
-      if (!term) return;
+      if (!term || !containerRef.current?.getClientRects().length) return;
       safeFitRef.current?.();
       const { cols, rows } = term;
       if (rows > 1) {
@@ -530,15 +639,21 @@ export function Terminal({ name, host, cmd, args, cwd, window: win, active, onSt
   }, [refreshNonce]);
 
   return <>
-    <div ref={containerRef} className="term-surface" />
-    {hasSelection ? <button className="btn btn-sm term-copy-selection" type="button"
+    <div ref={containerRef} className={`term-surface ${selecting ? "term-selecting" : ""}`} />
+    <button className="btn btn-sm term-copy-selection" type="button" aria-pressed={selecting}
       onMouseDown={(event) => { event.preventDefault(); event.stopPropagation(); }}
       onClick={() => {
         const text = termRef.current?.getSelection();
-        if (text) void copyToClipboard(text).then((ok) => {
+        if (!text) {
+          selectingRef.current = !selectingRef.current;
+          setSelecting(selectingRef.current);
+          termRef.current?.focus();
+          return;
+        }
+        void copyToClipboard(text).then((ok) => {
           setPasteStatus({ error: !ok, message: ok ? "Text copied to your clipboard." : "Clipboard access failed. Try copying again." });
         });
-      }}>Copy selection</button> : null}
+      }}>{hasSelection ? "Copy selection" : selecting ? "Cancel selection" : "Select text"}</button>
     {pasteStatus ? <div className={`term-paste-status ${pasteStatus.error ? "term-paste-error" : ""}`} role={pasteStatus.error ? "alert" : "status"}>
       <span>{pasteStatus.message}</span>
       <button type="button" className="tile-btn" aria-label="Dismiss clipboard message" onClick={() => setPasteStatus(null)}>×</button>

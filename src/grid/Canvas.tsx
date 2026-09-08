@@ -1,18 +1,20 @@
 import { LiveSessionIcon } from "../ui/LiveSessionIcon";
+import { useDelayedLoading } from "../ui/useDelayedLoading";
 import { DeviceIcon } from "../ui/DeviceIcon";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { motion } from "framer-motion";
 import {
   Columns2,
+  Copy,
   EyeOff,
   FileCode,
   FolderInput,
   Focus,
   LayoutGrid,
+  Loader2,
   Maximize2,
   Minimize2,
-  Moon,
   Rows2,
   Square,
   StretchHorizontal,
@@ -23,9 +25,9 @@ import { deviceNameFor } from "../devices";
 import { Modal } from "../ui/Modal";
 import { Terminal } from "../terminal/Terminal";
 import { TileCodePanel } from "./TileCodePanel";
-import { fetchSessionPath, killSession } from "../serverApi";
+import { duplicateSession, fetchSessionPath, killSession } from "../serverApi";
 import { confirmEditorDiscard } from "../editorChanges";
-import { attachCommand } from "../connection";
+import { attachCommand, sessionConnection } from "../connection";
 import {
   sessionDisplayName,
   shortPath,
@@ -35,6 +37,8 @@ import {
 } from "../sessionMeta";
 import { ALL_WORKSPACE_ID, DEFAULT_WORKSPACE_ID, wsKeyOf } from "../workspaces";
 import { ctrlBadge, digitFromCode } from "../shortcuts";
+import { useDictation } from "../state/dictation";
+import { DictationButton, DictationIndicator } from "../ui/Dictation";
 
 // Uniform N-column grid, filtered to the active workspace. One tile can be
 // maximized (animated). Tiles reorder by dragging their header onto another
@@ -62,6 +66,15 @@ export function Canvas() {
   const devices = useStore((s) => s.devices);
   const tileCode = useStore((s) => s.tileCode);
   const toggleTileCode = useStore((s) => s.toggleTileCode);
+  const recordingTileId = useDictation((state) => state.recording?.tileId);
+  useEffect(() => {
+    if (!recordingTileId) return;
+    const source = tiles.find((entry) => entry.id === recordingTileId);
+    if (!source || activeId !== recordingTileId || hiddenTiles.includes(recordingTileId) ||
+        (activeWorkspaceId !== ALL_WORKSPACE_ID && (sessionWs[wsKeyOf(source)] ?? DEFAULT_WORKSPACE_ID) !== activeWorkspaceId)) {
+      void useDictation.getState().cancel();
+    }
+  }, [recordingTileId, activeId, hiddenTiles, activeWorkspaceId, sessionWs, tiles]);
 
   // Columns are per-workspace; the active workspace decides the grid.
   const columns = workspaceColumns[activeWorkspaceId] ?? defaultColumns;
@@ -72,6 +85,10 @@ export function Canvas() {
   const [closing, setClosing] = useState<string | null>(null);
   const [terminating, setTerminating] = useState(false);
   const [closeError, setCloseError] = useState<string | null>(null);
+  const [duplicating, setDuplicating] = useState<string | null>(null);
+  const showDuplicateSpinner = useDelayedLoading(duplicating !== null);
+  const duplicationPending = useRef(false);
+  const [duplicateError, setDuplicateError] = useState<string | null>(null);
   const [layoutFor, setLayoutFor] = useState<{ id: string; x: number; y: number } | null>(
     null,
   );
@@ -95,7 +112,6 @@ export function Canvas() {
     if (activeId && focusId && activeId !== focusId) setFocusId(null);
   }, [activeId, fullId, focusId]);
   const [renaming, setRenaming] = useState<{ id: string; val: string } | null>(null);
-  const [manualDim, setManualDim] = useState<Record<string, boolean>>({});
   const [dragId, setDragId] = useState<string | null>(null);
   const [overId, setOverId] = useState<string | null>(null);
 
@@ -194,9 +210,32 @@ export function Canvas() {
       (sessionWs[wsKeyOf(fullTile)] ?? DEFAULT_WORKSPACE_ID) === activeWorkspaceId);
   const effFull = fullInActiveWs ? fullId : null;
 
+  const duplicate = async (source: (typeof tiles)[number]) => {
+    if (duplicationPending.current) return;
+    duplicationPending.current = true;
+    setDuplicating(source.id);
+    setDuplicateError(null);
+    const host = source.host ?? connection.host ?? undefined;
+    const workspace = sessionWs[wsKeyOf(source)] ?? DEFAULT_WORKSPACE_ID;
+    const label = `${sessionDisplayName(source, tileTitles)} copy`;
+    try {
+      const copy = await duplicateSession(source.session ?? source.name, source.window, host);
+      const store = useStore.getState();
+      const id = host ? `${host}::${copy.name}` : copy.name;
+      store.assignSession(id, store.workspaces.some((entry) => entry.id === workspace) ? workspace : DEFAULT_WORKSPACE_ID);
+      store.renameTile(id, label);
+      store.openSession(copy.name, copy.cwd, host);
+    } catch (error) {
+      setDuplicateError(error instanceof Error ? error.message : "Could not duplicate the session");
+    } finally {
+      duplicationPending.current = false;
+      setDuplicating(null);
+    }
+  };
+
   const tile = (t: (typeof tiles)[number]) => {
     const base = t.session ?? t.name;
-    const { cmd, args } = attachCommand(t.host ? { host: t.host } : connection, base, t.cwd, t.window);
+    const { cmd, args } = attachCommand(sessionConnection(t.host, connection), base, t.cwd, t.window);
     const rs = allSessions.find((s) => s.name === base);
     const fullPath = t.path ?? rs?.path;
     const path = shortPath(fullPath);
@@ -210,17 +249,11 @@ export function Canvas() {
     const shortcutIdx = wsTiles.findIndex((x) => x.id === t.id);
     const isFull = fullId === t.id;
     const isFocus = focusId === t.id;
-    // Dimmed either because another tile is focused, or this tile was manually
-    // darkened. The focused/maximized tile is never dimmed.
-    const isDim = manualDim[t.id] ?? false;
-    const dimmed = !isFull && !isFocus && (!!focusId || isDim);
-    // Colored gradient border, darkened while another tile is focused.
+    // The focused/maximized tile stays visible while focus dims the others.
+    const dimmed = !isFull && !isFocus && !!focusId;
+    // Keep workspace hues intact; focus softens their opacity through CSS.
     const borderBg = wsColor
-      ? `linear-gradient(140deg, ${
-          dimmed ? `color-mix(in srgb, ${wsColor} 40%, #000)` : wsColor
-        } 0%, ${
-          dimmed ? "color-mix(in srgb, var(--border) 40%, #000)" : "var(--border)"
-        } 22%)`
+      ? `linear-gradient(140deg, ${wsColor} 0%, var(--border) 22%)`
       : undefined;
     const span = tileSpan[t.id] ?? { c: 1, r: 1 };
     const spanStyle = effFull
@@ -368,16 +401,17 @@ export function Canvas() {
           ) : null}
           <div className="tile-head-spacer" />
           <div className="tile-actions">
+            <DictationButton tileId={t.id} activate={() => setActive(t.id)} />
             <button
-              className={`tile-btn ${isDim ? "tile-btn-on" : ""}`}
-              title={isDim ? "Undim" : "Dim this window"}
-              onMouseDown={(e) => e.stopPropagation()}
-              onClick={(e) => {
-                e.stopPropagation();
-                setManualDim((m) => ({ ...m, [t.id]: !isDim }));
-              }}
+              className="tile-btn"
+              title="Duplicate session"
+              aria-label="Duplicate session"
+              disabled={duplicating !== null}
+              aria-busy={duplicating === t.id}
+              onMouseDown={(event) => event.stopPropagation()}
+              onClick={(event) => { event.stopPropagation(); void duplicate(t); }}
             >
-              <Moon size={13} />
+              {showDuplicateSpinner && duplicating === t.id ? <Loader2 size={13} className="async-spinner" /> : <Copy size={13} />}
             </button>
             <button
               className={`tile-btn ${isFocus ? "tile-btn-on" : ""}`}
@@ -456,7 +490,6 @@ export function Canvas() {
                 e.stopPropagation();
                 if (fullId === t.id) setFullId(null);
                 if (focusId === t.id) setFocusId(null);
-                setManualDim((m) => ({ ...m, [t.id]: false }));
                 hideTile(t.id);
               }}
             >
@@ -479,6 +512,7 @@ export function Canvas() {
         {borderBg ? <div className="tile-color-border" aria-hidden="true" style={{ background: borderBg }} /> : null}
         <div className={`tile-body ${codeOpen ? `tile-body-code-${tileCode[t.id]?.layout ?? "full"}` : ""}`}>
           <Terminal
+            tileId={t.id}
             name={base}
             host={t.host ?? connection.host ?? undefined}
             cmd={cmd}
@@ -489,15 +523,15 @@ export function Canvas() {
             onStatus={(s) => setStatus(t.id, s)}
           />
           {codeOpen ? <TileCodePanel tileId={t.id} /> : null}
+          <DictationIndicator tileId={t.id} />
         </div>
         {dimmed ? (
           <div
             className="tile-dim-overlay"
-            title={focusId ? "Click to exit focus" : "Click to undim"}
+            title="Click to exit focus"
             onMouseDown={(e) => {
               e.stopPropagation();
-              if (focusId) setFocusId(null);
-              else setManualDim((m) => ({ ...m, [t.id]: false }));
+              setFocusId(null);
             }}
           />
         ) : null}
@@ -507,6 +541,10 @@ export function Canvas() {
 
   return (
     <>
+      <Modal open={duplicateError !== null} onClose={() => setDuplicateError(null)} title="Duplicate session" size="sm">
+        <p role="alert">{duplicateError}</p>
+        <div className="modal-actions"><button className="btn" onClick={() => setDuplicateError(null)}>Dismiss</button></div>
+      </Modal>
       <div
         className={`grid ${effFull ? "grid-full" : ""}`}
         style={{
@@ -559,7 +597,7 @@ export function Canvas() {
                   (tile.session ?? tile.name) === (current.session ?? current.name) &&
                   (current.window === undefined || tile.window === current.window));
                 if (!await confirmEditorDiscard(affected.map((tile) => tile.id))) return;
-                await killSession(current.session ?? current.name, current.window, current.host ?? connection.host ?? undefined);
+                await killSession(current.session ?? current.name, current.window, sessionConnection(current.host, connection).host ?? "");
                 for (const tile of affected) {
                   if (fullId === tile.id) setFullId(null);
                   if (focusId === tile.id) setFocusId(null);

@@ -1,6 +1,8 @@
+import { AsyncButton } from "../ui/AsyncButton";
+import { themeById } from "../theme/themes";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import CodeMirror from "@uiw/react-codemirror";
-import { githubDark } from "@uiw/codemirror-theme-github";
+import { githubDark, githubLight } from "@uiw/codemirror-theme-github";
 import { loadLanguage } from "@uiw/codemirror-extensions-langs";
 import { Eye, FolderOpen, FolderTree as FolderTreeIcon, Loader2, PanelLeft, Save, X } from "lucide-react";
 import { marked } from "marked";
@@ -11,6 +13,7 @@ import { FolderTree } from "./FileTree";
 import { FilePicker } from "../panels/FilePicker";
 import { Modal } from "../ui/Modal";
 import { fileMutationPending, onFileMutation, registerEditorDiscard, registerEditorFile, remapFilePath } from "../editorChanges";
+import { copyImageToClipboard } from "../imageClipboard";
 import { CodeLayoutMenu } from "./CodeLayoutMenu";
 
 // file extension -> the key codemirror-extensions-langs' loadLanguage expects.
@@ -66,6 +69,10 @@ export function TileCodePanel({ tileId }: { tileId: string }) {
 
   const [content, setContent] = useState("");
   const [loaded, setLoaded] = useState(false);
+  const themeId = useStore(state => state.themeId);
+  const imageRef = useRef<HTMLImageElement>(null);
+  const [copyStatus, setCopyStatus] = useState<string | null>(null);
+  const [copyingImage, setCopyingImage] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -255,15 +262,17 @@ export function TileCodePanel({ tileId }: { tileId: string }) {
             <Eye size={13} />
           </button>
         ) : null}
-        <button
+        <AsyncButton
           className="tile-btn"
           title="Save"
-          disabled={!path || !dirty || saving}
+          aria-label="Save"
+          loading={saving}
+          icon={Save}
+          iconSize={13}
+          disabled={!path || !dirty}
           onMouseDown={(e) => e.stopPropagation()}
           onClick={save}
-        >
-          {saving ? <Loader2 size={13} className="sw-spin" /> : <Save size={13} />}
-        </button>
+        />
         {path ? (
           <button
             className="tile-btn"
@@ -302,7 +311,18 @@ export function TileCodePanel({ tileId }: { tileId: string }) {
             <div className="code-status muted">Pick a file from the tree to edit it.</div>
           ) : isImage ? (
             <div className="code-preview code-preview-img">
-              <img src={fileRawUrl(path, host)} alt={baseName(path)} />
+              <img ref={imageRef} crossOrigin="anonymous" src={fileRawUrl(path, host)} alt={baseName(path)} />
+              <div className="image-copy-actions">
+                <button className="btn btn-sm" type="button" disabled={copyingImage} onClick={() => {
+                  if (!imageRef.current) return;
+                  setCopyingImage(true);
+                  setCopyStatus(null);
+                  void copyImageToClipboard(imageRef.current).then(() => setCopyStatus("Image copied to this device's clipboard."))
+                    .catch((error: unknown) => setCopyStatus(error instanceof Error ? error.message : "Image copy failed."))
+                    .finally(() => setCopyingImage(false));
+                }}>{copyingImage ? "Copying image…" : "Copy image"}</button>
+                {copyStatus ? <span role="status">{copyStatus}</span> : null}
+              </div>
             </div>
           ) : isPdf ? (
             <iframe className="code-preview-pdf" src={fileRawUrl(path, host)} title={baseName(path)} />
@@ -317,7 +337,7 @@ export function TileCodePanel({ tileId }: { tileId: string }) {
           ) : (
             <CodeMirror
               value={content}
-              theme={githubDark}
+              theme={themeById(themeId).appearance === "light" ? githubLight : githubDark}
               extensions={extensions}
               height="100%"
               style={{ height: "100%" }}

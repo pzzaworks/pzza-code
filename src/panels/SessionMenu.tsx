@@ -1,3 +1,4 @@
+import { notify } from "../state/notifications";
 import { LiveSessionIcon } from "../ui/LiveSessionIcon";
 import { DeviceIcon } from "../ui/DeviceIcon";
 import { useEffect, useState } from "react";
@@ -99,6 +100,7 @@ export function SessionMenu({ close }: { close: () => void }) {
       }
     }
     openSession(trimmed, undefined, host);
+    notify({ category: "app", event: "session-opened", title: "Session window opened", body: `${trimmed} on ${device?.name ?? "this device"}.`, target: { tileId: host ? `${host}::${trimmed}` : trimmed } });
     // Give tmux a beat to create the session, then re-scan so the new session's
     // current path lands in allSessions (drives the tile header and code editor).
     setTimeout(() => {

@@ -1,5 +1,7 @@
 import { motion } from "framer-motion";
-import type { LucideIcon } from "lucide-react";
+import { Loader2, type LucideIcon } from "lucide-react";
+import { useDelayedLoading } from "./useDelayedLoading";
+import "./AsyncButton.css";
 
 interface Props {
   icon: LucideIcon;
@@ -9,6 +11,8 @@ interface Props {
   accent?: boolean;
   danger?: boolean;
   disabled?: boolean;
+  loading?: boolean;
+  allowWhileLoading?: boolean;
   size?: number;
   spin?: boolean;
   className?: string;
@@ -24,20 +28,25 @@ export function IconButton({
   accent,
   danger,
   disabled,
+  loading = false,
+  allowWhileLoading = false,
   size = 16,
   spin,
   className = "",
 }: Props) {
+  const showSpinner = useDelayedLoading(loading);
+  const blocked = disabled || (loading && !allowWhileLoading);
   return (
     <motion.button
       type="button"
       className={`icon-btn ${active ? "icon-btn-on" : ""} ${
         accent ? "icon-btn-accent" : ""
       } ${danger ? "icon-btn-danger" : ""} ${className}`}
-      onClick={onClick}
+      onClick={() => { if (!blocked) onClick?.(); }}
       title={title}
-      disabled={disabled}
-      whileTap={disabled ? undefined : { scale: 0.86 }}
+      disabled={blocked}
+      aria-busy={loading}
+      whileTap={blocked ? undefined : { scale: 0.86 }}
       transition={{ type: "spring", stiffness: 500, damping: 24 }}
     >
       <motion.span
@@ -47,7 +56,7 @@ export function IconButton({
           spin ? { repeat: Infinity, duration: 0.8, ease: "linear" } : { duration: 0.15 }
         }
       >
-        <Icon size={size} strokeWidth={1.9} />
+        {showSpinner ? <Loader2 size={size} className="async-spinner" aria-hidden="true" /> : <Icon size={size} strokeWidth={1.9} />}
       </motion.span>
     </motion.button>
   );

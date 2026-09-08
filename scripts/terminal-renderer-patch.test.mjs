@@ -44,6 +44,25 @@ test("WebGL explicit RGB, indexed and inverse backgrounds keep their RGB and fol
   assert.ok(source.includes("blendFuncSeparate(h.SRC_ALPHA,h.ONE_MINUS_SRC_ALPHA,h.ONE,h.ONE_MINUS_SRC_ALPHA)"));
 });
 
+test("WebGL styled default backgrounds preserve transparent and opaque theme alpha", () => {
+  const source = patched["addon-webgl"];
+  const method = source.slice(source.indexOf("_updateRectangle(e,"), source.indexOf("_addRectangle(e,t,i,s"));
+  const Renderer = new Function(`let l,c,d,_,u,g,v; return class { ${method} }`)();
+  const renderer = new Renderer();
+  renderer._terminal = { rows: 1, cols: 1 };
+  renderer._dimensions = { device: { cell: { width: 1, height: 1 } } };
+  renderer._pzzaBackgroundOpacity = 0.5;
+  let result;
+  renderer._addRectangle = (...args) => { result = args.slice(-4); };
+  for (const alpha of [0, 255]) {
+    renderer._themeService = { colors: { background: { rgba: 0x20406000 + alpha } } };
+    for (const bg of [0, 67108864, 134217728]) {
+      renderer._updateRectangle({ attributes: new Float32Array(8) }, 0, 0, bg, 0, 1, 0);
+      assert.deepEqual(result, [32 / 255, 64 / 255, 96 / 255, alpha / 255]);
+    }
+  }
+});
+
 test("DOM fallback scales only cell background styles, never foregrounds or dimensions", () => {
   const source = patched.xterm;
   const method = source.slice(source.indexOf("_addStyle(e,t){"), source.indexOf("_isCellInSelection(e,t){"));

@@ -1,3 +1,4 @@
+import { AsyncButton } from "../ui/AsyncButton";
 import { useEffect, useId, useState } from "react";
 import { RefreshCw } from "lucide-react";
 import { deviceHost, type Device } from "../devices";
@@ -83,9 +84,7 @@ export function DeviceInfo({ device }: { device: Device }) {
         <span className="device-info-os"><DeviceIcon device={device} size={21} />
           <span><strong>{info?.osName || "Operating system"}</strong><span>{info?.osVersion || (info ? "Version unavailable" : "Details unavailable")}</span></span>
         </span>
-        <button type="button" className="usage-refresh" title="Refresh device details" aria-label="Refresh device details" disabled={loading} onClick={() => setRefresh((value) => value + 1)}>
-          <RefreshCw size={14} className={loading ? "sw-spin" : ""} />
-        </button>
+        <AsyncButton className="usage-refresh" title="Refresh device details" aria-label="Refresh device details" loading={loading} icon={RefreshCw} onClick={() => setRefresh((value) => value + 1)} />
       </div>
       <div className="device-info-health" role="status">
         <span className={`device-info-status ${reachable ? "device-info-reachable" : ""}`}>{status}</span>

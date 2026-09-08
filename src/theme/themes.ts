@@ -86,7 +86,7 @@ const SPECS: Spec[] = [
     ansi: ["#e0dcc7","#f85552","#8da101","#dfa000","#3a94c5","#df69ba","#35a77c","#5c6a72","#a6b0a0","#f85552","#8da101","#dfa000","#3a94c5","#df69ba","#35a77c","#5c6a72"] },
   { id: "kanagawa", name: "Kanagawa", appearance: "dark", bg: "#1f1f28", fg: "#dcd7ba",
     ansi: ["#16161d","#c34043","#76946a","#c0a36e","#7e9cd8","#957fb8","#6a9589","#c8c093","#727169","#e82424","#98bb6c","#e6c384","#7fb4ca","#938aa9","#7aa89f","#dcd7ba"] },
-  { id: "ayu-dark", name: "Ayu Dark", appearance: "dark", bg: "#0b0e14", fg: "#bfbdb6",
+  { id: "pzza", name: "Pzza", appearance: "dark", bg: "#0b0e14", fg: "#bfbdb6",
     ansi: ["#11151c","#ea6c73","#91b362","#f9af4f","#53bdfa","#fae994","#90e1c6","#c7c7c7","#686868","#f07178","#c2d94c","#ffb454","#59c2ff","#ffee99","#95e6cb","#ffffff"] },
   { id: "ayu-mirage", name: "Ayu Mirage", appearance: "dark", bg: "#1f2430", fg: "#cbccc6",
     ansi: ["#191e2a","#ed8274","#a6cc70","#fad07b","#6dcbfa","#cfbafa","#90e1c6","#c7c7c7","#686868","#f28779","#bae67e","#ffd580","#73d0ff","#d4bfff","#95e6cb","#ffffff"] },
@@ -118,8 +118,8 @@ const SPECS: Spec[] = [
 
 export const BUILTIN_THEMES: Theme[] = SPECS.map(make);
 
-export const DEFAULT_THEME_ID = "ayu-dark";
+export const DEFAULT_THEME_ID = "pzza";
 
 export function themeById(id: string): Theme {
-  return BUILTIN_THEMES.find((t) => t.id === id) ?? BUILTIN_THEMES[0];
+  return BUILTIN_THEMES.find((t) => t.id === id) ?? BUILTIN_THEMES.find((t) => t.id === DEFAULT_THEME_ID)!;
 }

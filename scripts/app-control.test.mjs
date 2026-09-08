@@ -26,6 +26,7 @@ function fixture() {
     setTileCodePath(id, path) { writes.push("path"); state.tileCode[id] = { ...state.tileCode[id], open: true, path }; },
     setTileCodeLayout(id, layout) { writes.push("layout"); state.tileCode[id] = { ...state.tileCode[id], layout }; },
     setColumns(columns) { writes.push("columns"); state.workspaceColumns[state.activeWorkspaceId] = columns; },
+    openSession(name, cwd, host) { state.tiles.push({ id: name, name, session: name, cwd, host }); state.activeId = name; },
   };
   const context = {
     getState: () => state, hasUnsavedEditor: (id) => dirty.has(id), defaultWorkspaceId: "main", allWorkspaceId: "all",
@@ -41,6 +42,25 @@ test("focus reveals a hidden remote tile and switches its workspace", () => {
   assert.equal(result.workspaceId, "remote");
   assert.equal(result.tiles[0].host, "devbox");
   assert.equal(result.tiles[0].hidden, false);
+});
+
+test("opening a project session stays local while the app is connected remotely", () => {
+  const f = fixture();
+  f.state.connection.host = "devbox";
+  const result = f.run("open_session", { session: "build-project", cwd: "/projects/demo" });
+  assert.equal(result.activeId, "build-project");
+  assert.equal(result.tiles.find((tile) => tile.id === "build-project").host, "");
+  f.run("open_session", { session: "build-project", cwd: "/projects/demo" });
+  assert.equal(f.state.tiles.length, 2);
+  assert.throws(() => f.run("open_session", { session: "bad:target", cwd: "/project" }));
+  assert.throws(() => f.run("open_session", { session: "valid", cwd: "relative" }));
+});
+
+test("opening a local session cannot focus a remote tile with the same legacy ID", () => {
+  const f = fixture();
+  f.state.tiles[0].id = "project";
+  assert.throws(() => f.run("open_session", { session: "project", cwd: "/projects/demo" }), /different device/);
+  assert.deepEqual(f.writes, []);
 });
 
 test("layout changes apply to an open editor only", () => {

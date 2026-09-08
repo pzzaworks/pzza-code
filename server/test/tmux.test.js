@@ -60,7 +60,7 @@ test("fallback accepts only known executable labels and preserves existing tool 
   assert.equal(detectSessionActivity([pane({ command: "claude" })], [processRow()])[0].command, "");
 });
 
-test("activity requests deduplicate in flight, refresh afterwards, reject invalid hosts and sanitize output", async (t) => {
+test("activity requests deduplicate in flight, cache briefly, refresh after expiry, reject invalid hosts and sanitize output", async (t) => {
   let calls = 0;
   const callbacks = [];
   const mock = t.mock.method(childProcess, "execFile", (command, args, options, callback) => {
@@ -77,9 +77,13 @@ test("activity requests deduplicate in flight, refresh afterwards, reject invali
     assert.equal(first, same);
     callbacks[0](null, JSON.stringify([{ session: "one", window: 2, active: false, command: "node --private-data" }]));
     assert.deepEqual(await first, [{ session: "one", window: 2, active: false, command: "" }]);
+    assert.deepEqual(await sessionActivity("fixture-device"), await first);
+    assert.equal(calls, 1);
+    const clock = t.mock.method(Date, "now", () =>  Date.prototype.getTime.call(new Date()) + 1001);
     const next = sessionActivity("fixture-device");
     callbacks[1](null, "one\t2\t0\tcodex\n");
     assert.equal((await next)[0].command, "codex");
+    clock.mock.restore();
     assert.equal(calls, 2);
     await assert.rejects(sessionActivity("-bad host"), /invalid host/);
     assert.equal(calls, 2);
@@ -215,8 +219,75 @@ test("receiver scans, icons and termination distinguish explicit local from defa
     { command: "sh", host: "", timeout: 15_000 },
     { command: "ssh", host: "default-device", timeout: 15_000 },
     { command: "ssh", host: "other-device", timeout: 15_000 },
-    { command: process.execPath, host: "", timeout: 9_000 },
+    { command: "tmux", host: "", timeout: 3_000 },
+    { command: "ps", host: "", timeout: 3_000 },
     { command: "ssh", host: "default-device", timeout: 9_000 },
     { command: "ssh", host: "other-device", timeout: 9_000 },
   ]);
+});
+
+test("duplicate starts an independent shell in the selected window's live folder", async (t) => {
+  const { duplicationCommand } = await import("../lib/tmux.js");
+  const root = await mkdtemp("/tmp/pzza-duplicate-");
+  const socket = path.join(root, "socket");
+  const realTmux = (await run("sh", ["-c", "command -v tmux"])).stdout.trim();
+  const tmux = (...args) => run(realTmux, ["-S", socket, ...args]);
+  t.after(async () => {
+    await tmux("kill-server").catch(() => {});
+    await rm(root, { recursive: true, force: true });
+  });
+  const bin = path.join(root, "bin");
+  const cwd = path.join(root, "folder with 'quotes' and $(literal)");
+  await mkdir(bin);
+  await mkdir(cwd);
+  await writeFile(path.join(bin, "tmux"), `#!/bin/sh\nexec ${shQuote(realTmux)} -S ${shQuote(socket)} "$@"\n`, { mode: 0o700 });
+  const env = { ...process.env, PATH: `${bin}:${process.env.PATH}` };
+  await tmux("-f", "/dev/null", "new-session", "-d", "-s", "source", "-c", root, "exec /bin/sh");
+  await tmux("set-option", "-g", "default-shell", "/bin/sh");
+  await tmux("new-window", "-d", "-t", "source:1", "-c", cwd);
+  await tmux("send-keys", "-t", "=source:1", `${shQuote(realTmux)} -S ${shQuote(socket)} wait-for -S source-ready`, "Enter");
+  await tmux("wait-for", "source-ready");
+  const sourcePane = (await tmux("display-message", "-p", "-t", "=source:1", "#{pane_id}")).stdout.trim();
+  const result = await run("sh", ["-c", duplicationCommand("source", 1, "source-copy")], { env });
+  assert.equal(result.stdout, cwd);
+  await tmux("send-keys", "-t", "=source-copy:", `${shQuote(realTmux)} -S ${shQuote(socket)} wait-for -S copy-ready`, "Enter");
+  await tmux("wait-for", "copy-ready");
+  assert.equal((await tmux("display-message", "-p", "-t", "=source-copy:", "#{pane_current_path}")).stdout.trim(), cwd);
+  assert.notEqual((await tmux("display-message", "-p", "-t", "=source-copy:", "#{pane_id}")).stdout.trim(), sourcePane);
+  assert.equal((await tmux("display-message", "-p", "-t", "=source-copy:", "#{session_group}")).stdout.trim(), "");
+  await tmux("kill-session", "-t", "=source-copy");
+  assert.equal((await tmux("display-message", "-p", "-t", "=source:1", "#{pane_id}")).stdout.trim(), sourcePane);
+  await assert.rejects(run("sh", ["-c", duplicationCommand("missing", undefined, "missing-copy")], { env }));
+  await assert.rejects(tmux("has-session", "-t", "=missing-copy"));
+  for (const [name, window, copy] of [["source\nother", 1, "copy"], ["source", -1, "copy"], ["source", 1, "-bad;copy"]]) {
+    assert.throws(() => duplicationCommand(name, window, copy), /invalid/);
+  }
+});
+
+test("duplicate routes to the source host, uses unique names and reports failures", async (t) => {
+  const { duplicateSession } = await import("../lib/tmux.js");
+  const calls = [];
+  const mock = t.mock.method(childProcess, "execFile", (command, args, options, callback) => {
+    calls.push({ command, args });
+    assert.ok(options.timeout <= 15000);
+    callback(args.includes("offline-device") ? new Error("failed") : null, "/projects/live");
+  });
+  syncBuiltinESMExports();
+  try {
+    const first = await duplicateSession("source", 3, "fixture-device");
+    const second = await duplicateSession("source", 3, "fixture-device");
+    assert.notEqual(first.name, second.name);
+    assert.equal(first.cwd, "/projects/live");
+    assert.equal(calls[0].command, "ssh");
+    assert.ok(calls[0].args.includes("fixture-device"));
+    assert.match(calls[0].args.at(-1), /=source:3/);
+    await duplicateSession("source", undefined, "");
+    assert.equal(calls[2].command, "sh");
+    await assert.rejects(duplicateSession("source", undefined, "offline-device"), /Could not duplicate/);
+    await assert.rejects(duplicateSession("source", undefined, "-bad-host"), /invalid host/);
+    assert.equal(calls.length, 4);
+  } finally {
+    mock.mock.restore();
+    syncBuiltinESMExports();
+  }
 });

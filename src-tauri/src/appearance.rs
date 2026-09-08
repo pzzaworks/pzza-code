@@ -36,16 +36,30 @@ mod macos {
             .clone()
     }
 
-    pub fn apply(window: &tauri::WebviewWindow, radius: u32) -> Result<(), String> {
-        let (connection, blur) = functions()?;
+    pub fn apply(window: &tauri::WebviewWindow, radius: u32, rounded: bool) -> Result<(), String> {
         let pointer = window.ns_window().map_err(|error| error.to_string())?;
         if pointer.is_null() {
             return Err("Native window is unavailable".into());
         }
-        // The caller schedules this on the main thread and owns a live window.
+        // Transparent content needs its own clip: an opaque window background
+        // normally hides the webview's square corners. Keep full screen edge-to-edge.
+        let native = unsafe { &*pointer.cast::<objc2::runtime::AnyObject>() };
         let number: isize = unsafe {
-            objc2::msg_send![&*pointer.cast::<objc2::runtime::AnyObject>(), windowNumber]
+            let content: *mut objc2::runtime::AnyObject = objc2::msg_send![native, contentView];
+            if !content.is_null() {
+                let content = &*content;
+                let _: () = objc2::msg_send![content, setWantsLayer: true];
+                let layer: *mut objc2::runtime::AnyObject = objc2::msg_send![content, layer];
+                if !layer.is_null() {
+                    let style: usize = objc2::msg_send![native, styleMask];
+                    let corner_radius: f64 = if !rounded || style & (1 << 14) != 0 { 0.0 } else { 12.0 };
+                    let _: () = objc2::msg_send![&*layer, setCornerRadius: corner_radius];
+                    let _: () = objc2::msg_send![&*layer, setMasksToBounds: true];
+                }
+            }
+            objc2::msg_send![native, windowNumber]
         };
+        let (connection, blur) = functions()?;
         let id = u32::try_from(number).map_err(|_| "Invalid native window identifier")?;
         let status = unsafe { blur(connection(), id, radius) };
         if status == 0 {
@@ -60,6 +74,7 @@ mod macos {
 pub async fn set_desktop_blur(
     window: tauri::WebviewWindow,
     radius: u32,
+    rounded: bool,
 ) -> Result<(), String> {
     if radius > 64 {
         return Err("Desktop blur radius must be between 0 and 64".into());
@@ -70,7 +85,7 @@ pub async fn set_desktop_blur(
         let target = window.clone();
         window
             .run_on_main_thread(move || {
-                let _ = sender.send(macos::apply(&target, radius));
+                let _ = sender.send(macos::apply(&target, radius, rounded));
             })
             .map_err(|error| error.to_string())?;
         tauri::async_runtime::spawn_blocking(move || {
@@ -83,7 +98,7 @@ pub async fn set_desktop_blur(
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = window;
+        let _ = (window, rounded);
         Err("Adjustable desktop blur is only available on macOS".into())
     }
 }

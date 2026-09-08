@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 const layouts = new Set(["full", "side-by-side", "stacked"]);
-const actions = new Set(["get_state", "focus_tile", "open_editor", "close_editor", "set_layout", "set_columns"]);
+const actions = new Set(["get_state", "open_session", "focus_tile", "open_editor", "close_editor", "set_layout", "set_columns"]);
 const fail = (message, status = 400) => Object.assign(new Error(message), { status });
 const identifier = (value) => typeof value === "string" && /^[\w.-]{1,128}$/.test(value);
 
@@ -9,9 +9,10 @@ export function validateCommand(action, args) {
   if (!actions.has(action) || !args || typeof args !== "object" || Array.isArray(args)) throw fail("Invalid app command");
   const fields = {
     get_state: [], focus_tile: ["tileId"], open_editor: ["tileId", "path", "root", "layout"], close_editor: ["tileId"],
-    set_layout: ["tileId", "layout"], set_columns: ["columns"],
+    set_layout: ["tileId", "layout"], set_columns: ["columns"], open_session: ["session", "cwd"],
   }[action];
   if (Object.keys(args).some((key) => !fields.includes(key))) throw fail("Unknown command argument");
+  if (action === "open_session" && (typeof args.session !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(args.session) || typeof args.cwd !== "string" || !args.cwd.startsWith("/") || args.cwd.length > 4096 || /[\x00-\x1f\x7f]/.test(args.cwd))) throw fail("Invalid local session or directory");
   if (fields.includes("tileId") && (typeof args.tileId !== "string" || !args.tileId.trim() || args.tileId.length > 512 || /[\x00-\x1f\x7f]/.test(args.tileId))) throw fail("Invalid tile ID");
   if (args.layout !== undefined && !layouts.has(args.layout)) throw fail("Invalid layout");
   if (action === "set_layout" && !layouts.has(args.layout)) throw fail("Invalid panel layout");

@@ -2,7 +2,7 @@
 // projects root (the same $HOME-relative folder on every device, e.g.
 // ~/Projects). Sync takes the union of every device's repos: a repo missing on
 // a device is cloned there from the origin URL seen elsewhere; a repo that is
-// present switches to origin's default branch and fast-forwards it. Modified
+// present switches to origin's default branch and merges upstream changes. Modified
 // tracked files are stashed first (git stash pop brings them back); untracked
 // files stay where they are. Afterwards every .env / .env.* file is copied from
 // the device holding the newest copy to every device where it is missing or
@@ -59,11 +59,50 @@ export function originKey(url) {
     }
   }
   repo = repo.replace(/^\/+|\/+$/g, "").replace(/\.git$/, "");
-  return repo ? `${host}/${repo}` : null;
+  return repo ? `${host}/${host === "github.com" ? repo.toLowerCase() : repo}` : null;
+}
+
+// Resolve through the authenticated CLI so private transferred repositories can
+// be verified without handling credentials here. Failure leaves identity intact.
+async function githubRepository(fullName) {
+  return new Promise((resolve) => {
+    execFile("gh", ["api", "--hostname", "github.com", `repos/${fullName}`], { timeout: 8_000, maxBuffer: 128 * 1024 }, (error, stdout) => {
+      if (error) return resolve(null);
+      try {
+        const data = JSON.parse(stdout);
+        resolve(Number.isSafeInteger(data.id) && /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(data.full_name) ? { id: data.id, fullName: data.full_name } : null);
+      } catch { resolve(null); }
+    });
+  });
+}
+
+export async function reconcileGithubOrigins(scan, resolveRepository = githubRepository) {
+  const lookups = new Map();
+  const lookup = (name) => {
+    const key = name.toLowerCase();
+    if (!lookups.has(key)) lookups.set(key, Promise.resolve().then(() => resolveRepository(name)).catch(() => null));
+    return lookups.get(key);
+  };
+  const repos = scan.devices.flatMap((device) => device.repos);
+  await mapConcurrent(repos, REPO_CONCURRENCY, async (repo) => {
+    const match = originKey(repo.origin)?.match(/^github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)$/);
+    if (!match) return;
+    const [, owner, name] = match;
+    if (owner.toLowerCase() === "pzzaworks") return;
+    const [original, candidate] = await Promise.all([lookup(`${owner}/${name}`), lookup(`pzzaworks/${name}`)]);
+    if (!original || !candidate || !Number.isSafeInteger(original.id) || original.id !== candidate.id ||
+        !/^pzzaworks\/[A-Za-z0-9_.-]+$/i.test(candidate.fullName)) return;
+    // Preserve the transport used by this checkout, but only after identity proof.
+    repo.originalProjectId = `origin:${originKey(repo.origin)}`;
+    repo.canonicalOrigin = repo.origin.startsWith("https://") || repo.origin.startsWith("http://")
+      ? `https://github.com/${candidate.fullName}.git` : `git@github.com:${candidate.fullName}.git`;
+  });
+  for (const device of scan.devices) for (const repo of device.repos) repo.projectId = projectIdFor(device.id, repo);
+  return scan;
 }
 
 export function projectIdFor(deviceId, repo) {
-  const origin = originKey(repo.origin);
+  const origin = originKey(repo.canonicalOrigin ?? repo.origin);
   return origin ? `origin:${origin}` : `local:${JSON.stringify([deviceId, repo.rel])}`;
 }
 
@@ -87,7 +126,7 @@ export function groupProjects(scan) {
   return [...groups.values()].map((g) => {
     const source = [...g.members].find(([deviceId, repo]) => !g.duplicates.has(deviceId) && originKey(repo.origin));
     const first = source?.[1] ?? g.members.values().next().value;
-    return { ...g, rel: first.rel, origin: source ? first.origin : null };
+    return { ...g, rel: first.rel, origin: source ? (first.canonicalOrigin ?? first.origin) : null };
   });
 }
 
@@ -117,7 +156,8 @@ export function migrateProjectOptions(raw, scan) {
   const ids = new Set(projects.map((p) => p.id));
   for (const p of projects) {
     const paths = new Set([...p.members.values(), ...[...p.duplicates.values()].flat()].map((r) => r.rel));
-    const entries = [options.repos[p.id], ...[...paths].filter((rel) => !ids.has(rel)).map((rel) => options.repos[rel])].filter(Boolean);
+    const aliases = [...p.members.values(), ...[...p.duplicates.values()].flat()].map((repo) => `origin:${originKey(repo.origin)}`);
+    const entries = [options.repos[p.id], ...aliases.map((id) => options.repos[id]), ...[...paths].filter((rel) => !ids.has(rel)).map((rel) => options.repos[rel])].filter(Boolean);
     if (entries.length) repos[p.id] = {
       enabled: entries.every((entry) => entry.enabled !== false),
       env: entries.every((entry) => entry.env !== false),
@@ -271,11 +311,12 @@ const SYNC_FUNCS =
   `pz_clone() { if pz_linked_worktree "$2"; then pz_r "$2" skipped "linked worktree; left alone"; return; fi; if mkdir -p "$(dirname "$2")" && out=$(git clone --quiet "$1" "$2" 2>&1); then pz_r "$2" cloned ""; else pz_r "$2" failed "$(pz_tail "$out")"; fi; }; ` +
   // pz_update REL STASH SWITCH: STASH=1 stashes modified tracked files (else a
   // dirty tree is reported and left alone); SWITCH=1 moves to origin's default
-  // branch (else the current branch is fast-forwarded in place).
+  // branch (else the current branch receives upstream changes in place).
   `pz_update() { d=$1; do_stash=$2; do_switch=$3; expected=$4; ` +
   `if pz_linked_worktree "$d"; then pz_r "$d" skipped "linked worktree; left alone"; return; fi; ` +
   `actual=$(git -C "$d" remote get-url origin 2>/dev/null); ` +
   `[ "$actual" = "$expected" ] || { pz_r "$d" failed "origin changed since scan; left alone"; return; }; ` +
+  `if [ -n "$(git -C "$d" ls-files --unmerged)" ] || [ -f "$(git -C "$d" rev-parse --absolute-git-dir)/MERGE_HEAD" ] || [ -d "$(git -C "$d" rev-parse --absolute-git-dir)/rebase-merge" ] || [ -d "$(git -C "$d" rev-parse --absolute-git-dir)/rebase-apply" ]; then pz_r "$d" failed "unfinished merge or rebase; left alone"; return; fi; ` +
   `if ! out=$(git -C "$d" fetch --quiet --prune origin 2>&1); then pz_r "$d" failed "fetch: $(pz_tail "$out")"; return; fi; ` +
   `if [ "$do_switch" = 1 ]; then git -C "$d" remote set-head origin -a >/dev/null 2>&1; fi; ` +
   `was=$(git -C "$d" rev-parse --abbrev-ref HEAD 2>/dev/null); before=$(git -C "$d" rev-parse HEAD 2>/dev/null); stashed=; ` +
@@ -290,7 +331,13 @@ const SYNC_FUNCS =
   `if [ "$do_stash" != 1 ]; then pz_r "$d" dirty "$n uncommitted change(s) on $was, left alone (stash is off)"; return; fi; ` +
   `if out=$(git -C "$d" stash push --quiet -m "pzza-sync $was $(date +%Y-%m-%d_%H:%M)" 2>&1); then stashed="stashed $n change(s) from $was"; ` +
   `else pz_r "$d" failed "stash: $(pz_tail "$out")"; return; fi; fi; ` +
-  `if ! out=$(git -C "$d" checkout --quiet "$def" 2>&1 && git -C "$d" merge --ff-only --quiet "origin/$def" 2>&1); then pz_r "$d" failed "$(pz_tail "$out")"; return; fi; ` +
+  `if ! out=$(git -C "$d" checkout --quiet "$def" 2>&1); then pz_r "$d" failed "$(pz_tail "$out")"; return; fi; ` +
+  // A merge preserves local commit IDs. Abort conflicts so sync never leaves
+  // an unresolved index behind; any parked edits remain recoverable in stash.
+  `if ! out=$(git -C "$d" merge --ff --no-edit --quiet "origin/$def" 2>&1); then out=$(pz_tail "$out"); ` +
+  `if git -C "$d" rev-parse --verify --quiet MERGE_HEAD >/dev/null; then ` +
+  `if git -C "$d" merge --abort >/dev/null 2>&1; then out="merge conflict; merge aborted and local commits preserved. $out"; else out="merge abort failed; resolve the merge manually. $out"; fi; fi; ` +
+  `pz_r "$d" failed "$(pz_tail "$out")\${stashed:+; $stashed (git stash pop to restore)}"; return; fi; ` +
   `after=$(git -C "$d" rev-parse HEAD 2>/dev/null); pulled=; ` +
   `if [ "$before" != "$after" ]; then pulled="+$(git -C "$d" rev-list --count "$before..$after" 2>/dev/null) commits"; fi; ` +
   `if [ -n "$stashed" ]; then pz_r "$d" stashed "$stashed, now on $def\${pulled:+ $pulled} (git stash pop to restore)"; ` +
@@ -530,7 +577,7 @@ export async function scanProjects(body, { redact: strip = false, onProgress } =
       return { ...d, error, root: parsed.root, repos: parsed.repos };
     }),
   );
-  return { root: String(body.root), devices: results };
+  return reconcileGithubOrigins({ root: String(body.root), devices: results });
 }
 
 // Decide what each device has to do for every repo in the union. A repo only
@@ -571,7 +618,7 @@ export function planSync(scan, opts = normalizeOptions()) {
 }
 
 // Scan, plan and run the sync on every device in parallel: git first (clone /
-// stash / checkout / fast-forward), then the env files. Returns
+// stash / checkout / merge), then the env files. Returns
 // { root, devices: [{ id, name, host, error, results: [...], envs: [...] }] }.
 export async function syncProjects(body) {
   const rootE = rootExpr(body.root);

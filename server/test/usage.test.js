@@ -63,3 +63,31 @@ test("rejected credentials do not keep displaying a previous successful sample",
   now += USAGE_FRESH_MS;
   await assert.rejects(limited("account", async () => { throw usageResponseError(new Response(null, { status: 401 })); }), /401/);
 });
+
+test("manual refresh bypasses successful cache and deduplicates concurrent requests", async () => {
+  let calls = 0;
+  const limited = createUsageLimiter(() => 0);
+  const fetchUsage = async () => ({ five_hour: { utilization: ++calls } });
+  await limited("account", fetchUsage);
+  const results = await Promise.all([
+    limited("account", fetchUsage, { fresh: true }),
+    limited("account", fetchUsage, { fresh: true }),
+  ]);
+  assert.equal(calls, 2);
+  assert.equal(results[0].five_hour.utilization, 2);
+  assert.deepEqual(results[0], results[1]);
+  await limited("account", fetchUsage);
+  assert.equal(calls, 2);
+});
+
+test("manual refresh still honors provider error cooldown", async () => {
+  let calls = 0;
+  const limited = createUsageLimiter(() => 0);
+  const fetchUsage = async () => {
+    calls++;
+    throw usageResponseError(new Response(null, { status: 429, headers: { "Retry-After": "900" } }), 0);
+  };
+  await assert.rejects(limited("account", fetchUsage), /rate limited/);
+  await assert.rejects(limited("account", fetchUsage, { fresh: true }), /rate limited/);
+  assert.equal(calls, 1);
+});

@@ -1,3 +1,5 @@
+import { IconButton } from "../ui/IconButton";
+import { AsyncButton } from "../ui/AsyncButton";
 import { DeviceInfo } from "./DeviceInfo";
 import { LiveSessionIcon } from "../ui/LiveSessionIcon";
 import { confirmEditorDiscard } from "../editorChanges";
@@ -221,14 +223,7 @@ export function DevicesMenu() {
                         return n ? <span className="field-hint">{n}</span> : null;
                       })()}
                     </span>
-                    <button
-                      className="usage-refresh"
-                      title="Re-scan"
-                      onClick={() => runScan(d)}
-                      disabled={scan?.loading}
-                    >
-                      <RefreshCw size={12} className={scan?.loading ? "sw-spin" : ""} />
-                    </button>
+                    <IconButton icon={RefreshCw} size={12} title="Re-scan" onClick={() => runScan(d)} loading={scan?.loading ?? false} />
                   </div>
 
                   {scan?.loading ? (
@@ -388,10 +383,9 @@ export function DevicesMenu() {
               <button className="btn" disabled={terminating} onClick={() => { setKilling(null); setKillError(null); }}>
                 Cancel
               </button>
-              <button className="btn btn-danger" disabled={terminating} onClick={() => void terminate()}>
-                <Trash2 size={14} strokeWidth={2} />
-                {terminating ? "Terminating…" : "Terminate"}
-              </button>
+              <AsyncButton className="btn btn-danger" loading={terminating} icon={Trash2} onClick={() => void terminate()}>
+                Terminate
+              </AsyncButton>
             </div>
           </>
         ) : null}

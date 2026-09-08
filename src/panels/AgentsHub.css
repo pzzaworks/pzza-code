@@ -1,0 +1,52 @@
+.modal.agents-hub-modal { width: 1120px; max-width: calc(100vw - 24px); height: min(820px, 90vh); max-height: 90vh; outline: none; }
+.ah-layout { display: flex; flex: 1; min-height: 0; }
+.ah-nav { flex: 0 0 185px; border-right: 1px solid var(--border); padding: 14px 10px; }
+.ah-nav > button { display: flex; align-items: center; gap: 10px; padding: 12px; width: 100%; text-align: left; border: 0; border-radius: 8px; color: var(--muted); background: transparent; cursor: pointer; }
+.ah-nav > button.active, .ah-list-item.active { color: var(--text); background: var(--surface-alt); }
+.ah-nav > p { padding: 12px; color: var(--muted); font-size: 11px; line-height: 1.6; }
+.ah-main { display: flex; flex-direction: column; min-width: 0; flex: 1; min-height: 0; }
+.ah-header { display: flex; gap: 8px; align-items: center; padding: 18px; border-bottom: 1px solid var(--border); }
+.ah-header > div { flex: 1; }
+.ah-header h2 { font-size: 18px; margin: 0; }
+.ah-header p { margin: 5px 0 0; color: var(--muted); font-size: 11px; }
+.ah-scroll { padding: 16px; overflow: auto; min-height: 0; }
+.ah-message { padding: 10px 16px; font-size: 12px; overflow-wrap: anywhere; }
+.ah-message.error { color: var(--danger); }
+.ah-workbench { display: grid; grid-template-columns: 185px minmax(0, 1fr); gap: 18px; }
+.ah-workbench > aside { display: flex; flex-direction: column; gap: 8px; }
+.ah-list-item { background: transparent; color: var(--muted); padding: 10px; text-align: left; border: 1px solid var(--border); border-radius: 8px; cursor: pointer; overflow-wrap: anywhere; }
+.ah-editor { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.ah-editor > label { display: grid; gap: 6px; font-size: 12px; }
+.ah-source { resize: vertical; min-height: 280px; width: 100%; font: 12px/1.7 ui-monospace, monospace; }
+.ah-editor fieldset { border: 1px solid var(--border); border-radius: 8px; display: grid; gap: 8px; padding: 12px; font-size: 12px; }
+.ah-editor fieldset label { display: flex; gap: 8px; align-items: center; }
+.ah-markdown { min-height: 280px; padding: 14px; border: 1px solid var(--border); border-radius: 8px; overflow-wrap: anywhere; }
+.ah-catalog { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
+.ah-catalog article { display: flex; flex-direction: column; gap: 10px; padding: 16px; border: 1px solid var(--border); border-radius: 10px; }
+.ah-catalog h3 { margin: 0; font-size: 14px; }
+.ah-catalog p { color: var(--muted); font-size: 12px; line-height: 1.6; margin: 0; }
+.ah-catalog small { color: var(--muted); font-size: 10px; }
+.ah-catalog a, .ah-editor > a { color: var(--text); font-size: 11px; overflow-wrap: anywhere; }
+.ah-plan, .ah-deploy { padding: 14px; border: 1px solid var(--border); border-radius: 10px; margin-bottom: 12px; }
+.ah-plan { display: grid; gap: 8px; font-size: 12px; }
+.ah-plan p { margin: 0; overflow-wrap: anywhere; }
+.ah-plan details { overflow-wrap: anywhere; }
+.ah-plan pre { white-space: pre-wrap; word-break: break-word; max-height: 240px; overflow: auto; background: var(--surface-alt); padding: 10px; }
+.ah-target { display: flex; gap: 8px; align-items: center; margin: 8px 0; }
+.ah-target .input { flex: 1; min-width: 100px; }
+@media (max-width: 720px) {
+  .ah-layout { flex-direction: column; }
+  .ah-nav { display: flex; flex: 0 0 auto; padding: 6px; overflow-x: auto; border-right: 0; border-bottom: 1px solid var(--border); }
+  .ah-nav > button { white-space: nowrap; width: auto; flex-shrink: 0; }
+  .ah-nav > p { display: none; }
+  .ah-workbench { grid-template-columns: 1fr; }
+  .ah-workbench > aside { max-height: 160px; overflow: auto; }
+  .ah-target { flex-wrap: wrap; }
+  .ah-header { padding: 12px; }
+  .ah-header .btn { font-size: 10px; }
+}
+
+.agents-hub-modal .input { width: 100%; box-sizing: border-box; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-alt); color: var(--text); padding: 9px 11px; font: inherit; font-size: 12px; }
+.agents-hub-modal .input:focus { outline: 1px solid var(--muted); outline-offset: 1px; }
+.agents-hub-modal .ah-source { font: 12px/1.7 ui-monospace, monospace; }
+.ah-search { margin-bottom: 10px; }

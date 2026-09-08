@@ -26,7 +26,6 @@ import {
   Lightbulb,
   Maximize2,
   Monitor,
-  Moon,
   MousePointerClick,
   Plus,
   RefreshCw,
@@ -97,7 +96,7 @@ const TileHeadDemo = () => (
     <span className="tile-device">Devbox</span>
     <div className="tile-head-spacer" />
     <div className="tile-actions">
-      <TB icon={Moon} />
+      <TB icon={Copy} />
       <TB icon={Focus} />
       <TB icon={LayoutGrid} />
       <TB icon={Maximize2} />
@@ -140,13 +139,13 @@ const Switch = ({ on }: { on?: boolean }) => (
 );
 
 const McpDemo = () => (
-  <Panel caption="Top bar · MCP">
+  <Panel caption="Settings · MCP & connections">
     <div className="menu-body">
       <div className="menu-title">MCP</div>
       <div className="mcp-toggle">
         <span className="set-label">
-          <span>Expose to agents</span>
-          <span className="set-hint">let Claude / Codex control the app safely</span>
+          <span>Allow app window control</span>
+          <span className="set-hint">let connected agents control this app window</span>
         </span>
         <Switch on />
       </div>
@@ -370,6 +369,10 @@ interface Group {
 }
 
 export function HelpModal({ open, onClose }: { open: boolean; onClose: () => void }) {
+  return <Modal open={open} onClose={onClose} title="Help & docs" icon={CircleQuestionMark} size="xl"><HelpContent /></Modal>;
+}
+
+export function HelpContent() {
   const [active, setActive] = useState("start");
 
   const groups: Group[] = [
@@ -468,7 +471,7 @@ export function HelpModal({ open, onClose }: { open: boolean; onClose: () => voi
                 This page.
               </Row>
               <Row ui={<IB icon={SettingsIcon} />} name="Settings">
-                Font size, cursor blink and other preferences.
+                Open the settings sidebar for preferences, devices, sync, remote desktop, connections and help.
               </Row>
               <Row ui={<IB icon={Plus} />} name="New session">
                 Open a new terminal - pick the device, workspace and (optionally) which account.
@@ -547,7 +550,7 @@ export function HelpModal({ open, onClose }: { open: boolean; onClose: () => voi
             <>
               <Hero caption="Tile actions · top-right of every tile">
                 <span className="tile-actions">
-                  <TB icon={Moon} />
+                  <TB icon={Copy} />
                   <TB icon={Focus} />
                   <TB icon={LayoutGrid} />
                   <TB icon={Maximize2} />
@@ -558,8 +561,9 @@ export function HelpModal({ open, onClose }: { open: boolean; onClose: () => voi
                 </span>
               </Hero>
               <H>The buttons on each tile</H>
-              <Row ui={<TB icon={Moon} />} name="Dim">
-                Darkens just this one window. Click again - or click the dimmed tile - to undim.
+              <Row ui={<TB icon={Copy} />} name="Duplicate session">
+                Opens a fresh terminal in the same folder, device, and workspace. The original
+                keeps running; running programs and terminal history are not copied.
               </Row>
               <Row ui={<TB icon={Focus} />} name="Focus">
                 Spotlights this tile and dims every other one, corner accents and all. Click any
@@ -601,7 +605,6 @@ export function HelpModal({ open, onClose }: { open: boolean; onClose: () => voi
             <>
               <Hero caption="Focus · dims every other tile">
                 <span className="tile-actions">
-                  <TB icon={Moon} on />
                   <TB icon={Focus} on />
                 </span>
               </Hero>
@@ -612,11 +615,8 @@ export function HelpModal({ open, onClose }: { open: boolean; onClose: () => voi
                 keystrokes, so moving the mouse over a background agent never steals your scroll or
                 types into the wrong place.
               </P>
-              <Row ui={<TB icon={Moon} on />} name="Dim (manual)">
-                Darken any windows you pick, one by one - independent of focus.
-              </Row>
               <Row ui={<TB icon={Focus} on />} name="Focus (spotlight)">
-                Darken everything except one. Great when a single agent needs your full attention.
+                Soften the other tiles while keeping their colors. Great when one session needs your full attention.
               </Row>
               <Tip>
                 Activating a tile with the keyboard (<Kbd>{ctrlBadge(1)}</Kbd>–
@@ -1005,25 +1005,34 @@ export function HelpModal({ open, onClose }: { open: boolean; onClose: () => voi
               <H>How to</H>
               <Steps>
                 <Step>
-                  Open <IB icon={Blocks} /> <b>MCP</b> from the top bar.
+                  Open <IB icon={Blocks} /> <b>MCP & connections</b> from the top bar or the settings sidebar.
                 </Step>
                 <Step>
-                  Turn <b>Expose to agents</b> on.
+                  Turn <b>Allow app window control</b> on if you want agents to control this window. This does not disable independent session, file or device tools.
                 </Step>
                 <Step>
-                  Hit <b>Add</b> next to <b>Claude Code</b> or <b>Codex</b> to register the server
-                  in that CLI automatically.
+                  Use <b>Add</b> next to a supported CLI to register the server automatically.
                 </Step>
                 <Step>
-                  For an editor (Cursor, Zed, Windsurf), use the copy button and paste the config
-                  into its MCP settings.
+                  For an editor, copy the configuration into its MCP settings.
                 </Step>
               </Steps>
+              <H>Device bridge</H>
+              <P>
+                In <b>MCP & connections</b>, the <b>Device bridge</b> starts disabled.
+                Use <b>Copy pairing identity</b> and <b>Add paired device</b> to explicitly pair devices,
+                choose <b>Approved projects on this device</b>, and save the permissions you intend to grant.
+                <b> Allow incoming requests</b> controls each paired device; <b>Revoke device now</b> removes its access.
+              </P>
+              <P>
+                Review <b>Jobs and submission approvals</b> before approving requested work.
+                Bridge permissions constrain requests; they are not an operating system sandbox for builds or terminal commands.
+                Pairing or enabling the bridge does not automatically submit work.
+              </P>
               <H>Model Context Protocol</H>
               <P>
-                <IB icon={Blocks} /> exposes your sessions and ports to Claude / Codex / Zed /
-                Cursor / Windsurf, and can auto-add the server to the CLIs or copy the config for
-                editors - so an agent can list and open terminals for you.
+                <IB icon={Blocks} /> provides tools for sessions, files, devices and app control.
+                Copy a configuration or install it into a supported CLI so your agent can connect.
               </P>
             </>
           ),
@@ -1067,8 +1076,7 @@ export function HelpModal({ open, onClose }: { open: boolean; onClose: () => voi
   const current = all.find((s) => s.id === active) ?? all[0];
 
   return (
-    <Modal open={open} onClose={onClose} title="Help & docs" icon={CircleQuestionMark} size="xl">
-      <div className="doc-layout">
+    <div className="doc-layout">
         <nav className="doc-nav">
           {groups.map((g) => (
             <div className="doc-nav-group" key={g.title}>
@@ -1093,7 +1101,6 @@ export function HelpModal({ open, onClose }: { open: boolean; onClose: () => voi
           <div className="doc-title">{current.label}</div>
           {current.body}
         </div>
-      </div>
-    </Modal>
+    </div>
   );
 }

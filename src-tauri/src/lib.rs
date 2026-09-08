@@ -1,8 +1,11 @@
 mod agent;
+mod menu;
 mod appearance;
 mod forward;
 mod pty;
 mod rdp;
+mod speech;
+mod speech_model;
 mod sshmux;
 mod sys;
 mod tmux;
@@ -10,6 +13,7 @@ mod tmux;
 use agent::AgentState;
 use forward::ForwardState;
 use pty::PtyState;
+use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -18,17 +22,27 @@ pub fn run() {
         // relaunch after install.
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        .manage(speech::SpeechState::default())
+        .manage(speech_model::SpeechModelState::default())
         .manage(PtyState::default())
         .manage(ForwardState::default())
         .manage(AgentState::default())
         .setup(|app| {
+            #[cfg(target_os = "macos")]
+            menu::install(app.handle())?;
             // Launch the local device agent (server/index.js) as a managed sidecar.
             agent::start(&app.handle());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            speech::speech_prepare,
+            speech::speech_start,
+            speech::speech_stop,
+            speech_model::speech_model_status,
+            speech_model::speech_model_download,
             pty::pty_spawn,
             pty::pty_write,
+            pty::pty_ack,
             pty::pty_resize,
             pty::pty_kill,
             tmux::tmux_list_sessions,
@@ -47,6 +61,7 @@ pub fn run() {
         .run(|app, event| {
             // Tear the agent down with the app so no orphan Node process lingers.
             if let tauri::RunEvent::Exit = event {
+                app.state::<PtyState>().shutdown();
                 agent::stop(app);
             }
         });
