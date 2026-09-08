@@ -46,8 +46,10 @@ test("real isolated tmux: concurrent opens reuse one process, preserve agent, an
   const tmux = (...args) => promisify(execFile)("tmux", args, { env, timeout: 5000 });
   try {
     // Start the isolated server first so the test exercises session creation,
-    // not tmux's separate initial server startup race.
-    await tmux("new-session", "-d", "-s", "test-anchor");
+    // not tmux's separate initial server startup race. Use controlled commands
+    // so a login shell cannot recreate history files during fixture cleanup.
+    await tmux("-f", "/dev/null", "new-session", "-d", "-s", "test-anchor", "exec sleep 60");
+    await tmux("set-option", "-g", "default-shell", "/bin/sh");
     const results = await Promise.all(Array.from({ length: 6 }, () => openQuickChat({ host: "", agent: "claude" }, run)));
     assert.ok(results.every(result => result.agent === "claude"));
     const before = (await tmux("display-message", "-p", "-t", "=pzza-quick-chat:", "#{pane_pid}")).stdout;
@@ -60,7 +62,7 @@ test("real isolated tmux: concurrent opens reuse one process, preserve agent, an
     await closeQuickChat({ host: "" }, run);
     assert.equal((await openQuickChat({ host: "", agent: "codex" }, run)).agent, "codex");
     await closeQuickChat({ host: "" }, run);
-    await tmux("new-session", "-d", "-s", "pzza-quick-chat");
+    await tmux("new-session", "-d", "-s", "pzza-quick-chat", "exec sleep 60");
     await assert.rejects(openQuickChat({ host: "", agent: "claude" }, run), /not a managed/);
     await assert.rejects(closeQuickChat({ host: "" }, run), /not a managed/);
     await tmux("has-session", "-t", "=pzza-quick-chat");

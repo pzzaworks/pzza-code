@@ -7,7 +7,7 @@ import { sh, shQuote, SSH_TOKEN } from "./shell.js";
 import { ACTIVITY_PROBE_SCRIPT, detectSessionActivity, probeSessionActivity } from "./session-activity.js";
 
 const SESSIONS_CMD =
-  "tmux list-sessions -F '#{session_name}\t#{session_windows}\t#{session_attached}\t#{pane_current_command}\t#{pane_current_path}'";
+  "tmux list-sessions -F '#{session_name}\t#{session_windows}\t#{session_attached}\t#{pane_current_command}\t#{pane_current_path}\t#{session_created}'";
 
 // Resolve an exact session before modifying it. Internal grouped views retain
 // the parent's windows and processes unless they are closed with the parent.
@@ -79,7 +79,7 @@ export function parseSessions(out) {
   const sessions = [];
   for (const line of String(out || "").split("\n")) {
     if (!line) continue;
-    const [name, windows, attached, command, path] = line.split("\t");
+    const [name, windows, attached, command, path, created] = line.split("\t");
     if (name) {
       sessions.push({
         name,
@@ -87,6 +87,7 @@ export function parseSessions(out) {
         attached: attached !== "0",
         command: command || "",
         path: path || "",
+        createdAt: Number.isFinite(Number(created)) && Number(created) > 0 ? Number(created) * 1000 : null,
       });
     }
   }

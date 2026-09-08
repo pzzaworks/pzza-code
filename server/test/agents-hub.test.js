@@ -202,7 +202,7 @@ test("replacing the reviewed project directory cannot redirect an approved deplo
 });
 
 
-test("global discovery automatically adds user instructions without scanning projects", async t => {
+test("global discovery reads live content and timestamps without importing or scanning projects", async t => {
   const f = await fixture(t);
   await fs.mkdir(path.join(f.home, ".claude"));
   await fs.mkdir(path.join(f.home, ".codex"));
@@ -212,24 +212,19 @@ test("global discovery automatically adds user instructions without scanning pro
   await fs.writeFile(path.join(f.cwd, "CLAUDE.md"), "Do not discover projects");
   await fs.symlink(path.join(f.cwd, "CLAUDE.md"), path.join(f.home, "CLAUDE.md"));
   const input = { devices: [{ host: "", name: "Local" }] };
-  const found = await f.hub.discover(input);
+  const found = await f.hub.globalDiscover(input);
   assert.deepEqual(found.devices[0].files.map(file => file.path).sort(), [".claude/CLAUDE.md", ".codex/AGENTS.md", "AGENTS.md"]);
-  assert.equal(found.state.documents.length, 3);
   assert.match(found.devices[0].error, /CLAUDE.md/);
   const file = found.devices[0].files.find(file => file.path === ".claude/CLAUDE.md");
-  const imported = await f.hub.readInstruction({ host: "", root: f.home, path: file.path, sha256: file.sha256 });
-  assert.equal(imported.content, "Personal guidance");
-  const edited = editable(found.state);
-  edited.documents[0].content = "Keep my library edit";
-  f.hub.save(edited);
-  const again = await f.hub.discover(input);
-  assert.equal(again.state.documents.length, 3);
-  assert.equal(again.state.documents[0].content, "Keep my library edit");
-  assert.equal(again.state.revision, 2);
-  await fs.writeFile(path.join(f.home, ".claude/CLAUDE.md"), "Changed after discovery");
-  await assert.rejects(f.hub.readInstruction({ host: "", root: f.home, path: file.path, sha256: file.sha256 }), /changed/);
-  await assert.rejects(f.hub.readInstruction({ host: "", root: f.cwd, path: "CLAUDE.md", sha256: file.sha256 }), /supported user/);
-  await assert.rejects(f.hub.readInstruction({ host: "", root: f.home, path: "project/CLAUDE.md", sha256: file.sha256 }), /supported user/);
+  assert.equal(file.content, "Personal guidance");
+  assert.equal(file.modifiedAt, Math.floor((await fs.stat(path.join(f.home, file.path))).mtimeMs));
+  assert.match(file.sha256, /^[a-f0-9]{64}$/);
+  assert.equal(f.hub.state().revision, 0);
+  assert.deepEqual(f.hub.state().documents, []);
+  await fs.writeFile(path.join(f.home, ".claude/CLAUDE.md"), "Changed on device");
+  const again = await f.hub.globalDiscover(input);
+  assert.equal(again.devices[0].files.find(item => item.path === file.path).content, "Changed on device");
+  assert.equal(f.hub.state().revision, 0);
 });
 
 test("instruction-only sync copies identical bytes and preserves existing destination backups", async t => {
@@ -249,4 +244,146 @@ test("instruction-only sync copies identical bytes and preserves existing destin
     assert.ok(result.backupPath);
     assert.equal(await fs.readFile(path.join(cwd, "CLAUDE.md"), "utf8"), content);
   }
+});
+
+
+async function globalFixture(t, options = {}) {
+  const f = await fixture(t);
+  const homes = { "": f.home, alpha: path.join(f.directory, "alpha-home"), beta: path.join(f.directory, "beta-home") };
+  await Promise.all(Object.values(homes).map(home => fs.mkdir(home, { recursive: true })));
+  const target = async (host, payload) => {
+    if (!Object.hasOwn(homes, host)) throw new Error("Device offline");
+    return runHubTarget("", payload, { env: { ...f.env, HOME: homes[host] } });
+  };
+  const hub = createAgentsHub({ stateDir: f.stateDir, target, ...options });
+  return { ...f, hub, homes, target };
+}
+
+async function sourceFile(hub, host = "", name = "CLAUDE.md") {
+  const discovered = await hub.globalDiscover({ devices: [{ host, name: "Source" }] });
+  const file = discovered.devices[0].files.find(file => file.path === name);
+  return { host, path: name, sha256: file.sha256 };
+}
+
+test("global sync previews exact content, keeps durable backups and replays idempotently", async t => {
+  const f = await globalFixture(t);
+  const content = "# Chosen source\n\nPreserve spacing and UTF-8: café.\n";
+  await fs.writeFile(path.join(f.home, "CLAUDE.md"), content);
+  await fs.writeFile(path.join(f.homes.alpha, "CLAUDE.md"), "Previous alpha guidance");
+  const input = { source: await sourceFile(f.hub), targets: [{ host: "alpha", path: "CLAUDE.md" }, { host: "beta", path: ".claude/CLAUDE.md" }, { host: "", path: "CLAUDE.md" }] };
+  const preview = await f.hub.globalPreview(input);
+  assert.equal(preview.source.content, content);
+  assert.equal(preview.targets[0].previousContent, "Previous alpha guidance");
+  assert.equal(preview.targets[1].previousContent, null);
+  assert.equal(preview.targets[2].status, "unchanged");
+  assert.equal(await fs.readFile(path.join(f.homes.alpha, "CLAUDE.md"), "utf8"), "Previous alpha guidance");
+  const [first, concurrent] = await Promise.all([f.hub.globalSync({ previewId: preview.previewId }), f.hub.globalSync({ previewId: preview.previewId })]);
+  assert.deepEqual(concurrent, first);
+  assert.deepEqual(first.results.map(result => result.status), ["synced", "synced", "unchanged"]);
+  assert.equal(await fs.readFile(path.join(first.results[0].backupPath, "files/CLAUDE.md"), "utf8"), "Previous alpha guidance");
+  assert.equal((await fs.stat(first.results[0].backupPath)).mode & 0o777, 0o700);
+  assert.equal(await fs.readFile(path.join(f.homes.alpha, "CLAUDE.md"), "utf8"), content);
+  assert.equal(await fs.readFile(path.join(f.homes.beta, ".claude/CLAUDE.md"), "utf8"), content);
+  assert.deepEqual(await f.hub.globalSync({ previewId: preview.previewId }), first);
+  assert.equal(f.hub.state().revision, 0);
+});
+
+test("global source changes invalidate selection and every pending target", async t => {
+  const f = await globalFixture(t);
+  await fs.writeFile(path.join(f.home, "CLAUDE.md"), "First source");
+  const source = await sourceFile(f.hub);
+  await fs.writeFile(path.join(f.home, "CLAUDE.md"), "Changed source");
+  await assert.rejects(f.hub.globalPreview({ source, targets: [{ host: "alpha", path: "CLAUDE.md" }] }), /Source changed/);
+  const preview = await f.hub.globalPreview({ source: await sourceFile(f.hub), targets: [{ host: "alpha", path: "CLAUDE.md" }, { host: "beta", path: "CLAUDE.md" }] });
+  await fs.writeFile(path.join(f.home, "CLAUDE.md"), "Changed after preview");
+  const result = await f.hub.globalSync({ previewId: preview.previewId });
+  assert.ok(result.results.every(item => item.status === "failed" && /Source changed/.test(item.error)));
+  for (const home of [f.homes.alpha, f.homes.beta]) await assert.rejects(fs.stat(path.join(home, "CLAUDE.md")), { code: "ENOENT" });
+});
+
+test("global sync reports stale and offline destinations while completing safe copies", async t => {
+  const f = await globalFixture(t);
+  await fs.writeFile(path.join(f.home, "CLAUDE.md"), "Chosen source");
+  await fs.writeFile(path.join(f.homes.alpha, "CLAUDE.md"), "Old alpha");
+  const preview = await f.hub.globalPreview({ source: await sourceFile(f.hub), targets: [{ host: "alpha", path: "CLAUDE.md" }, { host: "offline", path: "CLAUDE.md" }, { host: "beta", path: "CLAUDE.md" }] });
+  assert.equal(preview.targets[1].status, "failed");
+  await fs.writeFile(path.join(f.homes.alpha, "CLAUDE.md"), "Unreviewed alpha edit");
+  const result = await f.hub.globalSync({ previewId: preview.previewId });
+  assert.deepEqual(result.results.map(item => item.status), ["failed", "failed", "synced"]);
+  assert.equal(await fs.readFile(path.join(f.homes.alpha, "CLAUDE.md"), "utf8"), "Unreviewed alpha edit");
+  assert.equal(await fs.readFile(path.join(f.homes.beta, "CLAUDE.md"), "utf8"), "Chosen source");
+});
+
+test("global preview refuses arbitrary paths, cross-framework targets and symlink escapes", async t => {
+  const f = await globalFixture(t);
+  await fs.writeFile(path.join(f.home, "CLAUDE.md"), "Source");
+  const source = await sourceFile(f.hub);
+  for (const name of ["project/CLAUDE.md", "../CLAUDE.md", "/tmp/CLAUDE.md", ".ssh/config", "AGENTS.md"]) {
+    await assert.rejects(f.hub.globalPreview({ source, targets: [{ host: "alpha", path: name }] }), /allowed|same framework/);
+  }
+  await fs.symlink(f.cwd, path.join(f.homes.alpha, ".claude"));
+  const preview = await f.hub.globalPreview({ source, targets: [{ host: "alpha", path: ".claude/CLAUDE.md" }] });
+  assert.equal(preview.targets[0].status, "failed");
+  assert.equal((await f.hub.globalSync({ previewId: preview.previewId })).results[0].status, "failed");
+  assert.deepEqual(await fs.readdir(f.cwd), []);
+  const rejected = await f.target("", { operation: "global-write", path: "project/CLAUDE.md", content: "Wrong", baselineSha256: null, baselineMode: null });
+  assert.equal(rejected.ok, false);
+  assert.deepEqual(await fs.readdir(f.cwd), []);
+});
+
+test("global previews expire before applying", async t => {
+  let timestamp = 1;
+  const f = await globalFixture(t, { now: () => timestamp });
+  await fs.writeFile(path.join(f.home, "CLAUDE.md"), "Source");
+  const preview = await f.hub.globalPreview({ source: await sourceFile(f.hub), targets: [{ host: "alpha", path: "CLAUDE.md" }] });
+  timestamp = preview.expiresAt;
+  await assert.rejects(f.hub.globalSync({ previewId: preview.previewId }), /expired/);
+  await assert.rejects(fs.stat(path.join(f.homes.alpha, "CLAUDE.md")), { code: "ENOENT" });
+});
+
+
+test("global sync rereads the source between device writes", async t => {
+  const f = await globalFixture(t);
+  await fs.writeFile(path.join(f.home, "CLAUDE.md"), "Reviewed source");
+  let written = false;
+  const hub = createAgentsHub({ stateDir: f.stateDir, target: async (host, payload) => {
+    const result = await f.target(host, payload);
+    if (!written && payload.operation === "global-write") {
+      written = true;
+      await fs.writeFile(path.join(f.home, "CLAUDE.md"), "Source changed during sync");
+    }
+    return result;
+  } });
+  const preview = await hub.globalPreview({ source: await sourceFile(hub), targets: [{ host: "alpha", path: "CLAUDE.md" }, { host: "beta", path: "CLAUDE.md" }] });
+  const result = await hub.globalSync({ previewId: preview.previewId });
+  assert.deepEqual(result.results.map(item => item.status), ["synced", "failed"]);
+  assert.equal(await fs.readFile(path.join(f.homes.alpha, "CLAUDE.md"), "utf8"), "Reviewed source");
+  await assert.rejects(fs.stat(path.join(f.homes.beta, "CLAUDE.md")), { code: "ENOENT" });
+});
+
+test("a destination replaced by a symlink after global preview is never followed", async t => {
+  const f = await globalFixture(t);
+  await fs.writeFile(path.join(f.home, "CLAUDE.md"), "Source");
+  const outside = path.join(f.cwd, "untouched.md");
+  await fs.writeFile(outside, "Keep outside content");
+  const preview = await f.hub.globalPreview({ source: await sourceFile(f.hub), targets: [{ host: "alpha", path: "CLAUDE.md" }] });
+  await fs.symlink(outside, path.join(f.homes.alpha, "CLAUDE.md"));
+  const result = await f.hub.globalSync({ previewId: preview.previewId });
+  assert.equal(result.results[0].status, "failed");
+  assert.equal(await fs.readFile(outside, "utf8"), "Keep outside content");
+  assert.ok((await fs.lstat(path.join(f.homes.alpha, "CLAUDE.md"))).isSymbolicLink());
+});
+
+test("global backups remain available beyond project backup retention", async t => {
+  const f = await globalFixture(t);
+  await fs.writeFile(path.join(f.home, "CLAUDE.md"), "Original guidance");
+  const backups = [];
+  for (let index = 0; index < 11; index++) {
+    const previous = await f.target("", { operation: "global-read", path: "CLAUDE.md" });
+    const result = await f.target("", { operation: "global-write", path: "CLAUDE.md", baselineSha256: previous.sha256, baselineMode: previous.mode, content: `Guidance ${index}` });
+    assert.equal(result.ok, true, result.error);
+    backups.push(result.backupPath);
+  }
+  assert.equal(await fs.readFile(path.join(backups[0], "files/CLAUDE.md"), "utf8"), "Original guidance");
+  assert.equal((await fs.readdir(path.dirname(backups[0]))).length, 11);
 });

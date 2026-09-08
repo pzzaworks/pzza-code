@@ -73,3 +73,14 @@ export function iconColor(command?: string): string | undefined {
   if (Icon === Container) return "#2496ED";
   return undefined;
 }
+
+export function sessionAge(createdAt: number | null | undefined, now: number): string {
+  if (createdAt == null || !Number.isFinite(createdAt) || createdAt <= 0) return "Age unavailable";
+  const minutes = Math.max(0, Math.floor((now - createdAt) / 60_000));
+  if (minutes < 1) return "<1m";
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h`;
+  const days = Math.floor(hours / 24);
+  return days < 7 ? `${days}d` : `${Math.floor(days / 7)}w`;
+}

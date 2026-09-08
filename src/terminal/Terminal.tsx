@@ -10,6 +10,7 @@ import { themeById, terminalPalette } from "../theme/themes";
 import { killPty, resizePty, spawnPty, writePty } from "./ptyBridge";
 import { openWsPty, type WsPtyHandle } from "./wsPty";
 import { runBrowserPreview } from "./browserPreview";
+import { installMouseSelection } from "./mouseSelection";
 import { createOutputScheduler } from "./outputScheduler";
 import { HAS_TAURI } from "../tauriEnv";
 import { uploadPasteImage } from "../serverApi";
@@ -166,6 +167,7 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
       container.addEventListener("mousedown", selectDown, true);
       // Bubble after the terminal finalizes its selection on document mouseup.
       window.addEventListener("mouseup", selectUp);
+      const disposeMouseSelection = installMouseSelection(container, term);
 
       term.attachCustomKeyEventHandler((event) => {
         if (event.type !== "keydown") return true;
@@ -530,6 +532,7 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
         container.removeEventListener("mousedown", selectDown, true);
         window.removeEventListener("mouseup", selectUp);
         selectionListener.dispose();
+        disposeMouseSelection();
         unregisterMenu();
         container.removeEventListener("mousedown", onMouseDown);
         container.removeEventListener("wheel", onWheel, { capture: true });

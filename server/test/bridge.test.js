@@ -18,7 +18,7 @@ const executor = () => ({
   async revokePeer(peerId) { this.revoked.push(peerId); },
 });
 async function pair(t, realExecutor = false) {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "pzza-bridge-test-"));
+  const directory = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "pzza-bridge-test-")));
   const leftExecutor = executor();
   const rightExecutor = executor();
   let clock = timestamp;

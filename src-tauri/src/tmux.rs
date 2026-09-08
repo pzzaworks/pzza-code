@@ -10,6 +10,8 @@ pub struct TmuxSession {
     windows: u32,
     attached: bool,
     command: String,
+    #[serde(rename = "createdAt")]
+    created_at: Option<u64>,
 }
 
 // Build the command that talks to tmux. With a host it hops over ssh and lets
@@ -31,7 +33,7 @@ fn tmux_capture(host: &Option<String>, remote: &str) -> std::io::Result<std::pro
 #[tauri::command]
 pub fn tmux_list_sessions(host: Option<String>) -> Result<Vec<TmuxSession>, String> {
     let remote =
-        "tmux list-sessions -F '#{session_name}\t#{session_windows}\t#{session_attached}\t#{pane_current_command}'";
+        "tmux list-sessions -F '#{session_name}\t#{session_windows}\t#{session_attached}\t#{pane_current_command}\t#{session_created}'";
     let output = tmux_capture(&host, remote).map_err(|e| e.to_string())?;
 
     if !output.status.success() {
@@ -58,11 +60,14 @@ pub fn tmux_list_sessions(host: Option<String>) -> Result<Vec<TmuxSession>, Stri
         let windows = parts.next().unwrap_or("0").parse().unwrap_or(0);
         let attached = parts.next().unwrap_or("0") != "0";
         let command = parts.next().unwrap_or("").to_string();
+        let created_at = parts.next().and_then(|value| value.parse::<u64>().ok())
+            .filter(|value| *value > 0).and_then(|value| value.checked_mul(1000));
         sessions.push(TmuxSession {
             name,
             windows,
             attached,
             command,
+            created_at,
         });
     }
     Ok(sessions)

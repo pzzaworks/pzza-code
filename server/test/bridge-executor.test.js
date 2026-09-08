@@ -7,7 +7,7 @@ import test from "node:test";
 import { createBridgeExecutor, BRIDGE_CAPABILITIES } from "../lib/bridge-executor.js";
 
 async function fixture(t, options = {}) {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "pzza-bridge-executor-"));
+  const dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "pzza-bridge-executor-")));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   const root = path.join(dir, "project");
   await fs.mkdir(root);
