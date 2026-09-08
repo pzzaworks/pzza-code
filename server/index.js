@@ -39,7 +39,7 @@ import { createAgentsHub, createAgentsHubRouter } from "./lib/agents-hub.js";
 import { installAgent } from "./lib/install.js";
 import { filesRouter } from "./lib/files.js";
 import { startPtyBridge, sweepOrphanViews } from "./lib/pty.js";
-import { scanProjects, syncProjects } from "./lib/projects.js";
+import { scanProjects, syncProjects, cancelProjectSync } from "./lib/projects.js";
 
 // A query-param host, validated for safe ssh use ("" when absent/invalid).
 const queryHost = (url) => {
@@ -200,6 +200,11 @@ const server = http.createServer(async (req, res) => {
     }
     const out = await scanProjects(body, { redact: true });
     return json(res, out.error ? 400 : 200, out);
+  }
+  if (url.pathname === "/projects/sync/cancel" && req.method === "POST") {
+    const body = await readBody(req);
+    const result = cancelProjectSync(body.operationId);
+    return json(res, result.error ? 400 : 200, result);
   }
   if (url.pathname === "/projects/sync" && req.method === "POST") {
     const out = await syncProjects(await readBody(req));

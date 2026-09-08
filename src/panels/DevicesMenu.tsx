@@ -1,6 +1,5 @@
 import { IconButton } from "../ui/IconButton";
 import { AsyncButton } from "../ui/AsyncButton";
-import { DeviceSetupSection } from "./SettingsMenu";
 import { DeviceInfo } from "./DeviceInfo";
 import { LiveSessionIcon } from "../ui/LiveSessionIcon";
 import { confirmEditorDiscard } from "../editorChanges";
@@ -30,7 +29,7 @@ interface ScanState {
 
 // Manage devices, and scan each one for its real tmux sessions (even ones the
 // app never opened) to add, move, or terminate them.
-export function DevicesMenu({ close }: { close?: () => void }) {
+export function DevicesMenu() {
   const devices = useStore((s) => s.devices);
   const connectionHost = useStore((s) => s.connection.host);
   const addDevice = useStore((s) => s.addDevice);
@@ -179,8 +178,9 @@ export function DevicesMenu({ close }: { close?: () => void }) {
           const expanded = openDev === d.id;
           const scan = scans[d.id];
           return (
-            <div key={d.id} className={`device-block ${expanded ? "on" : ""}`}>
-              <div className="device-row device-row-click" role="button" tabIndex={0} aria-expanded={expanded} onKeyDown={event => { if (event.target === event.currentTarget && (event.key === "Enter" || event.key === " ")) { event.preventDefault(); toggleDevice(d); } }} onClick={() => toggleDevice(d)}>
+            <div key={d.id} className={`managed-device ${expanded ? "expanded" : ""}`}>
+              <div className="managed-device-header">
+              <button type="button" className="managed-device-toggle" aria-expanded={expanded} onClick={() => toggleDevice(d)}>
                 {expanded ? (
                   <ChevronDown size={14} className="muted-icon" />
                 ) : (
@@ -197,10 +197,12 @@ export function DevicesMenu({ close }: { close?: () => void }) {
                     {d.host}
                   </span>
                 </span>
+                <span className="managed-device-kind">{isLocal ? "Local" : "SSH"}</span>
+              </button>
                 {!isCurrent && !isLocal && devices.length > 1 ? (
                   <button
                     className="icon-btn icon-btn-danger"
-                    title="Remove device"
+                    title="Remove device" aria-label={`Remove ${d.name}`}
                     onClick={(e) => {
                       e.stopPropagation();
                       setPending({ id: d.id, name: d.name });
@@ -212,7 +214,7 @@ export function DevicesMenu({ close }: { close?: () => void }) {
               </div>
 
               {expanded ? (
-                <div className="device-scan">
+                <div className="managed-device-details">
                   <DeviceInfo key={scanHost(d)} device={d} />
                   <div className="device-scan-head">
                     <span className="device-scan-title">
@@ -248,7 +250,7 @@ export function DevicesMenu({ close }: { close?: () => void }) {
                       const isOpen = tiles.some((t) => t.id === tileId);
                       const wsId = sessionWs[tileId] ?? "";
                       return (
-                        <div className="scan-row" key={sess.name}>
+                        <div className="managed-session" key={sess.name}>
                           <span className="scan-icon">
                             <LiveSessionIcon session={sess.name} host={host} size={13} />
                           </span>
@@ -342,7 +344,6 @@ export function DevicesMenu({ close }: { close?: () => void }) {
         </div>
       </section>
 
-      <section className="settings-section device-setup-section"><DeviceSetupSection close={close} /></section>
 
       <Modal open={!!pending} onClose={() => setPending(null)} title="Remove device" size="sm">
         {pending ? (

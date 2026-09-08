@@ -149,7 +149,83 @@ def backup_files(home, cwd, profile_id, records):
         return os.path.join(location, backup_id)
     finally: os.close(root)
 
+def discover(request):
+    home = os.path.realpath(os.path.expanduser('~'))
+    requested = request.get('root', '')
+    if not isinstance(requested, str) or any(ord(c) < 32 for c in requested) or '..' in requested.split('/'):
+        raise Refused('Invalid discovery root', 400)
+    expanded = os.path.expanduser(requested)
+    if not os.path.isabs(expanded): raise Refused('Choose a configured project root', 400)
+    root_path = os.path.normpath(expanded)
+    if root_path == home or not root_path.startswith(home + os.sep):
+        raise Refused('Discovery must stay within a project folder below home', 403)
+    relative = os.path.relpath(root_path, home)
+    if relative.split(os.sep)[0].startswith('.'):
+        raise Refused('Personal configuration roots cannot be scanned', 403)
+    root = os.open(home, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    resolved = home
+    try:
+        for segment in relative.split(os.sep):
+            names = os.listdir(root)
+            if segment not in names:
+                matches = [name for name in names if name.casefold() == segment.casefold()]
+                if len(matches) != 1: raise Refused('Configured project root does not exist', 404)
+                segment = matches[0]
+            following = directory(root, segment)
+            os.close(root)
+            root = following
+            resolved = os.path.join(resolved, segment)
+        def framework_for(name):
+            segments = name.split('/')
+            leaf = segments[-1]
+            if leaf in ('CLAUDE.md', 'CLAUDE.local.md'): return 'claude'
+            if leaf in ('AGENTS.md', 'AGENTS.override.md'): return 'codex'
+            for folder, extension, framework in (('.claude', '.md', 'claude'), ('.cursor', '.mdc', 'cursor'), ('.windsurf', '.md', 'windsurf')):
+                if any(segments[index:index + 2] == [folder, 'rules'] for index in range(len(segments) - 1)) and leaf.endswith(extension): return framework
+            return None
+        if request['operation'] == 'read-instruction':
+            name = request.get('path', '')
+            framework = framework_for(name)
+            if not framework: raise Refused('Not a supported instruction file', 400)
+            data = read_file(root, name)
+            if data is None or len(data) > 512 * 1024: raise Refused('Instruction file unavailable or too large', 413)
+            if digest(data) != request.get('sha256'): raise Refused('Instruction changed; scan again')
+            if b'\x00' in data: raise Refused('Instruction must be text', 400)
+            return {'ok': True, 'framework': framework, 'content': data.decode('utf-8'), 'name': name}
+        found, visited, truncated = [], 0, False
+        skip = {'.git', 'node_modules', 'vendor', 'target', 'build', 'dist', '.venv', 'venv', '.cache', '.next', '.ssh', '.gnupg'}
+        def walk(fd, prefix, depth):
+            nonlocal visited, truncated
+            for name in sorted(os.listdir(fd)):
+                visited += 1
+                if visited > 10000 or len(found) >= 200:
+                    truncated = True
+                    return
+                if any(ord(c) < 32 for c in name) or name in skip: continue
+                relative_name = prefix + name
+                try:
+                    info = os.stat(name, dir_fd=fd, follow_symlinks=False)
+                    if stat.S_ISDIR(info.st_mode) and depth < 6 and (not name.startswith('.') or name in ('.claude', '.cursor', '.windsurf')):
+                        child = directory(fd, name)
+                        try: walk(child, relative_name + '/', depth + 1)
+                        finally: os.close(child)
+                    elif stat.S_ISREG(info.st_mode) and info.st_nlink == 1 and info.st_size <= 512 * 1024:
+                        framework = framework_for(relative_name)
+                        if not framework: continue
+                        data = read_file(root, relative_name)
+                        if data is None: continue
+                        data.decode('utf-8')
+                        folder = os.path.dirname(relative_name)
+                        for marker in ('.claude', '.cursor', '.windsurf'):
+                            if marker in folder.split('/'): folder = folder.split(marker)[0].rstrip('/')
+                        found.append({'path': relative_name, 'cwd': os.path.join(resolved, folder), 'framework': framework, 'bytes': len(data), 'sha256': digest(data)})
+                except (OSError, UnicodeError, Refused): continue
+        walk(root, '', 0)
+        return {'ok': True, 'root': resolved, 'files': found, 'truncated': truncated}
+    finally: os.close(root)
+
 def run(request):
+    if request.get('operation') in ('discover', 'read-instruction'): return discover(request)
     home = os.path.realpath(os.path.expanduser('~'))
     cwd = request.get('cwd')
     if not isinstance(cwd, str) or not os.path.isabs(cwd) or any(ord(c) < 32 for c in cwd):

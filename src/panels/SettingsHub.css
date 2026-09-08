@@ -210,3 +210,42 @@
   .settings-hub-backdrop, .modal.settings-hub, .terminal-preview-cursor.blink { animation: none; }
   .settings-hub-link, .settings-hub-sublink, .settings-nav-chevron, .settings-hub-content .switch-knob, .help-topic > summary > svg:last-child, .appearance-option, .settings-hub-content .notification-row { transition: none; }
 }
+
+.settings-hub-content .dictation-language-setting { display: flex; flex-direction: row; align-items: center; justify-content: space-between; text-align: left; gap: 18px; padding: 13px 0; }
+.settings-hub-content .dictation-language-setting > .settings-row-copy { margin: 0; text-align: left; }
+.settings-hub-content .dictation-language-setting > .cselect { flex: 0 1 210px; width: 210px; margin-left: auto; }
+.settings-hub-content .notification-content { padding: 13px 10px; }
+.settings-hub-content .notification-dismiss { margin: 8px 6px 0 0; }
+.settings-hub-content .notification-open { align-self: center; flex-shrink: 0; margin-right: 6px; }
+.settings-hub-content .port-row { padding: 12px 10px; border-bottom: 1px solid var(--border); border-radius: 6px; }
+.notification-event-groups { display: grid; gap: 18px; }
+.notification-event-group { margin: 0; padding: 0; min-width: 0; border: 0; }
+.notification-event-group > legend { display: flex; align-items: center; gap: 8px; padding: 0; margin-bottom: 4px; font-size: 12px; font-weight: 600; color: var(--text); }
+.notification-event-group > legend > span { font-size: 10px; font-weight: 400; color: var(--muted); }
+.notification-event-group .settings-row { padding: 10px 0; }
+.notification-event-group .settings-row-copy { font-size: 11px; }
+.managed-device { border-bottom: 1px solid var(--border); }
+.managed-device:last-child { border-bottom: 0; }
+.managed-device-header { display: flex; align-items: center; gap: 4px; padding: 2px 6px; margin: 0 -6px; border-radius: 7px; transition: background 120ms; }
+.managed-device-header:hover { background: var(--hover); }
+.managed-device-toggle { display: flex; align-items: center; flex: 1; min-width: 0; gap: 12px; padding: 12px 0; border: 0; background: transparent; color: var(--text); font: inherit; text-align: left; cursor: pointer; }
+.managed-device-toggle > svg { flex-shrink: 0; color: var(--muted); }
+.managed-device-toggle .device-main { display: grid; gap: 4px; flex: 1; min-width: 0; }
+.managed-device-toggle .device-name { font-size: 12px; font-weight: 550; }
+.managed-device-toggle .device-sub { color: var(--muted); font: 11px/1.4 ui-monospace, monospace; overflow-wrap: anywhere; }
+.managed-device-kind { color: var(--muted); font-size: 10px; border: 1px solid var(--border); padding: 3px 6px; border-radius: 4px; }
+.managed-device-details { padding: 6px 10px 14px 28px; }
+.managed-device-details .scan-head { padding: 0 0 10px; }
+.managed-session { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; padding: 11px 8px; border-top: 1px solid var(--border); }
+.managed-session:hover { background: var(--hover); }
+:root[data-appearance="light"] .modal.settings-hub { --muted: #515b69; }
+:root[data-appearance="light"] .settings-hub-content :is(input.input, textarea.input, .field-input, .set-input, .cselect) { background: var(--input); border-color: var(--control-border); }
+:root[data-appearance="light"] .settings-hub-content .switch { border-color: var(--control-border); }
+:root[data-appearance="light"] .settings-hub-content .switch-on { background: var(--accent); border-color: var(--accent); }
+:root[data-appearance="light"] .settings-hub-content .switch-knob { background: var(--muted); }
+:root[data-appearance="light"] .settings-hub-content .switch-on .switch-knob { background: #ffffff; }
+:root[data-appearance="light"] .settings-hub-nav { background: #f5f6f8; }
+:root[data-appearance="light"] .settings-hub-content .btn-on { background: var(--selected); color: var(--selected-text); }
+@container (max-width: 430px) {
+  .settings-hub-content .dictation-language-setting > .cselect { flex-basis: 180px; }
+}

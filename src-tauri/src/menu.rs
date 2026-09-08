@@ -1,5 +1,5 @@
 use tauri::{
-    menu::{Menu, MenuItem, PredefinedMenuItem},
+    menu::{Menu, MenuItem, PredefinedMenuItem, Submenu},
     Emitter, Manager,
 };
 
@@ -13,7 +13,10 @@ pub fn install(app: &tauri::AppHandle) -> tauri::Result<()> {
         let title = submenu.text()?;
         if title == app.package_info().name || title == "PzzaCode" {
             submenu.remove_at(0)?;
-            submenu.insert(&MenuItem::with_id(app, "pzza:about", "About PzzaCode", true, None::<&str>)?, 0)?;
+            submenu.insert(
+                &MenuItem::with_id(app, "pzza:about", "About PzzaCode", true, None::<&str>)?,
+                0,
+            )?;
         }
         let items: &[(&str, &str, Option<&str>)] = match title.as_str() {
             "File" => &[("new-session", "New Session…", Some("CmdOrCtrl+N"))],
@@ -45,6 +48,61 @@ pub fn install(app: &tauri::AppHandle) -> tauri::Result<()> {
             let item = MenuItem::with_id(app, format!("pzza:{id}"), *label, true, *shortcut)?;
             let position = if *id == "general" { 2 } else { offset };
             submenu.insert(&item, position)?;
+        }
+        if title == "Help" {
+            submenu.append(&PredefinedMenuItem::separator(app)?)?;
+            let groups: &[(&str, &[(&str, &str)])] = &[
+                (
+                    "Getting started",
+                    &[
+                        ("start", "Overview"),
+                        ("topbar", "The top bar"),
+                        ("agent-tools", "Agent tools"),
+                    ],
+                ),
+                (
+                    "Workspace",
+                    &[
+                        ("tiles", "Sessions & tiles"),
+                        ("controls", "Tile controls"),
+                        ("focus", "Focus & attention"),
+                        ("workspaces", "Workspaces"),
+                        ("layout", "Layout & grid"),
+                        ("shortcuts", "Keyboard shortcuts"),
+                    ],
+                ),
+                (
+                    "Agents",
+                    &[
+                        ("usage", "Agent usage"),
+                        ("multiaccount", "Multi-account"),
+                        ("paste", "Image paste"),
+                    ],
+                ),
+                (
+                    "Connections",
+                    &[
+                        ("devices", "Devices & the agent"),
+                        ("ports", "Ports"),
+                        ("rdp", "Remote desktop"),
+                        ("mcp", "MCP"),
+                    ],
+                ),
+                ("Tips", &[("tips", "Tips")]),
+            ];
+            for (label, topics) in groups {
+                let group = Submenu::new(app, *label, true)?;
+                for (id, topic) in *topics {
+                    group.append(&MenuItem::with_id(
+                        app,
+                        format!("pzza:help:{id}"),
+                        *topic,
+                        true,
+                        None::<&str>,
+                    )?)?;
+                }
+                submenu.append(&group)?;
+            }
         }
         if !items.is_empty() && title != "Help" {
             submenu.insert(

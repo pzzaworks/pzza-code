@@ -221,14 +221,39 @@ export function createAgentsHub({ stateDir, target = runHubTarget, inspectSkill 
     save({ ...library, [collection]: found ? current[collection].map((entry) => entry.id === found.id ? replacement : entry) : [...current[collection], replacement] });
     return summary();
   };
+  const discover = async (input) => {
+    if (!keys(input, ["root", "devices"]) || typeof input.root !== "string" || input.root.length > 4096 || !Array.isArray(input.devices) || !input.devices.length || input.devices.length > 20) throw fail("Choose configured devices and a project root");
+    const seen = new Set();
+    const devices = input.devices.map(device => {
+      if (!keys(device, ["host", "name"]) || typeof device.host !== "string" || (device.host && !HOST.test(device.host)) || typeof device.name !== "string") throw fail("Invalid discovery device");
+      if (seen.has(device.host)) throw fail("Choose each device once");
+      seen.add(device.host);
+      return device;
+    });
+    return { devices: await Promise.all(devices.map(async device => {
+      try {
+        const result = await target(device.host, { operation: "discover", root: input.root });
+        if (!result.ok) throw fail(result.error, result.status);
+        return { ...device, root: result.root, files: result.files, truncated: result.truncated };
+      } catch (error) { return { ...device, files: [], error: error.status ? error.message : "Device discovery failed" }; }
+    })) };
+  };
+  const readInstruction = async input => {
+    if (!keys(input, ["host", "root", "path", "sha256"]) || typeof input.host !== "string" || (input.host && !HOST.test(input.host)) || typeof input.root !== "string" || typeof input.path !== "string" || !/^[a-f0-9]{64}$/.test(input.sha256)) throw fail("Invalid discovered instruction");
+    const result = await target(input.host, { operation: "read-instruction", root: input.root, path: input.path, sha256: input.sha256 });
+    if (!result.ok) throw fail(result.error, result.status);
+    return { name: result.name, framework: result.framework, content: result.content };
+  };
   const preview = async (input) => {
-    if (!keys(input, ["profileId", "host", "cwd", "adoptExisting"]) || typeof input.host !== "string" || (input.host && !HOST.test(input.host)) || typeof input.cwd !== "string" || !path.isAbsolute(input.cwd) || input.cwd.length > 4096 || /[\x00-\x1f\x7f]/.test(input.cwd) || (input.adoptExisting !== undefined && typeof input.adoptExisting !== "boolean")) throw fail("Choose an explicit device and absolute project directory");
+    if (!keys(input, ["profileId", "documentId", "host", "cwd", "adoptExisting"]) || typeof input.host !== "string" || (input.host && !HOST.test(input.host)) || typeof input.cwd !== "string" || !path.isAbsolute(input.cwd) || input.cwd.length > 4096 || /[\x00-\x1f\x7f]/.test(input.cwd) || (input.adoptExisting !== undefined && typeof input.adoptExisting !== "boolean")) throw fail("Choose an explicit device and absolute project directory");
     const current = load();
-    const profile = current.profiles.find((item) => item.id === input.profileId);
-    if (!profile) throw fail("Agent profile not found", 404);
-    const files = renderHubProfile(current, profile);
+    if (input.documentId && input.profileId) throw fail("Choose one instruction or profile");
+    const document = current.documents.find(item => item.id === input.documentId);
+    const profile = input.documentId ? document && { id: `instruction-${document.id}`, framework: document.framework } : current.profiles.find((item) => item.id === input.profileId);
+    if (!profile) throw fail("Instruction or agent profile not found", 404);
+    const files = document ? [{ path: FRAMEWORKS.find(item => item.id === document.framework).instructionFile.replace("<profile-id>", document.id), contentBase64: Buffer.from(document.content).toString("base64") }] : renderHubProfile(current, profile);
     const blockers = profile.framework === "codex" ? ["AGENTS.override.md"] : profile.framework === "zed" ? [".rules", ".cursorrules", ".windsurfrules", ".clinerules", ".github/copilot-instructions.md", "AGENT.md"] : profile.framework === "windsurf" ? [".devin/rules"] : [];
-    const payload = { operation: "preview", profileId: profile.id, framework: profile.framework, revision: current.revision, cwd: input.cwd, files, blockers, adoptExisting: input.adoptExisting === true };
+    const payload = { operation: "preview", profileId: profile.id, framework: profile.framework, revision: current.revision, cwd: input.cwd, files, blockers, instructionOnly: Boolean(document), adoptExisting: input.adoptExisting === true };
     const observed = await target(input.host, payload);
     if (observed.ok === false) throw fail(observed.error, observed.status || 409);
     const previewId = crypto.randomUUID();
@@ -251,7 +276,7 @@ export function createAgentsHub({ stateDir, target = runHubTarget, inspectSkill 
       return { path: item.path, contentSha256: hash(bytes), bytes: bytes.length, ...previousContent(item.path), executable: item.executable === true, baselineExecutable: observed.baselineModes[item.path] === null ? null : Boolean(observed.baselineModes[item.path] & 0o111), operation: "write", encoding: text ? "utf8" : "base64", content: text ? decoded : item.contentBase64, baselineSha256: observed.baselines[item.path] ?? null };
     });
     for (const previous of Object.keys(observed.baselines)) if (!files.some((item) => item.path === previous)) publicFiles.push({ path: previous, ...previousContent(previous), operation: "delete", encoding: "utf8", content: null, baselineSha256: observed.baselines[previous] });
-    return { previewId, revision: plan.revision, profileId: profile.id, host: plan.host, cwd: plan.cwd, files: publicFiles, launch: { supported: FRAMEWORKS.find((item) => item.id === profile.framework).launchSupported, command: ["claude", "codex"].includes(profile.framework) ? profile.framework : null }, conflicts: plan.conflicts };
+    return { previewId, revision: plan.revision, profileId: profile.id, host: plan.host, cwd: plan.cwd, files: publicFiles, launch: { supported: !document && FRAMEWORKS.find((item) => item.id === profile.framework).launchSupported, command: ["claude", "codex"].includes(profile.framework) ? profile.framework : null }, conflicts: plan.conflicts };
   };
   const apply = async (previewId, mode) => {
     if (!["sync", "deploy"].includes(mode)) throw fail("Unknown deployment mode");
@@ -263,6 +288,7 @@ export function createAgentsHub({ stateDir, target = runHubTarget, inspectSkill 
     }
     const plan = previews.get(previewId);
     if (!plan || plan.expiresAt <= now() || plan.revision !== current.revision) throw fail("Deployment preview expired or the library changed. Preview again", 409);
+    if (plan.instructionOnly && mode !== "sync") throw fail("Instruction previews only support sync");
     if (plan.conflicts.length) throw fail("Resolve preview conflicts before applying", 409);
     if (mode === "deploy" && !["claude", "codex"].includes(plan.framework)) throw fail("This framework supports synchronization only");
     previews.delete(previewId);
@@ -289,7 +315,7 @@ export function createAgentsHub({ stateDir, target = runHubTarget, inspectSkill 
     const { deployments, ...library } = load();
     return save({ ...library, skills: [...library.skills, { id: crypto.randomUUID(), ...imported }] });
   };
-  return { state, summary, item, update, save, preview, apply, importSkill };
+  return { state, summary, item, update, save, preview, apply, importSkill, discover, readInstruction };
 }
 
 async function body(req) {
@@ -314,6 +340,8 @@ export function createAgentsHubRouter(hub, respond) {
         if (url.pathname === "/agents-hub/item") respond(res, 200, hub.item(input));
         else if (url.pathname === "/agents-hub/update") respond(res, 200, hub.update(input));
         else if (url.pathname === "/agents-hub/save") respond(res, 200, hub.save(input));
+        else if (url.pathname === "/agents-hub/discover") respond(res, 200, await hub.discover(input));
+        else if (url.pathname === "/agents-hub/read-instruction") respond(res, 200, await hub.readInstruction(input));
         else if (url.pathname === "/agents-hub/preview") respond(res, 200, await hub.preview(input));
         else if (url.pathname === "/agents-hub/import-skill") respond(res, 200, await hub.importSkill(input));
         else if (["/agents-hub/sync", "/agents-hub/deploy"].includes(url.pathname) && keys(input, ["previewId"]) && typeof input.previewId === "string") respond(res, 200, await hub.apply(input.previewId, url.pathname.endsWith("/sync") ? "sync" : "deploy"));

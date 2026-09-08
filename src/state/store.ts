@@ -85,8 +85,6 @@ async function listSessions(conn: Connection): Promise<RemoteSession[]> {
 }
 
 interface ConsoleState {
-  cornerStyle: "rounded" | "square";
-  setCornerStyle: (style: "rounded" | "square") => void;
   semiTransparent: boolean;
   setSemiTransparent: (enabled: boolean) => void;
   transparencyOptions: TransparencyOptions;
@@ -210,11 +208,6 @@ export interface TileCode {
 }
 
 export const useStore = create<ConsoleState>((set, get) => ({
-  cornerStyle: load<unknown>("pzza.cornerStyle", "rounded") === "square" ? "square" : "rounded",
-  setCornerStyle: (style) => {
-    persist("pzza.cornerStyle", style);
-    set({ cornerStyle: style });
-  },
   semiTransparent: load<unknown>(TRANSPARENCY_KEY, false) === true,
   setSemiTransparent: (enabled) => {
     persist(TRANSPARENCY_KEY, enabled);

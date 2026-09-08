@@ -5,15 +5,8 @@ import { setNativeTransparency } from "../nativeAppearance";
 import { themeById } from "./themes";
 import { chromeToCssVars, deriveChrome } from "./types";
 
-// Derive app surfaces from the selected terminal palette, retaining the
-// neutral accent used by app controls.
-const GREY_ACCENT = "#454a54";
-const GREY_ACCENT_TEXT = "#ffffff";
-
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
   const themeId = useStore((s) => s.themeId);
-  const cornerStyle = useStore((s) => s.cornerStyle);
-  useLayoutEffect(() => { document.documentElement.dataset.corners = cornerStyle; }, [cornerStyle]);
   const transparent = useStore((s) => s.semiTransparent);
   const options = useStore((s) => s.transparencyOptions);
   const nativeBlurRadius = transparent && options.desktopBlur ? options.desktopBlurRadius : 0;
@@ -28,7 +21,7 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
     const apply = () => {
       window.clearTimeout(timer);
       timer = window.setTimeout(() => {
-        void setNativeTransparency(transparent, nativeBlurRadius, cornerStyle === "rounded").then((result) => {
+        void setNativeTransparency(transparent, nativeBlurRadius).then((result) => {
           if (alive) useStore.getState().setTransparencyNotice(result.reason ?? null);
         }).catch(() => {
           if (alive) useStore.getState().setTransparencyNotice("Desktop blur is unavailable. Translucent app surfaces are still enabled.");
@@ -44,17 +37,13 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
       window.clearTimeout(timer);
       if (isMac) window.removeEventListener("resize", apply);
     };
-  }, [transparent, nativeBlurRadius, cornerStyle]);
+  }, [transparent, nativeBlurRadius]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const theme = themeById(themeId);
     const root = document.documentElement;
     const chrome = deriveChrome(theme.terminal, theme.appearance);
-    const vars = chromeToCssVars({
-      ...chrome,
-      accent: GREY_ACCENT,
-      accentText: GREY_ACCENT_TEXT,
-    });
+    const vars = chromeToCssVars(chrome);
     root.style.setProperty("--opaque-bg", chrome.bg);
     root.style.setProperty("--opaque-surface", chrome.surface);
     root.style.setProperty("--opaque-surface-alt", chrome.surfaceAlt);

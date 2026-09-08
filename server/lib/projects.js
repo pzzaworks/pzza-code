@@ -3,8 +3,7 @@
 // ~/Projects). Sync takes the union of every device's repos: a repo missing on
 // a device is cloned there from the origin URL seen elsewhere; a repo that is
 // present switches to origin's default branch and merges upstream changes. Modified
-// tracked files are stashed first (git stash pop brings them back); untracked
-// files stay where they are. Afterwards every .env / .env.* file is copied from
+// tracked and untracked files are stashed first and retained for recovery. Afterwards every .env / .env.* file is copied from
 // the device holding the newest copy to every device where it is missing or
 // differs, so secrets follow the project without ever passing through git.
 //
@@ -29,6 +28,20 @@ const SCAN_SKIP_DIRS = [
 ];
 const SCAN_OUTPUT_DIRS = ["dist", "dist-ssr", "build", "target", "out", "coverage", "vendor"];
 const pendingScans = new Map();
+const syncOperations = new Map();
+const cancelledRequests = new Map();
+const validOperationId = value => typeof value === "string" && /^[a-zA-Z0-9-]{1,80}$/.test(value);
+export function cancelProjectSync(operationId) {
+  if (!validOperationId(operationId)) return { error: "invalid sync operation" };
+  const operation = syncOperations.get(operationId);
+  if (operation) operation.cancelled = true;
+  else {
+    for (const [id, expires] of cancelledRequests) if (expires <= Date.now()) cancelledRequests.delete(id);
+    if (cancelledRequests.size >= 128) cancelledRequests.delete(cancelledRequests.keys().next().value);
+    cancelledRequests.set(operationId, Date.now() + 60_000);
+  }
+  return { ok: true };
+}
 
 // Where clones may come from: ssh scp-style, ssh://, https:// and git://. The
 // URL is quoted before it hits the shell anyway; this guards against a URL that
@@ -309,7 +322,7 @@ const SYNC_FUNCS =
   `pz_r() { printf 'PZZA_R\\t%s\\t%s\\t%s\\n' "$1" "$2" "$3"; }; ` +
   `pz_tail() { printf '%s' "$1" | grep -v '^hint:' | tail -n 3 | tr '\\n' ' '; }; ` +
   `pz_clone() { if pz_linked_worktree "$2"; then pz_r "$2" skipped "linked worktree; left alone"; return; fi; if mkdir -p "$(dirname "$2")" && out=$(git clone --quiet "$1" "$2" 2>&1); then pz_r "$2" cloned ""; else pz_r "$2" failed "$(pz_tail "$out")"; fi; }; ` +
-  // pz_update REL STASH SWITCH: STASH=1 stashes modified tracked files (else a
+  // pz_update REL STASH SWITCH: STASH=1 stashes tracked and untracked files (else a
   // dirty tree is reported and left alone); SWITCH=1 moves to origin's default
   // branch (else the current branch receives upstream changes in place).
   `pz_update() { d=$1; do_stash=$2; do_switch=$3; expected=$4; ` +
@@ -324,23 +337,25 @@ const SYNC_FUNCS =
   `if [ -z "$def" ]; then pz_r "$d" skipped "no default branch on origin"; return; fi; ` +
   `else def=$was; if [ "$def" = HEAD ]; then pz_r "$d" skipped "detached HEAD"; return; fi; ` +
   `git -C "$d" rev-parse --verify --quiet "origin/$def" >/dev/null || { pz_r "$d" skipped "$def has no origin branch"; return; }; fi; ` +
-  // Modified tracked files: park them in a stash so the checkout can proceed,
+  // Tracked and untracked files: park them in a durable stash so the checkout can proceed,
   // or report the tree as dirty and leave it alone when stashing is off.
-  `tracked=$(git -C "$d" status --porcelain --untracked-files=no 2>/dev/null); if [ -n "$tracked" ]; then ` +
+  // A dedicated ref keeps each snapshot reachable after stash reflog expiry.
+  `tracked=$(git -C "$d" status --porcelain --untracked-files=all 2>/dev/null); if [ -n "$tracked" ]; then ` +
   `n=$(printf '%s\\n' "$tracked" | wc -l | tr -d ' '); ` +
   `if [ "$do_stash" != 1 ]; then pz_r "$d" dirty "$n uncommitted change(s) on $was, left alone (stash is off)"; return; fi; ` +
-  `if out=$(git -C "$d" stash push --quiet -m "pzza-sync $was $(date +%Y-%m-%d_%H:%M)" 2>&1); then stashed="stashed $n change(s) from $was"; ` +
+  `if out=$(git -C "$d" stash push --include-untracked --quiet -m "pzza-sync $was $(date +%Y-%m-%d_%H:%M)" 2>&1); then stash_id=$(git -C "$d" rev-parse refs/stash) || { pz_r "$d" failed "stash could not be verified; left alone"; return; }; git -C "$d" update-ref "refs/pzza-sync/stashes/$stash_id" "$stash_id" || { pz_r "$d" failed "could not retain durable stash reference; left alone"; return; }; stashed="stashed $n change(s) from $was [$stash_id]"; ` +
   `else pz_r "$d" failed "stash: $(pz_tail "$out")"; return; fi; fi; ` +
-  `if ! out=$(git -C "$d" checkout --quiet "$def" 2>&1); then pz_r "$d" failed "$(pz_tail "$out")"; return; fi; ` +
+  `if [ -n "$(git -C "$d" status --porcelain --untracked-files=all)" ]; then pz_r "$d" failed "working files changed during stash; left alone; $stashed"; return; fi; ` +
+  `if ! out=$(git -C "$d" checkout --no-overwrite-ignore --quiet "$def" 2>&1); then pz_r "$d" failed "$(pz_tail "$out")"; return; fi; ` +
   // A merge preserves local commit IDs. Abort conflicts so sync never leaves
   // an unresolved index behind; any parked edits remain recoverable in stash.
-  `if ! out=$(git -C "$d" merge --ff --no-edit --quiet "origin/$def" 2>&1); then out=$(pz_tail "$out"); ` +
+  `if ! out=$(git -C "$d" merge --no-overwrite-ignore --ff --no-edit --quiet "origin/$def" 2>&1); then out=$(pz_tail "$out"); ` +
   `if git -C "$d" rev-parse --verify --quiet MERGE_HEAD >/dev/null; then ` +
   `if git -C "$d" merge --abort >/dev/null 2>&1; then out="merge conflict; merge aborted and local commits preserved. $out"; else out="merge abort failed; resolve the merge manually. $out"; fi; fi; ` +
-  `pz_r "$d" failed "$(pz_tail "$out")\${stashed:+; $stashed (git stash pop to restore)}"; return; fi; ` +
+  `pz_r "$d" failed "$(pz_tail "$out")\${stashed:+; $stashed (git stash apply $stash_id to restore)}"; return; fi; ` +
   `after=$(git -C "$d" rev-parse HEAD 2>/dev/null); pulled=; ` +
   `if [ "$before" != "$after" ]; then pulled="+$(git -C "$d" rev-list --count "$before..$after" 2>/dev/null) commits"; fi; ` +
-  `if [ -n "$stashed" ]; then pz_r "$d" stashed "$stashed, now on $def\${pulled:+ $pulled} (git stash pop to restore)"; ` +
+  `if [ -n "$stashed" ]; then pz_r "$d" stashed "$stashed, now on $def\${pulled:+ $pulled} (git stash apply $stash_id to restore)"; ` +
   `elif [ "$was" != "$def" ]; then pz_r "$d" updated "switched $was -> $def\${pulled:+, $pulled}"; ` +
   `elif [ -n "$pulled" ]; then pz_r "$d" updated "$def $pulled"; ` +
   `else pz_r "$d" current "$def"; fi; }; `;
@@ -382,14 +397,25 @@ async function mapConcurrent(items, limit, work) {
 // Copy one env file between devices through this agent: read it from the
 // source, stream it into the target. Content lives in memory only for the
 // duration of the copy and is never logged or persisted here.
+export function envWriteScript(rootE, rel, name) {
+  return prelude(rootE) + `cd "$root" && ! pz_linked_worktree ${shQuote(rel)} && cd ${shQuote(rel)} || exit 1; ` +
+    `case "$(pwd -P)" in "$root"|"$root"/*) ;; *) exit 1;; esac; umask 077; ` +
+    `file=${shQuote(name)}; [ ! -L "$file" ] || exit 1; ` +
+    `gitdir=$(git rev-parse --absolute-git-dir) || exit 1; ` +
+    `[ ! -L "$gitdir/pzza-env-backups" ] && mkdir -p "$gitdir/pzza-env-backups" && chmod 700 "$gitdir/pzza-env-backups" || exit 1; ` +
+    `tmp=$(mktemp "./.pzza-env.XXXXXX") || exit 1; trap 'rm -f "$tmp"' EXIT HUP INT TERM; cat > "$tmp" || exit 1; ` +
+    `if [ -e "$file" ]; then [ -f "$file" ] && [ ! -L "$file" ] || exit 1; backup=$(mktemp "$gitdir/pzza-env-backups/$file.XXXXXX") || exit 1; mv "$file" "$backup" && chmod 600 "$backup" || exit 1; fi; ` +
+    `ln "$tmp" "$file"`;
+
+}
+
 async function copyEnv(rootE, src, dst, srcRel, rel, name) {
-  const file = `${shQuote(rel)}/${shQuote(name)}`;
   const srcFile = `${shQuote(srcRel)}/${shQuote(name)}`;
   const read = await runOn(src, prelude(rootE) + `cd "$root" && ! pz_linked_worktree ${shQuote(srcRel)} && cat ${srcFile}`, SCAN_TIMEOUT_MS);
   if (!read.ok || deviceError(read)) return deviceError(read) || read.stderr.trim() || "read failed";
   // A newest-but-empty file must not wipe a populated copy elsewhere.
   if (read.stdout.trim() === "") return "source file is empty, not copied";
-  const script = prelude(rootE) + `cd "$root" && [ -d ${shQuote(rel)} ] && ! pz_linked_worktree ${shQuote(rel)} && umask 077 && cat > ${file}.pzza-tmp && mv -f ${file}.pzza-tmp ${file}`;
+  const script = envWriteScript(rootE, rel, name);
   return new Promise((resolve) => {
     const useSsh = dst || IS_CLIENT;
     const child = useSsh
@@ -620,10 +646,22 @@ export function planSync(scan, opts = normalizeOptions()) {
 // Scan, plan and run the sync on every device in parallel: git first (clone /
 // stash / checkout / merge), then the env files. Returns
 // { root, devices: [{ id, name, host, error, results: [...], envs: [...] }] }.
-export async function syncProjects(body) {
+export async function syncProjects(body, { scan = scanProjects, run = runOn, copy = copyEnv } = {}) {
+  const operationId = body.operationId;
+  if (operationId !== undefined && !validOperationId(operationId)) return { error: "invalid sync operation" };
+  if (syncOperations.size) return { error: "a sync operation is already running" };
+  const operation = { cancelled: (cancelledRequests.get(operationId) ?? 0) > Date.now() };
+  cancelledRequests.delete(operationId);
+  syncOperations.set(operationId, operation);
+  try {
+    return await performSync(body, operation, { scan, run, copy });
+  } finally { syncOperations.delete(operationId); }
+}
+
+async function performSync(body, operation, { scan: scanDevices, run, copy }) {
   const rootE = rootExpr(body.root);
   if (!rootE) return { error: "invalid projects root" };
-  const scan = await scanProjects(body);
+  const scan = await scanDevices(body);
   if (scan.error) return scan;
   const opts = migrateProjectOptions(body.options, scan);
   const planned = planSync(scan, opts);
@@ -632,7 +670,14 @@ export async function syncProjects(body) {
       const base = { id: d.id, name: d.name, host: d.host, envs: [] };
       if (d.error) return { ...base, error: d.error, results: [] };
       if (d.plan.length === 0) return { ...base, error: null, results: d.skipped };
-      const res = await runOn(d.host, syncScript(rootE, d.plan, opts), SYNC_TIMEOUT_MS);
+      const chunks = [];
+      const started = new Set();
+      for (const step of d.plan) {
+        if (operation.cancelled) break;
+        started.add(step.rel);
+        chunks.push(await run(d.host, syncScript(rootE, [step], opts), SYNC_TIMEOUT_MS));
+      }
+      const res = { ok: chunks.every(item => item.ok), stdout: chunks.map(item => item.stdout).join("\n"), stderr: chunks.map(item => item.stderr).join("\n"), error: chunks.find(item => item.error)?.error };
       const error = deviceError(res);
       const results = [];
       for (const line of res.stdout.split("\n")) {
@@ -644,7 +689,10 @@ export async function syncProjects(body) {
       // A step that produced no report line (killed by the timeout, ssh dropped)
       // must not silently vanish from the summary.
       const seen = new Set(results.map((r) => r.rel));
-      for (const p of d.plan) if (!seen.has(p.rel)) results.push({ projectId: p.projectId, rel: p.rel, status: "failed", detail: error || "no result (timed out?)" });
+      for (const p of d.plan) if (!seen.has(p.rel)) {
+        const skipped = operation.cancelled && !started.has(p.rel);
+        results.push({ projectId: p.projectId, rel: p.rel, status: skipped ? "skipped" : "failed", detail: skipped ? "cancelled before this repository started" : error || "no result (timed out?)" });
+      }
       results.push(...d.skipped);
       results.sort((a, b) => a.rel.localeCompare(b.rel));
       return { ...base, error: results.length ? null : error, results };
@@ -652,15 +700,16 @@ export async function syncProjects(body) {
   );
 
   const gitResults = new Map(devices.map((d) => [d.id, d.results]));
-  const jobs = planEnvSync(scan, gitResults, opts);
+  const jobs = operation.cancelled ? [] : planEnvSync(scan, gitResults, opts);
   // Bound concurrent SSH sessions and retain plan order in the report even
   // when smaller transfers complete before earlier ones.
   const copied = await mapConcurrent(jobs, ENV_CONCURRENCY, async (job) => {
-    const err = await copyEnv(rootE, job.from.host, job.target.host, job.srcRel, job.rel, job.name);
+    if (operation.cancelled) return { projectId: job.projectId, rel: job.rel, name: job.name, from: job.from.name, status: "skipped", detail: "cancelled" };
+    const err = await copy(rootE, job.from.host, job.target.host, job.srcRel, job.rel, job.name);
     return { projectId: job.projectId, rel: job.rel, name: job.name, from: job.from.name, status: err ? "failed" : "copied", detail: redact(err || "") };
   });
   for (let i = 0; i < jobs.length; i++) {
     devices.find((d) => d.id === jobs[i].target.id)?.envs.push(copied[i]);
   }
-  return { root: scan.root, devices };
+  return { root: scan.root, devices, cancelled: operation.cancelled };
 }

@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { deliverDesktopAlert } from "../desktopNotifications";
 
 export type NotificationCategory = "sync" | "terminal" | "bridge" | "devices" | "app";
 export const NOTIFICATION_EVENTS = {
@@ -6,10 +7,16 @@ export const NOTIFICATION_EVENTS = {
   "device-added": "Device added", "device-removed": "Device removed", "session-opened": "Session window opened",
   "model-ready": "Voice model downloaded", "model-error": "Voice model download failed",
   "sync-completed": "Sync completed", "sync-error": "Sync errors",
-  "terminal-bell": "Terminal attention signal", "terminal-command": "Terminal command result", "terminal-exit": "Terminal process failure",
+  "terminal-bell": "Terminal attention signal", "terminal-command": "Terminal command result", "terminal-exit": "Terminal process exit",
   "bridge-approval": "Bridge approval required", "bridge-result": "Bridge job result",
 } as const;
 export type NotificationEvent = keyof typeof NOTIFICATION_EVENTS;
+export const NOTIFICATION_EVENT_CATEGORIES: Record<NotificationEvent, NotificationCategory> = {
+  "agents-sync": "app", "agents-deploy": "app", "skill-import": "app", "session-opened": "app",
+  "model-ready": "app", "model-error": "app", "device-added": "devices", "device-removed": "devices",
+  "sync-completed": "sync", "sync-error": "sync", "terminal-bell": "terminal", "terminal-command": "terminal", "terminal-exit": "terminal",
+  "bridge-approval": "bridge", "bridge-result": "bridge",
+};
 export interface NotificationTarget { tileId?: string; section?: "sync" | "mcp" | "devices" | "general" | "agents-hub" }
 export interface Notice {
   event?: NotificationEvent;
@@ -46,7 +53,8 @@ function initial(): { items: Notice[]; preferences: Preferences } {
         if (typeof item.target.tileId === "string" && item.target.tileId.length <= 512) target.tileId = item.target.tileId;
         if (item.target.section === "sync" || item.target.section === "mcp" || item.target.section === "devices" || item.target.section === "general" || item.target.section === "agents-hub") target.section = item.target.section;
       }
-      return { ...item, target, dedupeKey: typeof item.dedupeKey === "string" ? item.dedupeKey.slice(0, 512) : undefined };
+      const event = item.event && Object.hasOwn(NOTIFICATION_EVENTS, item.event) ? item.event : undefined;
+      return { ...item, event, target, dedupeKey: typeof item.dedupeKey === "string" ? item.dedupeKey.slice(0, 512) : undefined };
     }) : [];
     const preferences = { ...defaults, categories: { ...defaults.categories } };
     if (raw.preferences && typeof raw.preferences === "object") {
@@ -86,8 +94,9 @@ export function notify(input: Omit<Notice, "id" | "createdAt" | "read">): void {
   const notice: Notice = { ...input, title: input.title.slice(0, 160), body: input.body.slice(0, 400), id: crypto.randomUUID(), createdAt: now, read: false };
   useNotifications.setState({ items: [notice, ...items.filter(item => now - item.createdAt < 30 * 86400000)].slice(0, 300) });
   if (preferences.mutedUntil > now) return;
-  if (preferences.desktop && !document.hasFocus() && typeof Notification !== "undefined" && Notification.permission === "granted") {
-    // Desktop alerts omit project names, paths, and terminal text for privacy.
-    try { const alert = new Notification("PzzaCode", { body: "New activity is available in your notification center.", tag: input.category }); alert.onclick = () => { window.focus(); alert.close(); }; } catch { /* In-app history remains available when the OS rejects an alert. */ }
-  }
+  const canDeliver = () => {
+    const current = useNotifications.getState().preferences;
+    return current.enabled && current.desktop && current.categories[input.category] && (!input.event || current.events[input.event] !== false) && current.mutedUntil <= Date.now() && !document.hasFocus();
+  };
+  if (canDeliver()) void deliverDesktopAlert(input.category, canDeliver).catch(() => { /* Activity history remains available when the OS rejects an alert. */ });
 }
