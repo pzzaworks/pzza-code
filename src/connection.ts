@@ -8,6 +8,12 @@ export interface Connection {
   host: string | null;
 }
 
+// An empty tile host explicitly selects this device; only an absent host
+// inherits the default connection.
+export function sessionConnection(host: string | undefined, fallback: Connection): Connection {
+  return { host: host === undefined ? fallback.host : host || null };
+}
+
 const STORAGE_KEY = "pzza.connection";
 
 function defaultHost(): string | null {

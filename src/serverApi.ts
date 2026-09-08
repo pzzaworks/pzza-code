@@ -148,10 +148,11 @@ export async function fetchSessions(): Promise<RemoteSession[]> {
 
 export interface PortDetails {
   port: number;
+  containers?: Array<{ name: string; runtime: "docker" | "podman"; project?: string; service?: string; container: string; id: string }>;
   processes: Array<{ pid: number; process: string; name: string; source: "package" | "folder" | "process"; folder: string | null }>;
 }
 export async function fetchPortDetails(host?: string, signal?: AbortSignal): Promise<PortDetails[]> {
-  const response = await agentFetch(`${SERVER_HTTP}/ports/details${host ? `?host=${encodeURIComponent(host)}` : ""}`, { signal });
+  const response = await agentFetch(`${SERVER_HTTP}/ports/details${host !== undefined ? `?host=${encodeURIComponent(host)}` : ""}`, { signal });
   if (!response.ok) throw new Error("Service names are unavailable from this device.");
   return response.json();
 }
@@ -211,7 +212,16 @@ export async function fetchMcpConfig(agentHost = "", mcpPath = ""): Promise<McpC
   const params = new URLSearchParams({ agentHost, mcpPath });
   const res = await agentFetch(`${SERVER_HTTP}/mcp/config?${params}`);
   if (!res.ok) throw new Error(`mcp config ${res.status}`);
-  return res.json();
+  const value: unknown = await res.json();
+  if (!value || typeof value !== "object" || !("path" in value) || typeof value.path !== "string" ||
+    !("frameworks" in value) || !value.frameworks || typeof value.frameworks !== "object" || Array.isArray(value.frameworks)) throw new Error("Invalid MCP configuration response");
+  const frameworks: Record<string, McpFramework> = {};
+  for (const [id, entry] of Object.entries(value.frameworks as Record<string, unknown>)) {
+    if (!entry || typeof entry !== "object" || !("label" in entry) || typeof entry.label !== "string" ||
+      !("cli" in entry) || typeof entry.cli !== "boolean" || !("config" in entry) || typeof entry.config !== "string") throw new Error("Invalid MCP framework response");
+    frameworks[id] = { label: entry.label, cli: entry.cli, config: entry.config };
+  }
+  return { path: value.path, frameworks };
 }
 export interface McpInstallResult {
   ok: boolean;
@@ -269,6 +279,21 @@ export async function fetchAccounts(): Promise<Account[]> {
   return res.json();
 }
 
+// Start an independent shell at the source pane's live working directory.
+export async function duplicateSession(name: string, window?: number, host?: string): Promise<{ name: string; cwd: string }> {
+  const res = await agentFetch(`${SERVER_HTTP}/sessions/duplicate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, window, host: HAS_TAURI ? host ?? "" : host }),
+  });
+  const data: unknown = await res.json();
+  if (!res.ok) throw new Error(data && typeof data === "object" && "error" in data && typeof data.error === "string"
+    ? data.error : "Could not duplicate the session");
+  if (!data || typeof data !== "object" || !("name" in data) || typeof data.name !== "string" || !data.name ||
+      !("cwd" in data) || typeof data.cwd !== "string" || !data.cwd) throw new Error("Invalid duplicate session response");
+  return { name: data.name, cwd: data.cwd };
+}
+
 // Create a tmux session up front, optionally bound to a specific agent account.
 export async function createSession(
   name: string,
@@ -280,6 +305,22 @@ export async function createSession(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ name, cwd, account }),
   });
+}
+
+export async function openQuickChat(host: string, agent: "claude" | "codex"): Promise<{ session: string; host: string; agent: "claude" | "codex" }> {
+  const response = await agentFetch(`${SERVER_HTTP}/quick-chat/open`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ host, agent }),
+    signal: AbortSignal.timeout(20000),
+  });
+  const value: unknown = await response.json();
+  if (!response.ok) throw new Error(value && typeof value === "object" && "error" in value && typeof value.error === "string" ? value.error : "Could not open Quick Chat.");
+  if (!value || typeof value !== "object" || !("session" in value) || value.session !== "pzza-quick-chat" ||
+      !("host" in value) || value.host !== host || !("agent" in value) || (value.agent !== "claude" && value.agent !== "codex")) {
+    throw new Error("Invalid Quick Chat response.");
+  }
+  return { session: value.session, host, agent: value.agent };
 }
 
 // Scan every tmux session on a device (host empty = the connected device).
@@ -416,8 +457,8 @@ export interface AccountSpend {
 }
 // Estimated spend per account (today / yesterday / trailing 30 days), computed
 // from local transcripts. First call can take a few seconds; the agent caches it.
-export async function fetchSpend(): Promise<AccountSpend[]> {
-  const res = await agentFetch(`${SERVER_HTTP}/spend`);
+export async function fetchSpend(fresh = false): Promise<AccountSpend[]> {
+  const res = await agentFetch(`${SERVER_HTTP}/spend${fresh ? "?fresh=1" : ""}`);
   if (!res.ok) throw new Error(`spend ${res.status}`);
   return res.json();
 }
@@ -499,11 +540,12 @@ export async function fetchForwardState(): Promise<ForwardState> {
   return res.json();
 }
 export async function setForwardEnabled(enabled: boolean): Promise<void> {
-  await agentFetch(`${SERVER_HTTP}/forward/toggle`, {
+  const response = await agentFetch(`${SERVER_HTTP}/forward/toggle`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ enabled }),
   });
+  if (!response.ok) throw new Error("Could not change port forwarding.");
 }
 
 // --- Project sync ------------------------------------------------------------
@@ -524,6 +566,8 @@ export interface EnvFile {
 
 export interface ProjectRepo {
   projectId: string;
+  originalProjectId?: string;
+  canonicalOrigin?: string;
   rel: string; // path below the root, e.g. "Personal/pzza-code"
   origin: string | null;
   defaultBranch: string | null; // origin's HEAD when the clone knows it
@@ -558,7 +602,7 @@ export interface RepoSyncOptions {
 }
 export interface SyncOptions {
   cloneMissing: boolean;
-  switchToDefault: boolean; // false = fast-forward the current branch in place
+  switchToDefault: boolean; // false = integrate upstream into the current branch
   stashDirty: boolean; // false = dirty repos are reported and skipped
   syncEnvs: boolean;
   envExclude: string[]; // env file name patterns, * wildcard
@@ -710,4 +754,33 @@ export async function fetchDeviceOs(host: string): Promise<DeviceOs> {
     if (os === "macos" || os === "linux" || os === "windows" || os === "freebsd") return os;
   }
   return "unknown";
+}
+
+export async function bridgeRequest<T>(path: string, body?: unknown): Promise<T> {
+  const response = await agentFetch(`${SERVER_HTTP}/bridge/${path}`, {
+    method: body === undefined ? "GET" : "POST",
+    headers: body === undefined ? undefined : { "Content-Type": "application/json" },
+    body: body === undefined ? undefined : JSON.stringify(body),
+    signal: AbortSignal.timeout(15000),
+  });
+  if (!response.ok) {
+    const value: unknown = await response.json().catch(() => null);
+    const message = value && typeof value === "object" && "error" in value && typeof value.error === "string" ? value.error : `Bridge request failed (${response.status})`;
+    throw new Error(message);
+  }
+  return response.json();
+}
+
+export async function agentsHubRequest<T>(path: string, body?: unknown): Promise<T> {
+  const response = await agentFetch(`${SERVER_HTTP}/agents-hub/${path}`, {
+    method: body === undefined ? "GET" : "POST",
+    headers: body === undefined ? undefined : { "Content-Type": "application/json" },
+    body: body === undefined ? undefined : JSON.stringify(body),
+    signal: AbortSignal.timeout(60000),
+  });
+  if (!response.ok) {
+    const value: unknown = await response.json().catch(() => null);
+    throw new Error(value && typeof value === "object" && "error" in value && typeof value.error === "string" ? value.error : `Agents Hub request failed (${response.status})`);
+  }
+  return response.json();
 }

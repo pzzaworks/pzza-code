@@ -1,3 +1,4 @@
+import { AsyncButton } from "../ui/AsyncButton";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AlertTriangle, Check, Loader2, RefreshCw, ServerCog, X } from "lucide-react";
 import { Modal } from "../ui/Modal";
@@ -209,10 +210,9 @@ export function SetupWizard({ open, onClose }: { open: boolean; onClose: () => v
             </div>
           )}
           <div className="modal-actions">
-            <button className="btn" onClick={check} disabled={loading}>
-              <RefreshCw size={14} />
+            <AsyncButton className="btn" onClick={check} loading={loading} icon={RefreshCw}>
               Re-check
-            </button>
+            </AsyncButton>
             <button className="btn btn-accent" onClick={onClose}>
               Done
             </button>

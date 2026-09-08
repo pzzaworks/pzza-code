@@ -1,18 +1,19 @@
-import { useEffect } from "react";
+import { useEffect, useLayoutEffect } from "react";
 import { useStore } from "../state/store";
 import { HAS_TAURI } from "../tauriEnv";
 import { setNativeTransparency } from "../nativeAppearance";
 import { themeById } from "./themes";
 import { chromeToCssVars, deriveChrome } from "./types";
 
-// The app uses a single locked look with a neutral grey accent (theme switching
-// was removed). Chrome is derived from the base terminal palette, then the
-// accent is overridden to grey.
+// Derive app surfaces from the selected terminal palette, retaining the
+// neutral accent used by app controls.
 const GREY_ACCENT = "#454a54";
 const GREY_ACCENT_TEXT = "#ffffff";
 
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
   const themeId = useStore((s) => s.themeId);
+  const cornerStyle = useStore((s) => s.cornerStyle);
+  useLayoutEffect(() => { document.documentElement.dataset.corners = cornerStyle; }, [cornerStyle]);
   const transparent = useStore((s) => s.semiTransparent);
   const options = useStore((s) => s.transparencyOptions);
   const nativeBlurRadius = transparent && options.desktopBlur ? options.desktopBlurRadius : 0;
@@ -23,15 +24,27 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
       useStore.getState().setTransparencyNotice(transparent ? "In the browser, blur applies inside the page. Desktop blur is available in the supported desktop app." : null);
       return;
     }
-    const timer = window.setTimeout(() => {
-      void setNativeTransparency(transparent, nativeBlurRadius).then((result) => {
-        if (alive) useStore.getState().setTransparencyNotice(result.reason ?? null);
-      }).catch(() => {
-        if (alive) useStore.getState().setTransparencyNotice("Desktop blur is unavailable. Translucent app surfaces are still enabled.");
-      });
-    }, 80);
-    return () => { alive = false; window.clearTimeout(timer); };
-  }, [transparent, nativeBlurRadius]);
+    let timer: number;
+    const apply = () => {
+      window.clearTimeout(timer);
+      timer = window.setTimeout(() => {
+        void setNativeTransparency(transparent, nativeBlurRadius, cornerStyle === "rounded").then((result) => {
+          if (alive) useStore.getState().setTransparencyNotice(result.reason ?? null);
+        }).catch(() => {
+          if (alive) useStore.getState().setTransparencyNotice("Desktop blur is unavailable. Translucent app surfaces are still enabled.");
+        });
+      }, 80);
+    };
+    apply();
+    // A full-screen transition changes native corner clipping as well as size.
+    const isMac = /mac/i.test(navigator.platform || navigator.userAgent);
+    if (isMac) window.addEventListener("resize", apply);
+    return () => {
+      alive = false;
+      window.clearTimeout(timer);
+      if (isMac) window.removeEventListener("resize", apply);
+    };
+  }, [transparent, nativeBlurRadius, cornerStyle]);
 
   useEffect(() => {
     const theme = themeById(themeId);
@@ -43,6 +56,8 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
       accentText: GREY_ACCENT_TEXT,
     });
     root.style.setProperty("--opaque-bg", chrome.bg);
+    root.style.setProperty("--opaque-surface", chrome.surface);
+    root.style.setProperty("--opaque-surface-alt", chrome.surfaceAlt);
     root.style.setProperty("--terminal-bg", transparent ? "transparent" : theme.terminal.background);
     root.style.setProperty("--surface-blur", `${options.blur}px`);
     root.style.setProperty("--surface-saturation", `${options.saturation}%`);

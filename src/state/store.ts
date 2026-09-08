@@ -1,5 +1,6 @@
+import { notify } from "./notifications";
 import { create } from "zustand";
-import { DEFAULT_THEME_ID } from "../theme/themes";
+import { DEFAULT_THEME_ID, themeById } from "../theme/themes";
 import {
   loadConnection,
   saveConnection,
@@ -84,6 +85,8 @@ async function listSessions(conn: Connection): Promise<RemoteSession[]> {
 }
 
 interface ConsoleState {
+  cornerStyle: "rounded" | "square";
+  setCornerStyle: (style: "rounded" | "square") => void;
   semiTransparent: boolean;
   setSemiTransparent: (enabled: boolean) => void;
   transparencyOptions: TransparencyOptions;
@@ -207,6 +210,11 @@ export interface TileCode {
 }
 
 export const useStore = create<ConsoleState>((set, get) => ({
+  cornerStyle: load<unknown>("pzza.cornerStyle", "rounded") === "square" ? "square" : "rounded",
+  setCornerStyle: (style) => {
+    persist("pzza.cornerStyle", style);
+    set({ cornerStyle: style });
+  },
   semiTransparent: load<unknown>(TRANSPARENCY_KEY, false) === true,
   setSemiTransparent: (enabled) => {
     persist(TRANSPARENCY_KEY, enabled);
@@ -220,10 +228,11 @@ export const useStore = create<ConsoleState>((set, get) => ({
     set({ transparencyOptions: next });
   },
   setTransparencyNotice: (notice) => set({ transparencyNotice: notice }),
-  themeId: load<string>(THEME_KEY, DEFAULT_THEME_ID),
+  themeId: themeById(load<string>(THEME_KEY, DEFAULT_THEME_ID)).id,
   setTheme: (id) => {
-    persist(THEME_KEY, id);
-    set({ themeId: id });
+    const selected = themeById(id).id;
+    persist(THEME_KEY, selected);
+    set({ themeId: selected });
   },
 
   connection: loadConnection(),
@@ -331,12 +340,16 @@ export const useStore = create<ConsoleState>((set, get) => ({
     const devices = [...get().devices, device];
     persist(DEVICES_KEY, devices);
     set({ devices });
+    notify({ category: "devices", event: "device-added", title: "Device added", body: `${trimmed} was added to your devices.`, target: { section: "devices" } });
   },
   removeDevice: (id) => {
     if (id === "this-mac") return; // the local machine is always present
+    const removed = get().devices.find(device => device.id === id);
+    if (!removed) return;
     const devices = get().devices.filter((d) => d.id !== id);
     persist(DEVICES_KEY, devices);
     set({ devices });
+    notify({ category: "devices", event: "device-removed", title: "Device removed", body: `${removed.name} was removed from this app.`, target: { section: "devices" } });
   },
 
   deviceRdp: load<Record<string, DeviceRdp>>(DEVICE_RDP_KEY, {}),

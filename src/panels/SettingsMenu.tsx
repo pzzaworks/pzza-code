@@ -1,11 +1,15 @@
+import { AsyncButton } from "../ui/AsyncButton";
 import { useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Download, Loader2, RefreshCw, RotateCw, ServerCog, SlidersHorizontal } from "lucide-react";
 import { DEFAULT_TRANSPARENCY_OPTIONS, useStore } from "../state/store";
 import { useUpdates } from "../state/updates";
 import { HAS_TAURI } from "../tauriEnv";
+import { DICTATION_SUPPORTED, useDictation } from "../state/dictation";
+import dictationLicenses from "../dictation-licenses.txt?raw";
+import { DictationLanguageSelect } from "../ui/DictationLanguageSelect";
 
-// Settings dropdown content: agent/devices + terminal.
+// General preferences shared by the settings hub.
 export function SettingsMenu({ close }: { close?: () => void }) {
   return (
     <div className="menu-body">
@@ -13,9 +17,36 @@ export function SettingsMenu({ close }: { close?: () => void }) {
       <AgentSection close={close} />
       <AppearanceSection />
       <TerminalSection />
+      <DictationSection />
       <UpdatesSection />
     </div>
   );
+}
+
+function DictationSection() {
+  const state = useDictation();
+  if (!DICTATION_SUPPORTED) return null;
+  const progress = state.totalBytes ? Math.min(100, Math.round(state.downloadedBytes / state.totalBytes * 100)) : 0;
+  return <Section title="Voice dictation">
+    <p className="set-note">Speak into any terminal. Multilingual recognition runs on this Mac, including Turkish and English. Free and open source, with an MIT-licensed model and engine.</p>
+    {state.model === "ready" ? <Row label="Enable dictation" hint={state.warming ? "Warming up the model…" : "A microphone button appears on each terminal"}>
+      <button type="button" className={`switch ${state.enabled ? "switch-on" : ""}`} role="switch" aria-label="Enable dictation" aria-checked={state.enabled} onClick={() => state.setEnabled(!state.enabled)}><span className="switch-knob" /></button>
+    </Row> : state.model === "downloading" ? <div className="dictation-download" role="status">
+      <span><Loader2 size={13} className="sw-spin" /> Downloading model · {progress}%</span>
+      <progress aria-label="Speech model download" value={state.downloadedBytes} max={state.totalBytes} />
+      <small>You can close Settings while this finishes.</small>
+    </div> : <AsyncButton className="btn set-full-btn" loading={state.model === "checking"} icon={Download} onClick={() => void state.download()}>
+      Download & enable · 574 MB
+    </AsyncButton>}
+    {state.model === "ready" && state.enabled ? <div className="dictation-language-setting">
+      <div className="set-label"><span>Recognition language</span><span className="set-hint">Auto-detect, or choose the language you speak.</span></div>
+      <DictationLanguageSelect value={state.language} disabled={state.recording !== null} onChange={state.setLanguage} />
+    </div> : null}
+    {state.error ? <p className="set-note dictation-error" role="alert">{state.error}</p> : null}
+    {state.error && state.model === "ready" ? <button className="btn btn-sm" disabled={state.recording !== null} onClick={() => void state.download(true)}>Re-download model</button> : null}
+    <p className="set-note">One download, no subscription or API key. Audio stays on your Mac. Stopping inserts text without submitting it.</p>
+    <details className="dictation-licenses"><summary>Open-source licenses</summary><pre>{dictationLicenses}</pre></details>
+  </Section>;
 }
 
 // Reopen the setup wizard (local agent health + add remote devices). The wizard
@@ -67,10 +98,9 @@ function UpdatesSection() {
             Restart for {status.update.version}
           </button>
         ) : (
-          <button className="btn btn-sm" onClick={() => check(true)} disabled={status.kind === "checking"}>
-            {status.kind === "checking" ? <Loader2 size={13} className="sw-spin" /> : <RefreshCw size={13} />}
+          <AsyncButton className="btn btn-sm" onClick={() => check(true)} loading={status.kind === "checking"} icon={RefreshCw} iconSize={13}>
             Check for updates
-          </button>
+          </AsyncButton>
         )}
       </Row>
       <Row label="Automatic updates" hint="Install new releases in the background, restart when you like">
@@ -131,11 +161,19 @@ function AppearanceSection() {
     return () => window.removeEventListener("resize", place);
   }, [optionsOpen]);
   const enabled = useStore((state) => state.semiTransparent);
+  const cornerStyle = useStore((state) => state.cornerStyle);
+  const setCornerStyle = useStore((state) => state.setCornerStyle);
   const options = useStore((state) => state.transparencyOptions);
   const setOptions = useStore((state) => state.setTransparencyOptions);
   const setEnabled = useStore((state) => state.setSemiTransparent);
   const notice = useStore((state) => state.transparencyNotice);
   return <Section title="Appearance">
+    <Row label="Corners" hint="App windows, panels, menus, and controls">
+      <div className="corner-style" role="group" aria-label="Corner style">
+        <button type="button" className={`btn btn-sm ${cornerStyle === "rounded" ? "btn-on" : ""}`} aria-pressed={cornerStyle === "rounded"} onClick={() => setCornerStyle("rounded")}>Rounded</button>
+        <button type="button" className={`btn btn-sm ${cornerStyle === "square" ? "btn-on" : ""}`} aria-pressed={cornerStyle === "square"} onClick={() => setCornerStyle("square")}>Square</button>
+      </div>
+    </Row>
     <Row label="Semi-transparent mode" hint="Translucent surfaces and a blurred background">
       <button ref={optionsButton} type="button" className={`btn btn-icon btn-sm ${optionsOpen ? "btn-on" : ""}`} title="Transparency settings" aria-label="Transparency settings" aria-haspopup="dialog" aria-expanded={optionsOpen}
         onClick={() => setOptionsOpen(!optionsOpen)}><SlidersHorizontal size={15} /></button>

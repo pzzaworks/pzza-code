@@ -19,6 +19,7 @@ export interface AppControlStore {
   setTileCodePath(id: string, path: string): void;
   setTileCodeLayout(id: string, layout: TileCodeLayout): void;
   setColumns(columns: number): void;
+  openSession(name: string, cwd?: string, host?: string): void;
 }
 export interface AppControlContext {
   getState(): AppControlStore;
@@ -53,6 +54,8 @@ export function appControlSnapshot(context: AppControlContext) {
       return {
         id: tile.id,
         name: state.tileTitles[tile.id] || tile.name,
+        session: tile.session ?? tile.name,
+        window: tile.window,
         host: tile.host ?? state.connection.host ?? "",
         workspaceId: workspaceFor(state, tile, context.defaultWorkspaceId),
         hidden: state.hiddenTiles.includes(tile.id),
@@ -67,6 +70,17 @@ export function appControlSnapshot(context: AppControlContext) {
 export function executeAppControl(action: string, args: Record<string, unknown>, context: AppControlContext) {
   const state = context.getState();
   if (action === "get_state") return appControlSnapshot(context);
+  if (action === "open_session") {
+    const session = text(args.session, "session");
+    const cwd = text(args.cwd, "cwd");
+    if (!/^[A-Za-z0-9_-]{1,128}$/.test(session) || !cwd.startsWith("/")) throw new Error("Invalid local session or directory.");
+    const existing = state.tiles.find((tile) => (tile.session ?? tile.name) === session && !(tile.host ?? state.connection.host));
+    if (!existing) {
+      if (state.tiles.some((tile) => tile.id === session)) throw new Error("A different device already uses this tile ID.");
+      state.openSession(session, cwd, "");
+    }
+    return executeAppControl("focus_tile", { tileId: existing?.id ?? session }, context);
+  }
   if (action === "set_columns") {
     if (typeof args.columns !== "number" || !Number.isInteger(args.columns) || args.columns < 1 || args.columns > 8) {
       throw new Error("columns must be an integer from 1 to 8.");

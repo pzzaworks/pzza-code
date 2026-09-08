@@ -14,7 +14,7 @@ export function openWsPty(
   cols: number,
   rows: number,
   cwd: string | undefined,
-  onData: (bytes: Uint8Array) => void,
+  onData: (bytes: Uint8Array, consumed: () => void) => void,
   onError?: (msg: string) => void,
   onClose?: () => void,
   window?: number,
@@ -25,25 +25,61 @@ export function openWsPty(
   let open = false;
   let closed = false;
   const queue: string[] = [];
+  const encoder = new TextEncoder();
+  const inputLimit = 1024 * 1024;
+  let queuedBytes = 0;
 
+  const fail = (message: string) => {
+    onError?.(message);
+    queue.length = 0;
+    queuedBytes = 0;
+    closed = true;
+    ws.close();
+  };
   const send = (obj: unknown) => {
+    if (closed) return;
     const str = JSON.stringify(obj);
-    if (open && ws.readyState === WebSocket.OPEN) ws.send(str);
-    else queue.push(str);
+    const bytes = encoder.encode(str).length;
+    if (queuedBytes + ws.bufferedAmount + bytes > inputLimit) {
+      fail("Terminal input is congested. Reconnect before sending more input.");
+      return;
+    }
+    if (open && ws.readyState === WebSocket.OPEN) {
+      try { ws.send(str); } catch { fail("Terminal connection closed while sending input."); }
+    } else {
+      queue.push(str);
+      queuedBytes += bytes;
+    }
   };
 
   ws.onopen = () => {
+    if (closed) { ws.close(); return; }
     open = true;
-    ws.send(JSON.stringify({ type: "attach", name, cols, rows, cwd, window, host }));
-    for (const q of queue) ws.send(q);
+    send({ type: "attach", name, cols, rows, cwd, window, host });
+    for (const q of queue) {
+      if (closed) break;
+      try { ws.send(q); } catch { fail("Terminal connection closed while sending input."); }
+    }
     queue.length = 0;
+    queuedBytes = 0;
   };
   ws.onmessage = (ev) => {
-    if (typeof ev.data !== "string") onData(new Uint8Array(ev.data as ArrayBuffer));
+    if (closed || !(ev.data instanceof ArrayBuffer)) return;
+    const bytes = new Uint8Array(ev.data);
+    let consumed = false;
+    onData(bytes, () => {
+      if (consumed || closed) return;
+      consumed = true;
+      if (bytes.byteLength > 0) send({ type: "ack", bytes: bytes.byteLength });
+    });
   };
   ws.onerror = () => onError?.("connection to devbox server failed");
   ws.onclose = () => {
-    if (!closed) onClose?.();
+    queue.length = 0;
+    queuedBytes = 0;
+    const intentional = closed;
+    closed = true;
+    if (!intentional) onClose?.();
   };
 
   return {
@@ -51,6 +87,8 @@ export function openWsPty(
     resize: (cols2, rows2) => send({ type: "resize", cols: cols2, rows: rows2 }),
     close: () => {
       closed = true; // intentional detach, not a failure
+      queue.length = 0;
+      queuedBytes = 0;
       try {
         ws.close();
       } catch {

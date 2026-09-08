@@ -3,10 +3,10 @@
 // server-backed panel (sessions, ports, usage, accounts, forwarding, MCP, the
 // setup wizard) and any external MCP client then talk to this one local backend.
 use std::path::PathBuf;
-use std::process::{Child, Command};
+use std::process::{Child, Command, ExitStatus};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager};
 
 pub const AGENT_PORT: &str = "5190";
@@ -115,7 +115,11 @@ fn agent_path() -> String {
         push(base);
     }
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
-    if let Ok(out) = Command::new(&shell).arg("-lc").arg("printf %s \"$PATH\"").output() {
+    if let Ok(out) = Command::new(&shell)
+        .arg("-lc")
+        .arg("printf %s \"$PATH\"")
+        .output()
+    {
         if out.status.success() {
             for p in String::from_utf8_lossy(&out.stdout).split(':') {
                 push(p);
@@ -147,7 +151,11 @@ fn find_node(path: &str) -> Option<String> {
             }
         }
     }
-    for c in ["/opt/homebrew/bin/node", "/usr/local/bin/node", "/usr/bin/node"] {
+    for c in [
+        "/opt/homebrew/bin/node",
+        "/usr/local/bin/node",
+        "/usr/bin/node",
+    ] {
         if std::path::Path::new(c).exists() {
             return Some(c.to_string());
         }
@@ -205,6 +213,10 @@ pub fn start(app: &AppHandle) {
             return;
         }
         let mut guard = state.child.lock().unwrap();
+        // Shutdown may have started while this thread waited for the child lock.
+        if state.shutting_down.load(Ordering::SeqCst) {
+            return;
+        }
         let alive = matches!(guard.as_mut().map(|c| c.try_wait()), Some(Ok(None)));
         if !alive {
             match spawn_agent_process(&node, &script, &path, &token, &instance) {
@@ -254,9 +266,72 @@ pub fn stop(app: &AppHandle) {
         // Signal the watchdog before killing, so it does not respawn the agent
         // during shutdown.
         state.shutting_down.store(true, Ordering::SeqCst);
-        if let Some(mut child) = state.child.lock().unwrap().take() {
-            let _ = child.kill();
-            let _ = child.wait();
+        let child = state.child.lock().unwrap().take();
+        if let Some(mut child) = child {
+            let _ = terminate_agent(&mut child, Duration::from_secs(5));
         }
+    }
+}
+
+fn terminate_agent(child: &mut Child, grace: Duration) -> std::io::Result<ExitStatus> {
+    if let Some(status) = child.try_wait()? {
+        return Ok(status);
+    }
+    #[cfg(unix)]
+    {
+        // This is our still-unreaped child, so its PID cannot be reused by another process.
+        unsafe {
+            libc::kill(child.id() as libc::pid_t, libc::SIGTERM);
+        }
+        let deadline = Instant::now() + grace;
+        while Instant::now() < deadline {
+            if let Some(status) = child.try_wait()? {
+                return Ok(status);
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = grace;
+    child.kill()?;
+    child.wait()
+}
+
+#[cfg(all(test, unix))]
+mod shutdown_tests {
+    use super::*;
+    use std::io::{BufRead, BufReader};
+    use std::process::Stdio;
+
+    fn ready_child(script: &str) -> Child {
+        let mut child = Command::new("/bin/sh")
+            .args(["-c", script])
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut ready = String::new();
+        BufReader::new(child.stdout.take().unwrap())
+            .read_line(&mut ready)
+            .unwrap();
+        assert_eq!(ready.trim(), "ready");
+        child
+    }
+
+    #[test]
+    fn agent_shutdown_allows_cleanup_before_reaping() {
+        let mut child = ready_child("trap 'exit 7' TERM; printf 'ready\n'; while :; do :; done");
+        let status = terminate_agent(&mut child, Duration::from_secs(1)).unwrap();
+        assert_eq!(status.code(), Some(7));
+        assert_eq!(child.try_wait().unwrap().unwrap().code(), Some(7));
+    }
+
+    #[test]
+    fn agent_shutdown_forces_exit_after_the_grace_period() {
+        let mut child = ready_child("trap '' TERM; printf 'ready\n'; exec sleep 30");
+        let start = Instant::now();
+        let status = terminate_agent(&mut child, Duration::from_millis(50)).unwrap();
+        assert!(!status.success());
+        assert!(start.elapsed() < Duration::from_secs(2));
+        assert!(child.try_wait().unwrap().is_some());
     }
 }

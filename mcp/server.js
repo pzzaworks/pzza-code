@@ -12,6 +12,7 @@ import {
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import { TOOLS } from "./lib/tools.js";
+import { toolResult } from "./lib/results.js";
 
 const server = new Server(
   { name: "pzzacode-mcp", version: "0.2.21" },
@@ -19,7 +20,7 @@ const server = new Server(
 );
 
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
-  tools: TOOLS.map(({ name, description, inputSchema }) => ({ name, description, inputSchema })),
+  tools: TOOLS.map(({ name, description, inputSchema, annotations }) => ({ name, description, inputSchema, ...(annotations ? { annotations } : {}) })),
 }));
 
 server.setRequestHandler(CallToolRequestSchema, async (req) => {
@@ -27,7 +28,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
   if (!tool) throw new Error(`unknown tool: ${req.params.name}`);
   try {
     const result = await tool.run(req.params.arguments ?? {});
-    return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+    return toolResult(tool.name, result);
   } catch (e) {
     return { content: [{ type: "text", text: `error: ${e.message}` }], isError: true };
   }

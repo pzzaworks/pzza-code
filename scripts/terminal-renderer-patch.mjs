@@ -44,8 +44,10 @@ export function patchTerminalRenderer(source, renderer, version) {
     // Read once per background-model update, not once per terminal cell.
     source = replaceOnce(source, "updateBackgrounds(e){const t=this._terminal,i=this._vertices;",
       `updateBackgrounds(e){const t=this._terminal,i=this._vertices;this._pzzaBackgroundOpacity=Math.max(0,Math.min(1,Number(t.element?.style.getPropertyValue("${OPACITY}")||"1")));`);
+    // Style flags can create rectangles even with the default background.
+    // Preserve that background's alpha instead of adding a dark cell layer.
     source = replaceOnce(source, "g=(l>>8&255)/255,v=1,this._addRectangle(e.attributes",
-      "g=(l>>8&255)/255,v=this._pzzaBackgroundOpacity,this._addRectangle(e.attributes");
+      "g=(l>>8&255)/255,v=!(67108864&i)&&!(50331648&s)?(l&255)/255:this._pzzaBackgroundOpacity,this._addRectangle(e.attributes");
     // RGB uses source alpha; alpha itself must not be multiplied by alpha a
     // second time when compositing translucent rectangles and glyph edges.
     return replaceOnce(source, "h.blendFunc(h.SRC_ALPHA,h.ONE_MINUS_SRC_ALPHA)",
