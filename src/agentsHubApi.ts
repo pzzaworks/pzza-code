@@ -14,7 +14,7 @@ export const importHubSkill = (revision: number, sourceUrl: string, subpath: str
 
 export interface HubDiscoveredFile { path: string; cwd: string; framework: string; bytes: number; sha256: string }
 export interface HubDiscoveryDevice { host: string; name: string; root?: string; files: HubDiscoveredFile[]; truncated?: boolean; error?: string }
-export interface HubDiscovery { devices: HubDiscoveryDevice[] }
-export const discoverHubInstructions = (root: string, devices: { host: string; name: string }[]) => agentsHubRequest<HubDiscovery>("discover", { root, devices });
+export interface HubDiscovery { devices: HubDiscoveryDevice[]; state: HubState }
+export const discoverHubInstructions = (devices: { host: string; name: string }[]) => agentsHubRequest<HubDiscovery>("discover", { devices });
 export const readHubInstruction = (host: string, root: string, file: HubDiscoveredFile) => agentsHubRequest<Omit<HubDocument, "id">>("read-instruction", { host, root, path: file.path, sha256: file.sha256 });
 export const previewHubInstruction = (documentId: string, host: string, cwd: string, adoptExisting: boolean) => agentsHubRequest<HubPreview>("preview", { documentId, host, cwd, adoptExisting });

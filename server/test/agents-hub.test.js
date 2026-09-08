@@ -202,24 +202,34 @@ test("replacing the reviewed project directory cannot redirect an approved deplo
 });
 
 
-test("instruction discovery is bounded, read-only and refuses symlink escapes", async t => {
+test("global discovery automatically adds user instructions without scanning projects", async t => {
   const f = await fixture(t);
-  await fs.writeFile(path.join(f.cwd, "CLAUDE.md"), "Existing project guidance\n");
-  await fs.mkdir(path.join(f.cwd, ".cursor/rules"), { recursive: true });
-  await fs.writeFile(path.join(f.cwd, ".cursor/rules/style.mdc"), "---\nalwaysApply: true\n---\nRules\n");
-  await fs.mkdir(path.join(f.cwd, "node_modules/hidden"), { recursive: true });
-  await fs.writeFile(path.join(f.cwd, "node_modules/hidden/AGENTS.md"), "Ignore dependency");
-  await fs.symlink(path.join(f.cwd, "CLAUDE.md"), path.join(f.cwd, "AGENTS.md"));
-  const found = await f.hub.discover({ root: "~/project", devices: [{ host: "", name: "Local" }] });
-  assert.deepEqual(found.devices[0].files.map(file => file.path).sort(), [".cursor/rules/style.mdc", "CLAUDE.md"]);
-  const file = found.devices[0].files.find(file => file.path === "CLAUDE.md");
-  const imported = await f.hub.readInstruction({ host: "", root: "~/project", path: file.path, sha256: file.sha256 });
-  assert.equal(imported.content, "Existing project guidance\n");
-  assert.equal(f.hub.state().revision, 0);
-  await fs.writeFile(path.join(f.cwd, "CLAUDE.md"), "Changed after discovery");
-  await assert.rejects(f.hub.readInstruction({ host: "", root: "~/project", path: file.path, sha256: file.sha256 }), /changed/);
-  const denied = await f.hub.discover({ root: "~", devices: [{ host: "", name: "Local" }] });
-  assert.match(denied.devices[0].error, /project folder/);
+  await fs.mkdir(path.join(f.home, ".claude"));
+  await fs.mkdir(path.join(f.home, ".codex"));
+  await fs.writeFile(path.join(f.home, "AGENTS.md"), "Home guidance");
+  await fs.writeFile(path.join(f.home, ".claude/CLAUDE.md"), "Personal guidance");
+  await fs.writeFile(path.join(f.home, ".codex/AGENTS.md"), "Agent guidance");
+  await fs.writeFile(path.join(f.cwd, "CLAUDE.md"), "Do not discover projects");
+  await fs.symlink(path.join(f.cwd, "CLAUDE.md"), path.join(f.home, "CLAUDE.md"));
+  const input = { devices: [{ host: "", name: "Local" }] };
+  const found = await f.hub.discover(input);
+  assert.deepEqual(found.devices[0].files.map(file => file.path).sort(), [".claude/CLAUDE.md", ".codex/AGENTS.md", "AGENTS.md"]);
+  assert.equal(found.state.documents.length, 3);
+  assert.match(found.devices[0].error, /CLAUDE.md/);
+  const file = found.devices[0].files.find(file => file.path === ".claude/CLAUDE.md");
+  const imported = await f.hub.readInstruction({ host: "", root: f.home, path: file.path, sha256: file.sha256 });
+  assert.equal(imported.content, "Personal guidance");
+  const edited = editable(found.state);
+  edited.documents[0].content = "Keep my library edit";
+  f.hub.save(edited);
+  const again = await f.hub.discover(input);
+  assert.equal(again.state.documents.length, 3);
+  assert.equal(again.state.documents[0].content, "Keep my library edit");
+  assert.equal(again.state.revision, 2);
+  await fs.writeFile(path.join(f.home, ".claude/CLAUDE.md"), "Changed after discovery");
+  await assert.rejects(f.hub.readInstruction({ host: "", root: f.home, path: file.path, sha256: file.sha256 }), /changed/);
+  await assert.rejects(f.hub.readInstruction({ host: "", root: f.cwd, path: "CLAUDE.md", sha256: file.sha256 }), /supported user/);
+  await assert.rejects(f.hub.readInstruction({ host: "", root: f.home, path: "project/CLAUDE.md", sha256: file.sha256 }), /supported user/);
 });
 
 test("instruction-only sync copies identical bytes and preserves existing destination backups", async t => {
