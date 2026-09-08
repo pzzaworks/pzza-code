@@ -15,6 +15,10 @@ const FRAMEWORKS = Object.freeze([
   { id: "windsurf", label: "Windsurf", instructionFile: ".windsurf/rules/<profile-id>.md", skillsDirectory: ".windsurf/skills", launchSupported: false },
   { id: "zed", label: "Zed", instructionFile: "AGENTS.md", skillsDirectory: ".agents/skills", launchSupported: false },
 ]);
+const GLOBAL_FILES = Object.freeze({
+  "CLAUDE.md": "claude", "AGENTS.md": "codex", ".claude/CLAUDE.md": "claude",
+  ".codex/AGENTS.md": "codex", ".codex/AGENTS.override.md": "codex",
+});
 const fail = (message, status = 400) => Object.assign(new Error(message), { status });
 const object = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
 const keys = (value, allowed) => object(value) && Object.keys(value).every((key) => allowed.includes(key));
@@ -144,6 +148,7 @@ export function runHubTarget(host, payload, { env = process.env } = {}) {
 export function createAgentsHub({ stateDir, target = runHubTarget, inspectSkill = inspectSkillSource, now = Date.now } = {}) {
   let stored;
   const previews = new Map();
+  const globalPreviews = new Map();
   const file = path.join(stateDir, "agents-hub.json");
   const checkDirectory = () => {
     const directory = fs.lstatSync(stateDir);
@@ -221,43 +226,86 @@ export function createAgentsHub({ stateDir, target = runHubTarget, inspectSkill 
     save({ ...library, [collection]: found ? current[collection].map((entry) => entry.id === found.id ? replacement : entry) : [...current[collection], replacement] });
     return summary();
   };
-  const discover = async (input) => {
-    if (!keys(input, ["devices"]) || !Array.isArray(input.devices) || !input.devices.length || input.devices.length > 20) throw fail("Choose configured devices");
+  const globalLocation = value => {
+    if (!keys(value, ["host", "path", "sha256"]) || typeof value.host !== "string" || (value.host && !HOST.test(value.host)) || !Object.hasOwn(GLOBAL_FILES, value.path)) throw fail("Choose an allowed global instruction file and device");
+    return { host: value.host, path: value.path };
+  };
+  const globalRead = async location => {
+    const result = await target(location.host, { operation: "global-read", path: location.path });
+    if (!result.ok) throw fail(result.error, result.status || 409);
+    return result;
+  };
+  const globalDiscover = async input => {
+    if (!keys(input, ["devices"]) || !Array.isArray(input.devices) || !input.devices.length || input.devices.length > 20) throw fail("Choose up to 20 configured devices");
     const seen = new Set();
     const devices = input.devices.map(device => {
-      if (!keys(device, ["host", "name"]) || typeof device.host !== "string" || (device.host && !HOST.test(device.host)) || typeof device.name !== "string") throw fail("Invalid discovery device");
-      if (seen.has(device.host)) throw fail("Choose each device once");
+      if (!keys(device, ["host", "name"]) || typeof device.host !== "string" || (device.host && !HOST.test(device.host)) || typeof device.name !== "string" || device.name.length > 200 || seen.has(device.host)) throw fail("Choose each valid device once");
       seen.add(device.host);
       return device;
     });
-    const discovered = await Promise.all(devices.map(async device => {
+    return { devices: await Promise.all(devices.map(async device => {
       try {
-        const result = await target(device.host, { operation: "discover" });
-        if (!result.ok) throw fail(result.error, result.status);
-        return { ...device, root: result.root, files: result.files, error: result.error };
-      } catch (error) { return { ...device, files: [], error: error.status ? error.message : "Device discovery failed" }; }
-    }));
-    const current = load();
-    const documents = [...current.documents];
-    for (const device of discovered) {
-      for (const file of device.files) {
-        const id = `global-${hash(JSON.stringify([device.host, file.path])).slice(0, 32)}`;
-        if (documents.some(document => document.id === id)) continue;
-        if (documents.length >= 100) { device.error = "Instruction library is full."; break; }
-        documents.push({ id, name: `${device.name} · ~/${file.path}`.slice(0, 120), framework: file.framework, content: file.content });
-      }
-    }
-    if (documents.length !== current.documents.length) {
-      const { deployments, ...library } = current;
-      save({ ...library, documents });
-    }
-    return { devices: discovered.map(device => ({ ...device, files: device.files.map(({ content, ...file }) => file) })), state: state() };
+        const result = await target(device.host, { operation: "global-discover" });
+        if (!result.ok) throw fail(result.error, result.status || 409);
+        return { ...device, files: result.files.map(({ mode, ...file }) => file), ...(result.error ? { error: result.error } : {}) };
+      } catch (error) { return { ...device, files: [], error: error.status ? error.message : "Could not read this device's global instructions" }; }
+    })) };
   };
-  const readInstruction = async input => {
-    if (!keys(input, ["host", "root", "path", "sha256"]) || typeof input.host !== "string" || (input.host && !HOST.test(input.host)) || typeof input.root !== "string" || typeof input.path !== "string" || !/^[a-f0-9]{64}$/.test(input.sha256)) throw fail("Invalid discovered instruction");
-    const result = await target(input.host, { operation: "read-instruction", root: input.root, path: input.path, sha256: input.sha256 });
-    if (!result.ok) throw fail(result.error, result.status);
-    return { name: result.name, framework: result.framework, content: result.content };
+  const globalPreview = async input => {
+    if (!keys(input, ["source", "targets"]) || !Array.isArray(input.targets) || !input.targets.length || input.targets.length > 20) throw fail("Choose a source and up to 20 destinations");
+    const sourceLocation = globalLocation(input.source);
+    if (typeof input.source.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(input.source.sha256)) throw fail("Refresh and choose a current source file");
+    const seen = new Set();
+    const locations = input.targets.map(value => {
+      const location = globalLocation(value);
+      if (GLOBAL_FILES[location.path] !== GLOBAL_FILES[sourceLocation.path]) throw fail("Source and destinations must use the same framework");
+      const identity = JSON.stringify(location);
+      if (seen.has(identity)) throw fail("Choose each destination once");
+      seen.add(identity);
+      return location;
+    });
+    const observed = await globalRead(sourceLocation);
+    if (observed.content === null || observed.sha256 !== input.source.sha256) throw fail("Source changed; refresh and choose it again", 409);
+    const source = { ...sourceLocation, framework: GLOBAL_FILES[sourceLocation.path], content: observed.content, modifiedAt: observed.modifiedAt, sha256: observed.sha256 };
+    const targets = await Promise.all(locations.map(async location => {
+      try {
+        const snapshot = await globalRead(location);
+        return { ...location, previousContent: snapshot.content, baselineSha256: snapshot.sha256, baselineMode: snapshot.mode, status: snapshot.sha256 === source.sha256 ? "unchanged" : "ready" };
+      } catch (error) { return { ...location, previousContent: null, baselineSha256: null, baselineMode: null, status: "failed", error: error.status ? error.message : "Destination could not be read safely" }; }
+    }));
+    for (const [id, plan] of globalPreviews) if (plan.expiresAt <= now() && !plan.pending) globalPreviews.delete(id);
+    if (globalPreviews.size >= 16) {
+      const removable = [...globalPreviews].find(([, plan]) => !plan.pending);
+      if (!removable) throw fail("Too many global sync operations are running", 409);
+      globalPreviews.delete(removable[0]);
+    }
+    const previewId = crypto.randomUUID();
+    const expiresAt = now() + 10 * 60_000;
+    globalPreviews.set(previewId, { source, targets: targets.map(({ previousContent, ...destination }) => destination), expiresAt });
+    return { previewId, expiresAt, source, targets: targets.map(({ baselineMode, ...destination }) => destination) };
+  };
+  const globalSync = async input => {
+    if (!keys(input, ["previewId"]) || typeof input.previewId !== "string") throw fail("Choose a global sync preview");
+    const plan = globalPreviews.get(input.previewId);
+    if (!plan || plan.expiresAt <= now()) throw fail("Global sync preview expired; preview again", 409);
+    if (plan.result) return structuredClone(plan.result);
+    if (plan.pending) return plan.pending;
+    plan.pending = (async () => {
+      const results = [];
+      for (const destination of plan.targets) {
+        const location = { host: destination.host, path: destination.path };
+        if (destination.status === "failed") { results.push({ ...location, status: "failed", error: destination.error }); continue; }
+        try {
+          const source = await globalRead(plan.source);
+          if (source.sha256 !== plan.source.sha256 || source.content === null) throw fail("Source changed after preview; preview again", 409);
+          const result = await target(destination.host, { operation: "global-write", path: destination.path, content: source.content, baselineSha256: destination.baselineSha256, baselineMode: destination.baselineMode });
+          results.push({ ...location, status: result.ok ? result.status : "failed", ...(result.backupPath ? { backupPath: result.backupPath } : {}), ...(!result.ok ? { error: result.error || "Destination could not be updated" } : {}) });
+        } catch (error) { results.push({ ...location, status: "failed", error: error.status ? error.message : "Could not safely synchronize this device" }); }
+      }
+      plan.result = { results };
+      return structuredClone(plan.result);
+    })();
+    try { return await plan.pending; } finally { delete plan.pending; }
   };
   const preview = async (input) => {
     if (!keys(input, ["profileId", "documentId", "host", "cwd", "adoptExisting"]) || typeof input.host !== "string" || (input.host && !HOST.test(input.host)) || typeof input.cwd !== "string" || !path.isAbsolute(input.cwd) || input.cwd.length > 4096 || /[\x00-\x1f\x7f]/.test(input.cwd) || (input.adoptExisting !== undefined && typeof input.adoptExisting !== "boolean")) throw fail("Choose an explicit device and absolute project directory");
@@ -330,7 +378,7 @@ export function createAgentsHub({ stateDir, target = runHubTarget, inspectSkill 
     const { deployments, ...library } = load();
     return save({ ...library, skills: [...library.skills, { id: crypto.randomUUID(), ...imported }] });
   };
-  return { state, summary, item, update, save, preview, apply, importSkill, discover, readInstruction };
+  return { state, summary, item, update, save, preview, apply, importSkill, globalDiscover, globalPreview, globalSync };
 }
 
 async function body(req) {
@@ -355,8 +403,9 @@ export function createAgentsHubRouter(hub, respond) {
         if (url.pathname === "/agents-hub/item") respond(res, 200, hub.item(input));
         else if (url.pathname === "/agents-hub/update") respond(res, 200, hub.update(input));
         else if (url.pathname === "/agents-hub/save") respond(res, 200, hub.save(input));
-        else if (url.pathname === "/agents-hub/discover") respond(res, 200, await hub.discover(input));
-        else if (url.pathname === "/agents-hub/read-instruction") respond(res, 200, await hub.readInstruction(input));
+        else if (url.pathname === "/agents-hub/global-discover") respond(res, 200, await hub.globalDiscover(input));
+        else if (url.pathname === "/agents-hub/global-preview") respond(res, 200, await hub.globalPreview(input));
+        else if (url.pathname === "/agents-hub/global-sync") respond(res, 200, await hub.globalSync(input));
         else if (url.pathname === "/agents-hub/preview") respond(res, 200, await hub.preview(input));
         else if (url.pathname === "/agents-hub/import-skill") respond(res, 200, await hub.importSkill(input));
         else if (["/agents-hub/sync", "/agents-hub/deploy"].includes(url.pathname) && keys(input, ["previewId"]) && typeof input.previewId === "string") respond(res, 200, await hub.apply(input.previewId, url.pathname.endsWith("/sync") ? "sync" : "deploy"));

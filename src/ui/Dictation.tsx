@@ -44,7 +44,9 @@ export function DictationPreview({ tileId, style }: { tileId: string; style: CSS
         <small role="status">{copyStatus || "Check existing terminal input before pasting."}</small>
       </>}
     </div>
-    {listening && <button type="button" className="tile-btn" aria-label="Stop dictation" onClick={() => void useDictation.getState().stop()}><Square size={11} /></button>}
-    <button type="button" className="tile-btn" aria-label={recording.phase === "error" ? "Dismiss dictation error" : "Cancel dictation"} onClick={() => void useDictation.getState().cancel()}><X size={12} /></button>
+    <div className="dictation-caret-actions">
+      {listening && <button type="button" className="tile-btn" aria-label="Stop dictation" onClick={() => void useDictation.getState().stop()}><Square size={12} /></button>}
+      <button type="button" className="tile-btn" aria-label={recording.phase === "error" ? "Dismiss dictation error" : "Cancel dictation"} onClick={() => void useDictation.getState().cancel()}><X size={12} /></button>
+    </div>
   </div>;
 }

@@ -117,13 +117,13 @@ def atomic_file(root, relative, content, expected, mode=0o600, expected_mode=Non
         except FileNotFoundError: pass
         os.close(parent)
 
-def backup_files(home, cwd, profile_id, records):
+def backup_files(home, cwd, profile_id, records, namespace="agents-hub-backups"):
     if not records: return None
     if sum(len(content) for content, mode in records.values()) > 32 * 1024 * 1024:
         raise Refused('Existing files exceed the 32 MiB safety-backup limit')
     root = os.open(home, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
-        for segment in ['.local', 'state', 'pzzacode', 'agents-hub-backups']:
+        for segment in ['.local', 'state', 'pzzacode', namespace]:
             following = directory(root, segment, True)
             os.close(root)
             root = following
@@ -138,51 +138,90 @@ def backup_files(home, cwd, profile_id, records):
             metadata = {'cwd': cwd, 'profileId': profile_id, 'files': {name: {'sha256': digest(content), 'mode': mode} for name, (content, mode) in records.items()}}
             atomic_file(backup, 'metadata.json', json.dumps(metadata, sort_keys=True).encode(), None)
         finally: os.close(backup)
-        location = os.path.join(home, '.local', 'state', 'pzzacode', 'agents-hub-backups')
+        location = os.path.join(home, '.local', 'state', 'pzzacode', namespace)
         retained = []
         for name in os.listdir(root):
             if len(name) == 32 and all(c in '0123456789abcdef' for c in name):
                 info = os.stat(name, dir_fd=root, follow_symlinks=False)
                 if stat.S_ISDIR(info.st_mode): retained.append((info.st_mtime_ns, name))
-        for _, name in sorted(retained)[:-10]:
+        for _, name in (sorted(retained)[:-10] if namespace == "agents-hub-backups" else []):
             shutil.rmtree(os.path.join(location, name))
         return os.path.join(location, backup_id)
     finally: os.close(root)
 
-def discover(request):
+GLOBAL_FILES = {
+    'CLAUDE.md': 'claude', 'AGENTS.md': 'codex',
+    '.claude/CLAUDE.md': 'claude',
+    '.codex/AGENTS.md': 'codex', '.codex/AGENTS.override.md': 'codex',
+}
+
+def global_snapshot(root, name):
+    if name not in GLOBAL_FILES: raise Refused('Not an allowed global instruction path', 403)
+    parent = None
+    try:
+        parent, leaf = parent_for(root, name)
+        fd = os.open(leaf, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
+        try:
+            before = os.fstat(fd)
+            if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1 or before.st_size > 512 * 1024:
+                raise Refused('Global instructions must be single-link regular text files under 512 KB')
+            content = b''
+            while True:
+                chunk = os.read(fd, 65536)
+                if not chunk: break
+                content += chunk
+                if len(content) > 512 * 1024: raise Refused('Instruction grew while reading; refresh again')
+            after = os.fstat(fd)
+            if (before.st_mtime_ns, before.st_ctime_ns, before.st_size) != (after.st_mtime_ns, after.st_ctime_ns, after.st_size):
+                raise Refused('Instruction changed while reading; refresh again')
+            if b'\x00' in content: raise Refused('Global instructions must be UTF-8 text')
+            return {'path': name, 'framework': GLOBAL_FILES[name], 'content': content.decode('utf-8'), 'modifiedAt': before.st_mtime_ns // 1000000, 'sha256': digest(content), 'bytes': len(content), 'mode': stat.S_IMODE(before.st_mode)}
+        finally: os.close(fd)
+    except FileNotFoundError:
+        return {'path': name, 'framework': GLOBAL_FILES[name], 'content': None, 'modifiedAt': None, 'sha256': None, 'bytes': 0, 'mode': None}
+    finally:
+        if parent is not None: os.close(parent)
+
+def global_operation(request):
     home = os.path.realpath(os.path.expanduser('~'))
-    allowed = {
-        'CLAUDE.md': 'claude', 'AGENTS.md': 'codex',
-        '.claude/CLAUDE.md': 'claude',
-        '.codex/AGENTS.md': 'codex', '.codex/AGENTS.override.md': 'codex',
-    }
     root = os.open(home, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
-        if request['operation'] == 'read-instruction':
-            name = request.get('path', '')
-            if name not in allowed or request.get('root') not in ('~', home):
-                raise Refused('Not a supported user instruction file', 403)
-            data = read_file(root, name)
-            if data is None or len(data) > 512 * 1024: raise Refused('Instruction file unavailable or too large', 413)
-            if digest(data) != request.get('sha256'): raise Refused('Instruction changed; refresh again')
-            if b'\x00' in data: raise Refused('Instruction must be text', 400)
-            return {'ok': True, 'framework': allowed[name], 'content': data.decode('utf-8'), 'name': name}
-        found = []
-        errors = []
-        for name, framework in allowed.items():
-            try:
-                data = read_file(root, name)
-                if data is None: continue
-                if len(data) > 512 * 1024 or b'\x00' in data: raise Refused('Instruction must be text under 512 KB')
-                content = data.decode('utf-8')
-                found.append({'path': name, 'cwd': home, 'framework': framework, 'bytes': len(data), 'sha256': digest(data), 'content': content})
-            except FileNotFoundError: continue
-            except (OSError, UnicodeError, Refused): errors.append('Could not read ~/' + name)
-        return {'ok': True, 'root': home, 'files': found, 'error': '; '.join(errors) or None}
+        operation = request['operation']
+        if operation == 'global-discover':
+            files, errors = [], []
+            for name in GLOBAL_FILES:
+                try:
+                    snapshot = global_snapshot(root, name)
+                    if snapshot['content'] is not None: files.append(snapshot)
+                except (OSError, UnicodeError, Refused): errors.append('Could not safely read ~/' + name)
+            return {'ok': True, 'files': files, 'error': '; '.join(errors) or None}
+        if operation == 'global-read':
+            return {'ok': True, **global_snapshot(root, request.get('path'))}
+        if operation != 'global-write': raise Refused('Unknown global instruction operation', 400)
+        name = request.get('path')
+        if name not in GLOBAL_FILES: raise Refused('Not an allowed global instruction path', 403)
+        content = request.get('content')
+        if not isinstance(content, str) or '\x00' in content or len(content.encode('utf-8')) > 512 * 1024:
+            raise Refused('Global instructions must be UTF-8 text under 512 KB', 400)
+        # Serialize this app's global writes without adding a lock file to home.
+        fcntl.flock(root, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        previous = global_snapshot(root, name)
+        if previous['sha256'] != request.get('baselineSha256') or previous['mode'] != request.get('baselineMode'):
+            raise Refused('Destination changed after preview; preview again')
+        encoded = content.encode('utf-8')
+        if digest(encoded) == previous['sha256']: return {'ok': True, 'status': 'unchanged'}
+        backup = None
+        if previous['content'] is not None:
+            backup = backup_files(home, home, 'global-instructions', {name: (previous['content'].encode('utf-8'), previous['mode'])}, 'global-instruction-backups')
+        try:
+            atomic_file(root, name, encoded, previous['sha256'], previous['mode'] if previous['mode'] is not None else 0o600, previous['mode'])
+        except Exception:
+            return {'ok': False, 'error': 'Destination changed or could not be written; refresh before retrying', 'status': 409, 'backupPath': backup}
+        return {'ok': True, 'status': 'synced', 'backupPath': backup}
     finally: os.close(root)
 
 def run(request):
-    if request.get('operation') in ('discover', 'read-instruction'): return discover(request)
+    if request.get('operation') in ('global-discover', 'global-read', 'global-write'): return global_operation(request)
     home = os.path.realpath(os.path.expanduser('~'))
     cwd = request.get('cwd')
     if not isinstance(cwd, str) or not os.path.isabs(cwd) or any(ord(c) < 32 for c in cwd):

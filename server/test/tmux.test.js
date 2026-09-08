@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import childProcess from "node:child_process";
-import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, rm, realpath } from "node:fs/promises";
 import { syncBuiltinESMExports } from "node:module";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -228,7 +228,7 @@ test("receiver scans, icons and termination distinguish explicit local from defa
 
 test("duplicate starts an independent shell in the selected window's live folder", async (t) => {
   const { duplicationCommand } = await import("../lib/tmux.js");
-  const root = await mkdtemp("/tmp/pzza-duplicate-");
+  const root = await realpath(await mkdtemp("/tmp/pzza-duplicate-"));
   const socket = path.join(root, "socket");
   const realTmux = (await run("sh", ["-c", "command -v tmux"])).stdout.trim();
   const tmux = (...args) => run(realTmux, ["-S", socket, ...args]);
