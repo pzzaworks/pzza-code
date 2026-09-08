@@ -4,7 +4,7 @@ use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
-use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
+use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use tauri::ipc::{Channel, Response};
 
 // Output is coalesced before it crosses the IPC bridge: a TUI redraw arrives as
@@ -70,7 +70,7 @@ impl OutputFlow {
 struct PtyHandle {
     master: Mutex<Box<dyn MasterPty + Send>>,
     writer: Mutex<Box<dyn Write + Send>>,
-    killer: Mutex<Box<dyn ChildKiller + Send + Sync>>,
+    stop: mpsc::Sender<()>,
     flow: OutputFlow,
     reaper: Mutex<Option<std::thread::JoinHandle<()>>>,
 }
@@ -112,11 +112,30 @@ impl PtyState {
             .collect();
         for handle in &handles {
             handle.flow.cancel();
-            let _ = handle.killer.lock().unwrap().kill();
+            let _ = handle.stop.send(());
         }
         for handle in handles {
             if let Some(reaper) = handle.reaper.lock().unwrap().take() {
                 let _ = reaper.join();
+            }
+        }
+    }
+}
+
+// The owning child handle escalates from hangup to a forced kill. A cloned
+// signal handle only sends SIGHUP and can leave shutdown waiting forever.
+fn reap_child(mut child: Box<dyn portable_pty::Child + Send + Sync>, stop: mpsc::Receiver<()>) -> i32 {
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return status.exit_code() as i32,
+            Err(_) => return -1,
+            Ok(None) => {}
+        }
+        match stop.recv_timeout(Duration::from_millis(20)) {
+            Err(RecvTimeoutError::Timeout) => continue,
+            Ok(()) | Err(RecvTimeoutError::Disconnected) => {
+                let _ = child.kill();
+                return child.wait().map(|status| status.exit_code() as i32).unwrap_or(-1);
             }
         }
     }
@@ -198,15 +217,16 @@ pub fn pty_spawn(
     // Acquire fallible master handles before spawning so failure cannot orphan a child.
     let mut reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
     let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
-    let mut child = pair
+    let child = pair
         .slave
         .spawn_command(builder)
         .map_err(|e| e.to_string())?;
     drop(pair.slave);
+    let (stop, stop_rx) = mpsc::channel();
     let handle = Arc::new(PtyHandle {
         master: Mutex::new(pair.master),
         writer: Mutex::new(writer),
-        killer: Mutex::new(child.clone_killer()),
+        stop,
         flow: OutputFlow::default(),
         reaper: Mutex::new(None),
     });
@@ -238,10 +258,7 @@ pub fn pty_spawn(
     // Reap independently: buffered output or inherited slave descriptors must
     // not leave an exited child waiting for the renderer to consume its output.
     let reaper = std::thread::spawn(move || {
-        let code = child
-            .wait()
-            .map(|status| status.exit_code() as i32)
-            .unwrap_or(-1);
+        let code = reap_child(child, stop_rx);
         let _ = exit_tx.send(code);
     });
     *handle.reaper.lock().unwrap() = Some(reaper);
@@ -253,7 +270,7 @@ pub fn pty_spawn(
             if !handle.flow.reserve(batch.len()) || on_data.send(Response::new(batch)).is_err() {
                 connected = false;
                 handle.flow.cancel();
-                let _ = handle.killer.lock().unwrap().kill();
+                let _ = handle.stop.send(());
                 break;
             }
         }
@@ -315,13 +332,13 @@ pub fn pty_resize(
     result
 }
 
-// The kill handle is independent of blocked input and output locks.
+// Shutdown requests are independent of blocked input and output locks.
 #[tauri::command]
 pub fn pty_kill(state: tauri::State<'_, PtyState>, id: u32) -> Result<(), String> {
     let handle = state.inner.lock().unwrap().ptys.remove(&id);
     if let Some(handle) = handle {
         handle.flow.cancel();
-        let _ = handle.killer.lock().unwrap().kill();
+        let _ = handle.stop.send(());
     }
     Ok(())
 }
@@ -389,12 +406,17 @@ mod tests {
         command.args(["-c", "printf trailing-output; exit 7"]);
         let mut child = pair.slave.spawn_command(command).unwrap();
         drop(pair.slave);
+        // Drain concurrently, as the app does: macOS can wait for pending
+        // terminal output to be consumed before completing child exit.
+        let output = std::thread::spawn(move || {
+            let mut output = Vec::new();
+            // Unix PTYs may report EIO rather than EOF after the slave closes.
+            let _ = reader.read_to_end(&mut output);
+            output
+        });
         let status = child.wait().unwrap();
         assert_eq!(status.exit_code(), 7);
-        let mut output = Vec::new();
-        // Unix PTYs may report EIO rather than EOF after the slave closes.
-        let _ = reader.read_to_end(&mut output);
-        assert!(String::from_utf8_lossy(&output).contains("trailing-output"));
+        assert!(String::from_utf8_lossy(&output.join().unwrap()).contains("trailing-output"));
         assert_eq!(child.try_wait().unwrap().unwrap().exit_code(), 7);
     }
 
@@ -405,12 +427,13 @@ mod tests {
         let writer = pair.master.take_writer().unwrap();
         let mut command = CommandBuilder::new("/bin/sh");
         command.args(["-c", "exec sleep 30"]);
-        let mut child = pair.slave.spawn_command(command).unwrap();
+        let child = pair.slave.spawn_command(command).unwrap();
         drop(pair.slave);
+        let (stop, stop_rx) = mpsc::channel();
         let handle = Arc::new(PtyHandle {
             master: Mutex::new(pair.master),
             writer: Mutex::new(writer),
-            killer: Mutex::new(child.clone_killer()),
+            stop,
             flow: OutputFlow::default(),
             reaper: Mutex::new(None),
         });
@@ -426,7 +449,7 @@ mod tests {
         started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
         let was_blocked = done_rx.recv_timeout(Duration::from_millis(20)).is_err();
         *handle.reaper.lock().unwrap() = Some(std::thread::spawn(move || {
-            child.wait().unwrap();
+            reap_child(child, stop_rx);
         }));
         let state = PtyState::default();
         state.inner.lock().unwrap().ptys.insert(1, handle);
@@ -440,4 +463,24 @@ mod tests {
         assert!(writer_finished);
         worker.join().unwrap();
     }
+    #[cfg(unix)]
+    #[test]
+    fn shutdown_reaps_a_child_that_ignores_hangup() {
+        use std::io::{BufRead, BufReader};
+        let pair = native_pty_system().openpty(size(80, 24)).unwrap();
+        let mut command = CommandBuilder::new("/bin/sh");
+        command.args(["-c", "trap '' HUP; printf 'ready\\n'; exec sleep 30"]);
+        let child = pair.slave.spawn_command(command).unwrap();
+        drop(pair.slave);
+        let mut ready = String::new();
+        BufReader::new(pair.master.try_clone_reader().unwrap()).read_line(&mut ready).unwrap();
+        assert_eq!(ready.trim(), "ready");
+        let (stop, stop_rx) = mpsc::channel();
+        let reaper = std::thread::spawn(move || reap_child(child, stop_rx));
+        let start = Instant::now();
+        stop.send(()).unwrap();
+        assert_ne!(reaper.join().unwrap(), 0);
+        assert!(start.elapsed() < Duration::from_secs(2));
+    }
+
 }

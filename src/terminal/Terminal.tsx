@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebglAddon } from "@xterm/addon-webgl";
@@ -75,10 +75,6 @@ const snappedLineHeight = (fontSize: number) => Math.round(fontSize * LINE_RATIO
 // React's reconcile loop. Transport depends on where the app runs: Rust PTY
 // under Tauri, the devbox WebSocket server in a plain browser.
 export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, active, onStatus }: Props) {
-  const [selecting, setSelecting] = useState(false);
-  const selectingRef = useRef(false);
-  const [hasSelection, setHasSelection] = useState(false);
-  const [pasteStatus, setPasteStatus] = useState<{ error: boolean; message: string } | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<XTerm | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -115,11 +111,15 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
     });
     termRef.current = term;
 
+    const reportError = (message: string) => notify({
+      category: "terminal", title: "Terminal needs attention", body: message,
+      dedupeKey: `terminal-error:${tileId}:${message}`, target: { tileId },
+    });
     const copySelection = () => {
       const selected = term.getSelection();
       if (!selected) return;
       void copyToClipboard(selected).then((ok) => {
-        if (!ok && !disposed) setPasteStatus({ error: true, message: "Clipboard access failed. Try the Copy selection button again." });
+        if (!ok && !disposed) reportError("Clipboard access failed. Use the keyboard copy shortcut to retry.");
       });
     };
     const unregisterMenu = registerContextMenu(container, () => [
@@ -127,11 +127,14 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
         if (!await copyToClipboard(term.getSelection())) throw new Error("Clipboard access failed. Try the keyboard copy shortcut.");
       } },
       { label: "Paste text or image", run: () => clipboardPaste(term.textarea ?? container) },
-      { label: "Select text", run: () => { selectingRef.current = true; setSelecting(true); term.focus(); } },
-      { label: "Select all", run: () => { term.selectAll(); term.focus(); } },
+      { label: "Select all", run: () => { term.selectAll(); copySelection(); term.focus(); } },
       { label: "Clear selection", disabled: !term.hasSelection(), run: () => term.clearSelection() },
     ]);
-    const selectionListener = term.onSelectionChange(() => setHasSelection(term.hasSelection()));
+    let pointerSelecting = false;
+    let selectionChanged = false;
+    const selectionListener = term.onSelectionChange(() => {
+      if (pointerSelecting) selectionChanged = true;
+    });
     // Native copy events write to the local clipboard even for SSH terminals.
     const onCopy = (event: ClipboardEvent) => {
       if (!term.hasSelection() || !event.clipboardData) return;
@@ -140,66 +143,27 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
       event.stopPropagation();
     };
     container.addEventListener("copy", onCopy, true);
-    // Explicit local selection bypasses mouse reporting from full-screen apps.
-    let selectionStart: number | null = null;
-    const cellAt = (event: MouseEvent) => {
-      const screen = container.querySelector(".xterm-screen");
-      if (!screen) return null;
-      const rect = screen.getBoundingClientRect();
-      if (!rect.width || !rect.height) return null;
-      const col = Math.max(0, Math.min(term.cols, Math.round((event.clientX - rect.left) / rect.width * term.cols)));
-      const row = Math.max(0, Math.min(term.rows - 1, Math.floor((event.clientY - rect.top) / rect.height * term.rows)));
-      return (term.buffer.active.viewportY + row) * term.cols + col;
-    };
+    // Let the terminal own drag, word and line selection. Copy only selections
+    // made during a pointer gesture, never selection changes from terminal output.
     const selectDown = (event: MouseEvent) => {
-      if (!selectingRef.current || event.button !== 0) return;
-      selectionStart = cellAt(event);
-      event.preventDefault();
-      event.stopImmediatePropagation();
-      term.clearSelection();
-      term.focus();
+      pointerSelecting = event.button === 0;
+      selectionChanged = false;
     };
-    const selectMove = (event: MouseEvent) => {
-      if (selectionStart === null) return;
-      event.preventDefault();
-      event.stopImmediatePropagation();
-      const end = cellAt(event);
-      if (end === null) return;
-      const start = Math.min(selectionStart, end);
-      term.select(start % term.cols, Math.floor(start / term.cols), Math.abs(end - selectionStart));
-    };
-    const selectUp = (event: MouseEvent) => {
-      if (selectionStart === null) return;
-      selectMove(event);
-      selectionStart = null;
-      selectingRef.current = false;
-      setSelecting(false);
-      setPasteStatus(null);
+    const selectUp = () => {
+      if (pointerSelecting && selectionChanged) copySelection();
+      pointerSelecting = false;
     };
     container.addEventListener("mousedown", selectDown, true);
-    document.addEventListener("mousemove", selectMove, true);
-    document.addEventListener("mouseup", selectUp, true);
+    // Bubble after the terminal finalizes its selection on document mouseup.
+    window.addEventListener("mouseup", selectUp);
 
     term.attachCustomKeyEventHandler((event) => {
       if (event.type !== "keydown") return true;
-      if (event.key === "Escape" && selectingRef.current) {
-        selectingRef.current = false;
-        selectionStart = null;
-        setSelecting(false);
-        setPasteStatus(null);
-        event.preventDefault();
-        return false;
-      }
       const copy = event.key.toLowerCase() === "c" && !event.altKey &&
         ((event.metaKey && !event.ctrlKey) || (event.ctrlKey && event.shiftKey));
       if (!copy) return true;
       event.preventDefault();
-      if (term.hasSelection()) copySelection();
-      else {
-        selectingRef.current = true;
-        setSelecting(true);
-        setPasteStatus({ error: false, message: "Drag over terminal text, then copy. Press Escape to cancel selection mode." });
-      }
+      copySelection();
       return false;
     });
 
@@ -226,7 +190,7 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
         // sequence cannot ride along into whatever the clipboard is pasted into.
         const text = new TextDecoder().decode(bytes).replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "");
         void copyToClipboard(text).then((ok) => {
-          if (!ok && !disposed) setPasteStatus({ error: true, message: "Clipboard access failed." });
+          if (!ok && !disposed) reportError("Clipboard access failed.");
         });
       } catch {
         /* malformed base64 - ignore */
@@ -425,7 +389,7 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
             if (exited || disposed) return;
             lastWrite = writePty(id, d);
             void lastWrite.catch((error: unknown) => {
-              if (!disposed) setPasteStatus({ error: true, message: error instanceof Error ? error.message : "Terminal input failed." });
+              if (!disposed) reportError(error instanceof Error ? error.message : "Terminal input failed.");
             });
           });
           unregisterDictation = registerDictationTarget(tileId, async (text) => {
@@ -450,7 +414,7 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
         },
         (message) => {
           if (!disposed) {
-            setPasteStatus({ error: true, message });
+            reportError(message);
             onStatus?.("failed");
           }
           // Server unreachable and nothing streamed yet: show the preview so the
@@ -470,7 +434,6 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
 
     const pasteController = new AbortController();
     let pasteQueue = Promise.resolve();
-    let pasteNoticeTimer: ReturnType<typeof setTimeout> | undefined;
     const onPaste = (event: ClipboardEvent) => {
       const clipboard = event.clipboardData;
       if (!clipboard) return;
@@ -485,7 +448,6 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
       // Keep consecutive image/text pastes ordered while an upload is pending.
       pasteQueue = pasteQueue.then(async () => {
         if (disposed) return;
-        clearTimeout(pasteNoticeTimer);
         try {
           if (HAS_TAURI && tauriId === null) throw new Error("Terminal is not connected yet. Paste again once it connects.");
           if (!images.length) { term.paste(text); return; }
@@ -493,7 +455,6 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
             const image = images[index];
             if (disposed) return;
             if (image.size > 20 * 1024 * 1024) throw new Error("Images must be 20 MB or smaller.");
-            setPasteStatus({ error: false, message: `Uploading image ${index + 1}/${images.length} to the terminal device…` });
             const target = HAS_TAURI ? host ?? "" : host;
             const imagePath = await uploadPasteImage(image, target, pasteController.signal);
             if (disposed) return;
@@ -505,10 +466,8 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
             const quoted = "'" + imagePath.replace(/'/g, "'\\''") + "' ";
             term.paste(quoted);
           }
-          setPasteStatus({ error: false, message: images.length === 1 ? "Image path pasted." : `${images.length} image paths pasted.` });
-          pasteNoticeTimer = setTimeout(() => { if (!disposed) setPasteStatus(null); }, 3000);
         } catch (error) {
-          if (!disposed) setPasteStatus({ error: true, message: error instanceof Error ? error.message : "Image paste failed." });
+          if (!disposed) reportError(error instanceof Error ? error.message : "Image paste failed.");
         }
       });
     };
@@ -535,8 +494,7 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
       container.removeEventListener("paste", onPaste, true);
       container.removeEventListener("copy", onCopy, true);
       container.removeEventListener("mousedown", selectDown, true);
-      document.removeEventListener("mousemove", selectMove, true);
-      document.removeEventListener("mouseup", selectUp, true);
+      window.removeEventListener("mouseup", selectUp);
       selectionListener.dispose();
       unregisterMenu();
       container.removeEventListener("mousedown", onMouseDown);
@@ -546,7 +504,6 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
       bellListener.dispose();
       completionListener.dispose();
       pasteController.abort();
-      clearTimeout(pasteNoticeTimer);
       cancelAnimationFrame(raf);
       clearTimeout(t1);
       clearTimeout(t2);
@@ -638,25 +595,5 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
     };
   }, [refreshNonce]);
 
-  return <>
-    <div ref={containerRef} className={`term-surface ${selecting ? "term-selecting" : ""}`} />
-    <button className="btn btn-sm term-copy-selection" type="button" aria-pressed={selecting}
-      onMouseDown={(event) => { event.preventDefault(); event.stopPropagation(); }}
-      onClick={() => {
-        const text = termRef.current?.getSelection();
-        if (!text) {
-          selectingRef.current = !selectingRef.current;
-          setSelecting(selectingRef.current);
-          termRef.current?.focus();
-          return;
-        }
-        void copyToClipboard(text).then((ok) => {
-          setPasteStatus({ error: !ok, message: ok ? "Text copied to your clipboard." : "Clipboard access failed. Try copying again." });
-        });
-      }}>{hasSelection ? "Copy selection" : selecting ? "Cancel selection" : "Select text"}</button>
-    {pasteStatus ? <div className={`term-paste-status ${pasteStatus.error ? "term-paste-error" : ""}`} role={pasteStatus.error ? "alert" : "status"}>
-      <span>{pasteStatus.message}</span>
-      <button type="button" className="tile-btn" aria-label="Dismiss clipboard message" onClick={() => setPasteStatus(null)}>×</button>
-    </div> : null}
-  </>;
+  return <div ref={containerRef} className="term-surface" />;
 }

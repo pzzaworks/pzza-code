@@ -1,6 +1,6 @@
 import { DeviceIcon } from "../ui/DeviceIcon";
 import { useEffect, useRef, useState } from "react";
-import { ChevronDown, ExternalLink, LoaderCircle } from "lucide-react";
+import { ExternalLink, LoaderCircle } from "lucide-react";
 import { AsyncButton } from "../ui/AsyncButton";
 import { useDelayedLoading } from "../ui/useDelayedLoading";
 import { useStore } from "../state/store";
@@ -26,7 +26,7 @@ import {
 
 const POLL_MS = 4000;
 
-// Port-forwarding dropdown content. Forwarding is automatic for every port at
+// Port-forwarding settings. Forwarding is automatic for every port at
 // once; the global enable/disable is a client-side control.
 function fwdLoad(key: string, fallback: string) {
   try {
@@ -55,52 +55,21 @@ function ForwardConfig({
   onClient: (id: string) => void;
 }) {
   const devices = useStore((s) => s.devices);
-  const [openCfg, setOpenCfg] = useState(false);
 
   const server = devices.find((d) => d.id === serverId);
-  const client = devices.find((d) => d.id === clientId);
 
   return (
-    <div className="fwd-config">
-      <button className="fwd-config-head" onClick={() => setOpenCfg((v) => !v)}>
-        <span className="small muted">
-          {server?.name ?? "?"} → {client?.name ?? "?"}
-        </span>
-        <ChevronDown size={14} className={`muted-icon ${openCfg ? "flip" : ""}`} />
-      </button>
-      {openCfg ? (
-        <div className="fwd-config-body">
-          <div className="field">
-            <span className="field-label">
-              Server<span className="field-hint">source (ports listen here)</span>
-            </span>
-            <Select
-              value={serverId}
-              onChange={onServer}
-              options={devices.map((d) => ({ value: d.id, label: d.name, sub: d.host, icon: <DeviceIcon device={d} /> }))}
-            />
-          </div>
-          <div className="field">
-            <span className="field-label">
-              Client<span className="field-hint">receiver (forwarded to here)</span>
-            </span>
-            <Select
-              value={clientId}
-              onChange={onClient}
-              options={devices.map((d) => ({ value: d.id, label: d.name, sub: d.host, icon: <DeviceIcon device={d} /> }))}
-            />
-          </div>
-          <p className="set-note" style={{ margin: 0 }}>
-            This device opens an SSH tunnel to {server?.name ?? "the server"} and mirrors its
-            listening ports here, so you can open them on localhost.
-          </p>
-        </div>
-      ) : null}
-    </div>
+    <section className="settings-section" aria-label="Forwarding connection">
+      <div className="settings-form">
+        <div className="settings-field"><span>Source device</span><Select value={serverId} onChange={onServer} options={devices.map(device => ({ value: device.id, label: device.name, sub: device.host, icon: <DeviceIcon device={device} /> }))} /><small>Services listen on this device.</small></div>
+        <div className="settings-field"><span>Receiver</span><Select value={clientId} onChange={onClient} options={devices.map(device => ({ value: device.id, label: device.name, sub: device.host, icon: <DeviceIcon device={device} /> }))} /><small>Forwarded services open on localhost.</small></div>
+      </div>
+      <p className="set-note">This device mirrors listening ports from {server?.name ?? "the source"} through SSH.</p>
+    </section>
   );
 }
 
-export function PortsMenu({ onLoadingChange }: { onLoadingChange?: (loading: boolean) => void }) {
+export function PortsMenu({ active = true, onLoadingChange }: { active?: boolean; onLoadingChange?: (loading: boolean) => void }) {
   const devices = useStore((s) => s.devices);
   const [serverId, setServerId] = useState(() =>
     fwdLoad("pzza.fwd.serverDev", devices.find((d) => d.id !== "this-mac")?.id ?? devices[0]?.id ?? ""),
@@ -127,14 +96,15 @@ export function PortsMenu({ onLoadingChange }: { onLoadingChange?: (loading: boo
   const clientIsLocal = clientId === "this-mac";
 
   return (
-    <div className="menu-body">
-      <div className="menu-title">Port forwarding</div>
+    <div className="settings-page ports-settings">
       <ForwardConfig serverId={serverId} clientId={clientId} onServer={onServer} onClient={onClient} />
+      <section className="settings-section" aria-label="Live services">
       {HAS_TAURI ? (
-        <TauriPorts serverHost={serverHost} clientIsLocal={clientIsLocal} onLoadingChange={onLoadingChange} />
+        <TauriPorts pollingActive={active} serverHost={serverHost} clientIsLocal={clientIsLocal} onLoadingChange={onLoadingChange} />
       ) : (
-        <ServerPorts onLoadingChange={onLoadingChange} />
+        <ServerPorts pollingActive={active} onLoadingChange={onLoadingChange} />
       )}
+      </section>
     </div>
   );
 }
@@ -208,8 +178,8 @@ function OpenLink({ port }: { port: number }) {
   );
 }
 
-function ServerPorts({ onLoadingChange }: { onLoadingChange?: (loading: boolean) => void }) {
-  const { details, unavailable, loading: detailsLoading } = usePortDetails();
+function ServerPorts({ pollingActive, onLoadingChange }: { pollingActive: boolean; onLoadingChange?: (loading: boolean) => void }) {
+  const { details, unavailable, loading: detailsLoading } = usePortDetails(undefined, pollingActive);
   const [caps, setCaps] = useState<Capabilities | null>(null);
   const [ports, setPorts] = useState<number[]>([]);
   const [enabled, setEnabled] = useState(true);
@@ -221,16 +191,17 @@ function ServerPorts({ onLoadingChange }: { onLoadingChange?: (loading: boolean)
   const [error, setError] = useState("");
   const [actionError, setActionError] = useState("");
   const showLoading = useDelayedLoading(loading);
-  useLoadingReport(loading || detailsLoading || toggling, onLoadingChange);
+  useLoadingReport(pollingActive && (loading || detailsLoading || toggling), onLoadingChange);
 
   useEffect(() => {
+    if (!pollingActive) return;
     fetchCapabilities()
       .then(setCaps)
       .catch(() => { setError("Could not load port forwarding. Close this panel and retry."); setLoading(false); });
-  }, []);
+  }, [pollingActive]);
 
   useEffect(() => {
-    if (!caps) return;
+    if (!caps || !pollingActive) return;
     let alive = true;
     let timer: ReturnType<typeof setTimeout>;
     const tick = async () => {
@@ -254,9 +225,9 @@ function ServerPorts({ onLoadingChange }: { onLoadingChange?: (loading: boolean)
       alive = false;
       clearTimeout(timer);
     };
-  }, [caps]);
+  }, [caps, pollingActive]);
 
-  if (!caps) return <p className="muted small pad" role="status">{error || (showLoading ? "Checking ports…" : "\u00a0")}</p>;
+  if (!caps) return <p className="settings-empty" role="status">{error || (showLoading ? "Checking ports…" : "\u00a0")}</p>;
 
   const isClient = caps.forward;
   const rows = isClient ? active : [...new Set([...ports, ...details.map(detail => detail.port).filter(port => port >= DEFAULT_MIN_PORT && !DEFAULT_SKIP.includes(port))])].sort((a, b) => a - b);
@@ -277,7 +248,7 @@ function ServerPorts({ onLoadingChange }: { onLoadingChange?: (loading: boolean)
 
   return (
     <>
-      <div className="ports-status">
+      <div className="settings-row ports-status">
         <span className={`dot ${enabled ? "dot-up" : "dot-down"}`} />
         <span className="small muted">
           {isClient
@@ -294,12 +265,12 @@ function ServerPorts({ onLoadingChange }: { onLoadingChange?: (loading: boolean)
       {unavailable ? <p className="small muted pad">Could not refresh service details. Showing last known names.</p> : null}
       <div className="ports-box">
         {rows.length === 0 ? (
-          <p className="muted small pad">
+          <p className="settings-empty">
             {loading ? (showLoading ? "Checking ports…" : "\u00a0") : isClient ? (enabled ? "No ports to forward." : "Forwarding is off.") : "No listening ports."}
           </p>
         ) : (
           rows.map((port) => (
-            <div key={port} className="port-row">
+            <div key={port} className="settings-row port-row">
               <PortIdentity port={port} details={details} live={isClient} />
               <OpenLink port={port} />
             </div>
@@ -327,22 +298,22 @@ function NativeOpenLink({ port }: { port: number }) {
   </div>;
 }
 
-function TauriPorts({ serverHost, clientIsLocal, onLoadingChange }: {
-  serverHost: string | null; clientIsLocal: boolean; onLoadingChange?: (loading: boolean) => void;
+function TauriPorts({ serverHost, clientIsLocal, pollingActive, onLoadingChange }: {
+  serverHost: string | null; clientIsLocal: boolean; pollingActive: boolean; onLoadingChange?: (loading: boolean) => void;
 }) {
   const host = serverHost;
-  const { details, unavailable, loading: detailsLoading } = usePortDetails(host ?? undefined, !!host && clientIsLocal);
+  const { details, unavailable, loading: detailsLoading } = usePortDetails(host ?? undefined, !!host && clientIsLocal && pollingActive);
   const [status, setStatus] = useState<ForwardStatus | null>(null);
   const [enabled, setEnabled] = useState(true);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const showLoading = useDelayedLoading(loading);
   const scanQueue = useRef<Promise<void>>(Promise.resolve());
-  useLoadingReport(!!host && clientIsLocal && (loading || detailsLoading), onLoadingChange);
+  useLoadingReport(pollingActive && !!host && clientIsLocal && (loading || detailsLoading), onLoadingChange);
 
   useEffect(() => { setStatus(null); }, [host, clientIsLocal]);
   useEffect(() => {
-    if (!host || !clientIsLocal) return;
+    if (!host || !clientIsLocal || !pollingActive) return;
     let alive = true;
     let timer: ReturnType<typeof setTimeout>;
     setLoading(true); setError("");
@@ -371,15 +342,15 @@ function TauriPorts({ serverHost, clientIsLocal, onLoadingChange }: {
     };
     void tick();
     return () => { alive = false; clearTimeout(timer); };
-  }, [host, enabled, clientIsLocal]);
+  }, [host, enabled, clientIsLocal, pollingActive]);
 
-  if (!clientIsLocal) return <p className="muted small pad">Forwarding runs on this device - select it as the client.</p>;
-  if (!host) return <p className="muted small pad">Pick a remote device as the server to mirror its ports here.</p>;
+  if (!clientIsLocal) return <p className="settings-empty">Forwarding runs on this device - select it as the client.</p>;
+  if (!host) return <p className="settings-empty">Pick a remote device as the server to mirror its ports here.</p>;
 
   const forwarded = [...(status?.forwarded ?? [])].sort((a, b) => a - b);
   const up = status?.masterUp;
   return <>
-    <div className="ports-status">
+    <div className="settings-row ports-status">
       <span className={`dot ${up && enabled ? "dot-up" : "dot-down"}`} />
       <span className="small muted" role="status">
         {!status ? (showLoading ? "Checking ports…" : "\u00a0") : !up ? "SSH connection unavailable" : enabled ? `forwarding ${forwarded.length} ports` : "forwarding off"}
@@ -390,9 +361,9 @@ function TauriPorts({ serverHost, clientIsLocal, onLoadingChange }: {
     {error ? <p className="small pad" role="alert">{error}</p> : null}
     {unavailable ? <p className="small muted pad">Could not refresh service details. Showing last known names.</p> : null}
     <div className="ports-box">
-      {forwarded.length === 0 ? <p className="muted small pad">
+      {forwarded.length === 0 ? <p className="settings-empty">
         {!status && loading ? (showLoading ? "Checking ports…" : "\u00a0") : !enabled ? "Forwarding is off." : up ? "No ports to forward." : "Waiting for the source device."}
-      </p> : forwarded.map(port => <div key={port} className="port-row">
+      </p> : forwarded.map(port => <div key={port} className="settings-row port-row">
         <PortIdentity port={port} details={details} live />
         <NativeOpenLink port={port} />
       </div>)}

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { Loader2, type LucideIcon } from "lucide-react";
 import { IconButton } from "./IconButton";
 import { useDelayedLoading } from "./useDelayedLoading";
@@ -12,21 +12,42 @@ interface Props {
   width?: number;
   keepMounted?: boolean;
   loading?: boolean;
-  children: ReactNode | ((close: () => void) => ReactNode);
+  panelClassName?: string;
+  onOpen?: () => void;
+  children: ReactNode | ((close: () => void, open: boolean) => ReactNode);
 }
 
 // A top-bar icon button that opens an anchored dropdown panel (replaces modals
 // for the top-right controls). Handles open/close, click-outside and animation.
-export function Dropdown({ icon: Icon, title, label, accent, width = 300, keepMounted = false, loading = false, children }: Props) {
+export function Dropdown({ icon: Icon, title, label, accent, width = 300, keepMounted = false, loading = false, panelClassName = "", onOpen, children }: Props) {
   const [open, setOpen] = useState(false);
   const [visited, setVisited] = useState(false);
   const showSpinner = useDelayedLoading(loading);
   const ref = useRef<HTMLDivElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const [rightOffset, setRightOffset] = useState(0);
   const close = useCallback(() => setOpen(false), []);
 
   useExclusiveMenu(title, open, close);
 
+  useLayoutEffect(() => {
+    if (!open) return;
+    const position = () => {
+      if (!ref.current || !panelRef.current) return;
+      const anchor = ref.current.getBoundingClientRect();
+      const panelWidth = panelRef.current.getBoundingClientRect().width;
+      const left = Math.max(12, Math.min(anchor.right - panelWidth, window.innerWidth - panelWidth - 12));
+      setRightOffset(anchor.right - left - panelWidth);
+    };
+    position();
+    const observer = new ResizeObserver(position);
+    if (panelRef.current) observer.observe(panelRef.current);
+    window.addEventListener("resize", position);
+    return () => { observer.disconnect(); window.removeEventListener("resize", position); };
+  }, [open, width]);
+
   const toggle = () => {
+    if (!open) onOpen?.();
     setVisited(true);
     setOpen((value) => !value);
   };
@@ -73,8 +94,8 @@ export function Dropdown({ icon: Icon, title, label, accent, width = 300, keepMo
         />
       )}
       {open || (keepMounted && visited) ? (
-        <div className="menu menu-panel" style={{ width, display: open ? undefined : "none" }}>
-          {typeof children === "function" ? children(close) : children}
+        <div ref={panelRef} className={`menu menu-panel ${panelClassName}`} style={{ width, maxWidth: "calc(100vw - 24px)", right: rightOffset, display: open ? undefined : "none" }}>
+          {typeof children === "function" ? children(close, open) : children}
         </div>
       ) : null}
     </div>

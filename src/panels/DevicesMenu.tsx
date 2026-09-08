@@ -1,5 +1,6 @@
 import { IconButton } from "../ui/IconButton";
 import { AsyncButton } from "../ui/AsyncButton";
+import { DeviceSetupSection } from "./SettingsMenu";
 import { DeviceInfo } from "./DeviceInfo";
 import { LiveSessionIcon } from "../ui/LiveSessionIcon";
 import { confirmEditorDiscard } from "../editorChanges";
@@ -29,7 +30,7 @@ interface ScanState {
 
 // Manage devices, and scan each one for its real tmux sessions (even ones the
 // app never opened) to add, move, or terminate them.
-export function DevicesMenu() {
+export function DevicesMenu({ close }: { close?: () => void }) {
   const devices = useStore((s) => s.devices);
   const connectionHost = useStore((s) => s.connection.host);
   const addDevice = useStore((s) => s.addDevice);
@@ -168,10 +169,10 @@ export function DevicesMenu() {
   };
 
   return (
-    <div className="menu-body device-info-panel">
-      <div className="menu-title">Devices</div>
+    <div className="settings-page device-info-panel">
 
-      <div className="device-list">
+      <section className="settings-section device-list">
+        <h3>Connected devices</h3>
         {devices.map((d) => {
           const isLocal = isLocalDevice(d);
           const isCurrent = isLocal; // the local device is the one the app drives directly
@@ -179,7 +180,7 @@ export function DevicesMenu() {
           const scan = scans[d.id];
           return (
             <div key={d.id} className={`device-block ${expanded ? "on" : ""}`}>
-              <div className="device-row device-row-click" onClick={() => toggleDevice(d)}>
+              <div className="device-row device-row-click" role="button" tabIndex={0} aria-expanded={expanded} onKeyDown={event => { if (event.target === event.currentTarget && (event.key === "Enter" || event.key === " ")) { event.preventDefault(); toggleDevice(d); } }} onClick={() => toggleDevice(d)}>
                 {expanded ? (
                   <ChevronDown size={14} className="muted-icon" />
                 ) : (
@@ -293,9 +294,10 @@ export function DevicesMenu() {
             </div>
           );
         })}
-      </div>
+      </section>
 
-      <div className="device-add">
+      <section className="settings-section device-add">
+        <h3>Add a device</h3>
         {detected.length > 0 ? (
           <div className="sw-detected" style={{ marginBottom: 10 }}>
             <span className="sw-detected-label">From ~/.ssh/config</span>
@@ -314,37 +316,33 @@ export function DevicesMenu() {
             </div>
           </div>
         ) : null}
-        <input
-          className="field-input"
-          placeholder="Name"
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-        />
-        <div className="device-add-row">
-          <input
-            className="field-input"
-            placeholder="host / IP"
-            value={host}
-            onChange={(e) => setHost(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && submit()}
-          />
-          <input
-            className="field-input device-user"
-            placeholder="user"
-            value={user}
-            onChange={(e) => setUser(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && submit()}
-          />
+        <div className="settings-form">
+          <label className="settings-field">
+            <span className="field-label">Name</span>
+            <input className="field-input" placeholder="My server" value={name} onChange={(e) => setName(e.target.value)} />
+          </label>
+          <label className="settings-field">
+            <span className="field-label">Host / IP</span>
+            <input className="field-input" placeholder="SSH alias or IP address" value={host} onChange={(e) => setHost(e.target.value)} onKeyDown={(e) => e.key === "Enter" && submit()} />
+          </label>
+          <label className="settings-field">
+            <span className="field-label">SSH user</span>
+            <input className="field-input" placeholder="Optional" value={user} onChange={(e) => setUser(e.target.value)} onKeyDown={(e) => e.key === "Enter" && submit()} />
+          </label>
         </div>
+        <div className="settings-actions">
         <button
-          className="btn btn-accent device-add-btn"
+          className="btn btn-accent btn-sm"
           onClick={submit}
           disabled={!name.trim() || !host.trim()}
         >
           <Plus size={14} strokeWidth={2.2} />
           Add device
         </button>
-      </div>
+        </div>
+      </section>
+
+      <section className="settings-section device-setup-section"><DeviceSetupSection close={close} /></section>
 
       <Modal open={!!pending} onClose={() => setPending(null)} title="Remove device" size="sm">
         {pending ? (

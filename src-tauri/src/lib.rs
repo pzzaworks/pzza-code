@@ -1,4 +1,5 @@
 mod agent;
+mod shutdown;
 mod menu;
 mod appearance;
 mod forward;
@@ -27,6 +28,7 @@ pub fn run() {
         .manage(PtyState::default())
         .manage(ForwardState::default())
         .manage(AgentState::default())
+        .manage(shutdown::ShutdownState::default())
         .setup(|app| {
             #[cfg(target_os = "macos")]
             menu::install(app.handle())?;
@@ -59,10 +61,24 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building pzza console")
         .run(|app, event| {
-            // Tear the agent down with the app so no orphan Node process lingers.
-            if let tauri::RunEvent::Exit = event {
-                app.state::<PtyState>().shutdown();
-                agent::stop(app);
+            // Closing the last window uses the same managed exit as Quit.
+            if let tauri::RunEvent::WindowEvent { event: tauri::WindowEvent::Destroyed, .. } = &event {
+                if app.webview_windows().is_empty() {
+                    app.exit(0);
+                }
+            }
+            if let tauri::RunEvent::ExitRequested { api, code, .. } = event {
+                let shutdown = app.state::<shutdown::ShutdownState>();
+                if shutdown.complete() {
+                    return;
+                }
+                api.prevent_exit();
+                let cleanup_app = app.clone();
+                let exit_app = app.clone();
+                shutdown.start(move || {
+                    agent::stop(&cleanup_app);
+                    cleanup_app.state::<PtyState>().shutdown();
+                }, move || exit_app.exit(code.unwrap_or(0)));
             }
         });
 }

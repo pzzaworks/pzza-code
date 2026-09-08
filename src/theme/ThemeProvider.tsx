@@ -67,6 +67,7 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
     for (const [key, value] of Object.entries(vars)) {
       root.style.setProperty(key, transparent && alpha[key] ? `color-mix(in srgb, ${value} ${alpha[key] * 100}%, transparent)` : value);
     }
+    root.style.colorScheme = theme.appearance;
     root.dataset.appearance = theme.appearance;
     root.dataset.transparency = transparent ? "on" : "off";
     root.dataset.native = String(HAS_TAURI);

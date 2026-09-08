@@ -1247,7 +1247,7 @@ button {
 .md-preview blockquote {
   margin: 12px 0;
   padding: 2px 14px;
-  border-left: 3px solid var(--accent);
+  border: 0;
   color: var(--muted);
 }
 .md-preview img {
@@ -4640,33 +4640,6 @@ button {
 .port-identity { flex: 1; }
 .port-row > .btn { flex-shrink: 0; }
 
-.term-paste-status {
-  position: absolute;
-  bottom: 10px;
-  right: 10px;
-  max-width: calc(100% - 20px);
-  z-index: 4;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 7px 10px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--bg);
-  color: var(--muted);
-  font-size: 12px;
-  overflow-wrap: anywhere;
-}
-.term-paste-error { color: var(--danger, #ef6464); }
-
-.term-copy-selection {
-  position: absolute;
-  right: 10px;
-  top: 10px;
-  z-index: 4;
-  background: var(--bg);
-}
-
 /* Translucency affects surfaces only; text and controls retain their contrast. */
 html[data-transparency="on"], html[data-transparency="on"] body, html[data-transparency="on"] #root { background: transparent; }
 html[data-transparency="on"] .app {
@@ -4811,14 +4784,14 @@ html[data-transparency="on"] .tile-code { background: transparent; }
 .dictation-licenses pre { max-height: 180px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 10px; }
 
 /* Floating content must remain readable above translucent terminal surfaces. */
-:is(.menu, .cselect-menu, .modal, .pzza-tooltip, .term-paste-status, .term-copy-selection) {
+:is(.menu, .cselect-menu, .modal, .pzza-tooltip) {
   --bg: var(--opaque-bg);
   --surface: var(--opaque-surface);
   --surface-alt: var(--opaque-surface-alt);
   -webkit-backdrop-filter: none;
   backdrop-filter: none;
 }
-.term-selecting { cursor: text; }
+
 
 .code-preview-img { position: relative; flex-direction: column; gap: 12px; }
 .code-preview-img img { min-height: 0; max-height: calc(100% - 60px); flex-shrink: 1; }
@@ -4831,21 +4804,15 @@ html[data-transparency="on"] .tile-code { background: transparent; }
 .context-error { padding: 8px; color: var(--danger); font-size: 12px; overflow-wrap: anywhere; }
 
 .notification-toolbar { position: relative; }
-.notification-badge { position: absolute; top: -4px; right: -5px; pointer-events: none; border-radius: 10px; background: #d65b50; color: white; padding: 1px 5px; font-size: 10px; font-weight: 700; }
+.notification-badge { position: absolute; top: 2px; right: 2px; width: 7px; height: 7px; aspect-ratio: 1; box-sizing: border-box; pointer-events: none; border-radius: 50%; background: #d65b50; }
 .notification-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 10px 0; }
 .notification-list { display: grid; gap: 6px; padding: 6px 0 12px; }
 .notification-row { display: flex; align-items: start; border: 1px solid var(--border); border-radius: 9px; background: var(--surface); }
-.notification-row.unread { border-left: 3px solid #75a4d0; }
 .notification-content { display: grid; gap: 6px; text-align: left; flex: 1; min-width: 0; padding: 12px; background: transparent; border: 0; color: var(--text); cursor: pointer; }
 .notification-content span { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
 .notification-content small { color: var(--muted); font-size: 10px; }
 .notification-preferences { display: grid; gap: 12px; padding: 14px 0; }
 .notification-preferences label { display: flex; align-items: center; gap: 8px; font-size: 13px; }
-.notification-banners { position: fixed; right: 20px; bottom: 20px; z-index: 5500; display: grid; gap: 8px; width: min(360px, calc(100vw - 40px)); pointer-events: none; }
-.notification-banner { display: flex; background: var(--opaque-bg); border: 1px solid var(--border); border-radius: 12px; padding: 12px; box-shadow: 0 6px 24px #0005; pointer-events: auto; }
-.notification-banner button { background: transparent; color: var(--text); border: 0; cursor: pointer; }
-.notification-banner button:first-child { flex: 1; display: grid; gap: 6px; text-align: left; }
-.notification-banner span { font-size: 12px; color: var(--muted); }
 
 .theme-controls { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 .theme-search { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 180px; }
@@ -4886,3 +4853,47 @@ html[data-corners="square"] *::-webkit-scrollbar-thumb,
 html[data-corners="square"] *::-webkit-scrollbar-track {
   border-radius: 0 !important;
 }
+
+.appearance-modes { display: inline-flex; gap: 4px; padding: 4px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-alt); }
+.appearance-modes .btn { width: auto; min-width: 96px; justify-content: center; }
+:root[data-appearance="light"] .menu { box-shadow: 0 12px 32px rgb(30 40 55 / 16%); }
+:root[data-appearance="light"] .modal { box-shadow: 0 24px 64px rgb(30 40 55 / 20%); }
+
+/* Keep native checkbox semantics with consistent, visible controls. */
+input[type="checkbox"] { appearance: none; -webkit-appearance: none; display: inline-grid; place-content: center; width: 18px; height: 18px; min-width: 18px; flex: 0 0 18px; margin: 0; border: 1px solid var(--muted); border-radius: 5px; background: var(--surface); color: var(--bg); cursor: pointer; vertical-align: middle; }
+input[type="checkbox"]::before { content: ""; width: 9px; height: 5px; border-left: 2px solid currentColor; border-bottom: 2px solid currentColor; transform: translateY(-1px) rotate(-45deg) scale(0); }
+input[type="checkbox"]:checked { background: var(--text); border-color: var(--text); }
+input[type="checkbox"]:checked::before { transform: translateY(-1px) rotate(-45deg) scale(1); }
+input[type="checkbox"]:indeterminate { background: var(--text); border-color: var(--text); }
+input[type="checkbox"]:indeterminate::before { width: 8px; height: 0; border-left: 0; transform: none; }
+input[type="checkbox"]:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+input[type="checkbox"]:disabled { opacity: .45; cursor: not-allowed; }
+@media (forced-colors: active) { input[type="checkbox"] { appearance: auto; } input[type="checkbox"]::before { content: none; } }
+:root[data-appearance="light"] .ft-folder { color: var(--muted); }
+:root[data-appearance="light"] .doc-note-tip { background: color-mix(in srgb, var(--success) 9%, var(--bg)); border-color: color-mix(in srgb, var(--success) 32%, var(--border)); }
+:root[data-appearance="light"] .doc-note-tip svg,
+:root[data-appearance="light"] .sw-ok { color: var(--success); }
+:root[data-appearance="light"] .sw-warn { color: var(--warning); }
+:root[data-appearance="light"] .update-err { color: var(--danger); }
+:root[data-appearance="light"] .sw-log { background: var(--surface-alt); color: var(--text); }
+:root[data-appearance="light"] .notification-badge { background: var(--danger); }
+
+.dismiss-btn { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 30px; width: 30px; height: 30px; padding: 0; border: 0; border-radius: 7px; background: transparent; color: var(--muted); cursor: pointer; }
+.dismiss-btn:hover { color: var(--text); background: var(--surface-alt); border-color: var(--border); }
+.dismiss-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; color: var(--text); }
+.dismiss-btn svg { flex-shrink: 0; pointer-events: none; }
+.notification-dismiss { margin: 4px; }
+.modal-head > .icon-btn { width: 30px; height: 30px; flex-shrink: 0; }
+.modal-head > .icon-btn svg { width: 16px; height: 16px; }
+
+.toolbar-action-status { position: relative; display: flex; }
+.toolbar-sync-indicator { position: absolute; width: 9px; height: 9px; top: -1px; right: -1px; border-radius: 50%; background: var(--success); box-shadow: 0 0 0 2px var(--opaque-bg); pointer-events: none; animation: sync-indicator-pulse 1.2s ease-in-out infinite; }
+@keyframes sync-indicator-pulse { 50% { opacity: .4; } }
+.menu-panel.notifications-panel { padding: 0; }
+.notifications-panel .latest-notifications { padding: 12px; }
+.latest-notifications > .notification-actions { margin: 0; padding: 0 0 10px; justify-content: space-between; }
+.latest-notifications > .notification-list { padding-top: 0; }
+.notification-content .notification-title { display: flex; align-items: center; gap: 8px; color: var(--text); font-size: 12px; }
+.notification-title > strong { min-width: 0; overflow-wrap: anywhere; }
+.notification-title > .notification-new { color: var(--text); background: var(--surface-alt); border: 1px solid var(--border); border-radius: 999px; padding: 2px 6px; flex-shrink: 0; font-size: 10px; line-height: 1.2; font-weight: 600; }
+@media (prefers-reduced-motion: reduce) { .toolbar-sync-indicator { animation: none; } }

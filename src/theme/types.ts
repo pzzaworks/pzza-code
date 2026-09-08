@@ -1,6 +1,4 @@
-// A theme is authored as just a terminal palette (background/foreground/cursor
-// + 16 ANSI colors). The app-chrome palette is derived from it, so adding a new
-// theme means adding one palette - which is how we can ship a large library.
+// Terminal colors and shared interface tokens for each appearance.
 
 export interface TerminalPalette {
   background: string;
@@ -90,11 +88,11 @@ export function deriveChrome(t: TerminalPalette, appearance: Theme["appearance"]
   const accentText = luminance(accent) > 0.78 ? "#0b0b0f" : "#ffffff";
   return {
     bg,
-    surface: mix(bg, darken ? fg : "#000000", 0.045),
-    surfaceAlt: mix(bg, fg, 0.11),
-    border: mix(bg, fg, 0.17),
+    surface: darken ? mix(bg, fg, 0.045) : "#ffffff",
+    surfaceAlt: darken ? mix(bg, fg, 0.11) : "#e8ebf0",
+    border: darken ? mix(bg, fg, 0.17) : "#c6ccd5",
     text: fg,
-    muted: mix(fg, bg, 0.45),
+    muted: darken ? mix(fg, bg, 0.45) : "#5c6572",
     accent,
     accentText,
     success: t.green,
