@@ -29,6 +29,14 @@ export interface ChromePalette {
   surface: string;
   surfaceAlt: string;
   border: string;
+  controlBorder: string;
+  input: string;
+  hover: string;
+  selected: string;
+  selectedText: string;
+  focusRing: string;
+  inactiveOverlay: string;
+  focusOverlay: string;
   text: string;
   muted: string;
   accent: string;
@@ -74,27 +82,60 @@ export function mix(a: string, b: string, t: number): string {
   return toHex(ar + (br - ar) * t, ag + (bg - ag) * t, ab + (bb - ab) * t);
 }
 export function luminance(hex: string): number {
-  const [r, g, b] = toRgb(hex).map((n) => n / 255);
+  const [r, g, b] = toRgb(hex).map((n) => {
+    const channel = n / 255;
+    return channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4;
+  });
   return 0.2126 * r + 0.7152 * g + 0.0722 * b;
 }
 
-// Build the app-chrome palette from a terminal palette.
+export function contrastRatio(foreground: string, background: string): number {
+  const values = [luminance(foreground), luminance(background)];
+  return (Math.max(...values) + 0.05) / (Math.min(...values) + 0.05);
+}
+
+// Light surfaces, text and control boundaries have distinct semantic roles.
 export function deriveChrome(t: TerminalPalette, appearance: Theme["appearance"]): ChromePalette {
+  if (appearance === "light") return {
+    bg: "#f4f5f7",
+    surface: "#ffffff",
+    surfaceAlt: "#edf0f4",
+    border: "#d6dbe3",
+    controlBorder: "#858e9b",
+    input: "#ffffff",
+    hover: "#e8ecf1",
+    selected: "#dce5f0",
+    selectedText: "#243b55",
+    focusRing: "#245ea3",
+    inactiveOverlay: "rgb(97 112 132 / 8%)",
+    focusOverlay: "rgb(116 134 157 / 24%)",
+    text: "#242830",
+    muted: "#515b69",
+    accent: "#424a57",
+    accentText: "#ffffff",
+    success: "#23633d",
+    warning: "#7a510a",
+    danger: "#ae2e24",
+  };
   const bg = t.background;
   const fg = t.foreground;
-  const accent = t.brightBlue || t.blue;
-  const darken = appearance === "dark";
-  // White sits on the accent unless the accent is genuinely near-white.
-  const accentText = luminance(accent) > 0.78 ? "#0b0b0f" : "#ffffff";
   return {
     bg,
-    surface: darken ? mix(bg, fg, 0.045) : "#ffffff",
-    surfaceAlt: darken ? mix(bg, fg, 0.11) : "#e8ebf0",
-    border: darken ? mix(bg, fg, 0.17) : "#c6ccd5",
+    surface: mix(bg, fg, 0.045),
+    surfaceAlt: mix(bg, fg, 0.11),
+    border: mix(bg, fg, 0.17),
+    controlBorder: mix(bg, fg, 0.32),
+    input: mix(bg, fg, 0.08),
+    hover: mix(bg, fg, 0.14),
+    selected: mix(bg, fg, 0.17),
+    selectedText: fg,
+    focusRing: "#8f9aab",
+    inactiveOverlay: "rgb(0 0 0 / 26%)",
+    focusOverlay: "rgb(27 36 52 / 30%)",
     text: fg,
-    muted: darken ? mix(fg, bg, 0.45) : "#5c6572",
-    accent,
-    accentText,
+    muted: mix(fg, bg, 0.45),
+    accent: "#454a54",
+    accentText: "#ffffff",
     success: t.green,
     warning: t.yellow,
     danger: t.red,
@@ -107,6 +148,14 @@ export function chromeToCssVars(c: ChromePalette): Record<string, string> {
     "--surface": c.surface,
     "--surface-alt": c.surfaceAlt,
     "--border": c.border,
+    "--control-border": c.controlBorder,
+    "--input": c.input,
+    "--hover": c.hover,
+    "--selected": c.selected,
+    "--selected-text": c.selectedText,
+    "--focus-ring": c.focusRing,
+    "--inactive-overlay": c.inactiveOverlay,
+    "--focus-overlay": c.focusOverlay,
     "--text": c.text,
     "--muted": c.muted,
     "--accent": c.accent,

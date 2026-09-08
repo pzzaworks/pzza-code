@@ -1292,10 +1292,10 @@ button {
   z-index: 2;
 }
 .tile-dimmed > :is(.tile-head, .tile-body, .tile-color-border) {
-  opacity: 0.6;
+  opacity: 0.3;
 }
 .tile-dimmed:hover > :is(.tile-head, .tile-body, .tile-color-border) {
-  opacity: 0.75;
+  opacity: 0.4;
 }
 /* Very light grey wash on tiles you haven't clicked, so the active one pops. */
 .tile-inactive::after {
@@ -1303,7 +1303,7 @@ button {
   position: absolute;
   inset: 0;
   z-index: 4;
-  background: rgba(0, 0, 0, 0.26);
+  background: var(--inactive-overlay);
   border-radius: inherit;
   pointer-events: none;
   transition: background 0.12s;
@@ -2384,7 +2384,7 @@ button {
   position: absolute;
   inset: 0;
   z-index: 5;
-  background: transparent;
+  background: var(--focus-overlay);
   border-radius: inherit;
   cursor: pointer;
 }
@@ -4758,27 +4758,8 @@ html[data-transparency="on"] .tile-code { background: transparent; }
 .dictation-download { display: flex; flex-direction: column; gap: 8px; padding: 8px 0; }
 .dictation-download > span { display: flex; align-items: center; gap: 6px; }
 .dictation-download progress { width: 100%; height: 6px; accent-color: var(--accent); }
-.dictation-download small, .dictation-hint { color: var(--muted); }
-.dictation-panel {
-  position: absolute;
-  left: 10px;
-  right: 10px;
-  bottom: 10px;
-  z-index: 6;
-  padding: 10px 12px;
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  background: var(--opaque-bg, var(--bg));
-  box-shadow: 0 4px 16px rgb(0 0 0 / 15%);
-}
-.dictation-panel-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 12px; }
-.dictation-panel-head > span[role="status"] { flex: 1; }
-.dictation-wave { display: flex; align-items: center; gap: 3px; height: 24px; }
-.dictation-wave i { display: block; width: 3px; border-radius: 2px; background: var(--accent); transition: height 80ms linear; }
-.dictation-transcript { max-height: 130px; overflow: auto; margin: 8px 0 0; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
-.dictation-hint, .dictation-error { margin: 8px 0 0; font-size: 12px; line-height: 1.4; }
-.dictation-error { color: var(--danger); }
-@media (prefers-reduced-motion: reduce) { .dictation-wave i { transition: none; } }
+.dictation-download small { color: var(--muted); }
+.dictation-error { margin: 8px 0 0; font-size: 12px; line-height: 1.4; color: var(--danger); }
 .dictation-licenses { margin-top: 8px; color: var(--muted); font-size: 11px; }
 .dictation-licenses summary { cursor: pointer; }
 .dictation-licenses pre { max-height: 180px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 10px; }
@@ -4804,7 +4785,7 @@ html[data-transparency="on"] .tile-code { background: transparent; }
 .context-error { padding: 8px; color: var(--danger); font-size: 12px; overflow-wrap: anywhere; }
 
 .notification-toolbar { position: relative; }
-.notification-badge { position: absolute; top: 2px; right: 2px; width: 7px; height: 7px; aspect-ratio: 1; box-sizing: border-box; pointer-events: none; border-radius: 50%; background: #d65b50; }
+.notification-badge { position: absolute; top: 2px; right: 2px; width: 7px; height: 7px; aspect-ratio: 1; box-sizing: border-box; pointer-events: none; border-radius: 50%; background: var(--success); }
 .notification-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 10px 0; }
 .notification-list { display: grid; gap: 6px; padding: 6px 0 12px; }
 .notification-row { display: flex; align-items: start; border: 1px solid var(--border); border-radius: 9px; background: var(--surface); }
@@ -4838,22 +4819,6 @@ html[data-transparency="on"] .tile-code { background: transparent; }
 .about-page h3 { font-size: 17px; margin-top: 30px; }
 .about-page p { color: var(--muted); font-size: 13px; line-height: 1.8; }
 .about-links { display: flex; justify-content: center; gap: 10px; flex-wrap: wrap; margin-top: 24px; }
-.corner-style { display: flex; gap: 4px; }
-
-/* The root setting also reaches portal menus and inline component radii.
-   Rounded mode leaves each component's original corner sizes intact. */
-html[data-corners="square"],
-html[data-corners="square"] *,
-html[data-corners="square"] *::before,
-html[data-corners="square"] *::after {
-  border-radius: 0 !important;
-}
-
-html[data-corners="square"] *::-webkit-scrollbar-thumb,
-html[data-corners="square"] *::-webkit-scrollbar-track {
-  border-radius: 0 !important;
-}
-
 .appearance-modes { display: inline-flex; gap: 4px; padding: 4px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-alt); }
 .appearance-modes .btn { width: auto; min-width: 96px; justify-content: center; }
 :root[data-appearance="light"] .menu { box-shadow: 0 12px 32px rgb(30 40 55 / 16%); }
@@ -4876,7 +4841,7 @@ input[type="checkbox"]:disabled { opacity: .45; cursor: not-allowed; }
 :root[data-appearance="light"] .sw-warn { color: var(--warning); }
 :root[data-appearance="light"] .update-err { color: var(--danger); }
 :root[data-appearance="light"] .sw-log { background: var(--surface-alt); color: var(--text); }
-:root[data-appearance="light"] .notification-badge { background: var(--danger); }
+:root[data-appearance="light"] .notification-badge { background: var(--success); }
 
 .dismiss-btn { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 30px; width: 30px; height: 30px; padding: 0; border: 0; border-radius: 7px; background: transparent; color: var(--muted); cursor: pointer; }
 .dismiss-btn:hover { color: var(--text); background: var(--surface-alt); border-color: var(--border); }
@@ -4887,7 +4852,7 @@ input[type="checkbox"]:disabled { opacity: .45; cursor: not-allowed; }
 .modal-head > .icon-btn svg { width: 16px; height: 16px; }
 
 .toolbar-action-status { position: relative; display: flex; }
-.toolbar-sync-indicator { position: absolute; width: 9px; height: 9px; top: -1px; right: -1px; border-radius: 50%; background: var(--success); box-shadow: 0 0 0 2px var(--opaque-bg); pointer-events: none; animation: sync-indicator-pulse 1.2s ease-in-out infinite; }
+.toolbar-sync-indicator { position: absolute; width: 7px; height: 7px; top: 2px; right: 2px; border-radius: 50%; background: var(--success); pointer-events: none; animation: sync-indicator-pulse 1.2s ease-in-out infinite; }
 @keyframes sync-indicator-pulse { 50% { opacity: .4; } }
 .menu-panel.notifications-panel { padding: 0; }
 .notifications-panel .latest-notifications { padding: 12px; }
@@ -4897,3 +4862,23 @@ input[type="checkbox"]:disabled { opacity: .45; cursor: not-allowed; }
 .notification-title > strong { min-width: 0; overflow-wrap: anywhere; }
 .notification-title > .notification-new { color: var(--text); background: var(--surface-alt); border: 1px solid var(--border); border-radius: 999px; padding: 2px 6px; flex-shrink: 0; font-size: 10px; line-height: 1.2; font-weight: 600; }
 @media (prefers-reduced-motion: reduce) { .toolbar-sync-indicator { animation: none; } }
+
+/* Dropdown copy follows one reading edge, independent of its screen position. */
+:is(.menu, .menu-panel, .menu-item, .cselect, .cselect-item, .cselect-value) { text-align: left; }
+.cselect-item-main { align-items: flex-start; text-align: left; }
+:root[data-appearance="light"] :is(.brand-logo, .about-logo) { filter: brightness(0); opacity: .85; }
+:root[data-appearance="light"] :is(.field-input, .set-input, input.input, textarea.input, .cselect, .fp-search, .ns-name) { color: var(--text); background: var(--input); border-color: var(--control-border); }
+:root[data-appearance="light"] :is(input, textarea)::placeholder { color: var(--muted); opacity: 1; }
+:root[data-appearance="light"] :is(.menu-item-on, .cselect-item-on, .btn-on, .settings-hub-sublink.active, .settings-hub-link.active:not([aria-expanded])) { color: var(--selected-text); background: var(--selected); }
+:root[data-appearance="light"] :is(.menu-item-on, .cselect-item-on, .btn-on):hover { background: var(--selected); }
+:root[data-appearance="light"] :is(.menu-item, .cselect-item, .icon-btn, .dismiss-btn, .port-row):hover { background: var(--hover); }
+:root[data-appearance="light"] :is(.btn-accent, .menu-item-on.btn-accent) { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+:root[data-appearance="light"] .btn-danger { color: var(--danger); background: color-mix(in srgb, var(--danger) 6%, var(--surface)); border-color: color-mix(in srgb, var(--danger) 65%, var(--surface)); }
+:root[data-appearance="light"] :is(button, input, textarea, summary, a):focus-visible { outline-color: var(--focus-ring); }
+:root[data-appearance="light"] .switch { background: #e3e7ed; border-color: var(--control-border); box-shadow: inset 0 0 0 1px var(--control-border); }
+:root[data-appearance="light"] .switch-on { background: var(--accent); box-shadow: none; }
+:root[data-appearance="light"] .switch-knob { background: #ffffff; box-shadow: 0 1px 3px rgb(30 40 55 / 25%); }
+:root[data-appearance="light"] .modal-backdrop { background: rgb(35 46 63 / 28%); }
+:root[data-appearance="light"] :is(.topbar-tools, .pzza-tooltip, .ws-menu) { box-shadow: 0 8px 24px rgb(30 40 55 / 14%); }
+:root[data-appearance="light"] .tile { box-shadow: 0 1px 3px rgb(30 40 55 / 6%); }
+:root[data-appearance="light"] .tile-focused { border-color: #7c8fa7; box-shadow: 0 0 0 1px #7c8fa7; }

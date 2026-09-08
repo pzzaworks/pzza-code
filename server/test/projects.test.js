@@ -2,12 +2,12 @@ import assert from "node:assert/strict";
 import childProcess from "node:child_process";
 import { execFile } from "node:child_process";
 import { syncBuiltinESMExports } from "node:module";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
-import { reconcileGithubOrigins, groupProjects, migrateProjectOptions, normalizeOptions, originKey, planEnvSync, planSync, projectIdFor, rootExpr, scanProjects, syncScript } from "../lib/projects.js";
+import { reconcileGithubOrigins, groupProjects, migrateProjectOptions, normalizeOptions, originKey, planEnvSync, planSync, projectIdFor, rootExpr, scanProjects, syncScript, syncProjects, cancelProjectSync, envWriteScript } from "../lib/projects.js";
 
 const exec = promisify(execFile);
 const run = (command, args, options = {}) => exec(command, args, { timeout: 20_000, ...options });
@@ -122,7 +122,9 @@ test("parallel sync retains stash, branch switching, clone and current behavior"
   assert.equal(rows.find((row) => row[1] === "cloned repo")[2], "cloned");
   assert.equal((await git(first, "branch", "--show-current")).stdout.trim(), "main");
   assert.match((await git(first, "stash", "show", "-p")).stdout, /local edit/);
-  assert.equal(await readFile(path.join(first, "untracked.txt"), "utf8"), "keep\n");
+  const stashId = (await git(first, "rev-parse", "refs/stash")).stdout.trim();
+  assert.equal((await git(first, "rev-parse", `refs/pzza-sync/stashes/${stashId}`)).stdout.trim(), stashId);
+  assert.equal((await git(first, "show", "stash@{0}^3:untracked.txt")).stdout, "keep\n");
 });
 
 test("sync runs at most four fetches together and separates nested repositories", async (t) => {
@@ -476,16 +478,16 @@ test("sync merges divergence preserving both histories and aborts conflicting me
     if (conflict) await writeFile(path.join(repo, "tracked.txt"), "uncommitted edit\n");
     const { stdout } = await run("sh", ["-c", syncScript(rootExpr(projects), plan, normalizeOptions())]);
     const row = results(stdout)[0];
-    assert.equal(row[2], conflict ? "failed" : "updated");
+    assert.equal(row[2], conflict ? "failed" : "stashed");
     await git(repo, "merge-base", "--is-ancestor", local, "HEAD");
     if (conflict) {
       assert.match(row[3], /merge aborted and local commits preserved/);
-      assert.match(row[3], /git stash pop to restore/);
+      assert.match(row[3], /git stash apply [a-f0-9]+ to restore/);
       assert.match((await git(repo, "stash", "show", "-p")).stdout, /uncommitted edit/);
       assert.equal((await git(repo, "rev-parse", "HEAD")).stdout.trim(), local);
       assert.equal((await git(repo, "ls-files", "--unmerged")).stdout, "");
     } else await git(repo, "merge-base", "--is-ancestor", remote, "HEAD");
-    assert.equal(await readFile(path.join(repo, "untracked.txt"), "utf8"), "keep\n");
+    assert.equal((await git(repo, "show", "stash@{0}^3:untracked.txt")).stdout, "keep\n");
   }
 });
 
@@ -512,4 +514,71 @@ test("transferred GitHub origins reconcile only with immutable identity proof an
     assert.equal(groupProjects(unverified).length, 2);
     assert.ok(planSync(unverified).every((device) => device.skipped.length === 1));
   }
+});
+
+
+test("sync leaves untracked-only changes alone with stashing disabled", async t => {
+  const { projects, plan } = await fixture(t, 1);
+  const repo = path.join(projects, plan[0].rel);
+  await writeFile(path.join(repo, "draft.txt"), "recoverable draft\n");
+  const { stdout } = await run("sh", ["-c", syncScript(rootExpr(projects), plan, normalizeOptions({ stashDirty: false }))]);
+  assert.equal(results(stdout)[0][2], "dirty");
+  assert.equal(await readFile(path.join(repo, "draft.txt"), "utf8"), "recoverable draft\n");
+  assert.equal((await git(repo, "stash", "list")).stdout, "");
+});
+
+test("cancellation finishes active repository and skips remaining work", async () => {
+  const operationId = "cancel-test";
+  let calls = 0;
+  const result = await syncProjects({ root: "~/Projects", devices: [{ id: "local", host: "" }], operationId }, {
+    scan: async () => ({ root: "~/Projects", devices: [{ id: "local", host: "", name: "Local", repos: ["one", "two"].map(rel => ({ rel, origin: `https://example.invalid/${rel}.git`, envs: [] })) }] }),
+    run: async () => { calls++; cancelProjectSync(operationId); return { ok: true, stdout: "PZZA_R\tone\tcurrent\t\n", stderr: "" }; },
+    copy: async () => { throw new Error("No environment writes after cancellation"); },
+  });
+  assert.equal(calls, 1);
+  assert.equal(result.cancelled, true);
+  assert.equal(result.devices[0].results.find(item => item.rel === "two").status, "skipped");
+});
+
+test("environment replacement retains a private durable backup", async t => {
+  const { projects, plan } = await fixture(t, 1);
+  const repo = path.join(projects, plan[0].rel);
+  await writeFile(path.join(repo, ".env"), "LOCAL_SETTING=before\n");
+  const source = path.join(projects, "source-env");
+  await writeFile(source, "LOCAL_SETTING=after\n");
+  const script = envWriteScript(rootExpr(projects), plan[0].rel, ".env");
+  const child = childProcess.spawn("sh", ["-c", script], { stdio: ["pipe", "ignore", "pipe"] });
+  child.stdin.end(await readFile(source));
+  const code = await new Promise((resolve, reject) => { child.on("error", reject); child.on("exit", resolve); });
+  assert.equal(code, 0);
+  assert.equal(await readFile(path.join(repo, ".env"), "utf8"), "LOCAL_SETTING=after\n");
+  const backupRoot = path.join(repo, ".git", "pzza-env-backups");
+  const backups = await readdir(backupRoot);
+  assert.equal(backups.length, 1);
+  assert.equal(await readFile(path.join(backupRoot, backups[0]), "utf8"), "LOCAL_SETTING=before\n");
+});
+
+test("sync never overwrites ignored local files during integration", async t => {
+  const { projects, origin, plan } = await fixture(t, 1);
+  const repo = path.join(projects, plan[0].rel);
+  await writeFile(path.join(repo, ".git/info/exclude"), "local.config\n");
+  await writeFile(path.join(repo, "local.config"), "local settings\n");
+  await writeFile(path.join(origin, "local.config"), "remote settings\n");
+  await git(origin, "add", "local.config");
+  await git(origin, "commit", "-m", "Add configuration fixture");
+  const { stdout } = await run("sh", ["-c", syncScript(rootExpr(projects), plan, normalizeOptions())]);
+  assert.equal(results(stdout)[0][2], "failed");
+  assert.equal(await readFile(path.join(repo, "local.config"), "utf8"), "local settings\n");
+});
+
+test("cancellation arriving before sync request prevents every write", async () => {
+  const operationId = "early-cancellation-test";
+  cancelProjectSync(operationId);
+  const result = await syncProjects({ root: "~/Projects", operationId }, {
+    scan: async () => ({ root: "~/Projects", devices: [{ id: "local", host: "", name: "Local", repos: [{ rel: "repo", origin: "https://example.invalid/repo.git", envs: [] }] }] }),
+    run: async () => { throw new Error("Cancelled work must not start"); },
+    copy: async () => { throw new Error("Cancelled work must not copy files"); },
+  });
+  assert.equal(result.cancelled, true);
+  assert.equal(result.devices[0].results[0].status, "skipped");
 });

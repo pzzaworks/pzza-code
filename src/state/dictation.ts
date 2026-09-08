@@ -10,10 +10,10 @@ const ENABLED_KEY = "pzza.dictation.enabled";
 const LANGUAGE_KEY = "pzza.dictation.language";
 export type { DictationLanguage } from "../dictationLanguages";
 type Phase = "loading" | "listening" | "finalizing" | "error";
-interface Recording { id: string; tileId: string; phase: Phase; text: string; level: number; error: string | null }
+interface Recording { id: string; tileId: string; phase: Phase; text: string; committed: string; level: number; error: string | null }
 interface ModelStatus { installed: boolean; downloading: boolean; downloadedBytes: number; totalBytes: number; error?: string | null }
 interface DownloadEvent { status: "downloading" | "ready" | "error"; downloadedBytes: number; totalBytes: number; error?: string }
-interface SpeechEvent { id: string; kind: "loading" | "listening" | "finalizing" | "partial" | "final" | "error" | "level"; text?: string; level?: number; error?: string }
+interface SpeechEvent { id: string; kind: "loading" | "listening" | "finalizing" | "partial" | "committed" | "final" | "error" | "level"; text?: string; level?: number; error?: string }
 interface DictationState {
   enabled: boolean;
   language: DictationLanguage;
@@ -36,6 +36,7 @@ const savedLanguage = read(LANGUAGE_KEY);
 type TranscriptTarget = (text: string) => boolean | Promise<boolean>;
 const targets = new Map<string, TranscriptTarget>();
 let finalizingId: string | undefined;
+let delivery = { id: "", text: "", transcript: "", pending: Promise.resolve(), failed: false };
 let initialization: Promise<void> | undefined;
 let preparation: Promise<void> | undefined;
 let downloadPending = false;
@@ -44,6 +45,28 @@ const message = (error: unknown) => error instanceof Error ? error.message : Str
 // A transcript is data, never terminal control input or an implicit Enter key.
 export function dictationText(text: string): string {
   return text.replace(/[\r\n\t\u2028\u2029]+/g, " ").replace(/[\x00-\x1f\x7f-\x9f]/g, "").trim();
+}
+
+function deliverTranscript(id: string, text: string, final: boolean) {
+  const pipeline = delivery;
+  pipeline.transcript = text;
+  pipeline.pending = pipeline.pending.then(async () => {
+    const current = useDictation.getState().recording;
+    if (!current || current.id !== id || pipeline.id !== id || pipeline.failed) return;
+    if (!text.startsWith(pipeline.text)) throw new Error("Recognition revised text already inserted. Stop and check the terminal before continuing.");
+    const suffix = text.slice(pipeline.text.length);
+    if (suffix && !await targets.get(current.tileId)?.(suffix)) throw new Error("The terminal did not confirm insertion. Check its text before recording again.");
+    pipeline.text = text;
+    const latest = useDictation.getState().recording;
+    if (!latest || latest.id !== id) return;
+    useDictation.setState({ recording: final ? null : { ...latest, committed: text } });
+  }).catch((error: unknown) => {
+    pipeline.failed = true;
+    const current = useDictation.getState().recording;
+    if (!current || current.id !== id) return;
+    useDictation.setState({ recording: { ...current, phase: "error", text: current.text.startsWith(pipeline.transcript) ? current.text : pipeline.transcript, level: 0, error: message(error) } });
+    void invoke<void>("speech_stop", { id, cancel: true }).catch(() => {});
+  });
 }
 
 export function registerDictationTarget(tileId: string, insert: TranscriptTarget): () => void {
@@ -73,26 +96,17 @@ export function initializeDictation(): Promise<void> {
       const state = useDictation.getState();
       const current = state.recording;
       if (!current || current.id !== payload.id) return;
-      if (payload.kind === "final") {
+      if (payload.kind === "final" || payload.kind === "committed") {
         if (finalizingId === current.id) return;
-        finalizingId = current.id;
-        const text = dictationText(payload.text ?? "");
-        const finish = (inserted: boolean) => {
-          if (useDictation.getState().recording?.id !== current.id) return;
-          if (!inserted) useDictation.setState({ recording: { ...current, phase: "error", text, level: 0, error: "The terminal did not confirm insertion. Your transcript is preserved here; check the terminal before retrying." } });
-          else useDictation.setState({ recording: null });
-        };
-        try {
-          const inserted = text ? targets.get(current.tileId)?.(text) ?? false : true;
-          if (typeof inserted === "boolean") finish(inserted);
-          else void inserted.then(finish, () => finish(false));
-        } catch { finish(false); }
+        const final = payload.kind === "final";
+        if (final) finalizingId = current.id;
+        deliverTranscript(current.id, dictationText(payload.text ?? ""), final);
       } else if (payload.kind === "error") {
         useDictation.setState({ recording: { ...current, phase: "error", level: 0, error: payload.error ?? "Dictation failed. Check microphone access in System Settings." } });
       } else if (payload.kind === "level") {
         if (current.phase === "listening") useDictation.setState({ recording: { ...current, level: Math.max(0, Math.min(1, payload.level ?? 0)) } });
       } else if (payload.kind === "partial") {
-        useDictation.setState({ recording: { ...current, text: payload.text ?? current.text } });
+        useDictation.setState({ recording: { ...current, text: dictationText(payload.text ?? current.text) } });
       } else if (current.phase !== "finalizing") {
         useDictation.setState({ recording: { ...current, phase: payload.kind } });
       }
@@ -142,7 +156,8 @@ export const useDictation = create<DictationState>((set, get) => ({
   start: async (tileId) => {
     if (!DICTATION_SUPPORTED || !get().enabled || get().model !== "ready" || get().recording) return;
     const id = crypto.randomUUID();
-    set({ recording: { id, tileId, phase: "loading", text: "", level: 0, error: null } });
+    delivery = { id, text: "", transcript: "", pending: Promise.resolve(), failed: false };
+    set({ recording: { id, tileId, phase: "loading", text: "", committed: "", level: 0, error: null } });
     try {
       await initializeDictation();
       if (get().recording?.id !== id) return;

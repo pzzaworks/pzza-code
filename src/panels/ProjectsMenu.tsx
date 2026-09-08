@@ -2,7 +2,7 @@ import { AsyncButton } from "../ui/AsyncButton";
 import { notify } from "../state/notifications";
 import { Modal } from "../ui/Modal";
 import { deviceExclusions, projectSettings } from "../projectSettings";
-import { confirmEditorDiscard, hasUnsavedEditors } from "../editorChanges";
+import { hasUnsavedEditors } from "../editorChanges";
 import { DeviceIcon } from "../ui/DeviceIcon";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ChevronRight, Folder, FolderSync, Loader2, RefreshCw } from "lucide-react";
@@ -14,6 +14,7 @@ import {
   listDir,
   scanProjects,
   syncProjects,
+  cancelProjectSync,
   type SyncOptions,
   type ProjectDeviceRef,
   type ProjectRepo,
@@ -258,7 +259,7 @@ function buildRows(scan: ProjectScan, options: SyncOptions, excludedDevices: str
 
     const missingSomewhere = okDevices.some((d) => !byDevice.has(d.id));
     const offDefault = present.some((r) => defaultBranch && r.branch && r.branch !== defaultBranch);
-    const dirty = present.some((r) => r.modified > 0); // untracked files never block a sync
+    const dirty = present.some((r) => r.modified > 0); // Untracked files are protected by the same stash policy.
     const behind = present.some((r) => (r.behind ?? 0) > 0);
     const envDrift = envs.some((e) => e.state === "differs" || e.state === "partial");
     rows.push({
@@ -605,7 +606,8 @@ export function ProjectsMenu({ page = "repositories", syncRequest = 0, onSyncing
   const [confirmSync, setConfirmSync] = useState(false);
   const syncInFlight = useRef(false);
   const handledRequest = useRef(0);
-  const [pendingDirectSync, setPendingDirectSync] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
+  const syncOperation = useRef<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<Filter>("all");
   const [open, setOpen] = useState<Set<string>>(() => new Set());
@@ -613,7 +615,7 @@ export function ProjectsMenu({ page = "repositories", syncRequest = 0, onSyncing
   const [devicesOff, setDevicesOff] = useState<string[]>(() => deviceExclusions(loadJson(DEVICES_OFF_KEY)));
   const [excludeText, setExcludeText] = useState(() => opts.envExclude.join(", "));
 
-  useEffect(() => { onSyncingChange?.(syncing || pendingDirectSync); }, [syncing, pendingDirectSync, onSyncingChange]);
+  useEffect(() => { onSyncingChange?.(syncing); }, [syncing, onSyncingChange]);
 
   const patchOpts = (patch: Partial<SyncOptions>) =>
     setOpts((o) => {
@@ -656,7 +658,7 @@ export function ProjectsMenu({ page = "repositories", syncRequest = 0, onSyncing
   useEffect(() => {
     if (syncRequest > handledRequest.current) {
       handledRequest.current = syncRequest;
-      if (!syncInFlight.current) setPendingDirectSync(true);
+      setConfirmSync(true);
     }
     if (!syncInFlight.current) void runScan();
     return () => scanController.current?.abort();
@@ -689,44 +691,41 @@ export function ProjectsMenu({ page = "repositories", syncRequest = 0, onSyncing
     saveRoot(next);
   };
 
-  const runSync = async (direct = false) => {
+  const runSync = async () => {
     if (syncInFlight.current || scanning || !scan || syncRefs.length === 0) return;
     syncInFlight.current = true;
     setSyncing(true);
     setError(null);
     setSync(null);
     try {
-      if (direct && hasUnsavedEditors()) throw new Error("Save your open editor changes before syncing.");
-      if (!direct && !await confirmEditorDiscard()) return;
+      if (hasUnsavedEditors()) throw new Error("Save your open editor changes before syncing.");
       setConfirmSync(false);
       const migrated = scan ? migrateRepoOptions(opts, scan) : opts;
-      const result = await syncProjects(root, syncRefs, migrated);
+      const operationId = crypto.randomUUID();
+      syncOperation.current = operationId;
+      const result = await syncProjects(root, syncRefs, migrated, operationId);
       setSync(result);
       const failures = result.devices.reduce((count, device) => count + (device.error ? 1 : 0) + device.results.filter(item => item.status === "failed").length + device.envs.filter(item => item.status === "failed").length, 0);
-      notify({ category: "sync", event: failures ? "sync-error" : "sync-completed", title: failures ? "Sync needs attention" : "Sync completed", body: failures ? `${failures} errors across ${result.devices.length} devices. Open Sync to review.` : `Finished syncing ${result.devices.length} devices.`, target: { section: "sync" } });
+      notify({ category: "sync", event: failures ? "sync-error" : "sync-completed", title: result.cancelled ? "Sync cancelled" : failures ? "Sync needs attention" : "Sync completed", body: result.cancelled ? "Active repositories finished safely; remaining work was skipped." : failures ? `${failures} errors across ${result.devices.length} devices. Open Sync to review.` : `Finished syncing ${result.devices.length} devices.`, target: { section: "sync" } });
       // Refresh so branches/behind counts reflect the new state.
       await runScan();
     } catch (e) {
       notify({ category: "sync", event: "sync-error", title: "Sync failed", body: explainError(String((e as Error)?.message || e)), target: { section: "sync" } });
       setError(explainError(String((e as Error)?.message || e)));
     } finally {
+      syncOperation.current = null;
+      setCancelling(false);
       syncInFlight.current = false;
       setSyncing(false);
     }
   };
 
-  const directSync = useRef(runSync);
-  directSync.current = runSync;
-  useEffect(() => {
-    if (!pendingDirectSync || scanning) return;
-    if (!scan && !error) return;
-    setPendingDirectSync(false);
-    if (error || syncRefs.length === 0) {
-      notify({ category: "sync", event: "sync-error", title: "Sync could not start", body: error ?? "Enable a device in Settings → Sync & repositories.", target: { section: "sync" } });
-      return;
-    }
-    void directSync.current(true);
-  }, [pendingDirectSync, scanning, scan, error, syncRefs.length]);
+  const cancelSync = async () => {
+    if (!syncOperation.current || cancelling) return;
+    setCancelling(true);
+    try { await cancelProjectSync(syncOperation.current); }
+    catch (cause) { setError(cause instanceof Error ? cause.message : "Cancellation failed"); setCancelling(false); }
+  };
 
   const rows = useMemo(() => scan
     ? buildRows(scan, migrateRepoOptions(opts, scan), devicesOff)
@@ -812,6 +811,7 @@ export function ProjectsMenu({ page = "repositories", syncRequest = 0, onSyncing
       </div>
 
       {error ? <div className="pj-error">{error}</div> : null}
+      {syncing ? <div className="pj-scan-status" role="status"><span>{cancelling ? "Stopping after active repositories finish safely…" : "Syncing projects…"}</span><button className="btn btn-sm" disabled={cancelling} onClick={() => void cancelSync()}>Cancel sync</button></div> : null}
       {sync && sync.devices.length > 0 ? (
         <div className="pj-summary">
           {sync.devices.map((d) => {
@@ -871,7 +871,7 @@ export function ProjectsMenu({ page = "repositories", syncRequest = 0, onSyncing
         )}
       </div>
       <p className="set-note pj-note">
-        What a sync does is up to the settings: clone missing repos, stash local edits (git stash pop brings them
+        What a sync does is up to the settings: clone missing repos, stash local edits (git stash apply brings them
         back), switch to the default branch and integrate upstream commits, then copy the newest env files around. Diverged
         branches are merged while preserving local commits; conflicting merges are aborted. Every project
         can opt out on its card.
@@ -907,7 +907,7 @@ export function ProjectsMenu({ page = "repositories", syncRequest = 0, onSyncing
             <label className="settings-row">
               <span className="settings-row-copy">
                 Stash uncommitted changes
-                <small>Off: a dirty repo is reported and left alone</small>
+                <small>Tracked and untracked edits are retained; off leaves dirty repos alone</small>
               </span>
               <Switch on={opts.stashDirty} onToggle={() => patchOpts({ stashDirty: !opts.stashDirty })} title="Stash uncommitted changes" />
             </label>
@@ -917,7 +917,7 @@ export function ProjectsMenu({ page = "repositories", syncRequest = 0, onSyncing
             <label className="settings-row">
               <span className="settings-row-copy">
                 Sync env files
-                <small>The newest copy of each .env / .env.* wins</small>
+                <small>Newest copies sync; replaced files stay in private Git-directory backups</small>
               </span>
               <Switch on={opts.syncEnvs} onToggle={() => patchOpts({ syncEnvs: !opts.syncEnvs })} title="Sync env files" />
             </label>
@@ -942,8 +942,9 @@ export function ProjectsMenu({ page = "repositories", syncRequest = 0, onSyncing
           <p className="set-note">Each repository has its own sync and environment switches on the Repositories page.</p>
 
       </div>
-      <Modal open={confirmSync} onClose={() => { if (!syncing) setConfirmSync(false); }} title="Sync projects" size="sm">
-        <p className="move-q">Sync enabled projects under <b>{root}</b>?</p>
+      <Modal open={confirmSync} onClose={() => setConfirmSync(false)} title={syncing ? "Sync in progress" : "Sync projects"} size="sm">
+        <p className="move-q">{syncing ? "Syncing projects under" : "Sync enabled projects under"} <b>{root}</b>{syncing ? "." : "?"}</p>
+        {syncing ? <p className="set-note" role="status">{cancelling ? "Cancellation requested. Active repositories finish safely before sync stops." : "You can stop remaining work. Active repository operations finish safely first."}</p> : null}
         <p className="set-note">{syncRefs.length ? syncRefs.map((device) => device.name).join(", ") : "No devices are enabled. Choose devices in Settings → Sync & repositories."}</p>
         {scanning ? <ScanProgress progress={scanProgress} /> : null}
         {!scanning && scan ? <p className="set-note">{rows.filter(row => opts.repos[row.projectId]?.enabled !== false).length} enabled projects · {syncRefs.length} devices</p> : null}
@@ -951,11 +952,11 @@ export function ProjectsMenu({ page = "repositories", syncRequest = 0, onSyncing
         <p className="set-note">
           This updates Git working files{opts.cloneMissing ? ", clones missing projects" : ""}
           {opts.switchToDefault ? ", switches to the default branch" : ""}
-          {opts.stashDirty ? ", and stashes tracked local changes" : "; dirty projects are skipped"}.
-          {opts.syncEnvs ? " Environment files can be overwritten by newer copies from other devices. These copies cannot be undone through the app." : " Environment file copying is disabled."}
+          {opts.stashDirty ? ", and stashes tracked and untracked local changes" : "; dirty projects are skipped"}.
+          {opts.syncEnvs ? " Replaced environment files are backed up privately in the destination repository’s Git directory." : " Environment file copying is disabled."}
         </p>
         <div className="modal-actions">
-          <button className="btn" disabled={syncing} onClick={() => setConfirmSync(false)}>Cancel</button>
+          <button className="btn" disabled={cancelling} onClick={() => syncing ? void cancelSync() : setConfirmSync(false)}>{syncing ? cancelling ? "Stopping…" : "Cancel sync" : "Cancel"}</button>
           {!scan && !scanning ? <AsyncButton className="btn" loading={scanning} icon={RefreshCw} onClick={() => void runScan()}>Retry scan</AsyncButton> : null}
           <AsyncButton className="btn btn-danger" loading={syncing} disabled={scanning || !scan || syncRefs.length === 0} icon={FolderSync} onClick={() => void runSync()}>Sync projects</AsyncButton>
         </div>

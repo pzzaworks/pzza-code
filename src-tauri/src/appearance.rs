@@ -36,7 +36,7 @@ mod macos {
             .clone()
     }
 
-    pub fn apply(window: &tauri::WebviewWindow, radius: u32, rounded: bool) -> Result<(), String> {
+    pub fn apply(window: &tauri::WebviewWindow, radius: u32) -> Result<(), String> {
         let pointer = window.ns_window().map_err(|error| error.to_string())?;
         if pointer.is_null() {
             return Err("Native window is unavailable".into());
@@ -47,11 +47,7 @@ mod macos {
         let native = unsafe { &*pointer.cast::<objc2::runtime::AnyObject>() };
         let number: isize = unsafe {
             let style: usize = objc2::msg_send![native, styleMask];
-            let corner_radius: f64 = if !rounded || style & (1 << 14) != 0 {
-                0.0
-            } else {
-                12.0
-            };
+            let corner_radius: f64 = if style & (1 << 14) != 0 { 0.0 } else { 12.0 };
             // The compositor's background blur uses the window silhouette, not
             // the content layer's mask. Update both so blur cannot fill the corners.
             let supports_radius: bool = objc2::msg_send![
@@ -90,11 +86,7 @@ mod macos {
 }
 
 #[tauri::command]
-pub async fn set_desktop_blur(
-    window: tauri::WebviewWindow,
-    radius: u32,
-    rounded: bool,
-) -> Result<(), String> {
+pub async fn set_desktop_blur(window: tauri::WebviewWindow, radius: u32) -> Result<(), String> {
     if radius > 64 {
         return Err("Desktop blur radius must be between 0 and 64".into());
     }
@@ -104,7 +96,7 @@ pub async fn set_desktop_blur(
         let target = window.clone();
         window
             .run_on_main_thread(move || {
-                let _ = sender.send(macos::apply(&target, radius, rounded));
+                let _ = sender.send(macos::apply(&target, radius));
             })
             .map_err(|error| error.to_string())?;
         tauri::async_runtime::spawn_blocking(move || {
@@ -117,7 +109,7 @@ pub async fn set_desktop_blur(
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = (window, rounded);
+        let _ = window;
         Err("Adjustable desktop blur is only available on macOS".into())
     }
 }

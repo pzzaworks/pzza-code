@@ -11,6 +11,7 @@ interface Props {
   accent?: boolean;
   width?: number;
   keepMounted?: boolean;
+  preload?: boolean;
   loading?: boolean;
   panelClassName?: string;
   onOpen?: () => void;
@@ -19,13 +20,13 @@ interface Props {
 
 // A top-bar icon button that opens an anchored dropdown panel (replaces modals
 // for the top-right controls). Handles open/close, click-outside and animation.
-export function Dropdown({ icon: Icon, title, label, accent, width = 300, keepMounted = false, loading = false, panelClassName = "", onOpen, children }: Props) {
+export function Dropdown({ icon: Icon, title, label, accent, width = 300, keepMounted = false, preload = false, loading = false, panelClassName = "", onOpen, children }: Props) {
   const [open, setOpen] = useState(false);
   const [visited, setVisited] = useState(false);
   const showSpinner = useDelayedLoading(loading);
   const ref = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
-  const [rightOffset, setRightOffset] = useState(0);
+  const [leftOffset, setLeftOffset] = useState(0);
   const close = useCallback(() => setOpen(false), []);
 
   useExclusiveMenu(title, open, close);
@@ -36,8 +37,8 @@ export function Dropdown({ icon: Icon, title, label, accent, width = 300, keepMo
       if (!ref.current || !panelRef.current) return;
       const anchor = ref.current.getBoundingClientRect();
       const panelWidth = panelRef.current.getBoundingClientRect().width;
-      const left = Math.max(12, Math.min(anchor.right - panelWidth, window.innerWidth - panelWidth - 12));
-      setRightOffset(anchor.right - left - panelWidth);
+      const left = Math.max(12, Math.min(anchor.left, window.innerWidth - panelWidth - 12));
+      setLeftOffset(left - anchor.left);
     };
     position();
     const observer = new ResizeObserver(position);
@@ -93,8 +94,8 @@ export function Dropdown({ icon: Icon, title, label, accent, width = 300, keepMo
           allowWhileLoading
         />
       )}
-      {open || (keepMounted && visited) ? (
-        <div ref={panelRef} className={`menu menu-panel ${panelClassName}`} style={{ width, maxWidth: "calc(100vw - 24px)", right: rightOffset, display: open ? undefined : "none" }}>
+      {open || (keepMounted && (visited || preload)) ? (
+        <div ref={panelRef} className={`menu menu-panel ${panelClassName}`} style={{ width, maxWidth: "calc(100vw - 24px)", left: leftOffset, right: "auto", display: open ? undefined : "none" }}>
           {typeof children === "function" ? children(close, open) : children}
         </div>
       ) : null}

@@ -18,6 +18,7 @@ import { useStore } from "./state/store";
 import { Canvas } from "./grid/Canvas";
 import { WorkspaceTabs } from "./grid/WorkspaceTabs";
 import { LayoutMenu } from "./grid/LayoutMenu";
+import { HELP_SECTIONS, type HelpRequest } from "./panels/HelpModal";
 import { SettingsHub, type SettingsSection } from "./panels/SettingsHub";
 import { useRemoteDesktop } from "./panels/RdpMenu";
 import { SessionMenu } from "./panels/SessionMenu";
@@ -51,6 +52,7 @@ export default function App() {
   const remoteDesktop = useRemoteDesktop();
   const [menuError, setMenuError] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [helpRequest, setHelpRequest] = useState<HelpRequest | undefined>();
   const [settingsSection, setSettingsSection] = useState<SettingsSection>("general");
   const openSettings = (section: SettingsSection) => {
     setSettingsSection(section);
@@ -63,6 +65,15 @@ export default function App() {
     let unlisten: (() => void) | undefined;
     void import("@tauri-apps/api/event").then(({ listen }) => listen<string>("app-menu-action", ({ payload }) => {
       if (disposed) return;
+      if (payload.startsWith("help:")) {
+        const topic = payload.slice(5);
+        if (HELP_SECTIONS.some(group => group.topics.some(id => id === topic))) {
+          setHelpRequest(previous => ({ topic, serial: (previous?.serial ?? 0) + 1 }));
+          setSessionDialogOpen(false);
+          openSettings("help");
+        }
+        return;
+      }
       if (payload === "new-session") { setSettingsOpen(false); setSessionDialogOpen(true); return; }
       if (["general", "about", "notifications", "devices", "sync", "remote", "mcp", "help", "agents-hub"].includes(payload)) {
         setSessionDialogOpen(false);
@@ -210,10 +221,8 @@ export default function App() {
                 onClick={() => setToolsOpen((v) => !v)}
               />
               <div className={`topbar-tools ${toolsOpen ? "open" : ""}`}>
-                <QuickChat onOpenSettings={() => openSettings("quick-chat")} />
-                <LayoutMenu />
                 <div className="toolbar-action-status">
-                  <IconButton icon={FolderSync} title="Sync projects" disabled={syncing} onClick={() => {
+                  <IconButton icon={FolderSync} title={syncing ? "Sync in progress" : "Sync projects"} onClick={() => {
                     setToolsOpen(false);
                     setSyncRequest(value => value + 1);
                   }} />
@@ -233,6 +242,8 @@ export default function App() {
                 <Dropdown icon={Plus} title="New session" label="New session" width={340}>
                   {(close) => <SessionMenu close={close} />}
                 </Dropdown>
+                <QuickChat onOpenSettings={() => openSettings("quick-chat")} />
+                <LayoutMenu />
               </div>
             </div>
 
@@ -258,7 +269,7 @@ export default function App() {
           }
         }}
       />
-      <SettingsHub open={settingsOpen} section={settingsSection} onSectionChange={setSettingsSection} onClose={() => setSettingsOpen(false)} syncRequest={syncRequest} onSyncingChange={setSyncing} />
+      <SettingsHub helpRequest={helpRequest} open={settingsOpen} section={settingsSection} onSectionChange={setSettingsSection} onClose={() => setSettingsOpen(false)} syncRequest={syncRequest} onSyncingChange={setSyncing} />
     </ThemeProvider>
   );
 }

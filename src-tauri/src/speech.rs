@@ -291,7 +291,10 @@ mod native {
             consumed = samples.len();
         }
         if audio.len() >= 400_000 && consumed == 0 {
-            return Err("Could not find a safe speech boundary. Pause briefly between sentences and try again.".into());
+            // Some continuous utterances arrive as one long segment. Commit the
+            // decoded window instead of aborting or decoding the same audio forever.
+            committed = text.clone();
+            consumed = samples.len();
         }
         Ok(Transcript {
             preview: text.trim().to_string(),
@@ -350,6 +353,9 @@ mod native {
                                 capture.stop.store(true, Ordering::Release);
                                 let _ = microphone.join();
                                 return Err(error);
+                            }
+                            if !transcript.committed.is_empty() {
+                                emit(&app, &capture, "committed", Some(&committed), None, None);
                             }
                         }
                         Err(error) => {

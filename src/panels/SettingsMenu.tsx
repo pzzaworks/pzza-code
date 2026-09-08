@@ -39,7 +39,7 @@ function DictationSection() {
       Download · 574 MB
     </AsyncButton></Row>}
     {state.model === "ready" && state.enabled ? <div className="dictation-language-setting settings-row">
-      <div className="set-label"><span>Recognition language</span><span className="set-hint">Auto-detect, or choose the language you speak.</span></div>
+      <div className="settings-row-copy"><span>Recognition language</span><span className="set-hint">Auto-detect, or choose the language you speak.</span></div>
       <DictationLanguageSelect value={state.language} disabled={state.recording !== null} onChange={state.setLanguage} />
     </div> : null}
     {state.error ? <p className="set-note dictation-error" role="alert">{state.error}</p> : null}
@@ -143,20 +143,12 @@ function Row({ label, hint, children }: { label: string; hint?: string; children
 
 function AppearanceSection() {
   const enabled = useStore((state) => state.semiTransparent);
-  const cornerStyle = useStore((state) => state.cornerStyle);
-  const setCornerStyle = useStore((state) => state.setCornerStyle);
   const options = useStore((state) => state.transparencyOptions);
   const setOptions = useStore((state) => state.setTransparencyOptions);
   const setEnabled = useStore((state) => state.setSemiTransparent);
   const notice = useStore((state) => state.transparencyNotice);
   return <Section title="Appearance">
     <div className="appearance-choice"><ThemeSettings /></div>
-    <Row label="Corners" hint="App windows, panels, menus, and controls">
-      <div className="corner-style" role="group" aria-label="Corner style">
-        <button type="button" className={`btn btn-sm ${cornerStyle === "rounded" ? "btn-on" : ""}`} aria-pressed={cornerStyle === "rounded"} onClick={() => setCornerStyle("rounded")}>Rounded</button>
-        <button type="button" className={`btn btn-sm ${cornerStyle === "square" ? "btn-on" : ""}`} aria-pressed={cornerStyle === "square"} onClick={() => setCornerStyle("square")}>Square</button>
-      </div>
-    </Row>
     <Row label="Semi-transparent mode" hint="Translucent surfaces and a blurred background">
       <button className={`switch ${enabled ? "switch-on" : ""}`} type="button"
         role="switch" aria-label="Semi-transparent mode" aria-checked={enabled}

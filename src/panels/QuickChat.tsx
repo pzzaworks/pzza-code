@@ -1,10 +1,11 @@
 import { AsyncButton } from "../ui/AsyncButton";
-import { useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { MessageSquare, RotateCw, X } from "lucide-react";
 import { create } from "zustand";
 import { deviceHost, THIS_MAC } from "../devices";
 import { attachCommand } from "../connection";
 import { closeQuickChat, openQuickChat } from "../serverApi";
+import { createQuickChatPreparation } from "../state/quickChatSession";
 import { useStore } from "../state/store";
 import { Terminal } from "../terminal/Terminal";
 import { DeviceIcon } from "../ui/DeviceIcon";
@@ -62,12 +63,13 @@ export function QuickChatSettings() {
       {notice && <p className="set-note" role="status">{notice}</p>}
     </section>
     <section className="settings-section">
-      <div className="settings-row-copy"><span>Keep your conversation</span><small>Hiding the dropdown keeps your chat running. Close chat ends it and applies your choices to the next chat.</small></div>
+      <div className="settings-row-copy"><span>Keep your conversation</span><small>Hiding the dropdown keeps your chat running. A fresh chat starts when the app launches. Device and agent changes apply on the next launch.</small></div>
     </section>
   </div>;
 }
 
 type Chat = Awaited<ReturnType<typeof openQuickChat>> & { deviceName: string };
+const prepareChat = createQuickChatPreparation(openQuickChat, closeQuickChat);
 
 export function QuickChat({ onOpenSettings }: { onOpenSettings?: () => void }) {
   const devices = useStore(state => state.devices);
@@ -76,9 +78,9 @@ export function QuickChat({ onOpenSettings }: { onOpenSettings?: () => void }) {
   const [message, setMessage] = useState("");
   const inflight = useRef(false);
 
-  const launch = async () => {
+  const launch = useCallback(async () => {
     const choice = useQuickChatPreferences.getState().defaults;
-    if (inflight.current) return;
+    if (inflight.current || chat) return;
     const device = devices.find(item => item.id === choice.deviceId);
     if (!device) {
       setMessage("Choose an available device to open your chat.");
@@ -88,33 +90,19 @@ export function QuickChat({ onOpenSettings }: { onOpenSettings?: () => void }) {
     setBusy(true);
     setMessage("");
     try {
-      const result = await openQuickChat(deviceHost(device), choice.agent);
+      const result = await prepareChat(deviceHost(device), choice.agent);
       const id = result.host ? `${result.host}::${result.session}` : result.session;
       useStore.getState().hideTile(id);
       setChat({ ...result, deviceName: device.name });
-      if (result.agent !== choice.agent) {
-        setMessage("Reopened the existing agent. Close this chat before changing its agent.");
-      }
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Could not open Quick Chat. Retry or choose another device.");
     } finally { inflight.current = false; setBusy(false); }
-  };
+  }, [chat, devices]);
 
-  const terminate = async () => {
-    if (!chat || inflight.current) return;
-    inflight.current = true;
-    setBusy(true);
-    setMessage("");
-    try {
-      await closeQuickChat(chat.host);
-      setChat(null);
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Could not close this chat. Retry when the device is available.");
-    } finally { inflight.current = false; setBusy(false); }
-  };
+  useEffect(() => { void launch(); }, [launch]);
 
   const command = chat ? attachCommand({ host: chat.host || null }, chat.session) : null;
-  return <Dropdown icon={MessageSquare} title="Quick Chat" width={620} keepMounted loading={busy}
+  return <Dropdown icon={MessageSquare} title="Quick Chat" width={620} keepMounted preload={Boolean(chat)} loading={busy}
     panelClassName="quick-chat-panel" onOpen={() => {
       if (!chat) void launch();
     }}>
@@ -138,7 +126,6 @@ export function QuickChat({ onOpenSettings }: { onOpenSettings?: () => void }) {
       </div>}
       {chat && <div className="quick-chat-footer">
         <span className="muted">Hiding keeps your chat running.</span>
-        <AsyncButton className="btn btn-sm btn-danger" loading={busy} icon={X} onClick={() => void terminate()}>Close chat</AsyncButton>
       </div>}
     </>}
   </Dropdown>;
