@@ -7,7 +7,7 @@ import { createAgentsHub, runHubTarget } from "../lib/agents-hub.js";
 
 const skillText = "---\nname: review\ndescription: Review the current changes\n---\nRead the changes carefully.\n";
 async function fixture(t, options = {}) {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "pzza-hub-test-"));
+  const directory = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "pzza-hub-test-")));
   const home = path.join(directory, "home");
   const cwd = path.join(home, "project");
   await fs.mkdir(cwd, { recursive: true });
@@ -199,4 +199,44 @@ test("replacing the reviewed project directory cannot redirect an approved deplo
   assert.equal(result.status, "failed");
   assert.match(result.error, /directory was replaced/);
   assert.deepEqual(await fs.readdir(f.cwd), []);
+});
+
+
+test("instruction discovery is bounded, read-only and refuses symlink escapes", async t => {
+  const f = await fixture(t);
+  await fs.writeFile(path.join(f.cwd, "CLAUDE.md"), "Existing project guidance\n");
+  await fs.mkdir(path.join(f.cwd, ".cursor/rules"), { recursive: true });
+  await fs.writeFile(path.join(f.cwd, ".cursor/rules/style.mdc"), "---\nalwaysApply: true\n---\nRules\n");
+  await fs.mkdir(path.join(f.cwd, "node_modules/hidden"), { recursive: true });
+  await fs.writeFile(path.join(f.cwd, "node_modules/hidden/AGENTS.md"), "Ignore dependency");
+  await fs.symlink(path.join(f.cwd, "CLAUDE.md"), path.join(f.cwd, "AGENTS.md"));
+  const found = await f.hub.discover({ root: "~/project", devices: [{ host: "", name: "Local" }] });
+  assert.deepEqual(found.devices[0].files.map(file => file.path).sort(), [".cursor/rules/style.mdc", "CLAUDE.md"]);
+  const file = found.devices[0].files.find(file => file.path === "CLAUDE.md");
+  const imported = await f.hub.readInstruction({ host: "", root: "~/project", path: file.path, sha256: file.sha256 });
+  assert.equal(imported.content, "Existing project guidance\n");
+  assert.equal(f.hub.state().revision, 0);
+  await fs.writeFile(path.join(f.cwd, "CLAUDE.md"), "Changed after discovery");
+  await assert.rejects(f.hub.readInstruction({ host: "", root: "~/project", path: file.path, sha256: file.sha256 }), /changed/);
+  const denied = await f.hub.discover({ root: "~", devices: [{ host: "", name: "Local" }] });
+  assert.match(denied.devices[0].error, /project folder/);
+});
+
+test("instruction-only sync copies identical bytes and preserves existing destination backups", async t => {
+  const f = await fixture(t);
+  const content = "# Exact instruction\n\nKeep original spacing.\n";
+  f.hub.save({ ...f.library, documents: [{ ...f.library.documents[0], content }] });
+  const second = path.join(f.home, "second");
+  await fs.mkdir(second);
+  for (const cwd of [f.cwd, second]) {
+    await fs.writeFile(path.join(cwd, "CLAUDE.md"), "Previous guidance");
+    const preview = await f.hub.preview({ documentId: "base", host: "", cwd, adoptExisting: true });
+    assert.equal(preview.files[0].content, content);
+    assert.equal(preview.launch.supported, false);
+    await assert.rejects(f.hub.apply(preview.previewId, "deploy"), /only support sync/);
+    const result = await f.hub.apply(preview.previewId, "sync");
+    assert.equal(result.status, "synced", result.error);
+    assert.ok(result.backupPath);
+    assert.equal(await fs.readFile(path.join(cwd, "CLAUDE.md"), "utf8"), content);
+  }
 });

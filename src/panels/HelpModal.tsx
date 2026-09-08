@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   Blocks,
   Boxes,
@@ -376,6 +376,7 @@ export const HELP_SECTIONS = [
   { id: "connections", label: "Connections", topics: ["devices", "ports", "rdp", "mcp"] },
   { id: "tips", label: "Tips", topics: ["tips"] },
 ] as const;
+export interface HelpRequest { topic: string; serial: number }
 export type HelpSection = typeof HELP_SECTIONS[number]["id"];
 
 export function HelpModal({ open, onClose }: { open: boolean; onClose: () => void }) {
@@ -386,7 +387,17 @@ export function HelpModal({ open, onClose }: { open: boolean; onClose: () => voi
   </Modal>;
 }
 
-export function HelpContent({ section }: { section: HelpSection }) {
+export function HelpContent({ section, request }: { section: HelpSection; request?: HelpRequest }) {
+  const content = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!request) return;
+    const target = content.current?.querySelector<HTMLDetailsElement>(`[data-help-topic="${request.topic}"]`);
+    if (target) {
+      target.open = true;
+      target.scrollIntoView({ block: "start", behavior: "instant" });
+      target.querySelector<HTMLElement>("summary")?.focus();
+    }
+  }, [section, request]);
   const groups: Group[] = [
     {
       title: "Basics",
@@ -463,7 +474,7 @@ export function HelpContent({ section }: { section: HelpSection }) {
                 own; the menu header shows which one you're changing.
               </Row>
               <Row ui={<IB icon={FolderSync} />} name="Sync">
-                Sync your project repositories immediately using your saved preferences. A small indicator shows progress.
+                Review and confirm the sync before it starts. A small indicator shows progress; you can request cancellation without discarding local changes.
               </Row>
               <Row ui={<IB icon={Monitor} />} name="Remote desktop">
                 Open the device's Linux desktop over an SSH-tunneled RDP session.
@@ -489,8 +500,8 @@ export function HelpContent({ section }: { section: HelpSection }) {
           icon: Sparkles,
           body: <>
             <H>Quick Chat</H>
-            <P>Open <b>Quick Chat</b> in the top bar to chat in a dropdown. It opens your saved agent immediately. Choose the agent and device in <b>Settings → Agents Hub → Quick Chat</b>.</P>
-            <P>Click outside or use <b>Hide chat</b> to dismiss the dropdown while the chat keeps running. <b>Close chat</b> ends that chat session.</P>
+            <P>Open <b>Quick Chat</b> in the top bar to chat in a dropdown. It opens your saved agent immediately. Choose the agent and device for the next app launch in <b>Settings → Agents Hub → Quick Chat</b>.</P>
+            <P>Click outside or use <b>Hide chat</b> to dismiss the dropdown while the chat keeps running. Your chat is prepared at app startup and remains available until the app closes.</P>
             <H>Agents Hub</H>
             <P>Open <b>Settings → Agents Hub</b> to manage your agent tools. Use the submenus to browse configuration and open an item to edit it.</P>
           </>,
@@ -632,7 +643,7 @@ export function HelpContent({ section }: { section: HelpSection }) {
                 types into the wrong place.
               </P>
               <Row ui={<TB icon={Focus} on />} name="Focus (spotlight)">
-                Soften the other tiles while keeping their colors. Great when one session needs your full attention.
+                Reduce other tiles’ opacity and apply a colored overlay. Great when one session needs your full attention.
               </Row>
               <Tip>
                 Activating a tile with the keyboard (<Kbd>{ctrlBadge(1)}</Kbd>–
@@ -1090,13 +1101,13 @@ export function HelpContent({ section }: { section: HelpSection }) {
 
   const current = HELP_SECTIONS.find((entry) => entry.id === section) ?? HELP_SECTIONS[0];
   const topics = groups.flatMap((group) => group.sections);
-  return <div className="settings-page help-page"><div className="doc-content" key={current.id}>
+  return <div className="settings-page help-page"><div className="doc-content" key={current.id} ref={content}>
     {current.topics.map((id) => {
       const topic = topics.find((entry) => entry.id === id);
       if (!topic) return null;
       const Icon = topic.icon;
-      return <details className="help-topic" key={topic.id}>
-        <summary><Icon size={16} /><span>{topic.label}</span><ChevronDown size={14} /></summary>
+      return <details className="help-topic" key={topic.id} data-help-topic={topic.id}>
+        <summary tabIndex={0}><Icon size={16} /><span>{topic.label}</span><ChevronDown size={14} /></summary>
         <div className="help-topic-body">{topic.body}</div>
       </details>;
     })}

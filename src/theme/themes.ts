@@ -47,8 +47,8 @@ const DARK = make({
 });
 
 const LIGHT = make({
-  id: "light", name: "Light", appearance: "light", bg: "#f6f7f9", fg: "#282d35", sel: "#d3dfef",
-  ansi: ["#282d35", "#b52b3a", "#38712d", "#876000", "#1766a0", "#77529a", "#16716a", "#58616e", "#657080", "#b52b3a", "#38712d", "#876000", "#1766a0", "#77529a", "#16716a", "#46505e"],
+  id: "light", name: "Light", appearance: "light", bg: "#fbfcfe", fg: "#242830", sel: "#dce5f0",
+  ansi: ["#242830", "#ac302e", "#28623e", "#7a540a", "#245e9d", "#774699", "#17686d", "#525b68", "#606b7a", "#b32b39", "#256437", "#795308", "#185d9d", "#854298", "#126972", "#424c59"],
 });
 
 export const BUILTIN_THEMES: Theme[] = [DARK, LIGHT];

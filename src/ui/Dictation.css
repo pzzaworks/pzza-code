@@ -1,0 +1,6 @@
+.dictation-caret { position: absolute; z-index: 5; display: flex; align-items: flex-start; gap: 4px; max-width: min(440px, calc(100% - 16px)); padding: 3px 5px; border-radius: 4px; background: var(--opaque-surface); color: var(--muted); box-shadow: 0 1px 4px rgb(0 0 0 / 12%); font: inherit; }
+.dictation-caret-text { min-width: 0; font: 12px/1.5 ui-monospace, monospace; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 100px; overflow: auto; }
+.dictation-caret .tile-btn { flex-shrink: 0; }
+.dictation-caret-error { color: var(--danger); }
+.dictation-recovery-text { margin: 6px 0; color: var(--text); user-select: text; }
+.dictation-caret-text > small { display: block; margin-top: 5px; color: var(--muted); font: 11px/1.5 ui-sans-serif, sans-serif; }

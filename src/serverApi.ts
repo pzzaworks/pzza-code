@@ -639,6 +639,7 @@ export interface ProjectSyncDevice extends ProjectDeviceRef {
 }
 
 export interface ProjectSync {
+  cancelled?: boolean;
   root: string;
   devices: ProjectSyncDevice[];
 }
@@ -648,11 +649,12 @@ async function projectsPost<T>(
   root: string,
   devices: ProjectDeviceRef[],
   options?: SyncOptions,
+  operationId?: string,
 ): Promise<T> {
   const res = await agentFetch(`${SERVER_HTTP}${path}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ root, devices, options }),
+    body: JSON.stringify({ root, devices, options, operationId }),
   });
   const data = (await res.json()) as T & { error?: string };
   if (!res.ok) throw new Error(data.error || `${path} ${res.status}`);
@@ -711,8 +713,14 @@ export async function scanProjects(
 
 // Long-running: clones, stashes, pulls and copies env files on every device,
 // then returns the full report.
-export const syncProjects = (root: string, devices: ProjectDeviceRef[], options: SyncOptions): Promise<ProjectSync> =>
-  projectsPost<ProjectSync>("/projects/sync", root, devices, options);
+export const syncProjects = (root: string, devices: ProjectDeviceRef[], options: SyncOptions, operationId: string): Promise<ProjectSync> =>
+  projectsPost<ProjectSync>("/projects/sync", root, devices, options, operationId);
+export async function cancelProjectSync(operationId: string): Promise<void> {
+  const response = await agentFetch(`${SERVER_HTTP}/projects/sync/cancel`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ operationId }),
+  });
+  if (!response.ok) throw new Error("Could not cancel sync");
+}
 
 export interface DeviceInfo {
   health: "reachable" | "unreachable";

@@ -38,7 +38,7 @@ import {
 import { ALL_WORKSPACE_ID, DEFAULT_WORKSPACE_ID, wsKeyOf } from "../workspaces";
 import { ctrlBadge, digitFromCode } from "../shortcuts";
 import { useDictation } from "../state/dictation";
-import { DictationButton, DictationIndicator } from "../ui/Dictation";
+import { DictationButton } from "../ui/Dictation";
 
 // Uniform N-column grid, filtered to the active workspace. One tile can be
 // maximized (animated). Tiles reorder by dragging their header onto another
@@ -523,7 +523,6 @@ export function Canvas() {
             onStatus={(s) => setStatus(t.id, s)}
           />
           {codeOpen ? <TileCodePanel tileId={t.id} /> : null}
-          <DictationIndicator tileId={t.id} />
         </div>
         {dimmed ? (
           <div
