@@ -31,6 +31,7 @@ import { SPEND_FRESH_MS, computeSpend } from "./lib/spend.js";
 import { deviceInfo } from "./lib/device-info.js";
 import { deviceOs, doctor, sshHosts } from "./lib/system.js";
 import { mcpConfigs, mcpInstall } from "./lib/mcp.js";
+import { createAppControlRouter } from "./lib/app-control.js";
 import { installAgent } from "./lib/install.js";
 import { filesRouter } from "./lib/files.js";
 import { startPtyBridge, sweepOrphanViews } from "./lib/pty.js";
@@ -42,6 +43,7 @@ const queryHost = (url) => {
   return SSH_TOKEN.test(h) ? h : "";
 };
 
+const appControlRouter = createAppControlRouter(undefined, json);
 const server = http.createServer(async (req, res) => {
   // Defeat DNS rebinding: only a loopback Host on our port is served at all.
   if (!hostOk(req)) {
@@ -58,6 +60,7 @@ const server = http.createServer(async (req, res) => {
   if (url.pathname !== "/health" && !tokenOk(requestToken(req, url))) {
     return json(res, 401, { error: "unauthorized" });
   }
+  if (await appControlRouter(req, res, url)) return;
 
   if (url.pathname === "/capabilities") {
     return json(res, 200, { role: IS_CLIENT ? "client" : "source", forward: IS_CLIENT, host: DEVBOX || null });

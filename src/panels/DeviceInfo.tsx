@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { RefreshCw } from "lucide-react";
 import { deviceHost, type Device } from "../devices";
 import { fetchDeviceInfo, type DeviceInfo as DeviceInfoResult } from "../serverApi";
@@ -23,6 +23,7 @@ function uptime(seconds: number): string {
 }
 
 export function DeviceInfo({ device }: { device: Device }) {
+  const detailsId = useId();
   const host = deviceHost(device);
   const [result, setResult] = useState<DeviceInfoResult | null>(() => snapshots.get(host) ?? null);
   const [error, setError] = useState<string | null>(null);
@@ -88,27 +89,32 @@ export function DeviceInfo({ device }: { device: Device }) {
       </div>
       <div className="device-info-health" role="status">
         <span className={`device-info-status ${reachable ? "device-info-reachable" : ""}`}>{status}</span>
-        {result ? <span>{result.connection === "local" ? "Local" : "SSH"} probe round trip · {result.connectionMs.toFixed(0)} ms</span> : null}
       </div>
       {error || result?.error ? <p className="device-info-error">{error || result?.error}</p> : null}
       <dl className="device-info-grid">
-        <div className="device-info-item"><dt>Hostname</dt><dd>{info?.hostname || "Unavailable"}</dd></div>
         <div className="device-info-item"><dt>Uptime</dt><dd>{info ? uptime(info.uptimeSeconds) : "Unavailable"}</dd></div>
-        <div className="device-info-item device-info-wide"><dt>IP addresses</dt><dd className="device-info-addresses">
-          {addresses.length ? (showAddresses ? addresses : addresses.slice(0, 2)).map((address) => <span key={`${address.interface}:${address.address}`} className="device-info-address"><code>{address.address}</code><small>{address.interface} · {address.family}</small></span>) : "Unavailable"}
-          {addresses.length > 2 ? <button type="button" className="btn btn-sm device-info-more" aria-expanded={showAddresses} onClick={() => setShowAddresses((value) => !value)}>{showAddresses ? "View less" : `View ${addresses.length - 2} more`}</button> : null}
-        </dd></div>
-        <div className="device-info-item"><dt>CPU</dt><dd>{info ? `${info.cpu.logicalCores} logical cores` : "Unavailable"}<small>{info?.cpu.model || "Model unavailable"}</small></dd></div>
-        <div className="device-info-item"><dt>Load average</dt><dd>{info?.cpu.loadAverage ? info.cpu.loadAverage.map((value) => value.toFixed(2)).join(" / ") : "Unavailable"}<small>1 / 5 / 15 minutes</small></dd></div>
+        <div className="device-info-item"><dt>CPU</dt><dd>{info ? `${info.cpu.logicalCores} logical cores` : "Unavailable"}</dd></div>
         <div className="device-info-item device-info-wide"><dt>Memory</dt><dd>
           {memoryTotal !== null ? `${bytes(available)} ${info?.memory.availableBytes !== null ? "available" : "free"} / ${bytes(memoryTotal)} total` : "Unavailable"}
           {usedRatio !== null ? <span className="device-info-memory" role="meter" aria-label={info?.memory.availableBytes !== null ? "Memory in use" : "Memory not free, including cache"} aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(usedRatio)}><span style={{ width: `${usedRatio}%` }} /></span> : null}
         </dd></div>
-        {showDetails ? <><div className="device-info-item"><dt>Architecture</dt><dd>{info?.arch || "Unavailable"}</dd></div>
-        <div className="device-info-item"><dt>Kernel</dt><dd>{info?.kernelVersion || "Unavailable"}</dd></div></> : null}
       </dl>
-      <button type="button" className="btn btn-sm device-info-more" aria-expanded={showDetails} onClick={() => setShowDetails((value) => !value)}>{showDetails ? "Fewer details" : "More details"}</button>
-      <p className="device-info-updated">{result ? `Checked ${new Date(result.checkedAt).toLocaleTimeString()}` : "Waiting for a device response"} · {loading ? "Updating…" : "Updates every 10 seconds"}</p>
+      <button type="button" className="btn btn-sm device-info-more" aria-expanded={showDetails} aria-controls={detailsId} onClick={() => setShowDetails((value) => !value)}>{showDetails ? "Fewer details" : "More details"}</button>
+      <div id={detailsId} hidden={!showDetails}>
+        <dl className="device-info-grid">
+          <div className="device-info-item"><dt>Hostname</dt><dd>{info?.hostname || "Unavailable"}</dd></div>
+          <div className="device-info-item"><dt>Architecture</dt><dd>{info?.arch || "Unavailable"}</dd></div>
+          <div className="device-info-item device-info-wide"><dt>IP addresses</dt><dd className="device-info-addresses">
+            {addresses.length ? (showAddresses ? addresses : addresses.slice(0, 2)).map((address) => <span key={`${address.interface}:${address.address}`} className="device-info-address"><code>{address.address}</code><small>{address.interface} · {address.family}</small></span>) : "Unavailable"}
+            {addresses.length > 2 ? <button type="button" className="btn btn-sm device-info-more" aria-expanded={showAddresses} onClick={() => setShowAddresses((value) => !value)}>{showAddresses ? "View less" : `View ${addresses.length - 2} more`}</button> : null}
+          </dd></div>
+          <div className="device-info-item device-info-wide"><dt>CPU model</dt><dd>{info?.cpu.model || "Unavailable"}</dd></div>
+          <div className="device-info-item"><dt>Load average</dt><dd>{info?.cpu.loadAverage ? info.cpu.loadAverage.map((value) => value.toFixed(2)).join(" / ") : "Unavailable"}<small>1 / 5 / 15 minutes</small></dd></div>
+          <div className="device-info-item"><dt>Kernel</dt><dd>{info?.kernelVersion || "Unavailable"}</dd></div>
+          {result ? <div className="device-info-item device-info-wide"><dt>Connection</dt><dd>{result.connection === "local" ? "Local" : "SSH"} · {result.connectionMs.toFixed(0)} ms round trip</dd></div> : null}
+        </dl>
+        <p className="device-info-updated">{result ? `Checked ${new Date(result.checkedAt).toLocaleTimeString()}` : "Waiting for a device response"} · {loading ? "Updating…" : "Updates every 10 seconds"}</p>
+      </div>
     </section>
   );
 }

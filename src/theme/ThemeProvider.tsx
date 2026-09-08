@@ -15,7 +15,7 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
   const themeId = useStore((s) => s.themeId);
   const transparent = useStore((s) => s.semiTransparent);
   const options = useStore((s) => s.transparencyOptions);
-  const nativeBlur = transparent && options.desktopBlur;
+  const nativeBlurRadius = transparent && options.desktopBlur ? options.desktopBlurRadius : 0;
 
   useEffect(() => {
     let alive = true;
@@ -23,13 +23,15 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
       useStore.getState().setTransparencyNotice(transparent ? "In the browser, blur applies inside the page. Desktop blur is available in the supported desktop app." : null);
       return;
     }
-    void setNativeTransparency(transparent, nativeBlur).then((result) => {
-      if (alive) useStore.getState().setTransparencyNotice(result.reason ?? null);
-    }).catch(() => {
-      if (alive) useStore.getState().setTransparencyNotice("Desktop blur is unavailable. Translucent app surfaces are still enabled.");
-    });
-    return () => { alive = false; };
-  }, [transparent, nativeBlur]);
+    const timer = window.setTimeout(() => {
+      void setNativeTransparency(transparent, nativeBlurRadius).then((result) => {
+        if (alive) useStore.getState().setTransparencyNotice(result.reason ?? null);
+      }).catch(() => {
+        if (alive) useStore.getState().setTransparencyNotice("Desktop blur is unavailable. Translucent app surfaces are still enabled.");
+      });
+    }, 80);
+    return () => { alive = false; window.clearTimeout(timer); };
+  }, [transparent, nativeBlurRadius]);
 
   useEffect(() => {
     const theme = themeById(themeId);

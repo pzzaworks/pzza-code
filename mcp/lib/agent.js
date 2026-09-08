@@ -9,6 +9,14 @@ import { execFile } from "node:child_process";
 
 const BASE = process.env.PZZA_SERVER_URL || "http://127.0.0.1:5190";
 
+function responseError(status, body) {
+  try {
+    const value = JSON.parse(body);
+    if (typeof value?.error === "string") return new Error(`Agent request failed (${status}): ${value.error.slice(0, 4096)}`);
+  } catch { /* Non-JSON responses use the status-only error. */ }
+  return new Error(`Agent request failed (${status})`);
+}
+
 // Execute inside the destination account: its credential never leaves that host.
 async function remoteRequest() {
   const fs = await import("node:fs");
@@ -38,7 +46,7 @@ export function sshApi(host, endpoint, options = {}) {
       if (error) return reject(new Error("Cannot reach the app agent over SSH. Check SSH access, Node.js and that the app is running."));
       try {
         const result = JSON.parse(stdout);
-        if (result.status < 200 || result.status >= 300) return reject(new Error(`${endpoint} -> ${result.status}`));
+        if (result.status < 200 || result.status >= 300) return reject(responseError(result.status, result.body));
         try { resolve(JSON.parse(result.body)); } catch { resolve(result.body); }
       } catch { reject(new Error("Invalid response from the remote agent")); }
     });
@@ -65,8 +73,8 @@ async function api(p, opts) {
   const headers = { ...(opts && opts.headers ? opts.headers : {}) };
   if (token) headers.Authorization = `Bearer ${token}`;
   const res = await fetch(`${BASE}${p}`, { ...(opts || {}), headers, redirect: "error", signal: AbortSignal.timeout(30000) });
-  if (!res.ok) throw new Error(`${p} -> ${res.status}`);
   const text = await res.text();
+  if (!res.ok) throw responseError(res.status, text);
   try {
     return JSON.parse(text);
   } catch {

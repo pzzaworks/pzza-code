@@ -136,7 +136,7 @@ test("termination closes grouped internal views and preserves unrelated sessions
   const tmux = (...args) => exec("tmux", ["-L", socket, ...args]);
   const terminate = (name, window) => exec("sh", ["-c", terminationCommand(name, window).replaceAll("tmux ", `tmux -L ${socket} `)]);
   try {
-    await tmux("new-session", "-d", "-s", "work", "sleep 120");
+    await tmux("-f", "/dev/null", "new-session", "-d", "-s", "work", "sleep 120");
     await tmux("new-window", "-t", "=work:", "sleep 120");
     await tmux("new-session", "-d", "-t", "=work", "-s", "pzza-v-test");
     await tmux("new-session", "-d", "-s", "work-extra", "sleep 120");

@@ -33,8 +33,10 @@ import { HAS_TAURI } from "./tauriEnv";
 import { UpdateBanner } from "./panels/UpdateBanner";
 import { Modal } from "./ui/Modal";
 import { confirmEditorDiscard, hasUnsavedEditors } from "./editorChanges";
+import { useAppControl } from "./appControl";
 
 export default function App() {
+  useAppControl();
   const loadSessions = useStore((s) => s.loadSessions);
   const seedPreview = useStore((s) => s.seedPreview);
 
