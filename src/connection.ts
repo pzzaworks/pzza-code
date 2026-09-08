@@ -107,6 +107,7 @@ export function attachCommand(
 }
 
 export interface RemoteSession {
+  createdAt?: number | null; // Actual tmux creation time in milliseconds.
   name: string;
   windows: number;
   attached: boolean;

@@ -17,7 +17,7 @@
 .settings-nav-chevron { transform: rotate(-90deg); transition: transform 140ms; }
 .settings-hub-link[aria-expanded="true"] .settings-nav-chevron { transform: rotate(0); }
 .settings-nav-children { padding: 2px 0 6px; }
-.settings-hub-sublink { padding: 5px 8px 5px 33px; margin: 1px 0; font-size: 11px; line-height: 1.4; }
+.settings-hub-sublink { padding: 5px 8px 5px 33px; margin: 1px 0; font-size: 12px; line-height: 1.4; }
 .settings-hub-sublink.active { background: var(--surface-alt); color: var(--text); font-weight: 550; }
 .settings-hub :is(button, a, summary, input, textarea):focus-visible { outline: 2px solid var(--muted); outline-offset: 2px; }
 .settings-hub-main { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; container-type: inline-size; }
@@ -201,7 +201,7 @@
   .modal.settings-hub { max-width: calc(100vw - 16px); height: min(500px, 86vh); max-height: 86vh; }
   .settings-hub-nav { flex-basis: 142px; padding-inline: 6px; }
   .settings-hub-link { gap: 7px; padding-inline: 6px; font-size: 11px; }
-  .settings-hub-sublink { padding-left: 29px; font-size: 10px; }
+  .settings-hub-sublink { padding-left: 29px; font-size: 11px; }
   .appearance-preview { height: 48px; }
   .settings-hub-content .about-links { grid-template-columns: 1fr; }
 }

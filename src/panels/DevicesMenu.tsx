@@ -18,7 +18,7 @@ import { Modal } from "../ui/Modal";
 import { Select } from "../ui/Select";
 import { scanDevice, killSession, fetchSshHosts, type SshHost } from "../serverApi";
 import type { RemoteSession } from "../connection";
-import { sessionDisplayName } from "../sessionMeta";
+import { sessionDisplayName, sessionAge } from "../sessionMeta";
 import { deviceHost, type Device } from "../devices";
 
 interface ScanState {
@@ -41,6 +41,12 @@ export function DevicesMenu() {
   const openSession = useStore((s) => s.openSession);
   const assignSession = useStore((s) => s.assignSession);
   const closeTile = useStore((s) => s.closeTile);
+
+  const [now, setNow] = useState(Date.now);
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 30_000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   const [name, setName] = useState("");
   const [host, setHost] = useState("");
@@ -257,7 +263,9 @@ export function DevicesMenu() {
                           <span className="scan-main">
                             <span className="scan-name">{sessionDisplayName({ id: tileId, name: sess.name }, tileTitles)}</span>
                             <span className="scan-meta">
-                              {sess.windows}w{sess.attached ? " · live" : ""}
+                              <span title={sess.createdAt && Number.isFinite(sess.createdAt) && sess.createdAt > 0 ? `Created ${new Date(sess.createdAt).toLocaleString()}` : "Creation time unavailable"}>
+                                {sessionAge(sess.createdAt, now)}
+                              </span>{sess.attached ? " · live" : ""}
                               {isOpen ? " · open" : ""}
                             </span>
                           </span>
