@@ -221,6 +221,8 @@ export default function App() {
                 onClick={() => setToolsOpen((v) => !v)}
               />
               <div className={`topbar-tools ${toolsOpen ? "open" : ""}`}>
+                <LayoutMenu />
+                <QuickChat onOpenSettings={() => openSettings("quick-chat")} />
                 <div className="toolbar-action-status">
                   <IconButton icon={FolderSync} title={syncing ? "Sync in progress" : "Sync projects"} onClick={() => {
                     setToolsOpen(false);
@@ -242,8 +244,6 @@ export default function App() {
                 <Dropdown icon={Plus} title="New session" label="New session" width={340}>
                   {(close) => <SessionMenu close={close} />}
                 </Dropdown>
-                <QuickChat onOpenSettings={() => openSettings("quick-chat")} />
-                <LayoutMenu />
               </div>
             </div>
 

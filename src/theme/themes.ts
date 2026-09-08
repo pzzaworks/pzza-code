@@ -47,7 +47,7 @@ const DARK = make({
 });
 
 const LIGHT = make({
-  id: "light", name: "Light", appearance: "light", bg: "#fbfcfe", fg: "#242830", sel: "#dce5f0",
+  id: "light", name: "Light", appearance: "light", bg: "#ffffff", fg: "#1f2328", sel: "#ddf4ff",
   ansi: ["#242830", "#ac302e", "#28623e", "#7a540a", "#245e9d", "#774699", "#17686d", "#525b68", "#606b7a", "#b32b39", "#256437", "#795308", "#185d9d", "#854298", "#126972", "#424c59"],
 });
 
@@ -61,4 +61,10 @@ export function migrateThemeId(id: string): string {
 
 export function themeById(id: string): Theme {
   return id === "light" ? LIGHT : DARK;
+}
+
+export function terminalPalette(id: string, transparent: boolean): TerminalPalette {
+  const palette = themeById(id).terminal;
+  // Retain the background RGB channels for terminal contrast and color queries.
+  return transparent ? { ...palette, background: `${palette.background}00` } : palette;
 }
