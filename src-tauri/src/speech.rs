@@ -56,9 +56,9 @@ mod native {
             Ok(Self { context, decoder })
         }
 
-        fn recognize(&mut self, audio: &[f32], language: &str, capture: &Arc<Capture>) -> Result<(), String> {
+        fn recognize(&mut self, audio: &[f32], language: &str, capture: &Arc<Capture>, multilingual: bool) -> Result<(), String> {
             let mut params = recognition_params(language, capture);
-            params.set_audio_ctx(audio_context(audio.len()));
+            params.set_audio_ctx(if multilingual { 1500 } else { audio_context(audio.len()) });
             let result = self.decoder.full(params, audio);
             if capture.cancel.load(Ordering::Acquire) { return Ok(()); }
             if let Err(error) = result {
@@ -67,11 +67,20 @@ mod native {
             }
             Ok(())
         }
+
+        fn detect_language(&mut self, audio: &[f32]) -> Result<Option<String>, String> {
+            self.decoder.pcm_to_mel(audio, 8)
+                .map_err(|error| format!("Could not prepare language detection: {error}"))?;
+            let (language, probabilities) = self.decoder.lang_detect(0, 8)
+                .map_err(|error| format!("Could not detect the spoken language: {error}"))?;
+            Ok(probabilities.get(language as usize).filter(|probability| **probability >= 0.6)
+                .and_then(|_| whisper_rs::get_lang_str(language)).map(str::to_owned))
+        }
     }
 
     fn audio_context(samples: usize) -> i32 {
-        // Each encoder frame covers 20 ms. Keep generous padding for short
-        // speech and expand with the utterance instead of encoding 30 s every time.
+        // Each encoder frame covers 20 ms, with two seconds of padding. Mixed
+        // speech uses the full context to avoid losing short language switches.
         (samples.div_ceil(320).saturating_add(100).div_ceil(128) * 128).clamp(768, 1500) as i32
     }
 
@@ -341,25 +350,176 @@ mod native {
         consumed: usize,
     }
 
+    #[derive(Clone, Debug)]
+    struct Word {
+        text: String,
+        start: usize,
+        end: usize,
+    }
+
     #[derive(Default)]
     struct TranscriptWindow {
-        earlier: String,
-        previous: String,
-        confirmed: String,
-        language_candidate: Option<String>,
+        earlier: Vec<Word>,
+        previous: Vec<Word>,
+        confirmed: Vec<Word>,
         detected_language: Option<String>,
+        language_checked_at: usize,
+        language_hint_until: usize,
+        english_since: Option<usize>,
+        multilingual: bool,
+        language_changed: bool,
+        missing_prefix: bool,
     }
 
     impl TranscriptWindow {
-        fn confirms(&self, candidate: &str) -> bool {
-            agreed_prefix(&self.previous, candidate)
-                && self.earlier.split_whitespace().zip(candidate.split_whitespace())
-                    .all(|(earlier, current)| same_word(earlier, current))
+        fn update(&mut self, words: Vec<Word>, duration: usize, complete: bool) -> Transcript {
+            let words = if complete && words.is_empty() {
+                let count = self.previous.iter().zip(&self.earlier)
+                    .take_while(|(word, old)| same_word(&word.text, &old.text)).count();
+                self.previous[..count].to_vec()
+            } else { words };
+            self.missing_prefix |= self.language_changed && !self.confirmed.is_empty()
+                && !words.is_empty() && aligned_prefix(&words, &self.confirmed) == 0;
+            self.language_changed = false;
+            let carried = self.finish_missing_prefix(&words, duration);
+            if self.missing_prefix && aligned_prefix(&words, &self.confirmed) > 0 {
+                self.missing_prefix = false;
+            }
+            let entered = self.entered(&words);
+            let pending = &words[entered..];
+            let previous = &self.previous[self.entered(&self.previous)..];
+            let earlier = &self.earlier[self.entered(&self.earlier)..];
+            let count = if complete { pending.len() } else {
+                pending.iter().enumerate().take_while(|(index, word)| {
+                    // Keep the newest half-second and incomplete last word open.
+                    word.end.saturating_add(8_000) <= duration
+                        && previous.len() > index + 1
+                        && same_word(&previous[*index].text, &word.text)
+                        && earlier.get(*index).is_none_or(|old| same_word(&old.text, &word.text))
+                }).count()
+            };
+            let transcript = Transcript {
+                preview: word_text(pending),
+                committed: [carried, word_text(&pending[..count])].into_iter()
+                    .filter(|text| !text.is_empty()).collect::<Vec<_>>().join(" "),
+                consumed: 0,
+            };
+            // Rebase already entered audio onto this hypothesis. A correction to
+            // an old word must not prevent unrelated later words from being typed.
+            if count > 0 {
+                self.confirmed = words[..entered + count].to_vec();
+                self.missing_prefix = false;
+            }
+            if !words.is_empty() {
+                self.earlier = mem::replace(&mut self.previous, words);
+            }
+            transcript
         }
 
-        fn observe(&mut self, text: &str) {
-            self.earlier = mem::replace(&mut self.previous, text.into());
+        fn entered(&self, words: &[Word]) -> usize {
+            let aligned = aligned_prefix(words, &self.confirmed);
+            if aligned > 0 || self.missing_prefix { return aligned; }
+            // Without a language change, a wholly revised hypothesis still
+            // represents the same audio. Preserve the already entered frontier.
+            self.confirmed.last().map(|last| words.iter()
+                .take_while(|word| word.end <= last.end).count()).unwrap_or(0)
         }
+
+        fn finish_missing_prefix(&mut self, words: &[Word], duration: usize) -> String {
+            if !self.missing_prefix || words.is_empty() || self.confirmed.is_empty() || aligned_prefix(words, &self.confirmed) > 0 {
+                return String::new();
+            }
+            // A language change can omit the entire old-language prefix. Finish
+            // only its still-pending words that both earlier decodes agreed on.
+            let entered = aligned_prefix(&self.previous, &self.confirmed);
+            let previous = &self.previous[entered..];
+            let earlier = &self.earlier[aligned_prefix(&self.earlier, &self.confirmed)..];
+            let count = previous.iter().zip(earlier).take_while(|(word, old)| {
+                same_word(&word.text, &old.text) && word.end.saturating_add(8_000) <= duration
+            }).count();
+            let text = word_text(&previous[..count]);
+            if count > 0 { self.confirmed = self.previous[..entered + count].to_vec(); }
+            text
+        }
+
+        fn trim(&mut self, samples: usize) {
+            self.language_checked_at = self.language_checked_at.saturating_sub(samples);
+            self.language_hint_until = self.language_hint_until.saturating_sub(samples);
+            self.english_since = self.english_since.map(|start| start.saturating_sub(samples));
+            if self.language_hint_until == 0 {
+                self.detected_language = None;
+                self.multilingual = false;
+            }
+            for words in [&mut self.earlier, &mut self.previous, &mut self.confirmed] {
+                words.retain(|word| word.end > samples);
+                for word in words {
+                    word.start = word.start.saturating_sub(samples);
+                    word.end = word.end.saturating_sub(samples);
+                }
+            }
+        }
+
+        fn observe_language(&mut self, language: String, duration: usize) {
+            self.multilingual |= self.detected_language.as_ref().is_some_and(|current| *current != language);
+            let sustained_english = if language == "en" {
+                duration.saturating_sub(*self.english_since.get_or_insert(duration)) >= 16_000
+            } else {
+                self.english_since = None;
+                false
+            };
+            // An English hint can omit foreign phrases from mixed speech. Keep
+            // the other language's hint while that speech remains in the buffer;
+            // brief English interjections still transcribe under that hint. Switch
+            // back when English persists, rather than pinning a foreign language.
+            if language != "en" || sustained_english || self.detected_language.as_deref().is_none_or(|current| current == "en") {
+                self.language_changed |= self.detected_language.as_ref() != Some(&language);
+                self.detected_language = Some(language);
+                self.language_hint_until = duration;
+            }
+            self.language_checked_at = duration;
+        }
+    }
+
+    fn word_text(words: &[Word]) -> String {
+        words.iter().map(|word| word.text.as_str()).collect::<Vec<_>>().join(" ")
+    }
+
+    fn aligned_prefix(words: &[Word], confirmed: &[Word]) -> usize {
+        let Some(last) = confirmed.last() else { return 0; };
+        // Align the retained overlap, allowing insertions, deletions and revisions
+        // in old speech. Time breaks ties so repeated words remain distinct.
+        let mut costs: Vec<usize> = (0..=words.len()).collect();
+        let mut matches = vec![0; words.len() + 1];
+        for (index, old) in confirmed.iter().enumerate() {
+            let mut diagonal = costs[0];
+            let mut diagonal_matches = matches[0];
+            costs[0] = index + 1;
+            for (position, word) in words.iter().enumerate() {
+                let above = costs[position + 1];
+                let above_matches = matches[position + 1];
+                let overlaps = word.start < old.end && word.end > old.start;
+                // After two words establish the overlap, trust that lexical
+                // alignment: cutting retained audio can retime the entire phrase.
+                let nearby = word.start < old.end.saturating_add(1_600)
+                    && word.end.saturating_add(1_600) > old.start;
+                let equal = (overlaps || (nearby && diagonal_matches > 0) || diagonal_matches >= 2)
+                    && same_word(&old.text, &word.text);
+                let substitution = if equal { 0 } else if overlaps { 1 } else { 2 };
+                let best = [
+                    (diagonal + substitution, diagonal_matches + usize::from(equal)),
+                    (above + 1, above_matches),
+                    (costs[position] + 1, matches[position]),
+                ].into_iter().min_by_key(|(cost, matched)| (*cost, std::cmp::Reverse(*matched))).unwrap();
+                costs[position + 1] = best.0;
+                matches[position + 1] = best.1;
+                diagonal = above;
+                diagonal_matches = above_matches;
+            }
+        }
+        (0..=words.len()).filter(|index| *index == 0 || matches[*index] > 0).min_by_key(|index| {
+            let end = index.checked_sub(1).map(|i| words[i].end).unwrap_or(0);
+            (costs[*index], std::cmp::Reverse(matches[*index]), end.abs_diff(last.end))
+        }).unwrap_or(0)
     }
 
     fn utterance_boundary(audio: &[f32]) -> Option<usize> {
@@ -431,87 +591,57 @@ mod native {
         if audio.len() < 16_000 {
             audio.resize(16_000, 0.0);
         }
-        engine.recognize(&audio, window.detected_language.as_deref().unwrap_or(language), capture)?;
+        // Recheck recent speech, not the beginning of a long utterance. Reuse the
+        // result between checks to avoid an extra encoder pass on every update.
+        if language == "auto" && duration.saturating_sub(window.language_checked_at) >= 24_000 {
+            // An inconclusive detector must not interrupt otherwise usable ASR.
+            if let Ok(Some(detected)) = engine.detect_language(&audio[duration.saturating_sub(32_000)..duration]) {
+                window.observe_language(detected, duration);
+            }
+            window.language_checked_at = duration;
+        }
+        engine.recognize(&audio, window.detected_language.as_deref().unwrap_or(language), capture, window.multilingual)?;
         if capture.cancel.load(Ordering::Acquire) {
             return Ok(Transcript { preview: String::new(), committed: String::new(), consumed: samples.len() });
         }
-        let decoder = &engine.decoder;
-        // Reuse an agreed language only within this utterance. A pause resets
-        // detection so the next utterance can use a different language.
-        if language == "auto" && window.detected_language.is_none() {
-            if let Some(detected) = whisper_rs::get_lang_str(decoder.full_lang_id_from_state()) {
-                if duration >= 24_000 && window.language_candidate.as_deref() == Some(detected) {
-                    window.detected_language = Some(detected.into());
+        let mut words: Vec<Word> = Vec::new();
+        for segment in engine.decoder.as_iter() {
+            if segment.no_speech_probability() >= 0.6 { continue; }
+            let text = segment.to_str_lossy().map_err(|_| "Could not read recognition result")?;
+            let start = segment.start_timestamp().max(0) as usize * 160;
+            let end = (segment.end_timestamp().max(0) as usize * 160).min(duration);
+            for (index, part) in text.split_whitespace().enumerate() {
+                if index == 0 && !text.starts_with(char::is_whitespace) {
+                    if let Some(last) = words.last_mut() {
+                        last.text.push_str(part);
+                        last.end = end;
+                        continue;
+                    }
                 }
-                window.language_candidate = Some(detected.into());
+                words.push(Word { text: part.into(), start, end });
             }
         }
-        let mut text = String::new();
-        let mut committed = String::new();
-        let mut consumed = 0;
-        for segment in decoder.as_iter() {
-            if segment.no_speech_probability() < 0.6 {
-                let words = segment
-                    .to_str_lossy()
-                    .map_err(|_| "Could not read recognition result")?;
-                text.push_str(&words);
-            }
-            // Confirm complete words twice, but give recently revised words one
-            // more update. The newest half-second also stays uncommitted.
-            let agreed = window.confirms(text.trim())
-                && segment.end_timestamp().max(0) as usize + 50 <= duration / 160;
-            let stable = commit_all || agreed;
-            if stable {
-                committed = text.clone();
-            }
-        }
-        let text = text.trim();
-        let candidate = committed.trim();
-        let preview = remaining_words(text, &window.confirmed).unwrap_or("").trim().to_string();
-        let committed = if let Some(suffix) = remaining_words(candidate, &window.confirmed) {
-            let suffix = suffix.trim().to_string();
-            window.confirmed = candidate.into();
-            suffix
-        } else if commit_all {
-            return Err("Recognition revised words already entered. Check the terminal and repeat the remaining words.".into());
-        } else {
-            String::new()
-        };
-        window.observe(text);
-        // Retain acoustic context while emitting words. Cutting at estimated word
-        // timestamps can split a syllable and corrupt the next recognition update.
+        let mut transcript = window.update(words, duration, commit_all);
         if commit_all {
-            consumed = utterance_samples;
+            transcript.consumed = utterance_samples;
             *window = TranscriptWindow::default();
+        } else if let Some(last) = window.confirmed.last() {
+            if last.end >= 96_000 {
+                // Retain at least four seconds of confirmed acoustic context. Any
+                // partial word at the cut is already entered and aligned out.
+                let cut = window.confirmed.iter().rev()
+                    .find(|word| word.start + 64_000 <= last.end)
+                    .map(|word| word.start / 320 * 320).unwrap_or(0);
+                transcript.consumed = cut * rate as usize / 16_000;
+                window.trim(cut);
+            }
         }
-        Ok(Transcript {
-            preview,
-            committed,
-            consumed,
-        })
-    }
-
-    fn agreed_prefix(previous: &str, candidate: &str) -> bool {
-        !candidate.is_empty() && remaining_words(previous, candidate)
-            .is_some_and(|remaining| !remaining.trim().is_empty())
+        Ok(transcript)
     }
 
     fn same_word(left: &str, right: &str) -> bool {
         let normalize = |word: &str| word.trim_matches(['.', ',', '!', '?', ';', ':']).to_lowercase();
         normalize(left) == normalize(right)
-    }
-
-    fn remaining_words<'a>(text: &'a str, confirmed: &str) -> Option<&'a str> {
-        // Later context often revises casing or sentence punctuation. Keep what
-        // was already typed and align whole words, without deleting terminal input.
-        let mut remaining = text;
-        for word in confirmed.split_whitespace() {
-            remaining = remaining.trim_start();
-            let end = remaining.find(char::is_whitespace).unwrap_or(remaining.len());
-            if end == 0 || !same_word(&remaining[..end], word) { return None; }
-            remaining = &remaining[end..];
-        }
-        Some(remaining)
     }
 
     #[cfg(test)]
@@ -545,18 +675,6 @@ mod native {
         }
 
         #[test]
-        fn encoder_window_keeps_padding_without_truncating_long_speech() {
-            assert_eq!(audio_context(16_000), 768);
-            assert_eq!(audio_context(160_000), 768);
-            assert!(audio_context(240_000) >= 850);
-            for seconds in 1..=27 {
-                let context = audio_context(seconds * 16_000) as usize;
-                assert!(context <= 1500);
-                assert!(context * 320 >= (seconds + 2) * 16_000);
-            }
-        }
-
-        #[test]
         fn decoder_cancellation_reads_only_the_live_atomic_flag() {
             let capture = capture();
             let pointer = Arc::as_ptr(&capture).cast_mut().cast();
@@ -572,42 +690,126 @@ mod native {
             assert_eq!(Arc::strong_count(&capture), references, "Decoder callbacks must not leak recordings");
         }
 
-        #[test]
-        fn only_complete_agreed_words_are_committed() {
-            assert!(agreed_prefix("Please write this", "Please write"));
-            assert!(agreed_prefix("Türkçe konuşmaya devam", "Türkçe konuşmaya"));
-            assert!(!agreed_prefix("Please write", "Please write"));
-            assert!(!agreed_prefix("Please writer", "Please write"));
-            assert!(!agreed_prefix("Please read this", "Please write"));
-            assert!(!agreed_prefix("Anything", ""));
-            assert!(agreed_prefix("As I speak. Then continue", "As I speak, then"));
-            assert_eq!(remaining_words("As I speak. Then continue", "As I speak,"), Some(" Then continue"));
-            assert_eq!(remaining_words("Do not run this", "Do run"), None);
-            assert_eq!(remaining_words("Use foo-bar next", "Use foobar"), None);
+        fn words(text: &str) -> Vec<Word> {
+            text.split_whitespace().enumerate().map(|(index, text)| Word {
+                text: text.into(), start: index * 8_000, end: (index + 1) * 8_000,
+            }).collect()
         }
 
         #[test]
-        fn brief_language_switch_revisions_are_not_confirmed_early() {
+        fn old_word_revisions_do_not_block_new_input() {
             let mut window = TranscriptWindow::default();
-            window.observe("Please write this.");
-            window.observe("Please write the sentence.");
-            assert!(window.confirms("Please write"));
-            assert!(!window.confirms("Please write the"));
-            window.observe("Please write the sentence in.");
-            assert!(!window.confirms("Please write this"));
-            window.observe("Please write this sentence into the");
-            assert!(!window.confirms("Please write this"));
-            window.observe("Please write this sentence into the terminal");
-            assert!(window.confirms("Please write this"));
+            window.update(words("Please write the sentence"), 48_000, false);
+            assert_eq!(window.update(words("Please write the sentence here"), 56_000, false).committed, "Please write the");
+            assert_eq!(window.update(words("Please write this sentence here now"), 64_000, false).committed, "sentence");
+            assert_eq!(window.update(words("Please write this sentence here now"), 64_000, true).committed, "here now");
         }
 
         #[test]
-        fn consistent_word_growth_keeps_two_observation_confirmation() {
+        fn alignment_handles_insertions_deletions_and_repeated_words() {
+            let expanded = words("Please carefully write this sentence");
+            let confirmed = vec![expanded[0].clone(), expanded[2].clone(), expanded[3].clone()];
+            assert_eq!(aligned_prefix(&expanded, &confirmed), 4);
+            let shortened = vec![expanded[0].clone(), expanded[2].clone(), expanded[3].clone(), expanded[4].clone()];
+            assert_eq!(aligned_prefix(&shortened, &expanded[..4]), 3);
+            assert_eq!(aligned_prefix(&words("go go go next"), &words("go go")), 2);
+            assert_eq!(aligned_prefix(&words("Use foo-bar next"), &words("Use foobar")), 2);
+            assert_eq!(aligned_prefix(&words("Türkçe bitti now keep speaking"), &words("Türkçe bitti")), 2);
+        }
+
+        #[test]
+        fn incomplete_hypotheses_do_not_forget_entered_words() {
+            for revision in ["", "one two"] {
+                let mut window = TranscriptWindow::default();
+                assert_eq!(window.update(words("one two three"), 40_000, true).committed, "one two three");
+                assert_eq!(window.update(words(revision), 48_000, false).committed, "");
+                assert_eq!(window.update(words("one two three four"), 56_000, true).committed, "four");
+            }
             let mut window = TranscriptWindow::default();
-            window.observe("Please write");
-            window.observe("Please write this sentence");
-            assert!(window.confirms("Please write this"));
-            assert!(!window.confirms("Please write this sentence"));
+            window.update(words("keep listening"), 24_000, false);
+            assert_eq!(window.update(Vec::new(), 32_000, true).committed, "");
+            assert_eq!(window.update(words("keep listening"), 24_000, false).committed, "keep");
+            assert_eq!(window.update(Vec::new(), 32_000, true).committed, "listening");
+        }
+
+        #[test]
+        fn whole_revisions_do_not_repeat_already_entered_audio() {
+            let mut window = TranscriptWindow::default();
+            window.update(words("hello"), 16_000, true);
+            assert_eq!(window.update(words("merhaba next"), 32_000, true).committed, "next");
+        }
+
+        #[test]
+        fn language_changes_preserve_agreed_pending_words_from_omitted_prefixes() {
+            let mut window = TranscriptWindow::default();
+            window.observe_language("en".into(), 16_000);
+            window.update(words("If the network request fails"), 48_000, false);
+            assert_eq!(window.update(words("If the network request fails I may stay"), 72_000, false).committed, "If the network request");
+            window.observe_language("tr".into(), 72_000);
+            assert_eq!(window.update(words("Aynı isteği tekrar gönder"), 80_000, false).committed, "fails");
+            assert_eq!(window.update(words("Aynı isteği tekrar gönder"), 88_000, false).committed, "");
+            assert_eq!(window.update(words("Aynı isteği tekrar gönder"), 96_000, false).committed, "Aynı isteği tekrar gönder");
+            assert!(!window.missing_prefix);
+            assert_eq!(window.update(words("Entirely revised old phrase next"), 104_000, true).committed, "next");
+        }
+
+        #[test]
+        fn language_hints_follow_recent_speech_and_expire_with_its_audio() {
+            let mut window = TranscriptWindow::default();
+            window.observe_language("en".into(), 24_000);
+            assert!(!window.multilingual);
+            window.observe_language("tr".into(), 48_000);
+            assert!(window.multilingual);
+            window.observe_language("en".into(), 72_000);
+            assert_eq!(window.detected_language.as_deref(), Some("tr"));
+            window.observe_language("de".into(), 96_000);
+            assert_eq!(window.detected_language.as_deref(), Some("de"));
+            window.trim(96_000);
+            assert_eq!(window.detected_language, None);
+            window.observe_language("en".into(), 24_000);
+            assert_eq!(window.detected_language.as_deref(), Some("en"));
+        }
+
+        #[test]
+        fn later_speech_is_not_mistaken_for_missing_overlap() {
+            let confirmed = vec![Word { text: "go".into(), start: 0, end: 8_000 }];
+            let later = vec![Word { text: "go".into(), start: 24_000, end: 32_000 }];
+            assert_eq!(aligned_prefix(&later, &confirmed), 0);
+            let confirmed = vec![Word { text: "hello".into(), start: 0, end: 32_000 }];
+            let later = vec![Word { text: "continue".into(), start: 32_000, end: 36_000 }];
+            assert_eq!(aligned_prefix(&later, &confirmed), 0);
+        }
+
+        #[test]
+        fn retimed_overlap_does_not_repeat_words_after_an_audio_cut() {
+            let confirmed = words("into the terminal as I");
+            let mut revised = words("into the terminal as I speak");
+            for word in &mut revised[2..] {
+                word.start += 16_000;
+                word.end += 16_000;
+            }
+            assert_eq!(aligned_prefix(&revised, &confirmed), 5);
+        }
+
+        #[test]
+        fn recent_revisions_and_incomplete_words_wait_for_confirmation() {
+            let mut window = TranscriptWindow::default();
+            assert_eq!(window.update(words("Please write this"), 40_000, false).committed, "");
+            assert_eq!(window.update(words("Please write the sentence"), 48_000, false).committed, "Please write");
+            assert_eq!(window.update(words("Please write the sentence here"), 56_000, false).committed, "");
+            assert_eq!(window.update(words("Please write this sentence here"), 56_000, false).committed, "");
+            assert_eq!(window.update(words("Please write this sentence here now"), 56_000, false).committed, "");
+            assert_eq!(window.update(words("Please write this sentence here now"), 56_000, false).committed, "this sentence here");
+        }
+
+        #[test]
+        fn retained_audio_overlap_does_not_repeat_entered_words() {
+            let mut window = TranscriptWindow::default();
+            window.update(words("one two three four five six seven eight"), 80_000, false);
+            assert_eq!(window.update(words("one two three four five six seven eight nine"), 88_000, false).committed, "one two three four five six seven");
+            window.trim(32_000);
+            assert_eq!(window.update(words("five six seven eight nine ten"), 64_000, false).committed, "eight");
+            assert_eq!(window.update(words("five six seven eight nine ten"), 64_000, true).committed, "nine ten");
         }
 
         #[test]
@@ -628,9 +830,21 @@ mod native {
             let mut committed = String::new();
             let mut offset = 0;
             let mut live_updates = 0;
-            for incoming in samples.chunks(4_000) {
-                capture.samples.lock().unwrap().extend_from_slice(incoming);
-                offset += incoming.len();
+            let realtime = std::env::var_os("PZZA_DICTATION_TEST_REALTIME").is_some();
+            let started = Instant::now();
+            while offset < samples.len() {
+                // In live capture, audio also arrives while inference is running.
+                // Exercise that cadence as well as deterministic quarter-second steps.
+                let end = if realtime {
+                    let available = (started.elapsed().as_secs_f64() * 16_000.0) as usize;
+                    if available.saturating_sub(offset) < 4_000 && available < samples.len() {
+                        std::thread::sleep(Duration::from_millis(15));
+                        continue;
+                    }
+                    available.min(samples.len())
+                } else { (offset + 4_000).min(samples.len()) };
+                capture.samples.lock().unwrap().extend_from_slice(&samples[offset..end]);
+                offset = end;
                 let audio = capture.samples.lock().unwrap().clone();
                 let transcript = transcribe_samples(&mut engine, &capture, language, &mut window, &audio, 16_000, false).unwrap();
                 if !transcript.committed.is_empty() && offset < samples.len() {
@@ -649,9 +863,9 @@ mod native {
                 .split_whitespace().collect::<Vec<_>>().join(" ");
             assert_eq!(normalize(&committed), normalize(&expected));
             capture.cancel.store(true, Ordering::Release);
-            engine.recognize(&samples, language, &capture).unwrap();
+            engine.recognize(&samples, language, &capture, false).unwrap();
             capture.cancel.store(false, Ordering::Release);
-            engine.recognize(&samples, language, &capture).unwrap();
+            engine.recognize(&samples, language, &capture, false).unwrap();
             assert!(engine.decoder.full_n_segments() > 0, "The next recording must remain usable after cancellation");
         }
     }
