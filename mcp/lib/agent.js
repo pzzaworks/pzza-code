@@ -28,7 +28,7 @@ async function remoteRequest() {
   const dir = process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config");
   const token = fs.readFileSync(path.join(dir, "pzzacode", "agent-token"), "utf8").trim();
   const response = await fetch(`http://127.0.0.1:5190${endpoint}`, {
-    ...options, redirect: "error", signal: AbortSignal.timeout(25000),
+    ...options, redirect: "error", signal: AbortSignal.timeout(endpoint === "/git/protect" ? 58000 : 25000),
     headers: { ...options.headers, Authorization: `Bearer ${token}` },
   });
   process.stdout.write(JSON.stringify({ status: response.status, body: await response.text() }));
@@ -42,7 +42,7 @@ export function sshApi(host, endpoint, options = {}) {
   return new Promise((resolve, reject) => {
     const child = execFile("ssh", ["-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "-o", "StrictHostKeyChecking=yes",
       "-o", "ControlMaster=auto", "-o", "ControlPath=~/.ssh/pzza-mux-%C", "-o", "ControlPersist=120", host, `node -e ${quoted}`],
-    { timeout: 30000, maxBuffer: 8 * 1024 * 1024 }, (error, stdout) => {
+    { timeout: endpoint === "/git/protect" ? 60000 : 30000, maxBuffer: 8 * 1024 * 1024 }, (error, stdout) => {
       if (error) return reject(new Error("Cannot reach the app agent over SSH. Check SSH access, Node.js and that the app is running."));
       try {
         const result = JSON.parse(stdout);
@@ -76,7 +76,7 @@ async function localApi(p, opts) {
   const token = agentToken();
   const headers = { ...(opts && opts.headers ? opts.headers : {}) };
   if (token) headers.Authorization = `Bearer ${token}`;
-  const res = await fetch(`${BASE}${p}`, { ...(opts || {}), headers, redirect: "error", signal: AbortSignal.timeout(30000) });
+  const res = await fetch(`${BASE}${p}`, { ...(opts || {}), headers, redirect: "error", signal: AbortSignal.timeout(p === "/git/protect" ? 60000 : 30000) });
   const text = await res.text();
   if (!res.ok) throw responseError(res.status, text);
   try {

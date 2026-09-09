@@ -4,12 +4,14 @@ import { Check, LayoutGrid, Plus } from "lucide-react";
 import { useStore } from "../state/store";
 import { Modal } from "../ui/Modal";
 import { useExclusiveMenu } from "../ui/menuBus";
-import { ALL_WORKSPACE_ID, WORKSPACE_COLORS } from "../workspaces";
+import { ALL_WORKSPACE_ID, DEFAULT_WORKSPACE_ID, WORKSPACE_COLORS } from "../workspaces";
 import { altBadge, digitFromCode } from "../shortcuts";
 import { workspaceIcon, DEFAULT_WORKSPACE_ICON } from "../workspaceIcons";
 import { IconPicker } from "../ui/IconPicker";
 import { SESSION_DND, SESSION_TILE_DND, sessionDisplayName } from "../sessionMeta";
 import { WorkspaceSettings } from "../panels/WorkspaceSettings";
+
+const WORKSPACE_DND = "application/x-pzza-workspace";
 
 interface PendingMove {
   session: string;
@@ -21,6 +23,7 @@ export function WorkspaceTabs() {
   const workspaces = useStore((s) => s.workspaces);
   const workspaceId = useStore((s) => s.activeWorkspaceId);
   const setWorkspace = useStore((s) => s.setWorkspace);
+  const reorderWorkspace = useStore((s) => s.reorderWorkspace);
   const addWorkspace = useStore((s) => s.addWorkspace);
   const assignSession = useStore((s) => s.assignSession);
   const sessionWs = useStore((s) => s.sessionWs);
@@ -43,7 +46,7 @@ export function WorkspaceTabs() {
     scrollRef.current
       ?.querySelector<HTMLElement>(".ws-tab-active")
       ?.scrollIntoView({ block: "nearest", inline: "nearest" });
-  }, [workspaceId]);
+  }, [workspaceId, workspaces]);
 
   // Position the strip from the real edges of the brand and the tool cluster.
   // It is centered on the bar whenever the tabs fit that way; when they only
@@ -85,6 +88,9 @@ export function WorkspaceTabs() {
     };
   }, [workspaces]);
   const [dragOver, setDragOver] = useState<string | null>(null);
+  const [workspaceDrop, setWorkspaceDrop] = useState<{ id: string; placement: "before" | "after" } | null>(null);
+  const draggedWorkspace = useRef<string | null>(null);
+  const dragEndedAt = useRef(-Infinity);
   const [pending, setPending] = useState<PendingMove | null>(null);
   const ref = useRef<HTMLDivElement>(null);
 
@@ -133,9 +139,18 @@ export function WorkspaceTabs() {
   const onDropTab = (wsId: string, e: React.DragEvent) => {
     e.preventDefault();
     setDragOver(null);
+    setWorkspaceDrop(null);
+    const workspace = e.dataTransfer.getData(WORKSPACE_DND);
+    if (workspace) {
+      if (workspace === draggedWorkspace.current) {
+        const rect = e.currentTarget.getBoundingClientRect();
+        reorderWorkspace(workspace, wsId, e.clientX < rect.left + rect.width / 2 ? "before" : "after");
+      }
+      return;
+    }
     const session = e.dataTransfer.getData(SESSION_DND);
     if (!session) return;
-    const current = sessionWs[session] ?? workspaces[0]?.id;
+    const current = sessionWs[session] ?? DEFAULT_WORKSPACE_ID;
     if (current === wsId) return;
     setPending({ session, tileId: e.dataTransfer.getData(SESSION_TILE_DND) || session, wsId });
   };
@@ -169,6 +184,7 @@ export function WorkspaceTabs() {
       <div className="ws-tabs-scroll" ref={scrollRef}>
       <div
         className={`ws-tab ${workspaceId === ALL_WORKSPACE_ID ? "ws-tab-active" : ""}`}
+        draggable={false}
         onClick={() => {
           setWorkspace(ALL_WORKSPACE_ID);
           setSettingsFor(null);
@@ -188,8 +204,22 @@ export function WorkspaceTabs() {
             <div
               className={`ws-tab ${active ? "ws-tab-active" : ""} ${
                 dragOver === w.id ? "ws-tab-drop" : ""
-              }`}
+              } ${workspaceDrop?.id === w.id ? `ws-tab-reorder-${workspaceDrop.placement}` : ""}`}
+              draggable
+              onDragStart={(e) => {
+                draggedWorkspace.current = w.id;
+                e.dataTransfer.setData(WORKSPACE_DND, w.id);
+                e.dataTransfer.effectAllowed = "move";
+                closeMenus();
+              }}
+              onDragEnd={() => {
+                draggedWorkspace.current = null;
+                dragEndedAt.current = performance.now();
+                setWorkspaceDrop(null);
+                setDragOver(null);
+              }}
               onClick={(e) => {
+                if (performance.now() - dragEndedAt.current < 200) return;
                 if (active) {
                   const wasOpen = settingsFor === w.id;
                   setSettingsFor(wasOpen ? null : w.id);
@@ -201,7 +231,12 @@ export function WorkspaceTabs() {
               }}
               title={w.name}
               onDragOver={(e) => {
-                if (e.dataTransfer.types.includes(SESSION_DND)) {
+                if (e.dataTransfer.types.includes(WORKSPACE_DND) && draggedWorkspace.current) {
+                  e.preventDefault();
+                  e.dataTransfer.dropEffect = "move";
+                  const rect = e.currentTarget.getBoundingClientRect();
+                  setWorkspaceDrop({ id: w.id, placement: e.clientX < rect.left + rect.width / 2 ? "before" : "after" });
+                } else if (e.dataTransfer.types.includes(SESSION_DND)) {
                   e.preventDefault();
                   // Must match the source's effectAllowed ("move") or WebKit
                   // refuses the drop.
@@ -209,7 +244,11 @@ export function WorkspaceTabs() {
                   setDragOver(w.id);
                 }
               }}
-              onDragLeave={() => setDragOver((d) => (d === w.id ? null : d))}
+              onDragLeave={(e) => {
+                if (e.relatedTarget instanceof Node && e.currentTarget.contains(e.relatedTarget)) return;
+                setDragOver((d) => (d === w.id ? null : d));
+                setWorkspaceDrop((target) => target?.id === w.id ? null : target);
+              }}
               onDrop={(e) => onDropTab(w.id, e)}
             >
               <Icon

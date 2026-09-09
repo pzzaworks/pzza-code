@@ -30,6 +30,7 @@ test("packaged MCP initializes and calls the agent without installed dependencie
 
   const token = randomBytes(24).toString("hex");
   const requests = [];
+  const gitRequests = [];
   const agent = http.createServer((req, res) => {
     requests.push({ url: req.url, method: req.method, authorized: req.headers.authorization === `Bearer ${token}` });
     res.setHeader("Content-Type", "application/json");
@@ -38,6 +39,13 @@ test("packaged MCP initializes and calls the agent without installed dependencie
       res.end(JSON.stringify({ error: "unauthorized" }));
     } else if (req.url === "/capabilities") {
       res.end(JSON.stringify({ role: "source", forward: false, host: null }));
+    } else if (req.url === "/git/protect") {
+      let body = "";
+      req.on("data", chunk => { body += chunk; });
+      req.on("end", () => {
+        gitRequests.push(JSON.parse(body));
+        res.end(JSON.stringify({ approved: false, findings: [{ path: ".env.local", line: 0, rule: "sensitive-file" }] }));
+      });
     } else {
       res.writeHead(503);
       res.end(JSON.stringify({ error: "Device unavailable" }));
@@ -60,6 +68,7 @@ test("packaged MCP initializes and calls the agent without installed dependencie
   t.after(() => client.close());
   await client.connect(transport, { timeout: 5000 });
   assert.equal(client.getServerVersion()?.name, "pzzacode-mcp");
+  assert.match(client.getInstructions(), /Before every commit, push, or pull request, call the git_protect tool/);
 
   const { tools } = await client.listTools();
   assert.deepEqual(tools, TOOLS.map(({ name, description, inputSchema, annotations }) => ({
@@ -72,8 +81,19 @@ test("packaged MCP initializes and calls the agent without installed dependencie
   const failure = await client.callTool({ name: "device_info", arguments: {} });
   assert.equal(failure.isError, true);
   assert.match(failure.content[0].text, /503.*Device unavailable/);
+  for (const [name, arguments_] of [
+    ["git_protect", { path: directory, operation: "commit" }],
+    ["git_commit", { path: directory, message: "Review protected change" }],
+    ["git_create_pull_request", { path: directory, base: "main", title: "Review protected change", body: "Reviewed changes." }],
+  ]) {
+    const blocked = await client.callTool({ name, arguments: arguments_ });
+    assert.equal(blocked.isError, true);
+    assert.equal(JSON.parse(blocked.content[0].text).approved, false);
+  }
+  assert.deepEqual(gitRequests.map(request => request.operation), ["commit", "commit_create", "pull_request_create"]);
   assert.deepEqual(requests, [
     { url: "/capabilities", method: "GET", authorized: true },
     { url: "/device/info", method: "GET", authorized: true },
+    ...Array.from({ length: 3 }, () => ({ url: "/git/protect", method: "POST", authorized: true })),
   ]);
 });

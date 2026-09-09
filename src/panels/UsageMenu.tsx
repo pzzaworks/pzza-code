@@ -1,5 +1,8 @@
+import { useStore } from "../state/store";
+import { deviceHost } from "../devices";
+import { loadDeviceUsage } from "../usageFallback";
 import { useDelayedLoading } from "../ui/useDelayedLoading";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { AlertTriangle, Loader2, RefreshCw } from "lucide-react";
 import {
   fetchUsage,
@@ -116,6 +119,9 @@ function loadMode(): Mode {
 
 // Agent usage for the connected device's Claude / Codex accounts.
 export function UsageMenu() {
+  const devices = useStore(store => store.devices);
+  const request = useRef(0);
+  useEffect(() => () => { request.current++; }, []);
   const [loading, setLoading] = useState(true);
   const [spinning, setSpinning] = useState(false);
   const showSpinner = useDelayedLoading(loading);
@@ -135,26 +141,30 @@ export function UsageMenu() {
   };
 
   const load = useCallback((fresh = false) => {
+    const current = ++request.current;
     setLoading(true);
-    const usageRequest = fetchUsage(fresh)
-      .then((a) => {
-        setAccounts(a);
-        setFailed(false);
+    const usageRequest = loadDeviceUsage(devices.filter(device => deviceHost(device)).map(device => ({ host: deviceHost(device), name: device.name })), host => fetchUsage(fresh, host), (a) => {
+        if (request.current !== current) return;
+        setAccounts(a); setFailed(false);
+        if (a.some(account => account.usage && !account.error)) setLoading(false);
       })
-      .catch(() => setFailed(true));
+      .catch(() => { if (request.current === current) setFailed(true); });
     // Spend resolves separately (a slower local scan) so it never holds up usage.
     const spendRequest = fetchSpend(fresh)
       .then((s) => {
+        if (request.current !== current) return;
         const map: Record<string, AccountSpend> = {};
         for (const e of s) map[`${e.provider}:${e.label}`] = e;
         setSpend(map);
       })
       .catch(() => undefined);
-    void Promise.allSettled([usageRequest, spendRequest]).then(() => {
+    void spendRequest;
+    void usageRequest.finally(() => {
+      if (request.current !== current) return;
       setLoading(false);
       if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) setSpinning(false);
     });
-  }, []);
+  }, [devices]);
   useEffect(() => load(false), [load]);
 
   return (
@@ -191,7 +201,7 @@ export function UsageMenu() {
           <AlertTriangle size={15} className="sw-warn" /> Agent unreachable.
         </div>
       ) : accounts.length === 0 ? (
-        <div className="usage-empty muted">No Claude or Codex accounts found on this device.</div>
+        <div className="usage-empty muted">No signed-in agent accounts found on available devices.</div>
       ) : (
         accounts.map((acc, i) => {
           const p = PROVIDER[acc.provider] ?? { name: acc.label, color: "var(--accent)" };
@@ -202,6 +212,7 @@ export function UsageMenu() {
                 <span className="usage-name">{p.name}</span>
                 {acc.plan ? <span className="usage-plan">{acc.plan.replace(/_/g, " ")}</span> : null}
                 {acc.email ? <span className="usage-email">{acc.email}</span> : null}
+                {acc.sourceName ? <span className="usage-plan" title={`Usage from ${acc.sourceHost}`}>{acc.sourceName}</span> : null}
               </div>
               {acc.error ? (
                 <div className="usage-err">{acc.error}</div>
@@ -224,7 +235,7 @@ export function UsageMenu() {
                     />
                   ))}
                   {(() => {
-                    const sp = spend[`${acc.provider}:${acc.label}`];
+                    const sp = (acc.sourceHost ? undefined : spend[`${acc.provider}:${acc.label}`]);
                     if (!sp) return null;
                     const row = (label: string, w: { cost: number; tokens: number }) => (
                       <div className="usage-detail-row">

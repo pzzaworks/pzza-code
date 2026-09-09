@@ -1,6 +1,7 @@
 import { DeviceIcon } from "../ui/DeviceIcon";
 import { useEffect, useRef, useState } from "react";
-import { ExternalLink, LoaderCircle } from "lucide-react";
+import { ExternalLink, LoaderCircle, Settings } from "lucide-react";
+import { create } from "zustand";
 import { AsyncButton } from "../ui/AsyncButton";
 import { useDelayedLoading } from "../ui/useDelayedLoading";
 import { useStore } from "../state/store";
@@ -43,6 +44,12 @@ function fwdSave(key: string, v: string) {
   }
 }
 
+const useForwardConfig = create<{ serverId: string; clientId: string; enabled: boolean }>(() => ({
+  serverId: fwdLoad("pzza.fwd.serverDev", ""),
+  clientId: fwdLoad("pzza.fwd.clientDev", "this-mac"),
+  enabled: fwdLoad("pzza.fwd.enabled", "1") !== "0",
+}));
+
 function ForwardConfig({
   serverId,
   clientId,
@@ -69,18 +76,21 @@ function ForwardConfig({
   );
 }
 
-export function PortsMenu({ active = true, onLoadingChange }: { active?: boolean; onLoadingChange?: (loading: boolean) => void }) {
+export function PortsMenu({ active = true, onLoadingChange, onOpenSettings }: {
+  active?: boolean;
+  onLoadingChange?: (loading: boolean) => void;
+  onOpenSettings?: () => void;
+}) {
   const devices = useStore((s) => s.devices);
-  const [serverId, setServerId] = useState(() =>
-    fwdLoad("pzza.fwd.serverDev", devices.find((d) => d.id !== "this-mac")?.id ?? devices[0]?.id ?? ""),
-  );
-  const [clientId, setClientId] = useState(() => fwdLoad("pzza.fwd.clientDev", "this-mac"));
+  const configuredServer = useForwardConfig((state) => state.serverId);
+  const serverId = configuredServer || devices.find((device) => device.id !== "this-mac")?.id || devices[0]?.id || "";
+  const clientId = useForwardConfig((state) => state.clientId);
   const onServer = (v: string) => {
-    setServerId(v);
+    useForwardConfig.setState({ serverId: v });
     fwdSave("pzza.fwd.serverDev", v);
   };
   const onClient = (v: string) => {
-    setClientId(v);
+    useForwardConfig.setState({ clientId: v });
     fwdSave("pzza.fwd.clientDev", v);
   };
 
@@ -94,17 +104,25 @@ export function PortsMenu({ active = true, onLoadingChange }: { active?: boolean
         : server.host
       : null;
   const clientIsLocal = clientId === "this-mac";
+  const showControls = !onOpenSettings;
 
   return (
-    <div className="settings-page ports-settings">
-      <ForwardConfig serverId={serverId} clientId={clientId} onServer={onServer} onClient={onClient} />
-      <section className="settings-section" aria-label="Live services">
+    <div className={showControls ? "settings-page ports-settings" : "menu-body"}>
+      {showControls ? <ForwardConfig serverId={serverId} clientId={clientId} onServer={onServer} onClient={onClient} /> : <>
+        <div className="menu-title">Port forwarding</div>
+        <p className="small muted">{server?.name ?? "Source device"} → {devices.find(device => device.id === clientId)?.name ?? "Receiver"}</p>
+      </>}
+      <section className={showControls ? "settings-section" : undefined} aria-label="Live services">
       {HAS_TAURI ? (
-        <TauriPorts pollingActive={active} serverHost={serverHost} clientIsLocal={clientIsLocal} onLoadingChange={onLoadingChange} />
+        <TauriPorts pollingActive={active} serverHost={serverHost} clientIsLocal={clientIsLocal} showControls={showControls} onLoadingChange={onLoadingChange} />
       ) : (
-        <ServerPorts pollingActive={active} onLoadingChange={onLoadingChange} />
+        <ServerPorts pollingActive={active} showControls={showControls} onLoadingChange={onLoadingChange} />
       )}
       </section>
+      {onOpenSettings ? <button type="button" className="menu-item" onClick={onOpenSettings}>
+        <Settings size={16} strokeWidth={1.9} />
+        Settings
+      </button> : null}
     </div>
   );
 }
@@ -113,6 +131,7 @@ function ForwardSwitch({ enabled, onToggle, loading = false }: { enabled: boolea
   const showLoading = useDelayedLoading(loading);
   return (
     <button
+      type="button"
       className={`switch ${enabled ? "switch-on" : ""}`}
       onClick={onToggle}
       role="switch"
@@ -120,6 +139,7 @@ function ForwardSwitch({ enabled, onToggle, loading = false }: { enabled: boolea
       aria-busy={loading}
       disabled={loading}
       title={enabled ? "Disable forwarding" : "Enable forwarding"}
+      aria-label={enabled ? "Disable forwarding" : "Enable forwarding"}
     >
       <span className="switch-knob async-switch-knob">{showLoading ? <LoaderCircle size={12} className="async-spinner" /> : null}</span>
     </button>
@@ -178,7 +198,7 @@ function OpenLink({ port }: { port: number }) {
   );
 }
 
-function ServerPorts({ pollingActive, onLoadingChange }: { pollingActive: boolean; onLoadingChange?: (loading: boolean) => void }) {
+function ServerPorts({ pollingActive, showControls, onLoadingChange }: { pollingActive: boolean; showControls: boolean; onLoadingChange?: (loading: boolean) => void }) {
   const { details, unavailable, loading: detailsLoading } = usePortDetails(undefined, pollingActive);
   const [caps, setCaps] = useState<Capabilities | null>(null);
   const [ports, setPorts] = useState<number[]>([]);
@@ -258,7 +278,7 @@ function ServerPorts({ pollingActive, onLoadingChange }: { pollingActive: boolea
             : `source · ${caps.host ?? "server"}`}
         </span>
         <div className="ports-status-spacer" />
-        {isClient ? <ForwardSwitch enabled={enabled} onToggle={toggle} loading={toggling || loading} /> : null}
+        {isClient && showControls ? <ForwardSwitch enabled={enabled} onToggle={toggle} loading={toggling || loading} /> : null}
       </div>
       {error ? <p className="small pad" role="alert">{error}</p> : null}
       {actionError ? <p className="small pad" role="alert">{actionError}</p> : null}
@@ -298,13 +318,13 @@ function NativeOpenLink({ port }: { port: number }) {
   </div>;
 }
 
-function TauriPorts({ serverHost, clientIsLocal, pollingActive, onLoadingChange }: {
-  serverHost: string | null; clientIsLocal: boolean; pollingActive: boolean; onLoadingChange?: (loading: boolean) => void;
+function TauriPorts({ serverHost, clientIsLocal, pollingActive, showControls, onLoadingChange }: {
+  serverHost: string | null; clientIsLocal: boolean; pollingActive: boolean; showControls: boolean; onLoadingChange?: (loading: boolean) => void;
 }) {
   const host = serverHost;
   const { details, unavailable, loading: detailsLoading } = usePortDetails(host ?? undefined, !!host && clientIsLocal && pollingActive);
   const [status, setStatus] = useState<ForwardStatus | null>(null);
-  const [enabled, setEnabled] = useState(true);
+  const enabled = useForwardConfig((state) => state.enabled);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const showLoading = useDelayedLoading(loading);
@@ -356,7 +376,11 @@ function TauriPorts({ serverHost, clientIsLocal, pollingActive, onLoadingChange 
         {!status ? (showLoading ? "Checking ports…" : "\u00a0") : !up ? "SSH connection unavailable" : enabled ? `forwarding ${forwarded.length} ports` : "forwarding off"}
       </span>
       <div className="ports-status-spacer" />
-      <ForwardSwitch enabled={enabled} loading={loading} onToggle={() => { setLoading(true); setEnabled(value => !value); }} />
+      {showControls ? <ForwardSwitch enabled={enabled} loading={loading} onToggle={() => {
+        setLoading(true);
+        useForwardConfig.setState({ enabled: !enabled });
+        fwdSave("pzza.fwd.enabled", enabled ? "0" : "1");
+      }} /> : null}
     </div>
     {error ? <p className="small pad" role="alert">{error}</p> : null}
     {unavailable ? <p className="small muted pad">Could not refresh service details. Showing last known names.</p> : null}

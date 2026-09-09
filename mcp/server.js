@@ -13,10 +13,11 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { TOOLS } from "./lib/tools.js";
 import { toolResult } from "./lib/results.js";
+import { GIT_PROTECTION_INSTRUCTIONS } from "../server/lib/git-protection-policy.js";
 
 const server = new Server(
   { name: "pzzacode-mcp", version: "0.2.21" },
-  { capabilities: { tools: {} } },
+  { capabilities: { tools: {} }, instructions: GIT_PROTECTION_INSTRUCTIONS },
 );
 
 server.setRequestHandler(ListToolsRequestSchema, async () => ({

@@ -100,6 +100,7 @@ interface ConsoleState {
   workspaces: Workspace[];
   activeWorkspaceId: string;
   setWorkspace: (id: string) => void;
+  reorderWorkspace: (id: string, targetId: string, placement: "before" | "after") => void;
   addWorkspace: (name: string, icon?: string, color?: string) => void;
   removeWorkspace: (id: string) => void;
   renameWorkspace: (id: string, name: string) => void;
@@ -247,6 +248,16 @@ export const useStore = create<ConsoleState>((set, get) => ({
   setWorkspace: (id) => {
     set((state) => ({ activeWorkspaceId: id, refreshNonce: state.refreshNonce + 1 }));
   },
+  reorderWorkspace: (id, targetId, placement) => set((state) => {
+    const source = state.workspaces.find((workspace) => workspace.id === id);
+    if (!source || id === targetId || !state.workspaces.some((workspace) => workspace.id === targetId)) return state;
+    const workspaces = state.workspaces.filter((workspace) => workspace.id !== id);
+    const target = workspaces.findIndex((workspace) => workspace.id === targetId);
+    workspaces.splice(target + (placement === "after" ? 1 : 0), 0, source);
+    if (workspaces.every((workspace, index) => workspace.id === state.workspaces[index].id)) return state;
+    persist(WORKSPACES_KEY, workspaces);
+    return { workspaces };
+  }),
   addWorkspace: (name, icon, color) => {
     const trimmed = name.trim();
     if (!trimmed) return;

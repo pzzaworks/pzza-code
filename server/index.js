@@ -30,6 +30,9 @@ import { listSessions, listWindows, scanSessions, sessionActivity, terminateSess
 import { forwardStatus, setForwardEnabled, startForwardLoop } from "./lib/forward.js";
 import { accountEnvArg, listAccounts } from "./lib/accounts.js";
 import { USAGE_FRESH_MS, collectUsage } from "./lib/usage.js";
+import { createRemoteUsage } from "./lib/device-agent.js";
+import { createMcpRepair } from "./lib/mcp-repair.js";
+import { gitProtectorRouter } from "./lib/git-protector.js";
 import { SPEND_FRESH_MS, computeSpend } from "./lib/spend.js";
 import { deviceInfo } from "./lib/device-info.js";
 import { deviceOs, doctor, sshHosts } from "./lib/system.js";
@@ -48,6 +51,8 @@ const queryHost = (url) => {
   return SSH_TOKEN.test(h) ? h : "";
 };
 
+const remoteUsage = createRemoteUsage();
+const repairMcp = createMcpRepair();
 const appControl = createAppControl();
 const appControlRouter = createAppControlRouter(appControl, json);
 const bridge = createBridge({ stateDir: STATE_DIR, appControl });
@@ -74,6 +79,7 @@ const server = http.createServer(async (req, res) => {
   if (await bridgeRouter(req, res, url)) return;
   if (await agentsHubRouter(req, res, url)) return;
   if (await appControlRouter(req, res, url)) return;
+  if (await gitProtectorRouter(req, res, url, json)) return;
   if (await quickChatRouter(req, res, url, json)) return;
 
   if (url.pathname === "/capabilities") {
@@ -81,7 +87,10 @@ const server = http.createServer(async (req, res) => {
   }
   if (url.pathname === "/doctor") return json(res, 200, await doctor());
   if (url.pathname === "/usage") {
-    return json(res, 200, await collectUsage({ fresh: url.searchParams.get("fresh") === "1" }));
+    const host = url.searchParams.get("host") || "";
+    if (host && !SSH_TOKEN.test(host)) return json(res, 400, { error: "Invalid device host" });
+    try { return json(res, 200, host ? await remoteUsage(host, url.searchParams.get("fresh") === "1") : await collectUsage({ fresh: url.searchParams.get("fresh") === "1" })); }
+    catch { return json(res, 503, { error: "Usage is unavailable on this device" }); }
   }
   if (url.pathname === "/accounts") return json(res, 200, listAccounts());
   if (url.pathname === "/spend") return json(res, 200, await computeSpend({ fresh: url.searchParams.get("fresh") === "1" }));
@@ -215,6 +224,12 @@ const server = http.createServer(async (req, res) => {
   if (url.pathname === "/projects/sync" && req.method === "POST") {
     const out = await syncProjects(await readBody(req));
     return json(res, out.error ? 400 : 200, out);
+  }
+  if (url.pathname === "/mcp/repair" && req.method === "POST") {
+    const body = await readBody(req);
+    if (!body || typeof body !== "object" || (body.host !== undefined && (typeof body.host !== "string" || (body.host && !SSH_TOKEN.test(body.host))))) return json(res, 400, { error: "Invalid device host" });
+    try { return json(res, 200, await repairMcp(body.host || "", body.fresh === true)); }
+    catch (error) { return json(res, 503, { error: error.message }); }
   }
   if (url.pathname === "/mcp/config") {
     const agentHost = url.searchParams.get("agentHost") || "";

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import {
   Bell,
   Monitor,
+  EthernetPort,
   Plus,
   Settings as SettingsIcon,
   FolderSync,
@@ -21,6 +22,7 @@ import { LayoutMenu } from "./grid/LayoutMenu";
 import { HELP_SECTIONS, type HelpRequest } from "./panels/HelpModal";
 import { SettingsHub, type SettingsSection } from "./panels/SettingsHub";
 import { useRemoteDesktop } from "./panels/RdpMenu";
+import { PortsMenu } from "./panels/PortsMenu";
 import { SessionMenu } from "./panels/SessionMenu";
 import { Dropdown } from "./ui/Dropdown";
 import { IconButton } from "./ui/IconButton";
@@ -50,6 +52,7 @@ export default function App() {
   const [syncing, setSyncing] = useState(false);
   const [sessionDialogOpen, setSessionDialogOpen] = useState(false);
   const remoteDesktop = useRemoteDesktop();
+  const [portsLoading, setPortsLoading] = useState(false);
   const [menuError, setMenuError] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [helpRequest, setHelpRequest] = useState<HelpRequest | undefined>();
@@ -230,7 +233,21 @@ export default function App() {
                   }} />
                   {syncing ? <span className="toolbar-sync-indicator" role="status" aria-label="Sync in progress" /> : null}
                 </div>
-                <IconButton icon={Monitor} title="Remote desktop" loading={remoteDesktop.busy} onClick={() => { void remoteDesktop.openSaved(); }} />
+                <Dropdown icon={Monitor} title="Remote desktop" loading={remoteDesktop.busy} width={180}>
+                  {(close) => <>
+                    <button type="button" className="menu-item" disabled={remoteDesktop.busy} onClick={() => { close(); void remoteDesktop.openSaved(); }}>
+                      <Monitor size={16} strokeWidth={1.9} />
+                      Open
+                    </button>
+                    <button type="button" className="menu-item" onClick={() => { close(); openSettings("remote"); }}>
+                      <SettingsIcon size={16} strokeWidth={1.9} />
+                      Settings
+                    </button>
+                  </>}
+                </Dropdown>
+                <Dropdown icon={EthernetPort} title="Port forwarding" width={320} loading={portsLoading}>
+                  {(close, open) => <PortsMenu active={open && !settingsOpen} onLoadingChange={setPortsLoading} onOpenSettings={() => { close(); openSettings("ports"); }} />}
+                </Dropdown>
                 <Dropdown icon={Gauge} title="Agent usage" width={320}>
                   <UsageMenu />
                 </Dropdown>
@@ -253,7 +270,7 @@ export default function App() {
 
         <div className="body">
           <main className="canvas">
-            <Canvas />
+            <Canvas onNewSession={() => setSessionDialogOpen(true)} />
           </main>
         </div>
       </div>

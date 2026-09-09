@@ -54,3 +54,5 @@ export const approveBridgeJob = (jobId: string, approved: boolean) => bridgeRequ
 export const cancelBridgeJob = (jobId: string) => bridgeRequest<unknown>("cancel", { jobId });
 
 export const fetchBridgeAudit = () => bridgeRequest<{ audit: BridgeAuditEntry[] }>("audit");
+
+export const fetchBridgePeerIdentity = (host: string) => bridgeRequest<{ identity: BridgeState["identity"] }>("peer-identity", { host });
