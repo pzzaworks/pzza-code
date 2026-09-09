@@ -1,18 +1,20 @@
 import { execFile } from "node:child_process";
-import { SSH_TOKEN, shQuote } from "./shell.js";
+import { SSH_TOKEN, shQuote, deviceEnv } from "./shell.js";
+import { tmuxCommand } from "./tmux-client.js";
 
 export const QUICK_CHAT_SESSION = "pzza-quick-chat";
 
-export function quickChatCommand(agent) {
+export function quickChatCommand(agent, host = "") {
   if (agent !== "claude" && agent !== "codex") throw new Error("Choose a supported agent.");
   // A fixed name and atomic tmux creation prevent duplicate sessions, even
   // across concurrent clients. The session environment identifies our session.
+  const tmux = tmuxCommand(host);
   return `command -v tmux >/dev/null 2>&1 || exit 41
-if ! tmux has-session -t '=pzza-quick-chat' 2>/dev/null; then
+if ! ${tmux} has-session -t '=pzza-quick-chat' 2>/dev/null; then
   executable=$(command -v ${agent}) || exit 42
-  tmux new-session -d -s pzza-quick-chat -x 160 -y 45 -c "$HOME" -e PZZA_QUICK_CHAT_AGENT=${agent} -e "PATH=$PATH" sh -c ${shQuote('exec "$1"')} quick-chat "$executable" 2>/dev/null || tmux has-session -t '=pzza-quick-chat' 2>/dev/null || exit 43
+  ${tmux} new-session -d -s pzza-quick-chat -x 160 -y 45 -c "$HOME" -e PZZA_QUICK_CHAT_AGENT=${agent} -e "PATH=$PATH" sh -c ${shQuote('exec "$1"')} quick-chat "$executable" 2>/dev/null || ${tmux} has-session -t '=pzza-quick-chat' 2>/dev/null || exit 43
 fi
-owner=$(tmux show-environment -t '=pzza-quick-chat' PZZA_QUICK_CHAT_AGENT 2>/dev/null) || exit 44
+owner=$(${tmux} show-environment -t '=pzza-quick-chat' PZZA_QUICK_CHAT_AGENT 2>/dev/null) || exit 44
 case "$owner" in
   PZZA_QUICK_CHAT_AGENT=claude) printf 'claude' ;;
   PZZA_QUICK_CHAT_AGENT=codex) printf 'codex' ;;
@@ -35,19 +37,20 @@ function runQuickChat(body, closing, run) {
       (!closing && body.agent !== "claude" && body.agent !== "codex")) {
     return Promise.reject(Object.assign(new Error("Choose a valid device and agent."), { status: 400 }));
   }
+  const tmux = tmuxCommand(body.host);
   const command = closing ? `command -v tmux >/dev/null 2>&1 || exit 41
-if ! tmux has-session -t '=pzza-quick-chat' 2>/dev/null; then exit 0; fi
-owner=$(tmux show-environment -t '=pzza-quick-chat' PZZA_QUICK_CHAT_AGENT 2>/dev/null) || exit 44
+if ! ${tmux} has-session -t '=pzza-quick-chat' 2>/dev/null; then exit 0; fi
+owner=$(${tmux} show-environment -t '=pzza-quick-chat' PZZA_QUICK_CHAT_AGENT 2>/dev/null) || exit 44
 case "$owner" in
-  PZZA_QUICK_CHAT_AGENT=claude|PZZA_QUICK_CHAT_AGENT=codex) tmux kill-session -t '=pzza-quick-chat' ;;
+  PZZA_QUICK_CHAT_AGENT=claude|PZZA_QUICK_CHAT_AGENT=codex) ${tmux} kill-session -t '=pzza-quick-chat' ;;
   *) exit 44 ;;
-esac` : quickChatCommand(body.agent);
+esac` : quickChatCommand(body.agent, body.host);
   // Explicit empty host always means this device, including receiver mode.
   const args = body.host ? ["-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5",
     "-o", "StrictHostKeyChecking=yes", "-o", "ForwardAgent=no", "-o", "ClearAllForwardings=yes",
     "-o", "ControlMaster=no", "-o", "ControlPath=none", body.host, command] : ["-c", command];
   return new Promise((resolve, reject) => {
-    run(body.host ? "ssh" : "sh", args, { timeout: 15000, maxBuffer: 16384 }, (error, stdout) => {
+    run(body.host ? "ssh" : "sh", args, { timeout: 15000, maxBuffer: 16384, env: deviceEnv(body.host) }, (error, stdout) => {
       if (error) {
         const message = {
           41: "tmux is not installed or is not on this device's PATH.",

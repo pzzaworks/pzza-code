@@ -10,6 +10,8 @@ mod speech_model;
 mod sshmux;
 mod sys;
 mod tmux;
+#[cfg(target_os = "macos")]
+pub mod local_tmux;
 
 use agent::AgentState;
 use forward::ForwardState;
@@ -33,12 +35,17 @@ pub fn run() {
         .setup(|app| {
             #[cfg(target_os = "macos")]
             menu::install(app.handle())?;
+            #[cfg(target_os = "macos")]
+            if let Err(error) = local_tmux::start() {
+                eprintln!("PzzaCode local terminals: {error}");
+            }
             // Launch the local device agent (server/index.js) as a managed sidecar.
             agent::start(&app.handle());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             speech::speech_prepare,
+            speech::speech_input_devices,
             speech::speech_start,
             speech::speech_stop,
             speech_model::speech_model_status,

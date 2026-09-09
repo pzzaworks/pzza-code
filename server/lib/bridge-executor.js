@@ -4,6 +4,8 @@ import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { spawn, execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { tmuxArgs } from "./tmux-client.js";
+import { deviceEnv } from "./shell.js";
 
 export const BRIDGE_ACTION_CAPABILITIES = Object.freeze({
   "terminal.list": "terminal.read", "terminal.read": "terminal.read",
@@ -76,6 +78,7 @@ export function createBridgeExecutor({ stateDir, appControl, authorize = () => {
     throw fail(`Required local tool is not installed: ${name}`, 503);
   } } = {}) {
   if (!stateDir) throw fail("Bridge state directory is required");
+  const runTmux = (args) => run("tmux", tmuxArgs(args), { env: deviceEnv("") });
   const directory = path.resolve(stateDir, "bridge-jobs");
   const isBuildDirectory = (target) => typeof target === "string" && path.dirname(target) === directory &&
     path.basename(target).startsWith("build-") && uuid.test(path.basename(target).slice(6));
@@ -226,7 +229,7 @@ export function createBridgeExecutor({ stateDir, appControl, authorize = () => {
   }
   async function panes(root) {
     let output;
-    try { output = (await run("tmux", ["list-panes", "-a", "-F", "#{session_name}\t#{window_index}\t#{pane_id}\t#{pane_current_path}"])).stdout; }
+    try { output = (await runTmux(["list-panes", "-a", "-F", "#{session_name}\t#{window_index}\t#{pane_id}\t#{pane_current_path}"])).stdout; }
     catch { return []; }
     const rows = [];
     for (const line of output.trim().split("\n")) {
@@ -243,7 +246,7 @@ export function createBridgeExecutor({ stateDir, appControl, authorize = () => {
     if (found.length !== 1) throw fail("Session must have exactly one pane in the granted project", 403);
     // Reject multi-pane sessions: a session-wide termination must not affect
     // a window outside the project, even when another pane is in scope.
-    const result = await run("tmux", ["list-panes", "-s", "-t", `=${session}:`, "-F", "#{pane_id}"]);
+    const result = await runTmux(["list-panes", "-s", "-t", `=${session}:`, "-F", "#{pane_id}"]);
     if (result.stdout.trim() !== found[0].paneId) throw fail("Multi-pane sessions require local control", 403);
     return found[0];
   }
@@ -309,7 +312,7 @@ export function createBridgeExecutor({ stateDir, appControl, authorize = () => {
       if (!/^[a-zA-Z0-9_-]+$/.test(prefix)) throw fail("Session name may contain only letters, numbers, hyphens and underscores");
       const session = `${prefix}-${randomUUID()}`;
       await checked(context, action, args.projectId);
-      await run("tmux", ["new-session", "-d", "-s", session, "-c", cwd]);
+      await runTmux(["new-session", "-d", "-s", session, "-c", cwd]);
       return { session };
     }
     if (action.startsWith("terminal.")) {
@@ -318,7 +321,7 @@ export function createBridgeExecutor({ stateDir, appControl, authorize = () => {
       if (action === "terminal.read") {
         const lines = args.lines ?? 200;
         if (!Number.isInteger(lines) || lines < 1 || lines > 2000) throw fail("lines must be between 1 and 2000");
-        return { text: (await run("tmux", ["capture-pane", "-p", "-t", pane.paneId, "-S", `-${lines}`])).stdout };
+        return { text: (await runTmux(["capture-pane", "-p", "-t", pane.paneId, "-S", `-${lines}`])).stdout };
       }
       if (action === "terminal.write") {
         if (typeof args.text !== "string" || Buffer.byteLength(args.text) > 64 * 1024 || /\0/.test(args.text) || (args.enter !== undefined && typeof args.enter !== "boolean")) throw fail("Invalid terminal input");
@@ -327,10 +330,10 @@ export function createBridgeExecutor({ stateDir, appControl, authorize = () => {
           const live = await targetPane(root, args.session);
           if (live.paneId !== pane.paneId) throw fail("Terminal changed before writing", 409);
           await checked(context, action, args.projectId);
-          await run("tmux", ["send-keys", "-t", pane.paneId, "-l", "--", args.text]);
+          await runTmux(["send-keys", "-t", pane.paneId, "-l", "--", args.text]);
           if (args.enter) {
             await checked(context, action, args.projectId);
-            await run("tmux", ["send-keys", "-t", pane.paneId, "Enter"]);
+            await runTmux(["send-keys", "-t", pane.paneId, "Enter"]);
           }
           return { ok: true };
         });
@@ -338,7 +341,7 @@ export function createBridgeExecutor({ stateDir, appControl, authorize = () => {
         try { return await operation; } finally { if (terminalWrites.get(pane.paneId) === operation) terminalWrites.delete(pane.paneId); }
       }
       await checked(context, action, args.projectId);
-      await run("tmux", ["kill-pane", "-t", pane.paneId]);
+      await runTmux(["kill-pane", "-t", pane.paneId]);
       return { ok: true };
     }
     if (action === "app.list_clients") {

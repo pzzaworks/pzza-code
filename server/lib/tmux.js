@@ -3,43 +3,45 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { DEVBOX, IS_CLIENT } from "./config.js";
-import { sh, shQuote, SSH_TOKEN } from "./shell.js";
+import { sh, shQuote, SSH_TOKEN, deviceEnv } from "./shell.js";
+import { tmuxCommand } from "./tmux-client.js";
 import { ACTIVITY_PROBE_SCRIPT, detectSessionActivity, probeSessionActivity } from "./session-activity.js";
 
-const SESSIONS_CMD =
-  "tmux list-sessions -F '#{session_name}\t#{session_windows}\t#{session_attached}\t#{pane_current_command}\t#{pane_current_path}\t#{session_created}'";
+const sessionsCommand = (host) =>
+  `${tmuxCommand(host)} list-sessions -F '#{session_name}\t#{session_windows}\t#{session_attached}\t#{pane_current_command}\t#{pane_current_path}\t#{session_created}'`;
 
 // Resolve an exact session before modifying it. Internal grouped views retain
 // the parent's windows and processes unless they are closed with the parent.
-export function terminationCommand(name, window) {
+export function terminationCommand(name, window, host) {
   if (typeof name !== "string" || !name.trim() || /[\x00-\x1f\x7f]/.test(name)) throw new Error("invalid session");
   if (window !== undefined && (!Number.isInteger(window) || window < 0)) throw new Error("invalid window");
   const target = shQuote("=" + name + ":");
-  if (window !== undefined) return `tmux kill-window -t ${shQuote("=" + name + ":" + window)}`;
-  return `session_id=$(tmux display-message -p -t ${target} '#{session_id}') || exit 1
+  const tmux = tmuxCommand(host);
+  if (window !== undefined) return `${tmux} kill-window -t ${shQuote("=" + name + ":" + window)}`;
+  return `session_id=$(${tmux} display-message -p -t ${target} '#{session_id}') || exit 1
 [ -n "$session_id" ] || exit 1
-group=$(tmux display-message -p -t "$session_id:" '#{session_group}') || exit 1
+group=$(${tmux} display-message -p -t "$session_id:" '#{session_group}') || exit 1
 if [ -n "$group" ]; then
-  views=$(tmux list-sessions -F '#{session_id}\t#{session_group}\t#{session_name}') || exit 1
+  views=$(${tmux} list-sessions -F '#{session_id}\t#{session_group}\t#{session_name}') || exit 1
   printf '%s\n' "$views" | while IFS="$(printf '\t')" read -r view_id view_group view_name; do
     [ "$view_group" = "$group" ] || continue
     [ "$view_id" != "$session_id" ] || continue
-    case "$view_name" in pzza-v-*) tmux kill-session -t "$view_id" || exit 1 ;; esac
+    case "$view_name" in pzza-v-*) ${tmux} kill-session -t "$view_id" || exit 1 ;; esac
   done || exit 1
 fi
-tmux kill-session -t "$session_id"`;
+${tmux} kill-session -t "$session_id"`;
 }
 
 export function terminateSession(name, window, host) {
   if (host !== undefined && (typeof host !== "string" || (host && !SSH_TOKEN.test(host)))) return Promise.reject(new Error("invalid host"));
-  const command = terminationCommand(name, window);
   const targetHost = host === undefined ? (IS_CLIENT ? DEVBOX : "") : host;
+  const command = terminationCommand(name, window, targetHost);
   const executable = targetHost ? "ssh" : "sh";
   const args = targetHost
     ? ["-o", "BatchMode=yes", "-o", "ConnectTimeout=8", "-o", "StrictHostKeyChecking=accept-new", targetHost, command]
     : ["-c", command];
   return new Promise((resolve, reject) => {
-    execFile(executable, args, { timeout: 15_000 }, (error) => {
+    execFile(executable, args, { timeout: 15_000, env: deviceEnv(targetHost) }, (error) => {
       if (error) reject(new Error("Could not close the session on this device"));
       else resolve();
     });
@@ -48,14 +50,15 @@ export function terminateSession(name, window, host) {
 
 // Resolve the source's live pane rather than a cached path from the UI. A copy
 // starts a separate shell, so terminating it cannot affect the original pane.
-export function duplicationCommand(name, window, copyName) {
+export function duplicationCommand(name, window, copyName, host) {
   if (typeof name !== "string" || !name.trim() || /[\x00-\x1f\x7f]/.test(name)) throw new Error("invalid session");
   if (window !== undefined && (!Number.isInteger(window) || window < 0)) throw new Error("invalid window");
   if (typeof copyName !== "string" || !/^[A-Za-z0-9_-]+$/.test(copyName)) throw new Error("invalid copy name");
   const target = shQuote(`=${name}:${window ?? ""}`);
-  return `cwd=$(tmux display-message -p -t ${target} '#{pane_current_path}') || exit 1
+  const tmux = tmuxCommand(host);
+  return `cwd=$(${tmux} display-message -p -t ${target} '#{pane_current_path}') || exit 1
 [ -n "$cwd" ] && [ -d "$cwd" ] || exit 1
-tmux new-session -d -s ${shQuote(copyName)} -c "$cwd" || exit 1
+${tmux} new-session -d -s ${shQuote(copyName)} -c "$cwd" || exit 1
 printf '%s' "$cwd"`;
 }
 
@@ -63,12 +66,12 @@ export function duplicateSession(name, window, host) {
   if (host !== undefined && (typeof host !== "string" || (host && !SSH_TOKEN.test(host)))) return Promise.reject(new Error("invalid host"));
   const prefix = typeof name === "string" ? name.replace(/[^A-Za-z0-9_-]/g, "-").slice(0, 60) : "";
   const copyName = `${prefix || "session"}-copy-${randomUUID()}`;
-  const command = duplicationCommand(name, window, copyName);
   const targetHost = host === undefined ? (IS_CLIENT ? DEVBOX : "") : host;
+  const command = duplicationCommand(name, window, copyName, targetHost);
   return new Promise((resolve, reject) => {
     execFile(targetHost ? "ssh" : "sh", targetHost
       ? ["-o", "BatchMode=yes", "-o", "ConnectTimeout=8", "-o", "StrictHostKeyChecking=accept-new", targetHost, command]
-      : ["-c", command], { timeout: 15_000, maxBuffer: 64 * 1024 }, (error, cwd) => {
+      : ["-c", command], { timeout: 15_000, maxBuffer: 64 * 1024, env: deviceEnv(targetHost) }, (error, cwd) => {
       if (error) reject(new Error("Could not duplicate the session on this device. Check that the source window is still running."));
       else resolve({ name: copyName, cwd });
     });
@@ -96,7 +99,7 @@ export function parseSessions(out) {
 
 export function listSessions() {
   return new Promise((resolve) => {
-    sh(SESSIONS_CMD, (err, out) => resolve(err ? [] : parseSessions(out)));
+    sh(sessionsCommand(), (err, out) => resolve(err ? [] : parseSessions(out)));
   });
 }
 
@@ -104,10 +107,11 @@ export function listSessions() {
 export function scanSessions(host) {
   if (host !== undefined && (typeof host !== "string" || (host && !SSH_TOKEN.test(host)))) return Promise.reject(new Error("invalid host"));
   const targetHost = host === undefined ? (IS_CLIENT ? DEVBOX : "") : host;
+  const command = sessionsCommand(targetHost);
   return new Promise((resolve, reject) => {
     execFile(targetHost ? "ssh" : "sh", targetHost
-      ? ["-o", "BatchMode=yes", "-o", "ConnectTimeout=8", "-o", "StrictHostKeyChecking=accept-new", targetHost, SESSIONS_CMD]
-      : ["-c", SESSIONS_CMD], { timeout: 15000 }, (error, output, stderr) => {
+      ? ["-o", "BatchMode=yes", "-o", "ConnectTimeout=8", "-o", "StrictHostKeyChecking=accept-new", targetHost, command]
+      : ["-c", command], { timeout: 15000, env: deviceEnv(targetHost) }, (error, output, stderr) => {
       if (error && !/no server running|no sessions|error connecting.*No such file/.test(stderr || "")) return reject(new Error("Could not scan sessions on this device"));
       resolve(error ? [] : parseSessions(output));
     });
@@ -117,7 +121,7 @@ export function scanSessions(host) {
 export function listWindows() {
   return new Promise((resolve) => {
     sh(
-      "tmux list-windows -a -F '#{session_name}\t#{window_index}\t#{window_name}\t#{window_active}\t#{pane_current_command}\t#{pane_current_path}'",
+      `${tmuxCommand()} list-windows -a -F '#{session_name}\t#{window_index}\t#{window_name}\t#{window_active}\t#{pane_current_command}\t#{pane_current_path}'`,
       (err, out) => {
         if (err) return resolve([]);
         const wins = [];
@@ -158,7 +162,7 @@ export function sessionActivity(host) {
     const args = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=3", "-o", "StrictHostKeyChecking=accept-new",
         "-o", "ControlMaster=auto", "-o", "ControlPath=~/.ssh/pzza-mux-%C", "-o", "ControlPersist=120", target,
         `if command -v node >/dev/null 2>&1; then node -e ${shQuote(ACTIVITY_PROBE_SCRIPT)}; else ${ACTIVITY_FALLBACK}; fi`];
-    execFile(command, args, { timeout: 9_000, maxBuffer: 1024 * 1024 }, (error, stdout) => {
+    execFile(command, args, { timeout: 9_000, maxBuffer: 1024 * 1024, env: deviceEnv(target) }, (error, stdout) => {
       if (error) return resolve([]);
       try {
         const rows = JSON.parse(stdout);

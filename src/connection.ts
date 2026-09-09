@@ -73,8 +73,8 @@ export interface SpawnCmd {
 }
 
 // Command that attaches to (or creates, with -A) a named tmux session. Over ssh
-// the whole tmux invocation is one remote-shell string; locally the args are
-// passed directly so spaces in a session name need no quoting. `-u` makes tmux
+// the whole tmux invocation is one remote-shell string. Local clients receive
+// their service socket from the native process environment. `-u` makes tmux
 // write UTF-8 to this client even when the locale env does not advertise it.
 export function attachCommand(
   conn: Connection,
@@ -82,10 +82,11 @@ export function attachCommand(
   cwd?: string,
   window?: number,
 ): SpawnCmd {
+  const tmux = conn.host ? "tmux" : '"$@"';
   // A server started without a locale (e.g. by an older build) keeps spawning
   // shells that cannot handle multibyte input; give its environment a UTF-8
   // LANG once so every new window/pane gets one.
-  const heal = `tmux show-environment -g LANG >/dev/null 2>&1 || tmux set-environment -g LANG "\${LANG:-en_US.UTF-8}" 2>/dev/null; `;
+  const heal = `${tmux} show-environment -g LANG >/dev/null 2>&1 || ${tmux} set-environment -g LANG "\${LANG:-en_US.UTF-8}" 2>/dev/null; `;
   let remote: string;
   if (window !== undefined) {
     // View a specific window through a grouped session (independent view,
@@ -93,17 +94,20 @@ export function attachCommand(
     const view = `pzza-v-${Date.now().toString(36)}`;
     remote =
       heal +
-      `tmux new-session -d -t ${shQuote(session)} -s ${shQuote(view)} 2>/dev/null; ` +
-      `tmux set-option -t ${shQuote(view)} destroy-unattached on 2>/dev/null; ` +
-      `tmux select-window -t ${shQuote(view + ":" + window)} 2>/dev/null; ` +
-      `exec tmux -u attach -t ${shQuote(view)}`;
+      `${tmux} new-session -d -t ${shQuote(session)} -s ${shQuote(view)} 2>/dev/null; ` +
+      `${tmux} set-option -t ${shQuote(view)} destroy-unattached on 2>/dev/null; ` +
+      `${tmux} select-window -t ${shQuote(view + ":" + window)} 2>/dev/null; ` +
+      `exec ${tmux} -u attach -t ${shQuote(view)}`;
   } else {
-    remote = `${heal}exec tmux -u new-session -A -s ${shQuote(session)}${cwd ? ` -c ${shQuote(cwd)}` : ""}`;
+    remote = `${heal}exec ${tmux} -u new-session -A -s ${shQuote(session)}${cwd ? ` -c ${shQuote(cwd)}` : ""}`;
   }
   if (conn.host) {
     return { cmd: "ssh", args: ["-tt", ...SSH_MUX, conn.host, `sh -lc ${shQuote(remote)}`] };
   }
-  return { cmd: "sh", args: ["-lc", remote] };
+  const local = 'set -- tmux; if [ "${PZZA_TMUX_SOCKET+x}" = x ]; then ' +
+    'case "$PZZA_TMUX_SOCKET" in /*) ;; *) exit 1 ;; esac; ' +
+    'set -- tmux -N -S "$PZZA_TMUX_SOCKET"; unset TMUX; fi; ';
+  return { cmd: "sh", args: ["-lc", local + remote] };
 }
 
 export interface RemoteSession {

@@ -197,6 +197,15 @@ pub fn pty_spawn(
         .map_err(|e| e.to_string())?;
 
     let mut builder = CommandBuilder::new(&cmd);
+    #[cfg(target_os = "macos")]
+    {
+        if cmd == "ssh" {
+            builder.env_remove("PZZA_TMUX_SOCKET");
+        } else {
+            builder.env("PZZA_TMUX_SOCKET", crate::local_tmux::socket_path());
+        }
+        builder.env_remove("TMUX");
+    }
     builder.args(&args);
     if let Some(dir) = &cwd {
         builder.cwd(dir);

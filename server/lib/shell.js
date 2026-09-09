@@ -13,10 +13,17 @@ export function shQuote(v) {
   return `'${String(v).replace(/'/g, `'\\''`)}'`;
 }
 
+export function deviceEnv(host, environment = process.env) {
+  const env = { ...environment };
+  if (env.PZZA_TMUX_SOCKET !== undefined) delete env.TMUX;
+  if (host) delete env.PZZA_TMUX_SOCKET;
+  return env;
+}
+
 // Run a command string either locally (source) or on the devbox over ssh.
 export function sh(remote, cb) {
-  if (IS_CLIENT) execFile("ssh", ["-o", "BatchMode=yes", DEVBOX, remote], cb);
-  else execFile("sh", ["-c", remote], cb);
+  if (IS_CLIENT) execFile("ssh", ["-o", "BatchMode=yes", DEVBOX, remote], { env: deviceEnv(DEVBOX) }, cb);
+  else execFile("sh", ["-c", remote], { env: deviceEnv("") }, cb);
 }
 
 // Run a command on a specific device: locally/on the connected device when host
@@ -26,6 +33,7 @@ export function shOn(host, remote, cb) {
   execFile(
     "ssh",
     ["-o", "BatchMode=yes", "-o", "ConnectTimeout=8", "-o", "StrictHostKeyChecking=accept-new", host, remote],
+    { env: deviceEnv(host) },
     cb,
   );
 }

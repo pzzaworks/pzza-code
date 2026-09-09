@@ -4,6 +4,8 @@ import crypto from "node:crypto";
 import { execFile } from "node:child_process";
 import { AGENTS_HUB_TARGET } from "./agents-hub-target.js";
 import { inspectSkillSource } from "./skill-import.js";
+import { tmuxArgs } from "./tmux-client.js";
+import { deviceEnv } from "./shell.js";
 
 const LIMIT = 64 * 1024 * 1024;
 const ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
@@ -134,9 +136,10 @@ export function runHubTarget(host, payload, { env = process.env } = {}) {
   if (typeof host !== "string" || (host && !HOST.test(host))) return Promise.reject(fail("An explicit valid device host is required"));
   const input = JSON.stringify(payload);
   if (Buffer.byteLength(input) > LIMIT) return Promise.reject(fail("Deployment exceeds the transfer limit", 413));
-  const args = host ? ["-T", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", "-o", "ForwardAgent=no", "-o", "ClearAllForwardings=yes", "-o", "ControlMaster=no", "-o", "ControlPath=none", "-o", "ConnectTimeout=5", "-o", "PermitLocalCommand=no", "--", host, `python3 -c ${quote(AGENTS_HUB_TARGET)}`] : ["-c", AGENTS_HUB_TARGET];
+  const localOptions = host || env.PZZA_TMUX_SOCKET === undefined ? [] : tmuxArgs([], env.PZZA_TMUX_SOCKET);
+  const args = host ? ["-T", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", "-o", "ForwardAgent=no", "-o", "ClearAllForwardings=yes", "-o", "ControlMaster=no", "-o", "ControlPath=none", "-o", "ConnectTimeout=5", "-o", "PermitLocalCommand=no", "--", host, `python3 -c ${quote(AGENTS_HUB_TARGET)}`] : ["-c", AGENTS_HUB_TARGET, JSON.stringify(localOptions)];
   return new Promise((resolve, reject) => {
-    const child = execFile(host ? "ssh" : "python3", args, { timeout: 30_000, maxBuffer: LIMIT, env }, (error, stdout) => {
+    const child = execFile(host ? "ssh" : "python3", args, { timeout: 30_000, maxBuffer: LIMIT, env: deviceEnv(host, env) }, (error, stdout) => {
       if (error) return reject(fail("Could not run target operations. Python 3 and trusted SSH access are required; no tools are installed automatically", 503));
       try { resolve(JSON.parse(stdout)); } catch { reject(fail("Target returned an invalid deployment response", 502)); }
     });

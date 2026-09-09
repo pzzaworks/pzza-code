@@ -15,17 +15,21 @@ interface Props {
   options: Option[];
   onChange: (value: string) => void;
   placeholder?: string;
+  disabled?: boolean;
+  ariaLabel?: string;
+  onOpen?: () => void;
 }
 
 // Custom select (never a native <select>). The list renders in a portal at the
 // document root, so it is never clipped by a scrolling panel and always stacks
 // above everything.
-export function Select({ value, options, onChange, placeholder }: Props) {
+export function Select({ value, options, onChange, placeholder, disabled = false, ariaLabel, onOpen }: Props) {
   const [open, setOpen] = useState(false);
   const btnRef = useRef<HTMLButtonElement>(null);
   const [rect, setRect] = useState<DOMRect | null>(null);
 
   const current = options.find((o) => o.value === value);
+  useLayoutEffect(() => { if (disabled) setOpen(false); }, [disabled]);
 
   useLayoutEffect(() => {
     if (!open) return;
@@ -45,7 +49,9 @@ export function Select({ value, options, onChange, placeholder }: Props) {
         ref={btnRef}
         type="button"
         className={`cselect ${open ? "cselect-open" : ""}`}
-        onClick={() => setOpen((v) => !v)}
+        disabled={disabled}
+        aria-label={ariaLabel}
+        onClick={() => { if (!open) onOpen?.(); setOpen((v) => !v); }}
       >
         {current?.icon}
         <span className="cselect-value">{current?.label ?? placeholder ?? "Select"}</span>
