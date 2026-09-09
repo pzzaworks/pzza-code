@@ -343,14 +343,46 @@ mod native {
 
     #[derive(Default)]
     struct TranscriptWindow {
+        earlier: String,
         previous: String,
         confirmed: String,
+        language_candidate: Option<String>,
+        detected_language: Option<String>,
+    }
+
+    impl TranscriptWindow {
+        fn confirms(&self, candidate: &str) -> bool {
+            agreed_prefix(&self.previous, candidate)
+                && self.earlier.split_whitespace().zip(candidate.split_whitespace())
+                    .all(|(earlier, current)| same_word(earlier, current))
+        }
+
+        fn observe(&mut self, text: &str) {
+            self.earlier = mem::replace(&mut self.previous, text.into());
+        }
+    }
+
+    fn utterance_boundary(audio: &[f32]) -> Option<usize> {
+        let mut voiced = 0;
+        let mut quiet = 0;
+        for (index, frame) in audio.chunks_exact(320).enumerate() {
+            if frame.iter().map(|value| value * value).sum::<f32>() / 320.0 > 0.000025 {
+                voiced += 1;
+                quiet = 0;
+            } else {
+                quiet += 1;
+                // Look inside the buffer too: another phrase may have started
+                // while the engine was decoding the previous one.
+                if voiced >= 10 && quiet >= 20 { return Some((index + 1) * 320); }
+            }
+        }
+        None
     }
 
     fn transcribe(
         app: &AppHandle,
         capture: &Arc<Capture>,
-        language: &mut String,
+        language: &str,
         window: &mut TranscriptWindow,
         finalizing: bool,
     ) -> Result<Transcript, String> {
@@ -375,13 +407,16 @@ mod native {
     fn transcribe_samples(
         engine: &mut Engine,
         capture: &Arc<Capture>,
-        language: &mut String,
+        language: &str,
         window: &mut TranscriptWindow,
         samples: &[f32],
         rate: u32,
         finalizing: bool,
     ) -> Result<Transcript, String> {
         let mut audio = super::resample(samples, rate);
+        let boundary = utterance_boundary(&audio);
+        let utterance_samples = boundary.map(|end| end * rate as usize / 16_000).unwrap_or(samples.len());
+        if let Some(end) = boundary { audio.truncate(end); }
         if window.confirmed.is_empty() && !super::has_speech(&audio) {
             return Ok(Transcript {
                 preview: String::new(),
@@ -391,25 +426,24 @@ mod native {
             });
         }
         let duration = audio.len();
-        let pause = audio.len() >= 16_000
-            && audio[audio.len().saturating_sub(6_400)..]
-                .chunks_exact(320)
-                .all(|frame| frame.iter().map(|v| v * v).sum::<f32>() / 320.0 <= 0.000025);
-        let commit_all = pause || finalizing || audio.len() >= 400_000;
+        let commit_all = boundary.is_some() || finalizing || audio.len() >= 400_000;
         // Very short utterances still need a full decoder input frame.
         if audio.len() < 16_000 {
             audio.resize(16_000, 0.0);
         }
-        engine.recognize(&audio, language, capture)?;
+        engine.recognize(&audio, window.detected_language.as_deref().unwrap_or(language), capture)?;
         if capture.cancel.load(Ordering::Acquire) {
             return Ok(Transcript { preview: String::new(), committed: String::new(), consumed: samples.len() });
         }
         let decoder = &engine.decoder;
-        // Wait for enough speech before pinning automatic language detection.
-        // A single introductory word can otherwise select the wrong language.
-        if language == "auto" && duration >= 48_000 {
+        // Reuse an agreed language only within this utterance. A pause resets
+        // detection so the next utterance can use a different language.
+        if language == "auto" && window.detected_language.is_none() {
             if let Some(detected) = whisper_rs::get_lang_str(decoder.full_lang_id_from_state()) {
-                *language = detected.into();
+                if duration >= 24_000 && window.language_candidate.as_deref() == Some(detected) {
+                    window.detected_language = Some(detected.into());
+                }
+                window.language_candidate = Some(detected.into());
             }
         }
         let mut text = String::new();
@@ -422,9 +456,9 @@ mod native {
                     .map_err(|_| "Could not read recognition result")?;
                 text.push_str(&words);
             }
-            // Confirm complete words in two successive hypotheses and leave the
-            // newest half-second uncommitted. Terminal input cannot safely be retracted.
-            let agreed = agreed_prefix(&window.previous, text.trim())
+            // Confirm complete words twice, but give recently revised words one
+            // more update. The newest half-second also stays uncommitted.
+            let agreed = window.confirms(text.trim())
                 && segment.end_timestamp().max(0) as usize + 50 <= duration / 160;
             let stable = commit_all || agreed;
             if stable {
@@ -443,11 +477,11 @@ mod native {
         } else {
             String::new()
         };
-        window.previous = text.into();
+        window.observe(text);
         // Retain acoustic context while emitting words. Cutting at estimated word
         // timestamps can split a syllable and corrupt the next recognition update.
         if commit_all {
-            consumed = samples.len();
+            consumed = utterance_samples;
             *window = TranscriptWindow::default();
         }
         Ok(Transcript {
@@ -462,15 +496,19 @@ mod native {
             .is_some_and(|remaining| !remaining.trim().is_empty())
     }
 
+    fn same_word(left: &str, right: &str) -> bool {
+        let normalize = |word: &str| word.trim_matches(['.', ',', '!', '?', ';', ':']).to_lowercase();
+        normalize(left) == normalize(right)
+    }
+
     fn remaining_words<'a>(text: &'a str, confirmed: &str) -> Option<&'a str> {
         // Later context often revises casing or sentence punctuation. Keep what
         // was already typed and align whole words, without deleting terminal input.
-        let normalize = |word: &str| word.trim_matches(['.', ',', '!', '?', ';', ':']).to_lowercase();
         let mut remaining = text;
         for word in confirmed.split_whitespace() {
             remaining = remaining.trim_start();
             let end = remaining.find(char::is_whitespace).unwrap_or(remaining.len());
-            if end == 0 || normalize(&remaining[..end]) != normalize(word) { return None; }
+            if end == 0 || !same_word(&remaining[..end], word) { return None; }
             remaining = &remaining[end..];
         }
         Some(remaining)
@@ -487,6 +525,23 @@ mod native {
                 error: Mutex::new(None), received: AtomicBool::new(false), finished: AtomicBool::new(false),
                 captured_samples: AtomicUsize::new(0),
             })
+        }
+
+        #[test]
+        fn pauses_split_buffered_phrases_without_cutting_short_word_gaps() {
+            let speech = vec![0.02; 8_000];
+            let mut audio = speech.clone();
+            audio.extend(vec![0.0; 6_400]);
+            audio.extend(&speech);
+            assert_eq!(utterance_boundary(&audio), Some(14_400));
+            let mut short_gap = speech.clone();
+            short_gap.extend(vec![0.0; 3_200]);
+            short_gap.extend(&speech);
+            assert_eq!(utterance_boundary(&short_gap), None);
+            assert_eq!(utterance_boundary(&vec![0.0; 32_000]), None);
+            let mut leading_silence = vec![0.0; 16_000];
+            leading_silence.extend(&speech);
+            assert_eq!(utterance_boundary(&leading_silence), None);
         }
 
         #[test]
@@ -532,6 +587,30 @@ mod native {
         }
 
         #[test]
+        fn brief_language_switch_revisions_are_not_confirmed_early() {
+            let mut window = TranscriptWindow::default();
+            window.observe("Please write this.");
+            window.observe("Please write the sentence.");
+            assert!(window.confirms("Please write"));
+            assert!(!window.confirms("Please write the"));
+            window.observe("Please write the sentence in.");
+            assert!(!window.confirms("Please write this"));
+            window.observe("Please write this sentence into the");
+            assert!(!window.confirms("Please write this"));
+            window.observe("Please write this sentence into the terminal");
+            assert!(window.confirms("Please write this"));
+        }
+
+        #[test]
+        fn consistent_word_growth_keeps_two_observation_confirmation() {
+            let mut window = TranscriptWindow::default();
+            window.observe("Please write");
+            window.observe("Please write this sentence");
+            assert!(window.confirms("Please write this"));
+            assert!(!window.confirms("Please write this sentence"));
+        }
+
+        #[test]
         #[ignore = "Requires the installed speech model and a 16 kHz float PCM speech fixture"]
         fn real_model_streams_words_before_stop_and_recovers_after_cancel() {
             whisper_rs::install_logging_hooks();
@@ -544,7 +623,7 @@ mod native {
                 .map(|sample| f32::from_le_bytes(sample.try_into().unwrap())).collect();
             let mut engine = Engine::load(Path::new(&model)).unwrap();
             let capture = capture();
-            let mut language = "auto".to_string();
+            let language = "auto";
             let mut window = TranscriptWindow::default();
             let mut committed = String::new();
             let mut offset = 0;
@@ -553,24 +632,26 @@ mod native {
                 capture.samples.lock().unwrap().extend_from_slice(incoming);
                 offset += incoming.len();
                 let audio = capture.samples.lock().unwrap().clone();
-                let transcript = transcribe_samples(&mut engine, &capture, &mut language, &mut window, &audio, 16_000, false).unwrap();
+                let transcript = transcribe_samples(&mut engine, &capture, language, &mut window, &audio, 16_000, false).unwrap();
                 if !transcript.committed.is_empty() && offset < samples.len() {
                     live_updates += 1;
                 }
                 apply(&capture, &transcript, &mut committed).unwrap();
             }
-            let audio = capture.samples.lock().unwrap().clone();
-            let transcript = transcribe_samples(&mut engine, &capture, &mut language, &mut window, &audio, 16_000, true).unwrap();
-            apply(&capture, &transcript, &mut committed).unwrap();
+            while !capture.samples.lock().unwrap().is_empty() {
+                let audio = capture.samples.lock().unwrap().clone();
+                let transcript = transcribe_samples(&mut engine, &capture, language, &mut window, &audio, 16_000, true).unwrap();
+                apply(&capture, &transcript, &mut committed).unwrap();
+            }
             assert!(live_updates >= 2, "Expected multiple terminal updates before Stop, got {live_updates}");
             let normalize = |text: &str| text.to_lowercase().chars()
                 .filter(|character| character.is_alphanumeric() || character.is_whitespace()).collect::<String>()
                 .split_whitespace().collect::<Vec<_>>().join(" ");
             assert_eq!(normalize(&committed), normalize(&expected));
             capture.cancel.store(true, Ordering::Release);
-            engine.recognize(&samples, &language, &capture).unwrap();
+            engine.recognize(&samples, language, &capture).unwrap();
             capture.cancel.store(false, Ordering::Release);
-            engine.recognize(&samples, &language, &capture).unwrap();
+            engine.recognize(&samples, language, &capture).unwrap();
             assert!(engine.decoder.full_n_segments() > 0, "The next recording must remain usable after cancellation");
         }
     }
@@ -596,7 +677,7 @@ mod native {
         Ok(())
     }
 
-    fn run(app: AppHandle, capture: Arc<Capture>, mut language: String, input_device_id: Option<String>) {
+    fn run(app: AppHandle, capture: Arc<Capture>, language: String, input_device_id: Option<String>) {
         let result = (|| {
             emit(&app, &capture, "loading", None, None, None);
             prepare(&app)?;
@@ -626,7 +707,7 @@ mod native {
                     // Decode each new quarter-second of audio as soon as the engine
                     // is free, including audio captured while the last decode ran.
                     processed_samples = captured_samples;
-                    match transcribe(&app, &capture, &mut language, &mut window, false) {
+                    match transcribe(&app, &capture, &language, &mut window, false) {
                         Ok(transcript) => {
                             let preview = format!("{} {}", committed, transcript.preview)
                                 .trim()
@@ -668,7 +749,7 @@ mod native {
                 .map_err(|_| "Audio lock failed")?
                 .is_empty()
             {
-                let transcript = transcribe(&app, &capture, &mut language, &mut window, true)?;
+                let transcript = transcribe(&app, &capture, &language, &mut window, true)?;
                 apply(&capture, &transcript, &mut committed)?;
             }
             Ok(committed)
