@@ -26,6 +26,7 @@ test("dictation opt-in, native events, pinned insertion and cancellation", async
   const listeners = new Map();
   const calls = [];
   let disconnected = false;
+  let cancellationPending;
   let inputDevices = [
     { id: "built-in-mic", name: "Built-in microphone", isDefault: true },
     { id: "usb-mic", name: "USB microphone", isDefault: false },
@@ -35,6 +36,7 @@ test("dictation opt-in, native events, pinned insertion and cancellation", async
     listen: async (event, callback) => { listeners.set(event, callback); return () => listeners.delete(event); },
     invoke: async (command, args) => {
       calls.push({ command, args });
+      if (command === "speech_stop" && args.cancel) await cancellationPending;
       if (command === "speech_model_status") return { installed: false, downloading: false, downloadedBytes: 0, totalBytes: 100 };
       if (command === "speech_input_devices") {
         if (inputDeviceError) throw new Error("Could not list microphones");
@@ -130,7 +132,7 @@ test("dictation opt-in, native events, pinned insertion and cancellation", async
   emit("dictation", { id: previewId, kind: "final", text: "" });
   await flush();
   assert.equal(useDictation.getState().recording.text, "Keep this preview");
-  assert.match(useDictation.getState().recording.error, /without a final transcript/);
+  assert.match(useDictation.getState().recording.error, /before it could confirm the remaining words/);
   assert.deepEqual(inserted, ["Merhaba world", "First sentence", " and more", " words"], "empty final events never silently discard or insert provisional text");
   await useDictation.getState().cancel();
   await useDictation.getState().start("first");
@@ -196,4 +198,44 @@ test("dictation opt-in, native events, pinned insertion and cancellation", async
   storage.set("pzza.dictation.inputDevice", '{"id":42}');
   const invalidPreference = await import(`${pathToFileURL(outfile).href}?invalid`);
   assert.equal(invalidPreference.useDictation.getState().inputDevice, null);
+
+  await useDictation.getState().start("first");
+  const loadingId = useDictation.getState().recording.id;
+  assert.equal(useDictation.getState().recording.phase, "loading");
+  await useDictation.getState().stop();
+  assert.equal(useDictation.getState().recording, null, "Stop cancels microphone preparation");
+  assert.ok(calls.some(call => call.command === "speech_stop" && call.args.id === loadingId && call.args.cancel));
+  emit("dictation", { id: loadingId, kind: "listening" });
+  emit("dictation", { id: loadingId, kind: "committed", text: "cancelled startup" });
+  await flush();
+  assert.equal(useDictation.getState().recording, null, "late events cannot revive cancelled capture");
+
+  await useDictation.getState().start("first");
+  const stoppingId = useDictation.getState().recording.id;
+  emit("dictation", { id: stoppingId, kind: "listening" });
+  await useDictation.getState().stop();
+  assert.equal(useDictation.getState().recording.phase, "finalizing");
+  await useDictation.getState().stop();
+  assert.equal(useDictation.getState().recording, null, "Stop can cancel an in-progress final transcription");
+  assert.ok(calls.some(call => call.command === "speech_stop" && call.args.id === stoppingId && call.args.cancel));
+  emit("dictation", { id: stoppingId, kind: "final", text: "cancelled finalization" });
+  await flush();
+  await useDictation.getState().start("first");
+  assert.equal(useDictation.getState().recording.phase, "loading", "a new recording can follow cancellation");
+  await useDictation.getState().cancel();
+
+  await useDictation.getState().start("first");
+  let finishCancellation;
+  cancellationPending = new Promise(resolve => { finishCancellation = resolve; });
+  const cancelling = useDictation.getState().stop();
+  const startsBeforeRestart = calls.filter(call => call.command === "speech_start").length;
+  const restarting = useDictation.getState().start("first");
+  await flush();
+  assert.equal(useDictation.getState().recording.phase, "loading");
+  assert.equal(calls.filter(call => call.command === "speech_start").length, startsBeforeRestart, "a rapid restart waits for native cancellation to finish");
+  finishCancellation();
+  await Promise.all([cancelling, restarting]);
+  cancellationPending = undefined;
+  assert.equal(calls.filter(call => call.command === "speech_start").length, startsBeforeRestart + 1);
+  await useDictation.getState().cancel();
 });
