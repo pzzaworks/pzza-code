@@ -2,6 +2,8 @@ use std::process::Command;
 
 use crate::sshmux;
 
+const SESSION_FORMAT: &str = "#{session_name}\t#{session_windows}\t#{session_attached}\t#{pane_current_command}\t#{session_created}";
+
 // A tmux session on the device. One session maps to one grid tile, and a
 // session name is treated as a cmux tab.
 #[derive(serde::Serialize)]
@@ -23,8 +25,20 @@ fn tmux_capture(host: &Option<String>, remote: &str) -> std::io::Result<std::pro
             .args(sshmux::control_args())
             .arg(h)
             .arg(remote)
+            .env_remove("PZZA_TMUX_SOCKET")
             .output(),
-        None => Command::new("sh").arg("-c").arg(remote).output(),
+        None => {
+            #[cfg(target_os = "macos")]
+            {
+                crate::local_tmux::client_command()
+                    .args(["list-sessions", "-F", SESSION_FORMAT])
+                    .output()
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                Command::new("sh").arg("-c").arg(remote).output()
+            }
+        }
     }
 }
 
@@ -32,9 +46,8 @@ fn tmux_capture(host: &Option<String>, remote: &str) -> std::io::Result<std::pro
 // error) when no tmux server is running yet.
 #[tauri::command]
 pub fn tmux_list_sessions(host: Option<String>) -> Result<Vec<TmuxSession>, String> {
-    let remote =
-        "tmux list-sessions -F '#{session_name}\t#{session_windows}\t#{session_attached}\t#{pane_current_command}\t#{session_created}'";
-    let output = tmux_capture(&host, remote).map_err(|e| e.to_string())?;
+    let remote = format!("tmux list-sessions -F '{SESSION_FORMAT}'");
+    let output = tmux_capture(&host, &remote).map_err(|e| e.to_string())?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);

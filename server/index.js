@@ -14,6 +14,7 @@ import { quickChatRouter } from "./lib/quick-chat.js";
 
 import { DEVBOX, IS_CLIENT, MCP_PATH, PORT, STATE_DIR } from "./lib/config.js";
 import { SSH_TOKEN, sh, shOn, shQuote } from "./lib/shell.js";
+import { tmuxCommand } from "./lib/tmux-client.js";
 import {
   AGENT_ID,
   cors,
@@ -100,7 +101,7 @@ const server = http.createServer(async (req, res) => {
     if (!name) return json(res, 400, { error: "name required" });
     const win = url.searchParams.get("window");
     const target = win !== null && win !== "" ? `${name}:${win}` : name;
-    const cmd = `tmux display-message -p -t ${shQuote(target)} '#{pane_current_path}'`;
+    const cmd = `${tmuxCommand(queryHost(url) || undefined)} display-message -p -t ${shQuote(target)} '#{pane_current_path}'`;
     const out = await new Promise((resolve) =>
       shOn(queryHost(url), cmd, (err, o) => resolve(err ? "" : String(o || "").trim())),
     );
@@ -174,13 +175,18 @@ const server = http.createServer(async (req, res) => {
   }
   if (url.pathname === "/create" && req.method === "POST") {
     const body = await readBody(req);
-    const name = String(body.name || "").trim();
-    if (name) {
-      const cwd = body.cwd ? ` -c ${shQuote(body.cwd)}` : "";
-      const env = accountEnvArg(body.account); // binds a Claude/Codex account
-      sh(`tmux new-session -d -s ${shQuote(name)}${cwd}${env}`, () => {});
+    const name = typeof body?.name === "string" ? body.name.trim() : "";
+    if (!name || /[\x00-\x1f\x7f]/.test(name)) return json(res, 400, { error: "A valid session name is required" });
+    const cwd = body.cwd ? ` -c ${shQuote(body.cwd)}` : "";
+    const env = accountEnvArg(body.account);
+    try {
+      await new Promise((resolve, reject) => {
+        sh(`${tmuxCommand()} new-session -d -s ${shQuote(name)}${cwd}${env}`, (error) => error ? reject(error) : resolve());
+      });
+      return json(res, 200, { ok: true });
+    } catch {
+      return json(res, 503, { error: "Could not create the session on this device" });
     }
-    return json(res, 200, { ok: true });
   }
   // Project sync: git repos under the projects root, across every device.
   if (url.pathname === "/projects/scan" && req.method === "POST") {

@@ -5,6 +5,7 @@
 // the Rust PTY instead), so the import failure is logged and swallowed.
 import { DEVBOX, IS_CLIENT } from "./config.js";
 import { sh, shOn, shQuote, SSH_TOKEN } from "./shell.js";
+import { tmuxCommand } from "./tmux-client.js";
 import { hostOk, tokenOk } from "./http.js";
 
 const OUTPUT_HIGH = 256 * 1024;
@@ -131,6 +132,7 @@ export async function startPtyBridge(server) {
           const rows = msg.rows || 24;
 
           const hasWin = msg.window !== undefined && msg.window !== null;
+          const tmux = tmuxCommand(attachedHost || undefined);
           let attach;
           if (hasWin) {
             // A specific window: view it through a grouped session so it can show a
@@ -139,17 +141,17 @@ export async function startPtyBridge(server) {
             const view = `pzza-v-${Date.now().toString(36)}-${Math.floor(Math.random() * 46656).toString(36)}`;
             viewSession = view;
             attach =
-              `tmux new-session -d -t ${shQuote(name)} -s ${shQuote(view)} 2>/dev/null; ` +
-              `tmux set-option -t ${shQuote(view)} window-size latest 2>/dev/null; ` +
-              `tmux select-window -t ${shQuote(view + ":" + msg.window)} 2>/dev/null; ` +
-              `exec tmux -u attach -t ${shQuote(view)}`;
+              `${tmux} new-session -d -t ${shQuote(name)} -s ${shQuote(view)} 2>/dev/null; ` +
+              `${tmux} set-option -t ${shQuote(view)} window-size latest 2>/dev/null; ` +
+              `${tmux} select-window -t ${shQuote(view + ":" + msg.window)} 2>/dev/null; ` +
+              `exec ${tmux} -u attach -t ${shQuote(view)}`;
           } else {
             // Never shrink a session another client (cmux) is viewing.
             // Also heal a server started without a locale so new panes get a UTF-8 LANG.
             const prep =
-              `tmux show-environment -g LANG >/dev/null 2>&1 || tmux set-environment -g LANG "\${LANG:-en_US.UTF-8}" 2>/dev/null; ` +
-              `tmux set-option -t ${shQuote(name)} window-size latest 2>/dev/null; tmux set-option -t ${shQuote(name)} aggressive-resize on 2>/dev/null`;
-            attach = `${prep}; exec tmux -u new-session -A -s ${shQuote(name)}${
+              `${tmux} show-environment -g LANG >/dev/null 2>&1 || ${tmux} set-environment -g LANG "\${LANG:-en_US.UTF-8}" 2>/dev/null; ` +
+              `${tmux} set-option -t ${shQuote(name)} window-size latest 2>/dev/null; ${tmux} set-option -t ${shQuote(name)} aggressive-resize on 2>/dev/null`;
+            attach = `${prep}; exec ${tmux} -u new-session -A -s ${shQuote(name)}${
               msg.cwd ? ` -c ${shQuote(msg.cwd)}` : ""
             }`;
           }
@@ -160,7 +162,9 @@ export async function startPtyBridge(server) {
           // would get `_` for every non-ASCII glyph, so supply a UTF-8 locale then.
           const hasLocale = ["LC_ALL", "LC_CTYPE", "LANG"].some((k) => process.env[k]);
           const ptyEnv = { ...process.env, ...(hasLocale ? {} : { LANG: "en_US.UTF-8" }), COLORTERM: "truecolor" };
+          if (process.env.PZZA_TMUX_SOCKET !== undefined) delete ptyEnv.TMUX;
           if (attachedHost || IS_CLIENT) {
+            delete ptyEnv.PZZA_TMUX_SOCKET;
             term = pty.spawn("ssh", ["-tt", attachedHost || DEVBOX, `sh -lc ${shQuote(attach)}`], {
               name: "xterm-256color",
               cols,
@@ -203,7 +207,7 @@ export async function startPtyBridge(server) {
         term = null;
       }
       if (viewSession) {
-        shOn(attachedHost, `tmux kill-session -t ${shQuote(viewSession)} 2>/dev/null`, () => {});
+        shOn(attachedHost, `${tmuxCommand(attachedHost || undefined)} kill-session -t ${shQuote(viewSession)} 2>/dev/null`, () => {});
         viewSession = null;
       }
     });
@@ -212,12 +216,12 @@ export async function startPtyBridge(server) {
 
 // Clean up leftover internal window-view sessions that are no longer attached.
 export function sweepOrphanViews() {
-  sh("tmux list-sessions -F '#{session_name} #{session_attached}' 2>/dev/null", (err, out) => {
+  sh(`${tmuxCommand()} list-sessions -F '#{session_name} #{session_attached}' 2>/dev/null`, (err, out) => {
     if (err) return;
     for (const line of String(out || "").split("\n")) {
       const [name, attached] = line.split(" ");
       if (name && name.startsWith("pzza-v-") && attached === "0") {
-        sh(`tmux kill-session -t ${shQuote(name)} 2>/dev/null`, () => {});
+        sh(`${tmuxCommand()} kill-session -t ${shQuote(name)} 2>/dev/null`, () => {});
       }
     }
   });

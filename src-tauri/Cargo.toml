@@ -29,7 +29,9 @@ libc = "0.2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
-cpal = "=0.16.0"
+coreaudio-rs = { version = "=0.13.0", default-features = false, features = ["audio_unit"] }
+objc2-core-audio = { version = "0.3", default-features = false, features = ["std", "AudioHardware"] }
+objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFString"] }
 whisper-rs = { version = "=0.16.0", features = ["metal"] }
 
 [profile.release]

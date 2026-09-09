@@ -6,3 +6,4 @@
 .dictation-caret-error { color: var(--danger); }
 .dictation-recovery-text { margin: 6px 0; color: var(--text); user-select: text; }
 .dictation-caret-text > small { display: block; margin-top: 5px; color: var(--muted); font: 11px/1.5 ui-sans-serif, sans-serif; }
+.dictation-input-level { display: block; width: 72px; height: 6px; margin-top: 4px; }

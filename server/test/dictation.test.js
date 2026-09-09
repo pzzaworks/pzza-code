@@ -26,12 +26,22 @@ test("dictation opt-in, native events, pinned insertion and cancellation", async
   const listeners = new Map();
   const calls = [];
   let disconnected = false;
+  let inputDevices = [
+    { id: "built-in-mic", name: "Built-in microphone", isDefault: true },
+    { id: "usb-mic", name: "USB microphone", isDefault: false },
+  ];
+  let inputDeviceError = false;
   globalThis.__dictationTest = {
     listen: async (event, callback) => { listeners.set(event, callback); return () => listeners.delete(event); },
     invoke: async (command, args) => {
       calls.push({ command, args });
       if (command === "speech_model_status") return { installed: false, downloading: false, downloadedBytes: 0, totalBytes: 100 };
+      if (command === "speech_input_devices") {
+        if (inputDeviceError) throw new Error("Could not list microphones");
+        return inputDevices;
+      }
       if (command === "speech_start" && disconnected) throw new Error("Microphone access denied");
+      if (command === "speech_start" && args.inputDeviceId && !inputDevices.some(device => device.id === args.inputDeviceId)) throw new Error("Selected microphone is unavailable");
     },
   };
   const outfile = path.join(dir, "dictation.mjs");
@@ -60,16 +70,25 @@ test("dictation opt-in, native events, pinned insertion and cancellation", async
   assert.equal(useDictation.getState().model, "ready");
   assert.equal(storage.get("pzza.dictation.enabled"), "true");
   const inserted = [];
-  const unregister = registerDictationTarget("first", (text) => { inserted.push(text); return true; });
-  registerDictationTarget("second", () => { assert.fail("Transcript reached wrong terminal"); });
+  const focused = [];
+  const register = (tileId, insert) => registerDictationTarget(tileId, { insert, focus: () => focused.push(tileId) });
+  const unregister = register("first", (text) => { inserted.push(text); return true; });
+  register("second", () => { assert.fail("Transcript reached wrong terminal"); });
   await useDictation.getState().start("first");
+  assert.deepEqual(focused, ["first"], "starting dictation focuses the target even if its tile is already active");
   const id = useDictation.getState().recording.id;
+  assert.equal(calls.find(call => call.command === "speech_start").args.inputDeviceId, null, "new installations follow the system default microphone");
   emit("dictation", { id, kind: "listening" });
+  assert.deepEqual(focused, ["first", "first"], "listening restores focus after microphone permission prompts");
+  emit("dictation", { id, kind: "level", level: 0.4 });
+  assert.equal(useDictation.getState().recording.level, 0.4);
   emit("dictation", { id, kind: "partial", text: "Merhaba world" });
+  assert.equal(focused.length, 2, "audio updates do not repeatedly steal focus");
   assert.deepEqual(inserted, [], "partials must never be sent to terminal");
   await useDictation.getState().start("second");
   assert.equal(useDictation.getState().recording.id, id);
   await useDictation.getState().stop();
+  assert.deepEqual(focused, ["first", "first", "first"], "stopping from a keyboard-focused control returns focus to the terminal");
   assert.equal(useDictation.getState().recording.phase, "finalizing");
   emit("dictation", { id, kind: "final", text: "Merhaba\nworld\r\u0003\u001b" });
   emit("dictation", { id, kind: "final", text: "duplicate event" });
@@ -99,10 +118,26 @@ test("dictation opt-in, native events, pinned insertion and cancellation", async
   assert.deepEqual(inserted, ["Merhaba world", "First sentence", " and more", " words"], "final inserts only the remaining safe suffix");
   assert.equal(useDictation.getState().recording, null);
   await useDictation.getState().start("first");
+  const silentId = useDictation.getState().recording.id;
+  emit("dictation", { id: silentId, kind: "final", text: "" });
+  await flush();
+  assert.equal(useDictation.getState().recording.phase, "error");
+  assert.match(useDictation.getState().recording.error, /No speech was recognized/);
+  await useDictation.getState().cancel();
+  await useDictation.getState().start("first");
+  const previewId = useDictation.getState().recording.id;
+  emit("dictation", { id: previewId, kind: "partial", text: "Keep this preview" });
+  emit("dictation", { id: previewId, kind: "final", text: "" });
+  await flush();
+  assert.equal(useDictation.getState().recording.text, "Keep this preview");
+  assert.match(useDictation.getState().recording.error, /without a final transcript/);
+  assert.deepEqual(inserted, ["Merhaba world", "First sentence", " and more", " words"], "empty final events never silently discard or insert provisional text");
+  await useDictation.getState().cancel();
+  await useDictation.getState().start("first");
   unregister();
   assert.equal(useDictation.getState().recording, null, "closing target cancels recording");
   let failingWrites = 0;
-  registerDictationTarget("first", async () => { failingWrites++; throw new Error("PTY disconnected"); });
+  register("first", async () => { failingWrites++; throw new Error("PTY disconnected"); });
   await useDictation.getState().start("first");
   const failedId = useDictation.getState().recording.id;
   emit("dictation", { id: failedId, kind: "committed", text: "Keep this transcript" });
@@ -115,10 +150,50 @@ test("dictation opt-in, native events, pinned insertion and cancellation", async
   assert.ok(calls.some(call => call.command === "speech_stop" && call.args.id === failedId && call.args.cancel));
   await useDictation.getState().cancel();
   disconnected = true;
-  registerDictationTarget("first", () => true);
+  register("first", () => true);
   await useDictation.getState().start("first");
   assert.match(useDictation.getState().recording.error, /Microphone access denied/);
   useDictation.getState().setEnabled(false);
   assert.equal(useDictation.getState().recording, null);
   assert.equal(storage.get("pzza.dictation.enabled"), "false");
+
+  disconnected = false;
+  const refresh = useDictation.getState().refreshInputDevices();
+  await Promise.all([refresh, useDictation.getState().refreshInputDevices()]);
+  assert.equal(calls.filter(call => call.command === "speech_input_devices").length, 1, "concurrent device refreshes share one native request");
+  assert.deepEqual(useDictation.getState().inputDevices, inputDevices);
+  useDictation.getState().setInputDevice("usb-mic");
+  assert.deepEqual(JSON.parse(storage.get("pzza.dictation.inputDevice")), { id: "usb-mic", name: "USB microphone" });
+  useDictation.getState().setInputDevice("unknown-mic");
+  assert.equal(useDictation.getState().inputDevice.id, "usb-mic");
+  useDictation.getState().setEnabled(true);
+  await useDictation.getState().start("first");
+  assert.equal(calls.filter(call => call.command === "speech_start").at(-1).args.inputDeviceId, "usb-mic");
+  useDictation.getState().setInputDevice(null);
+  assert.equal(useDictation.getState().inputDevice.id, "usb-mic", "recording pins the selected microphone");
+  await useDictation.getState().cancel();
+
+  inputDevices = inputDevices.slice(0, 1);
+  await useDictation.getState().refreshInputDevices();
+  assert.equal(useDictation.getState().inputDevice.id, "usb-mic", "unplugging a microphone never silently switches the saved choice");
+  await useDictation.getState().start("first");
+  assert.match(useDictation.getState().recording.error, /Selected microphone is unavailable/);
+  await useDictation.getState().cancel();
+  inputDeviceError = true;
+  await useDictation.getState().refreshInputDevices();
+  assert.match(useDictation.getState().inputDevicesError, /Could not list microphones/);
+  assert.equal(useDictation.getState().model, "ready", "device errors do not mark the speech model as broken");
+  inputDeviceError = false;
+  await useDictation.getState().refreshInputDevices();
+  assert.equal(useDictation.getState().inputDevicesError, null);
+
+  const restored = await import(`${pathToFileURL(outfile).href}?restored`);
+  assert.deepEqual(restored.useDictation.getState().inputDevice, { id: "usb-mic", name: "USB microphone" }, "the microphone choice survives an app restart");
+  useDictation.getState().setInputDevice(null);
+  await useDictation.getState().start("first");
+  assert.equal(calls.filter(call => call.command === "speech_start").at(-1).args.inputDeviceId, null);
+  await useDictation.getState().cancel();
+  storage.set("pzza.dictation.inputDevice", '{"id":42}');
+  const invalidPreference = await import(`${pathToFileURL(outfile).href}?invalid`);
+  assert.equal(invalidPreference.useDictation.getState().inputDevice, null);
 });

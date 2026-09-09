@@ -14,7 +14,7 @@ export function DictationButton({ tileId, activate }: { tileId: string; activate
   const listening = recording?.phase === "listening";
   const title = listening ? "Stop dictation" : "Start dictation";
   return <button type="button" className={`tile-btn ${recording ? "dictation-mic-on" : ""}`} title={title} aria-label={title}
-    disabled={busy && !listening} aria-busy={pending} onMouseDown={(event) => event.stopPropagation()}
+    disabled={busy && !listening} aria-busy={pending} onMouseDown={(event) => { event.preventDefault(); event.stopPropagation(); }}
     onClick={(event) => {
       event.stopPropagation();
       if (listening) void useDictation.getState().stop();
@@ -35,6 +35,7 @@ export function DictationPreview({ tileId, style }: { tileId: string; style: CSS
   return <div className={`dictation-caret ${recording.phase === "error" ? "dictation-caret-error" : ""}`} style={style} onMouseDown={event => event.stopPropagation()}>
     <div className="dictation-caret-text">
       <span role={recording.error ? "alert" : "status"}>{recording.error ?? (preview || label)}</span>
+      {listening && <meter className="dictation-input-level" aria-label="Microphone input level" min={0} max={1} value={recording.level} />}
       {recording.error && recording.text && <>
         <p className="dictation-recovery-text">{recording.text}</p>
         <button type="button" className="btn btn-sm" onClick={() => {
@@ -45,8 +46,8 @@ export function DictationPreview({ tileId, style }: { tileId: string; style: CSS
       </>}
     </div>
     <div className="dictation-caret-actions">
-      {listening && <button type="button" className="tile-btn" aria-label="Stop dictation" onClick={() => void useDictation.getState().stop()}><Square size={12} /></button>}
-      <button type="button" className="tile-btn" aria-label={recording.phase === "error" ? "Dismiss dictation error" : "Cancel dictation"} onClick={() => void useDictation.getState().cancel()}><X size={12} /></button>
+      {listening && <button type="button" className="tile-btn" aria-label="Stop dictation" onMouseDown={event => event.preventDefault()} onClick={() => void useDictation.getState().stop()}><Square size={12} /></button>}
+      <button type="button" className="tile-btn" aria-label={recording.phase === "error" ? "Dismiss dictation error" : "Cancel dictation"} onMouseDown={event => event.preventDefault()} onClick={() => void useDictation.getState().cancel()}><X size={12} /></button>
     </div>
   </div>;
 }

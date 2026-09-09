@@ -6,9 +6,10 @@ import path from "node:path";
 import { execFile } from "node:child_process";
 import { DEVBOX, IS_CLIENT, PORT, STATE_DIR } from "./config.js";
 import { SSH_TOKEN, runCheck } from "./shell.js";
+import { tmuxArgs } from "./tmux-client.js";
 
 export async function doctor() {
-  const tmuxVersion = await runCheck("tmux", ["-V"]);
+  const tmuxVersion = await runCheck("tmux", tmuxArgs(["-V"]));
   let stateWritable = false;
   try {
     fs.accessSync(STATE_DIR, fs.constants.W_OK);

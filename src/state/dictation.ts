@@ -8,15 +8,22 @@ import { isDictationLanguage, type DictationLanguage } from "../dictationLanguag
 export const DICTATION_SUPPORTED = HAS_TAURI && /mac/i.test(navigator.platform || navigator.userAgent);
 const ENABLED_KEY = "pzza.dictation.enabled";
 const LANGUAGE_KEY = "pzza.dictation.language";
+const INPUT_DEVICE_KEY = "pzza.dictation.inputDevice";
 export type { DictationLanguage } from "../dictationLanguages";
 type Phase = "loading" | "listening" | "finalizing" | "error";
 interface Recording { id: string; tileId: string; phase: Phase; text: string; committed: string; level: number; error: string | null }
 interface ModelStatus { installed: boolean; downloading: boolean; downloadedBytes: number; totalBytes: number; error?: string | null }
 interface DownloadEvent { status: "downloading" | "ready" | "error"; downloadedBytes: number; totalBytes: number; error?: string }
 interface SpeechEvent { id: string; kind: "loading" | "listening" | "finalizing" | "partial" | "committed" | "final" | "error" | "level"; text?: string; level?: number; error?: string }
+interface InputDevice { id: string; name: string; isDefault: boolean }
+interface InputDeviceSelection { id: string; name: string }
 interface DictationState {
   enabled: boolean;
   language: DictationLanguage;
+  inputDevice: InputDeviceSelection | null;
+  inputDevices: InputDevice[];
+  inputDevicesLoading: boolean;
+  inputDevicesError: string | null;
   model: "checking" | "missing" | "downloading" | "ready" | "error";
   downloadedBytes: number;
   totalBytes: number;
@@ -25,6 +32,8 @@ interface DictationState {
   recording: Recording | null;
   setEnabled: (enabled: boolean) => void;
   setLanguage: (language: DictationLanguage) => void;
+  setInputDevice: (id: string | null) => void;
+  refreshInputDevices: () => Promise<void>;
   download: (replace?: boolean) => Promise<void>;
   start: (tileId: string) => Promise<void>;
   stop: () => Promise<void>;
@@ -33,13 +42,28 @@ interface DictationState {
 function read(key: string): string | null { try { return localStorage.getItem(key); } catch { return null; } }
 function save(key: string, value: string): void { try { localStorage.setItem(key, value); } catch { /* preferences are optional */ } }
 const savedLanguage = read(LANGUAGE_KEY);
-type TranscriptTarget = (text: string) => boolean | Promise<boolean>;
+function savedInputDevice(): InputDeviceSelection | null {
+  try {
+    const value: unknown = JSON.parse(read(INPUT_DEVICE_KEY) ?? "null");
+    if (typeof value === "object" && value !== null && "id" in value && "name" in value &&
+        typeof value.id === "string" && value.id.length > 0 && value.id.length <= 4096 &&
+        typeof value.name === "string" && value.name.length > 0 && value.name.length <= 256) {
+      return { id: value.id, name: value.name };
+    }
+  } catch { /* Ignore invalid saved device preferences. */ }
+  return null;
+}
+interface TranscriptTarget {
+  insert: (text: string) => boolean | Promise<boolean>;
+  focus: () => void;
+}
 const targets = new Map<string, TranscriptTarget>();
 let finalizingId: string | undefined;
 let delivery = { id: "", text: "", transcript: "", pending: Promise.resolve(), failed: false };
 let initialization: Promise<void> | undefined;
 let preparation: Promise<void> | undefined;
 let downloadPending = false;
+let inputDevicesPending: Promise<void> | undefined;
 const message = (error: unknown) => error instanceof Error ? error.message : String(error);
 
 // A transcript is data, never terminal control input or an implicit Enter key.
@@ -55,7 +79,10 @@ function deliverTranscript(id: string, text: string, final: boolean) {
     if (!current || current.id !== id || pipeline.id !== id || pipeline.failed) return;
     if (!text.startsWith(pipeline.text)) throw new Error("Recognition revised text already inserted. Stop and check the terminal before continuing.");
     const suffix = text.slice(pipeline.text.length);
-    if (suffix && !await targets.get(current.tileId)?.(suffix)) throw new Error("The terminal did not confirm insertion. Check its text before recording again.");
+    if (final && !text && !pipeline.text) {
+      throw new Error(current.text ? "Recognition ended without a final transcript. Copy the preview below to keep it." : "No speech was recognized. Check your microphone input and try again.");
+    }
+    if (suffix && !await targets.get(current.tileId)?.insert(suffix)) throw new Error("The terminal did not confirm insertion. Check its text before recording again.");
     pipeline.text = text;
     const latest = useDictation.getState().recording;
     if (!latest || latest.id !== id) return;
@@ -69,10 +96,10 @@ function deliverTranscript(id: string, text: string, final: boolean) {
   });
 }
 
-export function registerDictationTarget(tileId: string, insert: TranscriptTarget): () => void {
-  targets.set(tileId, insert);
+export function registerDictationTarget(tileId: string, target: TranscriptTarget): () => void {
+  targets.set(tileId, target);
   return () => {
-    if (targets.get(tileId) !== insert) return;
+    if (targets.get(tileId) !== target) return;
     targets.delete(tileId);
     if (useDictation.getState().recording?.tileId === tileId) void useDictation.getState().cancel();
   };
@@ -108,6 +135,8 @@ export function initializeDictation(): Promise<void> {
       } else if (payload.kind === "partial") {
         useDictation.setState({ recording: { ...current, text: dictationText(payload.text ?? current.text) } });
       } else if (current.phase !== "finalizing") {
+        // The microphone permission prompt can blur the terminal after start.
+        if (payload.kind === "listening" && current.phase === "loading") targets.get(current.tileId)?.focus();
         useDictation.setState({ recording: { ...current, phase: payload.kind } });
       }
     }));
@@ -133,6 +162,7 @@ export function initializeDictation(): Promise<void> {
 export const useDictation = create<DictationState>((set, get) => ({
   enabled: read(ENABLED_KEY) === "true",
   language: isDictationLanguage(savedLanguage) ? savedLanguage : "auto",
+  inputDevice: savedInputDevice(), inputDevices: [], inputDevicesLoading: false, inputDevicesError: null,
   model: "checking", downloadedBytes: 0, totalBytes: 574041195, warming: false, error: null, recording: null,
   setEnabled: (enabled) => {
     save(ENABLED_KEY, String(enabled)); set({ enabled, error: null });
@@ -140,6 +170,24 @@ export const useDictation = create<DictationState>((set, get) => ({
     else if (get().model === "ready") void prepare();
   },
   setLanguage: (language) => { save(LANGUAGE_KEY, language); set({ language }); },
+  setInputDevice: (id) => {
+    if (get().recording) return;
+    const device = id === null ? null : get().inputDevices.find((candidate) => candidate.id === id);
+    if (device === undefined) return;
+    const inputDevice = device ? { id: device.id, name: device.name } : null;
+    save(INPUT_DEVICE_KEY, JSON.stringify(inputDevice));
+    set({ inputDevice });
+  },
+  refreshInputDevices: () => {
+    if (!DICTATION_SUPPORTED) return Promise.resolve();
+    if (inputDevicesPending) return inputDevicesPending;
+    set({ inputDevicesLoading: true, inputDevicesError: null });
+    inputDevicesPending = invoke<InputDevice[]>("speech_input_devices")
+      .then((inputDevices) => { set({ inputDevices }); })
+      .catch((error: unknown) => { set({ inputDevicesError: message(error) }); })
+      .finally(() => { inputDevicesPending = undefined; set({ inputDevicesLoading: false }); });
+    return inputDevicesPending;
+  },
   download: async (replace = false) => {
     if (!DICTATION_SUPPORTED || downloadPending || get().model === "downloading") return;
     downloadPending = true;
@@ -161,8 +209,10 @@ export const useDictation = create<DictationState>((set, get) => ({
     try {
       await initializeDictation();
       if (get().recording?.id !== id) return;
-      if (!targets.has(tileId)) throw new Error("Wait for this terminal to connect before recording.");
-      await invoke<void>("speech_start", { id, language: get().language });
+      const target = targets.get(tileId);
+      if (!target) throw new Error("Wait for this terminal to connect before recording.");
+      target.focus();
+      await invoke<void>("speech_start", { id, language: get().language, inputDeviceId: get().inputDevice?.id ?? null });
     } catch (error) {
       const current = get().recording;
       if (current?.id === id) set({ recording: { ...current, phase: "error", error: message(error) } });
@@ -171,6 +221,7 @@ export const useDictation = create<DictationState>((set, get) => ({
   stop: async () => {
     const current = get().recording;
     if (!current || current.phase !== "listening") return;
+    targets.get(current.tileId)?.focus();
     set({ recording: { ...current, phase: "finalizing", level: 0 } });
     try { await invoke<void>("speech_stop", { id: current.id, cancel: false }); }
     catch (error) {

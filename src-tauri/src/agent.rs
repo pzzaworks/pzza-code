@@ -240,6 +240,9 @@ fn spawn_agent_process(
     instance: &str,
 ) -> std::io::Result<Child> {
     let mut cmd = Command::new(node);
+    #[cfg(target_os = "macos")]
+    cmd.env("PZZA_TMUX_SOCKET", crate::local_tmux::socket_path())
+        .env_remove("TMUX");
     cmd.arg(script)
         .env("PORT", AGENT_PORT)
         // A full PATH so the agent's child processes (tmux, ssh) resolve even
