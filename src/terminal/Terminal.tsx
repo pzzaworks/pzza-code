@@ -422,14 +422,17 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
                 if (!disposed) reportError(error instanceof Error ? error.message : "Terminal input failed.");
               });
             });
-            unregisterDictation = registerDictationTarget(tileId, async (text) => {
-              if (disposed || tauriId === null) return false;
-              const previousWrite = lastWrite;
-              term.paste(text);
-              if (lastWrite === previousWrite) return false;
-              await lastWrite;
-              term.focus();
-              return true;
+            unregisterDictation = registerDictationTarget(tileId, {
+              focus: () => { if (!disposed && tauriId !== null) term.focus(); },
+              insert: async (text) => {
+                if (disposed || tauriId === null) return false;
+                const previousWrite = lastWrite;
+                term.paste(text);
+                if (lastWrite === previousWrite) return false;
+                await lastWrite;
+                term.focus();
+                return true;
+              },
             });
             term.onResize(({ cols, rows }) => { if (!exited && !disposed) void resizePty(id, cols, rows).catch(() => {}); });
           })

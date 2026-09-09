@@ -7,6 +7,8 @@ import { DICTATION_SUPPORTED, useDictation } from "../state/dictation";
 import dictationLicenses from "../dictation-licenses.txt?raw";
 import { ThemeSettings } from "./ThemeSettings";
 import { DictationLanguageSelect } from "../ui/DictationLanguageSelect";
+import { Select } from "../ui/Select";
+import { useEffect } from "react";
 
 export const generalSections = [
   { id: "appearance", label: "Appearance" },
@@ -26,9 +28,30 @@ export function SettingsMenu({ section }: { section: GeneralSection }) {
 
 function DictationSection() {
   const state = useDictation();
+  useEffect(() => {
+    const refresh = () => { void useDictation.getState().refreshInputDevices(); };
+    refresh();
+    window.addEventListener("focus", refresh);
+    return () => window.removeEventListener("focus", refresh);
+  }, []);
   if (!DICTATION_SUPPORTED) return null;
   const progress = state.totalBytes ? Math.min(100, Math.round(state.downloadedBytes / state.totalBytes * 100)) : 0;
+  const defaultInput = state.inputDevices.find((device) => device.isDefault);
+  const missingInput = state.inputDevice && !state.inputDevicesLoading && !state.inputDevicesError && !state.inputDevices.some((device) => device.id === state.inputDevice?.id);
+  const inputOptions = [
+    { value: "", label: "System default", sub: defaultInput?.name ?? "Follow the macOS input setting" },
+    ...state.inputDevices.map((device) => ({ value: device.id, label: device.name, sub: device.isDefault ? "Current system default" : undefined })),
+    ...(state.inputDevice && !state.inputDevices.some((device) => device.id === state.inputDevice?.id)
+      ? [{ value: state.inputDevice.id, label: state.inputDevice.name, sub: missingInput ? "Unavailable - reconnect or choose another microphone" : "Saved microphone" }] : []),
+  ];
   return <Section title="Voice dictation">
+    <div className="dictation-language-setting settings-row">
+      <div className="settings-row-copy"><span>Microphone input</span><span className="set-hint">{state.recording ? "Stop dictation before changing the microphone." : state.inputDevicesLoading ? "Finding microphones…" : "Choose an input for voice dictation on this Mac."}</span></div>
+      <Select value={state.inputDevice?.id ?? ""} options={inputOptions} ariaLabel="Microphone input" disabled={state.recording !== null}
+        onOpen={() => void state.refreshInputDevices()} onChange={(id) => state.setInputDevice(id || null)} />
+    </div>
+    {state.inputDevicesError ? <p className="set-note dictation-error" role="alert">{state.inputDevicesError} <button type="button" className="btn btn-sm" onClick={() => void state.refreshInputDevices()}>Retry</button></p> : null}
+    {missingInput ? <p className="set-note dictation-error" role="alert">The saved microphone is unavailable. Reconnect it or choose another input.</p> : null}
     {state.model === "ready" ? <Row label="Enable dictation" hint={state.warming ? "Warming up the model…" : "A microphone button appears on each terminal"}>
       <button type="button" className={`switch ${state.enabled ? "switch-on" : ""}`} role="switch" aria-label="Enable dictation" aria-checked={state.enabled} onClick={() => state.setEnabled(!state.enabled)}><span className="switch-knob" /></button>
     </Row> : state.model === "downloading" ? <div className="dictation-download" role="status">

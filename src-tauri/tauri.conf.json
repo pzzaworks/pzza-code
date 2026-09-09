@@ -4,9 +4,9 @@
   "version": "0.2.30",
   "identifier": "com.pzzacode.app",
   "build": {
-    "beforeDevCommand": "npm run dev",
+    "beforeDevCommand": "npm run build:mcp && npm run dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "npm run build",
+    "beforeBuildCommand": "npm run build && npm run build:mcp",
     "frontendDist": "../dist"
   },
   "app": {
@@ -39,7 +39,7 @@
       "../server/index.js": "server/index.js",
       "../server/lib/*.js": "server/lib/",
       "../server/package.json": "server/package.json",
-      "../mcp/server.js": "mcp/server.js",
+      "../build/mcp/server.js": "mcp/server.js",
       "../mcp/lib/*.js": "mcp/lib/",
       "../mcp/package.json": "mcp/package.json",
       "../install.sh": "install.sh"
@@ -52,7 +52,8 @@
       "icons/icon.ico"
     ],
     "macOS": {
-      "minimumSystemVersion": "11.0"
+      "minimumSystemVersion": "11.0",
+      "entitlements": "./Entitlements.plist"
     },
     "createUpdaterArtifacts": true
   },

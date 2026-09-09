@@ -314,7 +314,8 @@ def run(request):
                 except Exception: pass
             raise Refused('Deployment could not apply every file. Check target files and any .hub-backup files before previewing again')
         if executable:
-            launched = subprocess.run(['tmux', 'new-session', '-d', '-s', request['session'], '-c', cwd, shlex.quote(executable)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
+            tmux_options = json.loads(sys.argv[1]) if len(sys.argv) > 1 else []
+            launched = subprocess.run(['tmux'] + tmux_options + ['new-session', '-d', '-s', request['session'], '-c', cwd, shlex.quote(executable)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
             if launched.returncode != 0:
                 return {'ok': False, 'filesApplied': True, 'backupPath': backup_path, 'error': 'Files were synchronized, but the terminal session could not start'}
             return {'ok': True, 'filesApplied': True, 'session': request['session'], 'backupPath': backup_path}

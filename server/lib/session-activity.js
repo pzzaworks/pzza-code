@@ -1,3 +1,5 @@
+import { tmuxArgs } from "./tmux-client.js";
+
 // The probe and classifier run identically in-process and on an SSH device.
 // Process arguments are examined on that device and never leave this module.
 export function detectSessionActivity(panes, processes) {
@@ -65,7 +67,7 @@ export function interpreterEntrypoint(argv) {
   return "";
 }
 
-export async function probeSessionActivity() {
+export async function probeSessionActivity(tmuxOptions = tmuxArgs([])) {
   const { execFile } = await import("node:child_process");
   const fs = await import("node:fs/promises");
   const path = await import("node:path");
@@ -74,7 +76,7 @@ export async function probeSessionActivity() {
   });
   const format = "#{session_name}\t#{window_index}\t#{window_active}\t#{pane_active}\t#{pane_pid}\t#{pane_tty}\t#{pane_current_command}";
   const [paneText, processText] = await Promise.all([
-    execute("tmux", ["list-panes", "-a", "-F", format]),
+    execute("tmux", [...tmuxOptions, "list-panes", "-a", "-F", format]),
     execute("ps", ["-ax", "-o", "pid=,ppid=,pgid=,tpgid=,tty=,comm="]),
   ]);
   const panes = paneText.split("\n").filter(Boolean).map((line) => {
@@ -124,4 +126,4 @@ export async function probeSessionActivity() {
   return detectSessionActivity(panes, processes);
 }
 
-export const ACTIVITY_PROBE_SCRIPT = `const detectSessionActivity = ${detectSessionActivity.toString()};\nconst interpreterEntrypoint = ${interpreterEntrypoint.toString()};\n(${probeSessionActivity.toString()})().then((rows) => process.stdout.write(JSON.stringify(rows))).catch(() => process.stdout.write("[]"));`;
+export const ACTIVITY_PROBE_SCRIPT = `const detectSessionActivity = ${detectSessionActivity.toString()};\nconst interpreterEntrypoint = ${interpreterEntrypoint.toString()};\n(${probeSessionActivity.toString()})([]).then((rows) => process.stdout.write(JSON.stringify(rows))).catch(() => process.stdout.write("[]"));`;

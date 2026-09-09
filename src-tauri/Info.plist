@@ -2,6 +2,8 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+  <key>NSLocalNetworkUsageDescription</key>
+  <string>Connect local terminal sessions and development tools to devices and services on your network.</string>
   <key>NSMicrophoneUsageDescription</key>
   <string>Record your voice for private, on-device terminal dictation.</string>
   <!-- The webview talks to the local device agent over http://127.0.0.1:5190.
