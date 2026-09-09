@@ -349,6 +349,8 @@ export interface UsageScoped {
   resets_at: string | null;
 }
 export interface AccountUsage {
+  sourceHost?: string;
+  sourceName?: string;
   provider: "claude" | "codex";
   label: string;
   email?: string;
@@ -366,8 +368,9 @@ export interface AccountUsage {
 }
 // Claude/Codex account usage on the connected device (5h + weekly windows).
 // `fresh` re-reads accounts; provider cooldowns still apply.
-export async function fetchUsage(fresh = false): Promise<AccountUsage[]> {
-  const res = await agentFetch(`${SERVER_HTTP}/usage${fresh ? "?fresh=1" : ""}`);
+export async function fetchUsage(fresh = false, host = ""): Promise<AccountUsage[]> {
+  const params = new URLSearchParams({ host, ...(fresh ? { fresh: "1" } : {}) });
+  const res = await agentFetch(`${SERVER_HTTP}/usage?${params}`, { signal: AbortSignal.timeout(15000) });
   if (!res.ok) throw new Error(`usage ${res.status}`);
   return res.json();
 }
@@ -558,7 +561,7 @@ export interface ProjectDeviceRef {
 
 export interface EnvFile {
   name: string;
-  hash: string; // sha256 prefix, compared across devices
+  hash: string; // sha256, compared across devices
   mtime: number; // unix seconds; the newest copy wins when syncing
 }
 
@@ -787,6 +790,27 @@ export async function agentsHubRequest<T>(path: string, body?: unknown): Promise
   if (!response.ok) {
     const value: unknown = await response.json().catch(() => null);
     throw new Error(value && typeof value === "object" && "error" in value && typeof value.error === "string" ? value.error : `Agents Hub request failed (${response.status})`);
+  }
+  return response.json();
+}
+
+export interface McpRepairResult {
+  framework: string;
+  server: string;
+  file: string;
+  scope?: string;
+  status: "healthy" | "repaired" | "repairable" | "unresolved" | "remote" | "disabled";
+  message: string;
+  backup?: string;
+}
+export async function repairMcp(host = "", fresh = false): Promise<{ results: McpRepairResult[] }> {
+  const response = await agentFetch(`${SERVER_HTTP}/mcp/repair`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ host, fresh }), signal: AbortSignal.timeout(15000),
+  });
+  if (!response.ok) {
+    const value: unknown = await response.json().catch(() => null);
+    throw new Error(value && typeof value === "object" && "error" in value && typeof value.error === "string" ? value.error : "Integration check failed");
   }
   return response.json();
 }

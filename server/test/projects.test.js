@@ -4,6 +4,7 @@ import { execFile } from "node:child_process";
 import { syncBuiltinESMExports } from "node:module";
 import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
+import { createHash } from "node:crypto";
 import path from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
@@ -127,7 +128,7 @@ test("parallel sync retains stash, branch switching, clone and current behavior"
   assert.equal((await git(first, "show", "stash@{0}^3:untracked.txt")).stdout, "keep\n");
 });
 
-test("sync runs at most four fetches together and separates nested repositories", async (t) => {
+test("sync runs at most four remote checks together and separates nested repositories", async (t) => {
   const { root, origin, projects, plan } = await fixture(t, 6);
   const nested = `${plan[0].rel}/child`;
   await run("git", ["clone", "--quiet", origin, path.join(projects, nested)]);
@@ -137,7 +138,7 @@ test("sync runs at most four fetches together and separates nested repositories"
   await mkdir(bin);
   const realGit = (await run("sh", ["-c", "command -v git"])).stdout.trim();
   await writeFile(path.join(bin, "git"), `#!/bin/sh
-if [ "$3" = fetch ]; then
+if [ "$3" = ls-remote ]; then
   printf 'start\\t%s\\n' "$2" >> "$PZZA_TEST_LOG"
   sleep 0.05
   "$PZZA_TEST_GIT" "$@"
@@ -163,8 +164,8 @@ exec "$PZZA_TEST_GIT" "$@"
     } else active.delete(rel);
   }
   assert.equal(active.size, 0);
-  assert.ok(peak > 1, "independent repositories should fetch concurrently");
-  assert.ok(peak <= 4, "fetch concurrency must remain bounded");
+  assert.ok(peak > 1, "independent repositories should check their remotes concurrently");
+  assert.ok(peak <= 4, "remote concurrency must remain bounded");
 });
 
 test("scan skips dependency/cache/output trees and linked worktrees while preserving real nested projects", async (t) => {
@@ -517,27 +518,28 @@ test("transferred GitHub origins reconcile only with immutable identity proof an
 });
 
 
-test("sync leaves untracked-only changes alone with stashing disabled", async t => {
+test("sync leaves current repositories and untracked-only changes alone with stashing disabled", async t => {
   const { projects, plan } = await fixture(t, 1);
   const repo = path.join(projects, plan[0].rel);
   await writeFile(path.join(repo, "draft.txt"), "recoverable draft\n");
   const { stdout } = await run("sh", ["-c", syncScript(rootExpr(projects), plan, normalizeOptions({ stashDirty: false }))]);
-  assert.equal(results(stdout)[0][2], "dirty");
+  assert.equal(results(stdout)[0][2], "current");
   assert.equal(await readFile(path.join(repo, "draft.txt"), "utf8"), "recoverable draft\n");
   assert.equal((await git(repo, "stash", "list")).stdout, "");
 });
 
-test("cancellation finishes active repository and skips remaining work", async () => {
+test("cancellation finishes the active batch and skips remaining work", async () => {
   const operationId = "cancel-test";
   let calls = 0;
   const result = await syncProjects({ root: "~/Projects", devices: [{ id: "local", host: "" }], operationId }, {
-    scan: async () => ({ root: "~/Projects", devices: [{ id: "local", host: "", name: "Local", repos: ["one", "two"].map(rel => ({ rel, origin: `https://example.invalid/${rel}.git`, envs: [] })) }] }),
-    run: async () => { calls++; cancelProjectSync(operationId); return { ok: true, stdout: "PZZA_R\tone\tcurrent\t\n", stderr: "" }; },
+    scan: async () => ({ root: "~/Projects", devices: [{ id: "local", host: "", name: "Local", repos: ["a", "b", "c", "d", "e"].map(rel => ({ rel, origin: `https://example.invalid/${rel}.git`, envs: [] })) }] }),
+    run: async () => { calls++; cancelProjectSync(operationId); return { ok: true, stdout: ["a", "b", "c", "d"].map(rel => `PZZA_R\t${rel}\tcurrent\t\n`).join(""), stderr: "" }; },
     copy: async () => { throw new Error("No environment writes after cancellation"); },
   });
   assert.equal(calls, 1);
   assert.equal(result.cancelled, true);
-  assert.equal(result.devices[0].results.find(item => item.rel === "two").status, "skipped");
+  assert.equal(result.devices[0].results.find(item => item.rel === "e").status, "skipped");
+  assert.equal(result.devices[0].results.filter(item => item.status === "current").length, 4);
 });
 
 test("environment replacement retains a private durable backup", async t => {
@@ -581,4 +583,185 @@ test("cancellation arriving before sync request prevents every write", async () 
   });
   assert.equal(result.cancelled, true);
   assert.equal(result.devices[0].results[0].status, "skipped");
+});
+
+test("current repositories skip fetch, stash, checkout and merge while newly pushed commits still arrive", async t => {
+  const { root, projects, origin, plan } = await fixture(t, 1);
+  const repo = path.join(projects, plan[0].rel);
+  const bin = path.join(root, "bin");
+  const log = path.join(root, "git.log");
+  const realGit = (await run("sh", ["-c", "command -v git"])).stdout.trim();
+  await mkdir(bin);
+  await writeFile(path.join(bin, "git"), `#!/bin/sh
+printf '%s\\n' "$3" >> "$PZZA_TEST_LOG"
+exec "$PZZA_TEST_GIT" "$@"
+`, { mode: 0o700 });
+  const environment = { ...process.env, PATH: `${bin}:${process.env.PATH}`, PZZA_TEST_GIT: realGit, PZZA_TEST_LOG: log };
+  await writeFile(path.join(repo, "tracked.txt"), "unfinished work\n");
+  await writeFile(path.join(repo, "draft.txt"), "unfinished draft\n");
+  const first = await run("sh", ["-c", syncScript(rootExpr(projects), plan, normalizeOptions())], { env: environment });
+  assert.equal(results(first.stdout)[0][2], "current");
+  const commands = (await readFile(log, "utf8")).trim().split("\n");
+  assert.equal(commands.filter(command => command === "ls-remote").length, 1);
+  for (const command of ["fetch", "stash", "checkout", "merge", "status"]) assert.ok(!commands.includes(command), `${command} must not run for an unchanged upstream`);
+  assert.equal(await readFile(path.join(repo, "tracked.txt"), "utf8"), "unfinished work\n");
+  assert.equal((await git(repo, "stash", "list")).stdout, "");
+
+  await writeFile(path.join(origin, "new.txt"), "new upstream file\n");
+  await git(origin, "add", "new.txt");
+  await git(origin, "commit", "-m", "New upstream fixture");
+  const second = await run("sh", ["-c", syncScript(rootExpr(projects), plan, normalizeOptions())], { env: environment });
+  assert.equal(results(second.stdout)[0][2], "stashed");
+  assert.equal(await readFile(path.join(repo, "new.txt"), "utf8"), "new upstream file\n");
+  assert.match((await git(repo, "stash", "show", "-p")).stdout, /unfinished work/);
+  assert.equal((await git(repo, "show", "stash@{0}^3:draft.txt")).stdout, "unfinished draft\n");
+});
+
+test("live checks handle default-branch changes and deleted branches without integrating stale refs", async t => {
+  const { projects, origin, plan } = await fixture(t, 1);
+  const repo = path.join(projects, plan[0].rel);
+  await git(origin, "checkout", "-b", "next");
+  await writeFile(path.join(origin, "next.txt"), "next branch\n");
+  await git(origin, "add", "next.txt");
+  await git(origin, "commit", "-m", "Next branch fixture");
+  const changed = await run("sh", ["-c", syncScript(rootExpr(projects), plan, normalizeOptions())]);
+  assert.equal(results(changed.stdout)[0][2], "updated");
+  assert.equal((await git(repo, "branch", "--show-current")).stdout.trim(), "next");
+  assert.equal(await readFile(path.join(repo, "next.txt"), "utf8"), "next branch\n");
+  await git(repo, "checkout", "main");
+  await git(origin, "branch", "-D", "main");
+  const deleted = await run("sh", ["-c", syncScript(rootExpr(projects), plan, normalizeOptions({ switchToDefault: false }))]);
+  assert.equal(results(deleted.stdout)[0][2], "skipped");
+  assert.match(results(deleted.stdout)[0][3], /main has no origin branch/);
+  assert.equal((await git(repo, "branch", "--show-current")).stdout.trim(), "main");
+});
+
+test("sync batches independent repositories in the actual service and stops retrying an unavailable device", async () => {
+  const repos = Array.from({ length: 10 }, (_, index) => ({ rel: `repo-${index}`, origin: `https://example.invalid/repo-${index}.git`, envs: [] }));
+  const scan = async (_body, options) => {
+    assert.equal(options.freshOrigins, true, "sync must verify ownership redirects before copying files");
+    return { root: "~/Projects", devices: [{ id: "local", host: "", name: "Local", repos }] };
+  };
+  const batches = [];
+  const result = await syncProjects({ root: "~/Projects" }, {
+    scan,
+    run: async (_host, script, timeout) => {
+      const names = [...script.matchAll(/\(pz_update '([^']+)'/g)].map(match => match[1]);
+      batches.push(names);
+      assert.equal(timeout, 60_000);
+      return { ok: true, stdout: names.map(rel => `PZZA_R\t${rel}\tcurrent\t\n`).join(""), stderr: "" };
+    },
+  });
+  assert.deepEqual(batches.map(batch => batch.length), [4, 4, 2]);
+  assert.equal(result.devices[0].results.filter(item => item.status === "current").length, 10);
+  let attempts = 0;
+  const unavailable = await syncProjects({ root: "~/Projects" }, {
+    scan,
+    run: async () => { attempts++; return { ok: false, stdout: "PZZA_R\trepo-0\tcurrent\t\n", stderr: "Connection closed" }; },
+  });
+  assert.equal(attempts, 1);
+  assert.equal(unavailable.devices[0].results.find(item => item.rel === "repo-0").status, "current");
+  assert.equal(unavailable.devices[0].results.filter(item => item.status === "failed").length, 9);
+});
+
+test("unambiguous GitHub projects do not perform speculative identity lookups", async () => {
+  let lookups = 0;
+  const scan = { devices: [deviceMetadata("local", [repoMetadata("one", "https://github.com/owner/one.git"), repoMetadata("two", "https://github.com/pzzaworks/two.git")])] };
+  await reconcileGithubOrigins(scan, async () => { lookups++; return null; });
+  assert.equal(lookups, 0);
+  assert.equal(groupProjects(scan).length, 2);
+});
+
+test("scans report fresh added and removed repositories and use full content hashes", async t => {
+  const { projects, origin, plan } = await fixture(t, 1);
+  const content = "LOCAL_SETTING=fixture\n";
+  await writeFile(path.join(projects, plan[0].rel, ".env"), content);
+  const body = { root: projects, devices: [{ id: "local", host: "" }] };
+  const before = await scanProjects(body);
+  assert.equal(before.devices[0].repos[0].envs[0].hash, createHash("sha256").update(content).digest("hex"));
+  await rm(path.join(projects, plan[0].rel), { recursive: true });
+  await run("git", ["clone", "--quiet", origin, path.join(projects, "new-repo")]);
+  const after = await scanProjects(body);
+  assert.deepEqual(after.devices[0].repos.map(repo => repo.rel), ["new-repo"]);
+});
+
+test("environment sync skips identical content regardless of timestamps and guards newer destination edits", async t => {
+  const same = "a".repeat(64);
+  const scan = { devices: [
+    deviceMetadata("a", [repoMetadata("app", "https://example.invalid/app.git", [envMetadata(same, 10)])]),
+    deviceMetadata("b", [repoMetadata("app", "https://example.invalid/app.git", [envMetadata(same, 100)])]),
+  ] };
+  assert.deepEqual(planEnvSync(scan, successfulResults(scan)), []);
+  const { projects, plan } = await fixture(t, 1);
+  const repo = path.join(projects, plan[0].rel);
+  const destination = path.join(repo, ".env");
+  await writeFile(destination, "LOCAL_SETTING=newer-edit\n");
+  const source = "LOCAL_SETTING=planned-copy\n";
+  const send = async (expected) => {
+    const child = childProcess.spawn("sh", ["-c", envWriteScript(rootExpr(projects), plan[0].rel, ".env", expected)], { stdio: ["pipe", "ignore", "ignore"] });
+    child.stdin.end(source);
+    return new Promise((resolve, reject) => { child.on("error", reject); child.on("exit", resolve); });
+  };
+  assert.equal(await send(createHash("sha256").update("LOCAL_SETTING=old\n").digest("hex")), 1);
+  assert.equal(await readFile(destination, "utf8"), "LOCAL_SETTING=newer-edit\n");
+  assert.equal(await send(null), 1, "a newly created destination must not be overwritten");
+  await writeFile(destination, source);
+  assert.equal(await send(null), 0, "an identical destination needs no replacement");
+  await assert.rejects(readdir(path.join(repo, ".git", "pzza-env-backups")), { code: "ENOENT" });
+});
+
+test("GitHub ownership checks share in-flight requests and cache verified identities across scans", async t => {
+  let calls = 0;
+  let changedOwner = false;
+  const probe = t.mock.method(childProcess, "execFile", (command, args, _options, callback) => {
+    if (command === "ssh") {
+      const rows = ["old-owner", "pzzaworks"].map(owner => [owner, `https://github.com/${owner}/cached-fixture.git`, "main", "main", "1234567", 0, 0, "0 0", 0, 1, ""].join("\t"));
+      queueMicrotask(() => callback(null, `PZZA_ROOT\t/home/test/projects\n${rows.join("\n")}\n`, ""));
+      return;
+    }
+    calls++;
+    assert.equal(command, "gh");
+    assert.ok(args.at(-1).endsWith("/cached-fixture"));
+    const replaced = changedOwner && args.at(-1).includes("old-owner/");
+    setTimeout(() => callback(null, JSON.stringify({ id: replaced ? 123456 : 987654, full_name: replaced ? "old-owner/cached-fixture" : "pzzaworks/cached-fixture" }), ""), 5);
+  });
+  syncBuiltinESMExports();
+  const makeScan = () => ({ devices: [deviceMetadata("local", [
+    repoMetadata("one", "https://github.com/old-owner/cached-fixture.git"),
+    repoMetadata("two", "https://github.com/pzzaworks/cached-fixture.git"),
+  ])] });
+  try {
+    const scans = await Promise.all(Array.from({ length: 4 }, () => reconcileGithubOrigins(makeScan())));
+    await reconcileGithubOrigins(makeScan());
+    assert.equal(calls, 2, "one identity proof per distinct origin, including subsequent refreshes");
+    assert.ok(scans.every(scan => groupProjects(scan).length === 1));
+    changedOwner = true;
+    const fresh = await scanProjects({ root: "~/Projects", devices: [{ id: "remote", host: "cached-origin-device" }] }, { freshOrigins: true });
+    assert.equal(calls, 4, "mutation planning must bypass completed identity caches");
+    assert.equal(groupProjects(fresh).length, 2, "a changed redirect must not share environment files with the previous repository");
+  } finally {
+    probe.mock.restore();
+    syncBuiltinESMExports();
+  }
+});
+
+test("env transfer refuses a source edited after its content was scanned", async t => {
+  const { projects, plan } = await fixture(t, 2);
+  const oldSource = "LOCAL_SETTING=old-source\n";
+  const newSource = "LOCAL_SETTING=new-source\n";
+  const destination = "LOCAL_SETTING=destination\n";
+  await writeFile(path.join(projects, plan[0].rel, ".env"), newSource);
+  await writeFile(path.join(projects, plan[1].rel, ".env"), destination);
+  const hash = content => createHash("sha256").update(content).digest("hex");
+  const result = await syncProjects({ root: projects }, {
+    scan: async () => ({ root: projects, devices: [
+      { id: "source", name: "Source", host: "", repos: [repoMetadata(plan[0].rel, "https://example.invalid/app.git", [envMetadata(hash(oldSource), 20)])] },
+      { id: "destination", name: "Destination", host: "", repos: [repoMetadata(plan[1].rel, "https://example.invalid/app.git", [envMetadata(hash(destination), 10)])] },
+    ] }),
+    run: async (_host, script) => ({ ok: true, stderr: "", stdout: `PZZA_R\t${script.match(/\(pz_update '([^']+)'/)[1]}\tcurrent\t\n` }),
+  });
+  const transfer = result.devices.find(device => device.id === "destination").envs[0];
+  assert.equal(transfer.status, "failed");
+  assert.match(transfer.detail, /source changed since scan/);
+  assert.equal(await readFile(path.join(projects, plan[1].rel, ".env"), "utf8"), destination);
 });

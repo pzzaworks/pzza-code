@@ -4,7 +4,8 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { shQuote } from "./shell.js";
 
 export function jwtClaims(token) {
@@ -71,7 +72,7 @@ function keychainService(dir) {
 // The Claude OAuth blob for an account. Linux/devbox keeps it in a file; macOS
 // (where Claude Code stores it in the login Keychain) has no file, so fall back
 // to that account's Keychain entry.
-export function readClaudeOAuth(dir) {
+export async function readClaudeOAuth(dir) {
   try {
     const j = JSON.parse(fs.readFileSync(path.join(dir, ".credentials.json"), "utf8"));
     if (j.claudeAiOauth) return j.claudeAiOauth;
@@ -80,10 +81,10 @@ export function readClaudeOAuth(dir) {
   }
   if (process.platform === "darwin") {
     try {
-      const out = execFileSync("security", ["find-generic-password", "-s", keychainService(dir), "-w"], {
-        encoding: "utf8",
+      const { stdout } = await promisify(execFile)("security", ["find-generic-password", "-s", keychainService(dir), "-w"], {
+        encoding: "utf8", timeout: 2000, maxBuffer: 128 * 1024,
       });
-      const j = JSON.parse(out);
+      const j = JSON.parse(stdout);
       if (j.claudeAiOauth) return j.claudeAiOauth;
     } catch {
       /* not in Keychain */

@@ -1,6 +1,9 @@
+import { useIntegrationHealth } from "../state/integrationHealth";
+import { useStore } from "../state/store";
+import { deviceHost } from "../devices";
 import { AsyncButton } from "../ui/AsyncButton";
 import { useEffect, useState } from "react";
-import { Check, Copy, Download } from "lucide-react";
+import { Check, Copy, Download, RefreshCw } from "lucide-react";
 import { fetchMcpConfig, mcpInstall, type McpConfig } from "../serverApi";
 
 const ENABLED_KEY = "pzza.mcp.enabled";
@@ -8,6 +11,9 @@ const ENABLED_KEY = "pzza.mcp.enabled";
 // MCP dropdown: a switch to expose pzzacode-mcp to agents, and per-framework
 // add/copy so Claude / Codex / Zed / Cursor / Windsurf can reach it.
 export function McpMenu() {
+  const devices = useStore(state => state.devices);
+  const health = useIntegrationHealth(state => state.devices);
+  const check = useIntegrationHealth(state => state.check);
   const [cfg, setCfg] = useState<McpConfig | null>(null);
   const [enabled, setEnabled] = useState(() => {
     try {
@@ -100,6 +106,15 @@ export function McpMenu() {
       </div>
       {configError ? <p className="set-note" role="alert">{configError}</p> : null}
 
+      </section>
+      <section className="settings-section" aria-label="Integration health">
+        <div className="settings-row"><div className="settings-row-copy"><span>Automatic startup repairs</span><small>Check installed server commands on each device every minute. Preserve configuration and private backups when a repair is needed.</small></div><AsyncButton className="btn btn-sm" icon={RefreshCw} loading={devices.some(device => health[deviceHost(device)]?.checking)} onClick={() => { for (const device of devices) void check(deviceHost(device), device.name, true); }}>Check now</AsyncButton></div>
+        {devices.map(device => {
+          const value = health[deviceHost(device)];
+          return <details key={device.id} className="bridge-disclosure"><summary>{device.name} · {value?.checking ? "Checking…" : value?.error ? "Unavailable" : value?.results.some(result => result.status === "unresolved") ? "Needs attention" : value?.results.some(result => result.status === "repaired") ? "Repaired" : value?.results.length ? "Ready" : "No servers configured"}</summary>
+            {value?.error ? <p role="alert">{value.error}</p> : value?.results.map((result, index) => <div key={`${result.file}:${result.server}:${index}`} className="settings-row"><div className="settings-row-copy"><span>{result.server || result.framework} · {result.status}</span><small>{result.message}</small><small>{result.file}{result.scope ? ` · ${result.scope}` : ""}{result.backup ? ` · Backup: ${result.backup}` : ""}</small></div></div>)}
+          </details>;
+        })}
       </section>
       <section className="settings-section" aria-label="Integrations">
       <h3 className="set-title">Integrations</h3>

@@ -1,11 +1,15 @@
+import { useStore } from "../state/store";
+import { deviceHost } from "../devices";
+import { Select } from "../ui/Select";
 import { useDelayedLoading } from "../ui/useDelayedLoading";
 import { AsyncButton } from "../ui/AsyncButton";
 import { useEffect, useState } from "react";
 import { Copy, Plus, X, RefreshCw, Loader2, Save, Ban } from "lucide-react";
-import { BRIDGE_CAPABILITIES, fetchBridgeState, fetchBridgeJobs, fetchBridgeAudit, saveBridgeConfig, approveBridgeJob, cancelBridgeJob, type BridgeState, type BridgeConfig, type BridgePeer, type BridgeJob, type BridgeAuditEntry } from "../bridgeApi";
+import { BRIDGE_CAPABILITIES, fetchBridgePeerIdentity, fetchBridgeState, fetchBridgeJobs, fetchBridgeAudit, saveBridgeConfig, approveBridgeJob, cancelBridgeJob, type BridgeState, type BridgeConfig, type BridgePeer, type BridgeJob, type BridgeAuditEntry } from "../bridgeApi";
 import "./BridgeSettings.css";
 
 export function BridgeSettings({ active = true, page = "access" }: { active?: boolean; page?: "access" | "activity" }) {
+  const devices = useStore(store => store.devices);
   const [state, setState] = useState<BridgeState | null>(null);
   const [draft, setDraft] = useState<BridgeConfig | null>(null);
   const [jobs, setJobs] = useState<BridgeJob[]>([]);
@@ -30,7 +34,7 @@ export function BridgeSettings({ active = true, page = "access" }: { active?: bo
     }).catch(e => { if (alive) report(e); });
     let timer: ReturnType<typeof setTimeout>;
     const poll = async () => {
-      if (document.visibilityState !== "hidden") {
+      if (page === "activity" && document.visibilityState !== "hidden") {
         try {
           const [jobState, auditState] = await Promise.all([fetchBridgeJobs(), fetchBridgeAudit()]);
           if (alive) { setJobs(jobState.jobs); setAudit(auditState.audit); }
@@ -40,7 +44,7 @@ export function BridgeSettings({ active = true, page = "access" }: { active?: bo
     };
     timer = setTimeout(() => void poll(), 5000);
     return () => { alive = false; clearTimeout(timer); };
-  }, [active]);
+  }, [active, page]);
   const save = async (config: BridgeConfig, action = "save") => {
     setPendingAction(action); setBusy(true); setError(null); setNote("");
     try {
@@ -57,7 +61,7 @@ export function BridgeSettings({ active = true, page = "access" }: { active?: bo
       if (!label.trim()) throw new Error("Give the device a name.");
       if (value.id === state.identity.id || draft.peers.some(peer => peer.id === value.id)) throw new Error("This device is already listed or is your own device.");
       setDraft({ ...draft, peers: [...draft.peers, { id: value.id, publicKey: value.publicKey, label: label.trim(), host: host.trim(), port: 5190, enabled: false, expiresAt: Date.now() + 3600000, projectIds: [], capabilities: [] }] });
-      setPairing(""); setLabel(""); setHost(""); setError(null);
+      setPairing(""); setLabel(""); setHost(""); setError(null); setNote("Device added to your draft. Select its projects and permissions, then save bridge settings. Add this device’s identity on its peer as well.");
     } catch (e) { report(e); }
   };
   const jobAction = async (jobId: string, action: "approve" | "reject" | "cancel") => {
@@ -93,6 +97,7 @@ export function BridgeSettings({ active = true, page = "access" }: { active?: bo
         }}><Plus size={13} /> Add project</button>
       </div>
       <div className="settings-section bridge-card"><h4>Pair a device</h4><p>Add identities on both devices. Permissions below grant incoming access to this device; the other device controls its own grants.</p>
+        {devices.some(device => deviceHost(device)) ? <div className="settings-form bridge-form"><label>Connected device<Select value={host} options={[{ value: "", label: "Choose a device" }, ...devices.filter(device => deviceHost(device)).map(device => ({ value: deviceHost(device), label: device.name }))]} onChange={value => { setHost(value); setLabel(devices.find(device => deviceHost(device) === value)?.name ?? ""); setPairing(""); }} /></label><AsyncButton className="btn btn-sm" disabled={busy || !host.trim()} loading={pendingAction === "identity"} icon={RefreshCw} onClick={() => { setPendingAction("identity"); setBusy(true); setError(null); void fetchBridgePeerIdentity(host.trim()).then(value => { setPairing(JSON.stringify(value.identity)); setNote("Verified this identity through the device's trusted SSH connection. Add it below and choose its access permissions."); }).catch(report).finally(() => { setBusy(false); setPendingAction(null); }); }}>Read pairing identity</AsyncButton></div> : null}
         <div className="settings-form bridge-form"><label>Device name<input value={label} onChange={e => setLabel(e.target.value)} placeholder="MacBook" /></label><label>Verified SSH alias<input value={host} onChange={e => setHost(e.target.value)} placeholder="macbook" /></label></div>
         <label className="settings-field bridge-field">Public pairing identity<textarea value={pairing} onChange={e => setPairing(e.target.value)} rows={3} spellCheck={false} /></label>
         <p>SSH host keys must already be verified. Leave the alias blank for incoming access only. Pairing does not connect until an action is requested.</p>

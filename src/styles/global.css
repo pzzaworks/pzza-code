@@ -476,6 +476,8 @@ button {
   border-color: var(--accent);
   color: var(--text);
 }
+.ws-tab-reorder-before { box-shadow: inset 2px 0 var(--accent); }
+.ws-tab-reorder-after { box-shadow: inset -2px 0 var(--accent); }
 .ws-tab-close {
   width: 16px;
   height: 16px;
@@ -1275,6 +1277,44 @@ button {
 }
 .grid-empty .btn {
   margin-top: 12px;
+}
+.empty-session-window {
+  width: min(440px, calc(100% - 48px));
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--surface) 78%, transparent);
+  box-shadow: 0 18px 48px rgb(0 0 0 / 12%);
+  backdrop-filter: blur(14px);
+  animation: empty-session-enter 220ms ease-out both;
+}
+.empty-session-chrome {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  height: 34px;
+  padding: 0 14px;
+  border-bottom: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 11px;
+}
+.empty-session-body {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 30px 20px 36px;
+}
+.empty-session-prompt { display: flex; align-items: center; gap: 9px; height: 34px; margin-bottom: 12px; color: var(--muted); font: 32px ui-monospace, monospace; opacity: .65; }
+.empty-session-cursor { width: 11px; height: 22px; border-radius: 2px; background: currentColor; }
+.empty-session-body p { margin: 0; color: var(--muted); font-size: 13px; }
+.grid-empty .empty-session-create { margin-top: 22px; min-height: 38px; padding-inline: 18px; pointer-events: auto; transition: transform 150ms ease, box-shadow 150ms ease; }
+.empty-session-create:hover { transform: translateY(-1px); }
+.empty-session-create:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
+@keyframes empty-session-enter { from { opacity: 0; transform: translateY(8px) scale(.98); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) {
+  .empty-session-window { animation: none; }
+  .grid-empty .empty-session-create { transition: none; }
+  .empty-session-create:hover { transform: none; }
 }
 
 .tile {

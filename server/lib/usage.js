@@ -123,7 +123,7 @@ const CLAUDE_SIGNIN_HINT = "run claude once in a terminal to refresh it";
 // rotates the token and could sign the CLI out), so an expired or rejected
 // token is reported as exactly that instead of a bare "usage 401".
 async function claudeAccountUsage(acc, fresh) {
-  const oauth = readClaudeOAuth(acc.dir);
+  const oauth = await readClaudeOAuth(acc.dir);
   // No usable creds on this device (e.g. a devbox-only account seen from the
   // Mac): hide it rather than showing a "not signed in" row.
   if (!oauth?.accessToken) return null;
@@ -137,7 +137,7 @@ async function claudeAccountUsage(acc, fresh) {
     if (!/\b401\b/.test(String(e.message))) throw e;
     // The CLI may have rotated the token between our read and the call: re-read
     // once and retry with the new one before giving up.
-    const again = readClaudeOAuth(acc.dir);
+    const again = await readClaudeOAuth(acc.dir);
     if (again?.accessToken && again.accessToken !== oauth.accessToken) {
       return { ...entry, usage: await limitedUsage(credentialKey("claude", again.accessToken), () => fetchClaudeUsage(again.accessToken), { fresh }) };
     }
