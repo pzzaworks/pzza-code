@@ -53,7 +53,12 @@ mod native {
                 model.to_str().ok_or("Speech model path is not valid UTF-8")?, parameters,
             ).map_err(|error| format!("Could not load the dictation model: {error}"))?;
             let decoder = context.create_state().map_err(|error| format!("Could not create speech decoder: {error}"))?;
-            Ok(Self { context, decoder })
+            let mut engine = Self { context, decoder };
+            // Compile the live decoder's Metal kernels during preparation so
+            // the first spoken words do not pay that startup cost.
+            let warmup = Arc::new(Capture::new(String::new()));
+            engine.recognize(&[0.0; 16_000], "en", &warmup, false)?;
+            Ok(engine)
         }
 
         fn recognize(&mut self, audio: &[f32], language: &str, capture: &Arc<Capture>, multilingual: bool) -> Result<(), String> {
@@ -127,6 +132,17 @@ mod native {
         received: AtomicBool,
         captured_samples: AtomicUsize,
         finished: AtomicBool,
+    }
+
+    impl Capture {
+        fn new(id: String) -> Self {
+            Self {
+                id, stop: AtomicBool::new(false), cancel: AtomicBool::new(false),
+                closed: AtomicBool::new(false), samples: Mutex::new(Vec::new()),
+                rate: Mutex::new(16_000), error: Mutex::new(None), received: AtomicBool::new(false),
+                captured_samples: AtomicUsize::new(0), finished: AtomicBool::new(false),
+            }
+        }
     }
 
     fn address(selector: u32, scope: u32) -> AudioObjectPropertyAddress {
@@ -378,10 +394,16 @@ mod native {
                     .take_while(|(word, old)| same_word(&word.text, &old.text)).count();
                 self.previous[..count].to_vec()
             } else { words };
-            self.missing_prefix |= self.language_changed && !self.confirmed.is_empty()
+            let omitted_prefix = self.language_changed && !self.confirmed.is_empty()
                 && !words.is_empty() && aligned_prefix(&words, &self.confirmed) == 0;
+            self.missing_prefix |= omitted_prefix;
             self.language_changed = false;
-            let carried = self.finish_missing_prefix(&words, duration);
+            // Recovery belongs to the boundary's old hypotheses. On subsequent
+            // passes those hypotheses already describe the new language and
+            // must go through normal word confirmation instead.
+            let carried = if omitted_prefix {
+                self.finish_missing_prefix(&words, duration)
+            } else { String::new() };
             if self.missing_prefix && aligned_prefix(&words, &self.confirmed) > 0 {
                 self.missing_prefix = false;
             }
@@ -407,13 +429,24 @@ mod native {
             // Rebase already entered audio onto this hypothesis. A correction to
             // an old word must not prevent unrelated later words from being typed.
             if count > 0 {
-                self.confirmed = words[..entered + count].to_vec();
+                self.confirm(&words, entered, count);
                 self.missing_prefix = false;
             }
             if !words.is_empty() {
                 self.earlier = mem::replace(&mut self.previous, words);
             }
             transcript
+        }
+
+        fn confirm(&mut self, words: &[Word], entered: usize, count: usize) {
+            if entered < self.confirmed.len() {
+                // A language-specific hypothesis may temporarily omit words
+                // already typed. Keep those anchors in case a later decode
+                // restores them with different timestamps.
+                self.confirmed.extend_from_slice(&words[entered..entered + count]);
+            } else {
+                self.confirmed = words[..entered + count].to_vec();
+            }
         }
 
         fn entered(&self, words: &[Word]) -> usize {
@@ -438,7 +471,10 @@ mod native {
                 same_word(&word.text, &old.text) && word.end.saturating_add(8_000) <= duration
             }).count();
             let text = word_text(&previous[..count]);
-            if count > 0 { self.confirmed = self.previous[..entered + count].to_vec(); }
+            if count > 0 {
+                let words = self.previous[..entered + count].to_vec();
+                self.confirm(&words, entered, count);
+            }
             text
         }
 
@@ -649,12 +685,7 @@ mod native {
         use super::*;
 
         fn capture() -> Arc<Capture> {
-            Arc::new(Capture {
-                id: "speech-test".into(), stop: AtomicBool::new(false), cancel: AtomicBool::new(false),
-                closed: AtomicBool::new(false), samples: Mutex::new(Vec::new()), rate: Mutex::new(16_000),
-                error: Mutex::new(None), received: AtomicBool::new(false), finished: AtomicBool::new(false),
-                captured_samples: AtomicUsize::new(0),
-            })
+            Arc::new(Capture::new("speech-test".into()))
         }
 
         #[test]
@@ -748,7 +779,9 @@ mod native {
             window.observe_language("tr".into(), 72_000);
             assert_eq!(window.update(words("Aynı isteği tekrar gönder"), 80_000, false).committed, "fails");
             assert_eq!(window.update(words("Aynı isteği tekrar gönder"), 88_000, false).committed, "");
-            assert_eq!(window.update(words("Aynı isteği tekrar gönder"), 96_000, false).committed, "Aynı isteği tekrar gönder");
+            assert_eq!(window.update(words("Aynı isteği tekrar gönder"), 96_000, false).committed, "Aynı isteği tekrar");
+            assert_eq!(window.update(words("Aynı isteği tekrar gönder"), 96_000, false).committed, "");
+            assert_eq!(window.update(words("Aynı isteği tekrar gönder"), 96_000, true).committed, "gönder");
             assert!(!window.missing_prefix);
             assert_eq!(window.update(words("Entirely revised old phrase next"), 104_000, true).committed, "next");
         }
@@ -768,6 +801,17 @@ mod native {
             assert_eq!(window.detected_language, None);
             window.observe_language("en".into(), 24_000);
             assert_eq!(window.detected_language.as_deref(), Some("en"));
+        }
+
+        #[test]
+        fn restored_language_prefixes_do_not_repeat_previously_entered_words() {
+            let mut window = TranscriptWindow::default();
+            window.observe_language("en".into(), 40_000);
+            assert_eq!(window.update(words("Please open the function and"), 40_000, true).committed, "Please open the function and");
+            window.observe_language("tr".into(), 48_000);
+            assert_eq!(window.update(words("Hata"), 48_000, true).committed, "Hata");
+            assert_eq!(window.update(words("Hata kontrolünü"), 56_000, true).committed, "kontrolünü");
+            assert_eq!(window.update(words("Please open the function and Hata kontrolünü ekle sonra"), 80_000, true).committed, "ekle sonra");
         }
 
         #[test]
@@ -1055,18 +1099,7 @@ mod native {
         if active.is_some() {
             return Err("Dictation is already running. Wait for it to finish.".into());
         }
-        let capture = Arc::new(Capture {
-            id,
-            stop: AtomicBool::new(false),
-            cancel: AtomicBool::new(false),
-            closed: AtomicBool::new(false),
-            samples: Mutex::new(Vec::new()),
-            rate: Mutex::new(16_000),
-            error: Mutex::new(None),
-            received: AtomicBool::new(false),
-            captured_samples: AtomicUsize::new(0),
-            finished: AtomicBool::new(false),
-        });
+        let capture = Arc::new(Capture::new(id));
         *active = Some(capture.clone());
         let worker_app = app.clone();
         std::thread::spawn(move || run(worker_app, capture, language, input_device_id));
