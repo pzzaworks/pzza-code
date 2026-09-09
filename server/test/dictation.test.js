@@ -84,6 +84,14 @@ test("dictation opt-in, native events, pinned insertion and cancellation", async
   assert.deepEqual(focused, ["first", "first"], "listening restores focus after microphone permission prompts");
   emit("dictation", { id, kind: "level", level: 0.4 });
   assert.equal(useDictation.getState().recording.level, 0.4);
+  assert.equal(useDictation.getState().recording.processing, false);
+  emit("dictation", { id, kind: "processing", active: true });
+  assert.equal(useDictation.getState().recording.processing, true);
+  assert.equal(useDictation.getState().recording.phase, "listening", "processing does not interrupt capture or change Stop behavior");
+  emit("dictation", { id, kind: "level", level: 0.8 });
+  assert.equal(useDictation.getState().recording.level, 0.8, "live input levels continue during decoding");
+  emit("dictation", { id, kind: "processing", active: false });
+  assert.equal(useDictation.getState().recording.processing, false);
   emit("dictation", { id, kind: "partial", text: "Merhaba world" });
   assert.equal(focused.length, 2, "audio updates do not repeatedly steal focus");
   assert.deepEqual(inserted, [], "partials must never be sent to terminal");
@@ -101,7 +109,9 @@ test("dictation opt-in, native events, pinned insertion and cancellation", async
   const cancelled = useDictation.getState().recording.id;
   await useDictation.getState().cancel();
   emit("dictation", { id: cancelled, kind: "final", text: "late result" });
+  emit("dictation", { id: cancelled, kind: "processing", active: true });
   await flush();
+  assert.equal(useDictation.getState().recording, null, "late processing events cannot restore a cancelled recording");
   assert.deepEqual(inserted, ["Merhaba world"]);
   await useDictation.getState().start("first");
   const liveId = useDictation.getState().recording.id;
@@ -149,6 +159,10 @@ test("dictation opt-in, native events, pinned insertion and cancellation", async
   assert.equal(useDictation.getState().recording.phase, "error");
   assert.equal(useDictation.getState().recording.text, "Keep this transcript intact", "queued final text remains recoverable after an uncertain write fails");
   assert.match(useDictation.getState().recording.error, /PTY disconnected/);
+  emit("dictation", { id: failedId, kind: "processing", active: true });
+  emit("dictation", { id: failedId, kind: "listening" });
+  assert.equal(useDictation.getState().recording.phase, "error");
+  assert.equal(useDictation.getState().recording.processing, false, "late native activity cannot revive a failed recording");
   assert.ok(calls.some(call => call.command === "speech_stop" && call.args.id === failedId && call.args.cancel));
   await useDictation.getState().cancel();
   disconnected = true;
