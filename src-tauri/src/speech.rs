@@ -22,6 +22,7 @@ mod native {
     };
     use objc2_core_foundation::{CFRetained, CFString};
     use serde::Serialize;
+    use std::path::Path;
     use std::{mem, ptr::{null, NonNull}};
     use std::sync::{
         atomic::{AtomicBool, Ordering},
@@ -40,8 +41,62 @@ mod native {
     }
 
     struct Engine {
-        _context: WhisperContext,
+        context: WhisperContext,
         decoder: WhisperState,
+    }
+
+    impl Engine {
+        fn load(model: &Path) -> Result<Self, String> {
+            let mut parameters = WhisperContextParameters::default();
+            parameters.flash_attn(true);
+            let context = WhisperContext::new_with_params(
+                model.to_str().ok_or("Speech model path is not valid UTF-8")?, parameters,
+            ).map_err(|error| format!("Could not load the dictation model: {error}"))?;
+            let decoder = context.create_state().map_err(|error| format!("Could not create speech decoder: {error}"))?;
+            Ok(Self { context, decoder })
+        }
+
+        fn recognize(&mut self, audio: &[f32], language: &str, capture: &Arc<Capture>) -> Result<(), String> {
+            let result = self.decoder.full(recognition_params(language, capture), audio);
+            if capture.cancel.load(Ordering::Acquire) { return Ok(()); }
+            if let Err(error) = result {
+                self.decoder = self.context.create_state().map_err(|error| format!("Could not reset speech decoder: {error}"))?;
+                return Err(format!("Speech recognition could not process the audio: {error}. Click the microphone to retry."));
+            }
+            Ok(())
+        }
+    }
+
+    unsafe extern "C" fn recording_cancelled(data: *mut std::ffi::c_void) -> bool {
+        // The caller keeps this Arc allocation alive throughout synchronous decoding.
+        // Only an atomic flag is read, including when the engine calls from a worker thread.
+        unsafe { &*data.cast::<Capture>() }.cancel.load(Ordering::Acquire)
+    }
+
+    fn recognition_params<'a>(language: &'a str, capture: &'a Arc<Capture>) -> FullParams<'a, 'a> {
+        let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
+        params.set_n_threads(std::thread::available_parallelism().map(|n| n.get().min(8) as i32).unwrap_or(4));
+        params.set_language(if language == "auto" { None } else { Some(language) });
+        params.set_detect_language(false);
+        params.set_translate(false);
+        params.set_no_context(true);
+        params.set_print_special(false);
+        params.set_print_progress(false);
+        params.set_print_realtime(false);
+        params.set_print_timestamps(false);
+        params.set_suppress_blank(true);
+        params.set_suppress_nst(true);
+        // Word boundaries let successive decodes confirm input before a sentence ends.
+        params.set_token_timestamps(true);
+        params.set_max_len(1);
+        params.set_split_on_word(true);
+        // Version 0.16.0's closure helper casts a boxed trait object to the wrong
+        // concrete type. Pass the recording's stable address through the C API instead.
+        unsafe {
+            params.set_abort_callback(Some(recording_cancelled));
+            params.set_abort_callback_user_data(Arc::as_ptr(capture).cast_mut().cast());
+        }
+        params
     }
 
     struct Capture {
@@ -53,6 +108,7 @@ mod native {
         rate: Mutex<u32>,
         error: Mutex<Option<String>>,
         received: AtomicBool,
+        finished: AtomicBool,
     }
 
     fn address(selector: u32, scope: u32) -> AudioObjectPropertyAddress {
@@ -153,18 +209,7 @@ mod native {
         if context.is_none() {
             whisper_rs::install_logging_hooks();
             let path = crate::speech_model::model_path(app)?;
-            let path = path
-                .to_str()
-                .ok_or("Speech model path is not valid UTF-8")?;
-            let loaded = WhisperContext::new_with_params(path, WhisperContextParameters::default())
-                .map_err(|_| "Could not load the dictation model. Re-download it and try again.")?;
-            let decoder = loaded
-                .create_state()
-                .map_err(|_| "Could not create speech decoder")?;
-            *context = Some(Engine {
-                _context: loaded,
-                decoder,
-            });
+            *context = Some(Engine::load(&path)?);
         }
         Ok(())
     }
@@ -274,10 +319,17 @@ mod native {
         consumed: usize,
     }
 
+    #[derive(Default)]
+    struct TranscriptWindow {
+        previous: String,
+        confirmed: String,
+    }
+
     fn transcribe(
         app: &AppHandle,
         capture: &Arc<Capture>,
-        language: &str,
+        language: &mut String,
+        window: &mut TranscriptWindow,
         finalizing: bool,
     ) -> Result<Transcript, String> {
         let rate = *capture.rate.lock().map_err(|_| "Audio lock failed")?;
@@ -289,91 +341,200 @@ mod native {
             .take(rate as usize * 27)
             .copied()
             .collect();
-        let mut audio = super::resample(&samples, rate);
-        if !super::has_speech(&audio) {
+        let state = app.state::<SpeechState>();
+        let mut context = state.context.lock().map_err(|_| "Speech model lock failed")?;
+        let engine = context.as_mut().ok_or("Speech model is not loaded")?;
+        transcribe_samples(engine, capture, language, window, &samples, rate, finalizing)
+    }
+
+    fn transcribe_samples(
+        engine: &mut Engine,
+        capture: &Arc<Capture>,
+        language: &mut String,
+        window: &mut TranscriptWindow,
+        samples: &[f32],
+        rate: u32,
+        finalizing: bool,
+    ) -> Result<Transcript, String> {
+        let mut audio = super::resample(samples, rate);
+        if window.confirmed.is_empty() && !super::has_speech(&audio) {
             return Ok(Transcript {
                 preview: String::new(),
                 committed: String::new(),
-                consumed: samples.len(),
+                // Keep a little preroll so a word beginning at this boundary is not lost.
+                consumed: if finalizing { samples.len() } else { samples.len().saturating_sub(rate as usize / 5) },
             });
         }
-        let pause = audio.len() >= 32_000
-            && audio[audio.len().saturating_sub(16_000)..]
+        let duration = audio.len();
+        let pause = audio.len() >= 16_000
+            && audio[audio.len().saturating_sub(6_400)..]
                 .chunks_exact(320)
                 .all(|frame| frame.iter().map(|v| v * v).sum::<f32>() / 320.0 <= 0.000025);
-        let commit_all = pause || (finalizing && audio.len() < 400_000);
+        let commit_all = pause || finalizing || audio.len() >= 400_000;
         // Very short utterances still need a full decoder input frame.
         if audio.len() < 16_000 {
             audio.resize(16_000, 0.0);
         }
-        let state = app.state::<SpeechState>();
-        let mut context = state
-            .context
-            .lock()
-            .map_err(|_| "Speech model lock failed")?;
-        let decoder = &mut context
-            .as_mut()
-            .ok_or("Speech model is not loaded")?
-            .decoder;
-        let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
-        params.set_n_threads(
-            std::thread::available_parallelism()
-                .map(|n| n.get().min(8) as i32)
-                .unwrap_or(4),
-        );
-        params.set_language(if language == "auto" {
-            None
-        } else {
-            Some(language)
-        });
-        params.set_detect_language(false);
-        params.set_translate(false);
-        params.set_no_context(true);
-        params.set_print_special(false);
-        params.set_print_progress(false);
-        params.set_print_realtime(false);
-        params.set_print_timestamps(false);
-        params.set_suppress_blank(true);
-        params.set_suppress_nst(true);
-        let cancelled = capture.clone();
-        params.set_abort_callback_safe(move || cancelled.cancel.load(Ordering::Acquire));
-        decoder
-            .full(params, &audio)
-            .map_err(|_| "Speech recognition failed. Try a shorter recording.")?;
+        engine.recognize(&audio, language, capture)?;
+        if capture.cancel.load(Ordering::Acquire) {
+            return Ok(Transcript { preview: String::new(), committed: String::new(), consumed: samples.len() });
+        }
+        let decoder = &engine.decoder;
+        // Wait for enough speech before pinning automatic language detection.
+        // A single introductory word can otherwise select the wrong language.
+        if language == "auto" && duration >= 48_000 {
+            if let Some(detected) = whisper_rs::get_lang_str(decoder.full_lang_id_from_state()) {
+                *language = detected.into();
+            }
+        }
         let mut text = String::new();
         let mut committed = String::new();
         let mut consumed = 0;
         for segment in decoder.as_iter() {
-            let end =
-                (segment.end_timestamp().max(0) as usize * rate as usize / 100).min(samples.len());
-            let stable = commit_all || (audio.len() >= 400_000 && segment.end_timestamp() <= 2300);
             if segment.no_speech_probability() < 0.6 {
                 let words = segment
                     .to_str_lossy()
                     .map_err(|_| "Could not read recognition result")?;
                 text.push_str(&words);
-                if stable {
-                    committed.push_str(&words);
-                }
             }
+            // Confirm complete words in two successive hypotheses and leave the
+            // newest half-second uncommitted. Terminal input cannot safely be retracted.
+            let agreed = agreed_prefix(&window.previous, text.trim())
+                && segment.end_timestamp().max(0) as usize + 50 <= duration / 160;
+            let stable = commit_all || agreed;
             if stable {
-                consumed = end;
+                committed = text.clone();
             }
         }
+        let text = text.trim();
+        let candidate = committed.trim();
+        let preview = remaining_words(text, &window.confirmed).unwrap_or("").trim().to_string();
+        let committed = if let Some(suffix) = remaining_words(candidate, &window.confirmed) {
+            let suffix = suffix.trim().to_string();
+            window.confirmed = candidate.into();
+            suffix
+        } else if commit_all {
+            return Err("Recognition revised words already entered. Check the terminal and repeat the remaining words.".into());
+        } else {
+            String::new()
+        };
+        window.previous = text.into();
+        // Retain acoustic context while emitting words. Cutting at estimated word
+        // timestamps can split a syllable and corrupt the next recognition update.
         if commit_all {
             consumed = samples.len();
-        }
-        if audio.len() >= 400_000 && consumed == 0 {
-            // Some continuous utterances arrive as one long segment. Commit the
-            // decoded window instead of aborting or decoding the same audio forever.
-            committed = text.clone();
-            consumed = samples.len();
+            *window = TranscriptWindow::default();
         }
         Ok(Transcript {
-            preview: text.trim().to_string(),
-            committed: committed.trim().to_string(),
+            preview,
+            committed,
             consumed,
         })
+    }
+
+    fn agreed_prefix(previous: &str, candidate: &str) -> bool {
+        !candidate.is_empty() && remaining_words(previous, candidate)
+            .is_some_and(|remaining| !remaining.trim().is_empty())
+    }
+
+    fn remaining_words<'a>(text: &'a str, confirmed: &str) -> Option<&'a str> {
+        // Later context often revises casing or sentence punctuation. Keep what
+        // was already typed and align whole words, without deleting terminal input.
+        let normalize = |word: &str| word.trim_matches(['.', ',', '!', '?', ';', ':']).to_lowercase();
+        let mut remaining = text;
+        for word in confirmed.split_whitespace() {
+            remaining = remaining.trim_start();
+            let end = remaining.find(char::is_whitespace).unwrap_or(remaining.len());
+            if end == 0 || normalize(&remaining[..end]) != normalize(word) { return None; }
+            remaining = &remaining[end..];
+        }
+        Some(remaining)
+    }
+
+    #[cfg(test)]
+    mod streaming_tests {
+        use super::*;
+
+        fn capture() -> Arc<Capture> {
+            Arc::new(Capture {
+                id: "speech-test".into(), stop: AtomicBool::new(false), cancel: AtomicBool::new(false),
+                closed: AtomicBool::new(false), samples: Mutex::new(Vec::new()), rate: Mutex::new(16_000),
+                error: Mutex::new(None), received: AtomicBool::new(false), finished: AtomicBool::new(false),
+            })
+        }
+
+        #[test]
+        fn decoder_cancellation_reads_only_the_live_atomic_flag() {
+            let capture = capture();
+            let pointer = Arc::as_ptr(&capture).cast_mut().cast();
+            assert!(!unsafe { recording_cancelled(pointer) });
+            capture.stop.store(true, Ordering::Release);
+            assert!(!unsafe { recording_cancelled(pointer) }, "Stop must finish recognition, not abort it");
+            capture.cancel.store(true, Ordering::Release);
+            assert!(unsafe { recording_cancelled(pointer) });
+            capture.cancel.store(false, Ordering::Release);
+            assert!(!unsafe { recording_cancelled(pointer) });
+            let references = Arc::strong_count(&capture);
+            for _ in 0..32 { drop(recognition_params("en", &capture)); }
+            assert_eq!(Arc::strong_count(&capture), references, "Decoder callbacks must not leak recordings");
+        }
+
+        #[test]
+        fn only_complete_agreed_words_are_committed() {
+            assert!(agreed_prefix("Please write this", "Please write"));
+            assert!(agreed_prefix("Türkçe konuşmaya devam", "Türkçe konuşmaya"));
+            assert!(!agreed_prefix("Please write", "Please write"));
+            assert!(!agreed_prefix("Please writer", "Please write"));
+            assert!(!agreed_prefix("Please read this", "Please write"));
+            assert!(!agreed_prefix("Anything", ""));
+            assert!(agreed_prefix("As I speak. Then continue", "As I speak, then"));
+            assert_eq!(remaining_words("As I speak. Then continue", "As I speak,"), Some(" Then continue"));
+            assert_eq!(remaining_words("Do not run this", "Do run"), None);
+            assert_eq!(remaining_words("Use foo-bar next", "Use foobar"), None);
+        }
+
+        #[test]
+        #[ignore = "Requires the installed speech model and a 16 kHz float PCM speech fixture"]
+        fn real_model_streams_words_before_stop_and_recovers_after_cancel() {
+            whisper_rs::install_logging_hooks();
+            let model = std::env::var_os("PZZA_DICTATION_TEST_MODEL").expect("Set PZZA_DICTATION_TEST_MODEL");
+            let fixture = std::env::var_os("PZZA_DICTATION_TEST_AUDIO").expect("Set PZZA_DICTATION_TEST_AUDIO");
+            let expected = std::env::var("PZZA_DICTATION_TEST_EXPECTED").unwrap_or_else(|_|
+                "Please write this sentence into the terminal as I speak. Then keep listening until I press the stop button.".into());
+            let bytes = std::fs::read(fixture).unwrap();
+            let samples: Vec<f32> = bytes.chunks_exact(4)
+                .map(|sample| f32::from_le_bytes(sample.try_into().unwrap())).collect();
+            let mut engine = Engine::load(Path::new(&model)).unwrap();
+            let capture = capture();
+            let mut language = "auto".to_string();
+            let mut window = TranscriptWindow::default();
+            let mut committed = String::new();
+            let mut offset = 0;
+            let mut live_updates = 0;
+            for incoming in samples.chunks(16_000) {
+                capture.samples.lock().unwrap().extend_from_slice(incoming);
+                offset += incoming.len();
+                let audio = capture.samples.lock().unwrap().clone();
+                let transcript = transcribe_samples(&mut engine, &capture, &mut language, &mut window, &audio, 16_000, false).unwrap();
+                if !transcript.committed.is_empty() && offset < samples.len() {
+                    live_updates += 1;
+                }
+                apply(&capture, &transcript, &mut committed).unwrap();
+            }
+            let audio = capture.samples.lock().unwrap().clone();
+            let transcript = transcribe_samples(&mut engine, &capture, &mut language, &mut window, &audio, 16_000, true).unwrap();
+            apply(&capture, &transcript, &mut committed).unwrap();
+            assert!(live_updates >= 2, "Expected multiple terminal updates before Stop, got {live_updates}");
+            let normalize = |text: &str| text.to_lowercase().chars()
+                .filter(|character| character.is_alphanumeric() || character.is_whitespace()).collect::<String>()
+                .split_whitespace().collect::<Vec<_>>().join(" ");
+            assert_eq!(normalize(&committed), normalize(&expected));
+            capture.cancel.store(true, Ordering::Release);
+            engine.recognize(&samples, &language, &capture).unwrap();
+            capture.cancel.store(false, Ordering::Release);
+            engine.recognize(&samples, &language, &capture).unwrap();
+            assert!(engine.decoder.full_n_segments() > 0, "The next recording must remain usable after cancellation");
+        }
     }
 
     fn apply(
@@ -397,7 +558,7 @@ mod native {
         Ok(())
     }
 
-    fn run(app: AppHandle, capture: Arc<Capture>, language: String, input_device_id: Option<String>) {
+    fn run(app: AppHandle, capture: Arc<Capture>, mut language: String, input_device_id: Option<String>) {
         let result = (|| {
             emit(&app, &capture, "loading", None, None, None);
             prepare(&app)?;
@@ -409,6 +570,7 @@ mod native {
             let microphone = std::thread::spawn(move || capture_audio(audio_app, audio_capture, input_device_id));
             let mut last = Instant::now();
             let mut committed = String::new();
+            let mut window = TranscriptWindow::default();
             while !capture.closed.load(Ordering::Acquire) {
                 if capture.cancel.load(Ordering::Acquire) {
                     capture.stop.store(true, Ordering::Release);
@@ -416,7 +578,7 @@ mod native {
                 if !capture.stop.load(Ordering::Acquire)
                     && last.elapsed() >= Duration::from_millis(900)
                 {
-                    match transcribe(&app, &capture, &language, false) {
+                    match transcribe(&app, &capture, &mut language, &mut window, false) {
                         Ok(transcript) => {
                             let preview = format!("{} {}", committed, transcript.preview)
                                 .trim()
@@ -459,7 +621,7 @@ mod native {
                 .map_err(|_| "Audio lock failed")?
                 .is_empty()
             {
-                let transcript = transcribe(&app, &capture, &language, true)?;
+                let transcript = transcribe(&app, &capture, &mut language, &mut window, true)?;
                 apply(&capture, &transcript, &mut committed)?;
             }
             Ok(committed)
@@ -468,6 +630,7 @@ mod native {
         if let Ok(mut active) = app.state::<SpeechState>().active.lock() {
             *active = None;
         }
+        capture.finished.store(true, Ordering::Release);
         match result {
             Ok(text) => emit(&app, &capture, "final", Some(&text), None, None),
             Err(error) => emit(&app, &capture, "error", None, None, Some(&error)),
@@ -559,6 +722,7 @@ mod native {
             rate: Mutex::new(16_000),
             error: Mutex::new(None),
             received: AtomicBool::new(false),
+            finished: AtomicBool::new(false),
         });
         *active = Some(capture.clone());
         let worker_app = app.clone();
@@ -567,7 +731,7 @@ mod native {
     }
 
     #[tauri::command]
-    pub fn speech_stop(
+    pub async fn speech_stop(
         state: tauri::State<'_, SpeechState>,
         id: String,
         cancel: bool,
@@ -575,8 +739,9 @@ mod native {
         let active = state
             .active
             .lock()
-            .map_err(|_| "Speech session lock failed")?;
-        if let Some(capture) = active.as_ref() {
+            .map_err(|_| "Speech session lock failed")?
+            .clone();
+        if let Some(capture) = active {
             if capture.id != id {
                 return Err("This dictation session is no longer active".into());
             }
@@ -584,6 +749,18 @@ mod native {
                 capture.cancel.store(true, Ordering::Release);
             }
             capture.stop.store(true, Ordering::Release);
+            if cancel {
+                tauri::async_runtime::spawn_blocking(move || {
+                    let deadline = Instant::now() + Duration::from_secs(10);
+                    while !capture.finished.load(Ordering::Acquire) {
+                        if Instant::now() >= deadline {
+                            return Err("The microphone is still stopping. Try again in a moment.");
+                        }
+                        std::thread::sleep(Duration::from_millis(20));
+                    }
+                    Ok(())
+                }).await.map_err(|_| "Could not stop the microphone")??;
+            }
         }
         Ok(())
     }

@@ -64,6 +64,7 @@ let initialization: Promise<void> | undefined;
 let preparation: Promise<void> | undefined;
 let downloadPending = false;
 let inputDevicesPending: Promise<void> | undefined;
+let cancellation: Promise<void> | undefined;
 const message = (error: unknown) => error instanceof Error ? error.message : String(error);
 
 // A transcript is data, never terminal control input or an implicit Enter key.
@@ -80,7 +81,7 @@ function deliverTranscript(id: string, text: string, final: boolean) {
     if (!text.startsWith(pipeline.text)) throw new Error("Recognition revised text already inserted. Stop and check the terminal before continuing.");
     const suffix = text.slice(pipeline.text.length);
     if (final && !text && !pipeline.text) {
-      throw new Error(current.text ? "Recognition ended without a final transcript. Copy the preview below to keep it." : "No speech was recognized. Check your microphone input and try again.");
+      throw new Error(current.text ? "Recognition ended before it could confirm the remaining words. Please repeat them." : "No speech was recognized. Check your microphone input and try again.");
     }
     if (suffix && !await targets.get(current.tileId)?.insert(suffix)) throw new Error("The terminal did not confirm insertion. Check its text before recording again.");
     pipeline.text = text;
@@ -207,6 +208,7 @@ export const useDictation = create<DictationState>((set, get) => ({
     delivery = { id, text: "", transcript: "", pending: Promise.resolve(), failed: false };
     set({ recording: { id, tileId, phase: "loading", text: "", committed: "", level: 0, error: null } });
     try {
+      await cancellation;
       await initializeDictation();
       if (get().recording?.id !== id) return;
       const target = targets.get(tileId);
@@ -220,7 +222,8 @@ export const useDictation = create<DictationState>((set, get) => ({
   },
   stop: async () => {
     const current = get().recording;
-    if (!current || current.phase !== "listening") return;
+    if (!current) return;
+    if (current.phase !== "listening") { await get().cancel(); return; }
     targets.get(current.tileId)?.focus();
     set({ recording: { ...current, phase: "finalizing", level: 0 } });
     try { await invoke<void>("speech_stop", { id: current.id, cancel: false }); }
@@ -232,7 +235,11 @@ export const useDictation = create<DictationState>((set, get) => ({
     const current = get().recording;
     if (!current) return;
     set({ recording: null });
-    try { await invoke<void>("speech_stop", { id: current.id, cancel: true }); }
+    // The control can reset immediately; new capture waits for native cleanup.
+    const pending = (cancellation ?? Promise.resolve()).then(() => invoke<void>("speech_stop", { id: current.id, cancel: true }));
+    cancellation = pending;
+    try { await pending; }
     catch (error) { set({ error: message(error) }); }
+    finally { if (cancellation === pending) cancellation = undefined; }
   },
 }));
