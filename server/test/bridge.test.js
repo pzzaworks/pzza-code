@@ -59,6 +59,24 @@ test("bridge stays disabled by default and persists a private device identity", 
   assert.deepEqual((await again.state()).identity, first.identity);
 });
 
+test("SSH pairing imports only a validated public identity and rejects a changed fingerprint", async t => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "pzza-bridge-import-"));
+  const remote = createBridge({ stateDir: path.join(directory, "remote"), executor: executor() });
+  let tamper = false;
+  const local = createBridge({ stateDir: path.join(directory, "local"), executor: executor(), agentRequest: async (host, endpoint) => {
+    assert.equal(host, "trusted-device");
+    assert.equal(endpoint, "/bridge/state");
+    const value = await remote.state();
+    return tamper ? { ...value, identity: { ...value.identity, id: "0".repeat(64) } } : value;
+  } });
+  t.after(async () => { await local.close(); await remote.close(); await fs.rm(directory, { recursive: true, force: true }); });
+  assert.deepEqual(await local.peerIdentity("trusted-device"), { identity: (await remote.state()).identity });
+  assert.equal((await local.state()).config.peers.length, 0);
+  tamper = true;
+  await assert.rejects(local.peerIdentity("trusted-device"), /invalid or local identity/);
+  await assert.rejects(local.peerIdentity("-oProxyCommand=command"), /valid trusted SSH/);
+});
+
 test("signed dispatch enforces receiving capabilities and project grants", async (t) => {
   const f = await pair(t);
   assert.deepEqual(await f.left.dispatch({ peerId: f.rightIdentity.id, action: "terminal.list", args: { projectId: "project" } }), { ok: true });

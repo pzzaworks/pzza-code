@@ -15,9 +15,12 @@ import {
   Loader2,
   Maximize2,
   Minimize2,
+  Minus,
+  Plus,
   Rows2,
   Square,
   StretchHorizontal,
+  TerminalSquare,
   X,
 } from "lucide-react";
 import { useStore } from "../state/store";
@@ -43,7 +46,7 @@ import { DictationButton } from "../ui/Dictation";
 // Uniform N-column grid, filtered to the active workspace. One tile can be
 // maximized (animated). Tiles reorder by dragging their header onto another
 // tile, or move to a workspace by dragging onto a top-bar tab.
-export function Canvas() {
+export function Canvas({ onNewSession }: { onNewSession: () => void }) {
   const tiles = useStore((s) => s.tiles);
   const allSessions = useStore((s) => s.allSessions);
   const workspaceColumns = useStore((s) => s.workspaceColumns);
@@ -401,18 +404,21 @@ export function Canvas() {
           ) : null}
           <div className="tile-head-spacer" />
           <div className="tile-actions">
-            <DictationButton tileId={t.id} activate={() => setActive(t.id)} />
             <button
               className="tile-btn"
-              title="Duplicate session"
-              aria-label="Duplicate session"
-              disabled={duplicating !== null}
-              aria-busy={duplicating === t.id}
-              onMouseDown={(event) => event.stopPropagation()}
-              onClick={(event) => { event.stopPropagation(); void duplicate(t); }}
+              title="Tile layout"
+              onMouseDown={(e) => e.stopPropagation()}
+              onClick={(e) => {
+                e.stopPropagation();
+                const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                setLayoutFor(
+                  layoutFor?.id === t.id ? null : { id: t.id, x: r.right, y: r.bottom },
+                );
+              }}
             >
-              {showDuplicateSpinner && duplicating === t.id ? <Loader2 size={13} className="async-spinner" /> : <Copy size={13} />}
+              <LayoutGrid size={13} />
             </button>
+            <DictationButton tileId={t.id} activate={() => setActive(t.id)} />
             <button
               className={`tile-btn ${isFocus ? "tile-btn-on" : ""}`}
               title={isFocus ? "Unfocus" : "Focus (dim others)"}
@@ -446,20 +452,6 @@ export function Canvas() {
             </button>
             <button
               className="tile-btn"
-              title="Tile layout"
-              onMouseDown={(e) => e.stopPropagation()}
-              onClick={(e) => {
-                e.stopPropagation();
-                const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
-                setLayoutFor(
-                  layoutFor?.id === t.id ? null : { id: t.id, x: r.right, y: r.bottom },
-                );
-              }}
-            >
-              <LayoutGrid size={13} />
-            </button>
-            <button
-              className="tile-btn"
               title="Move to workspace"
               onMouseDown={(e) => e.stopPropagation()}
               onClick={(e) => {
@@ -469,6 +461,17 @@ export function Canvas() {
               }}
             >
               <FolderInput size={13} />
+            </button>
+            <button
+              className="tile-btn"
+              title="Duplicate session"
+              aria-label="Duplicate session"
+              disabled={duplicating !== null}
+              aria-busy={duplicating === t.id}
+              onMouseDown={(event) => event.stopPropagation()}
+              onClick={(event) => { event.stopPropagation(); void duplicate(t); }}
+            >
+              {showDuplicateSpinner && duplicating === t.id ? <Loader2 size={13} className="async-spinner" /> : <Copy size={13} />}
             </button>
             <button
               className="tile-btn"
@@ -570,8 +573,24 @@ export function Canvas() {
       </div>
       {noneVisible ? (
         <div className="grid-empty grid-empty-overlay">
-          <p>No tiles in this workspace.</p>
-          <p className="muted">Hit + in the top bar to open a session.</p>
+          <section className="empty-session-window" aria-label="Empty workspace">
+            <div className="empty-session-chrome" aria-hidden="true">
+              <TerminalSquare size={14} />
+              <span>Session</span>
+              <div className="tile-head-spacer" />
+              <Minus size={12} />
+              <Square size={10} />
+              <X size={12} />
+            </div>
+            <div className="empty-session-body">
+              <div className="empty-session-prompt" aria-hidden="true"><span>›</span><span className="empty-session-cursor" /></div>
+              <p>Start a session in this workspace.</p>
+              <button type="button" className="btn btn-accent empty-session-create" onClick={onNewSession}>
+                <Plus size={16} />
+                New Session
+              </button>
+            </div>
+          </section>
         </div>
       ) : null}
 

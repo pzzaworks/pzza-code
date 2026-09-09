@@ -4,6 +4,7 @@ import path from "node:path";
 import os from "node:os";
 import crypto from "node:crypto";
 import { spawn } from "node:child_process";
+import { deviceAgentRequest } from "./device-agent.js";
 import { createBridgeExecutor, BRIDGE_ACTION_CAPABILITIES, BRIDGE_CAPABILITIES } from "./bridge-executor.js";
 
 const BODY_LIMIT = 2 * 1024 * 1024;
@@ -141,7 +142,7 @@ export function sendBridgeRequest(peer, request) {
   });
 }
 
-export function createBridge({ stateDir, executor: suppliedExecutor, transport = sendBridgeRequest, now = Date.now, appControl } = {}) {
+export function createBridge({ stateDir, executor: suppliedExecutor, transport = sendBridgeRequest, agentRequest = deviceAgentRequest, now = Date.now, appControl } = {}) {
   let initialized;
   let expiryTimer;
   let executor;
@@ -358,6 +359,13 @@ export function createBridge({ stateDir, executor: suppliedExecutor, transport =
     return result.result;
   };
   return { state, configure, receive, receiveSigned, dispatch,
+    peerIdentity: async (host) => {
+      if (!HOST.test(host || "")) throw fail("Choose a valid trusted SSH device");
+      const remote = await agentRequest(host, "/bridge/state");
+      const parsed = parsePublicIdentity(remote?.identity?.publicKey);
+      if (parsed.id !== remote.identity.id || parsed.id === initialize().identity.id) throw fail("The device returned an invalid or local identity");
+      return { identity: { id: parsed.id, publicKey: parsed.publicKey } };
+    },
     audit: () => ({ audit: structuredClone(initialize().audit) }),
     jobs: async () => { initialize(); return { jobs: await executor.listJobs() }; },
     approve: (jobId, approved) => { initialize(); if (typeof approved !== "boolean") throw fail("Approval decision is required"); return executor.approve(jobId, approved); },
@@ -409,6 +417,7 @@ export function createBridgeRouter(bridge, json) {
       else if (req.method === "POST") {
         const body = await readBridgeBody(req);
         if (url.pathname === "/bridge/config") json(res, 200, await bridge.configure(body));
+        else if (url.pathname === "/bridge/peer-identity" && exactKeys(body, ["host"])) json(res, 200, await bridge.peerIdentity(body.host));
         else if (url.pathname === "/bridge/dispatch") json(res, 200, await bridge.dispatch(body));
         else if (url.pathname === "/bridge/approve" && exactKeys(body, ["jobId", "approved"])) json(res, 200, await bridge.approve(body.jobId, body.approved));
         else if (url.pathname === "/bridge/cancel" && exactKeys(body, ["jobId"])) json(res, 200, await bridge.cancel(body.jobId));

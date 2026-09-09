@@ -7,9 +7,10 @@
 // the device holding the newest copy to every device where it is missing or
 // differs, so secrets follow the project without ever passing through git.
 //
-// Every device is driven with ONE shell script per phase (scan, then sync) so
-// a sync costs two ssh round-trips per device plus one per env file moved.
+// Scans share concurrent reads; sync runs bounded batches and checks live remote
+// commit IDs before touching a checkout that is already current.
 import { execFile, spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { DEVBOX, IS_CLIENT } from "./config.js";
 import { SSH_TOKEN, shQuote } from "./shell.js";
 
@@ -17,6 +18,7 @@ import { SSH_TOKEN, shQuote } from "./shell.js";
 const SCAN_DEPTH = 4;
 const SCAN_TIMEOUT_MS = 60_000;
 const SYNC_TIMEOUT_MS = 15 * 60_000;
+const DEVICE_CONCURRENCY = 4;
 const REPO_CONCURRENCY = 4;
 const ENV_CONCURRENCY = 4;
 const MAX_OUTPUT = 8 * 1024 * 1024;
@@ -28,6 +30,7 @@ const SCAN_SKIP_DIRS = [
 ];
 const SCAN_OUTPUT_DIRS = ["dist", "dist-ssr", "build", "target", "out", "coverage", "vendor"];
 const pendingScans = new Map();
+const githubLookups = new Map();
 const syncOperations = new Map();
 const cancelledRequests = new Map();
 const validOperationId = value => typeof value === "string" && /^[a-zA-Z0-9-]{1,80}$/.test(value);
@@ -77,8 +80,12 @@ export function originKey(url) {
 
 // Resolve through the authenticated CLI so private transferred repositories can
 // be verified without handling credentials here. Failure leaves identity intact.
-async function githubRepository(fullName) {
-  return new Promise((resolve) => {
+async function githubRepository(fullName, fresh = false) {
+  const key = fullName.toLowerCase();
+  const cached = githubLookups.get(key);
+  if (cached && (!fresh || cached.expires === Infinity) && cached.expires > Date.now()) return cached.result;
+  const entry = { expires: Infinity, result: null };
+  entry.result = new Promise((resolve) => {
     execFile("gh", ["api", "--hostname", "github.com", `repos/${fullName}`], { timeout: 8_000, maxBuffer: 128 * 1024 }, (error, stdout) => {
       if (error) return resolve(null);
       try {
@@ -86,7 +93,13 @@ async function githubRepository(fullName) {
         resolve(Number.isSafeInteger(data.id) && /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(data.full_name) ? { id: data.id, fullName: data.full_name } : null);
       } catch { resolve(null); }
     });
+  }).then(result => {
+    entry.expires = Date.now() + (result ? 5 * 60_000 : 30_000);
+    return result;
   });
+  if (githubLookups.size >= 256) githubLookups.delete(githubLookups.keys().next().value);
+  githubLookups.set(key, entry);
+  return entry.result;
 }
 
 export async function reconcileGithubOrigins(scan, resolveRepository = githubRepository) {
@@ -97,11 +110,14 @@ export async function reconcileGithubOrigins(scan, resolveRepository = githubRep
     return lookups.get(key);
   };
   const repos = scan.devices.flatMap((device) => device.repos);
+  // Only resolve an ownership alias when both names actually occur in the
+  // scan. Unrelated repositories need no network request to identify them.
+  const candidates = new Set(repos.map(repo => originKey(repo.origin)?.match(/^github\.com\/pzzaworks\/([^/]+)$/)?.[1]).filter(Boolean));
   await mapConcurrent(repos, REPO_CONCURRENCY, async (repo) => {
     const match = originKey(repo.origin)?.match(/^github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)$/);
     if (!match) return;
     const [, owner, name] = match;
-    if (owner.toLowerCase() === "pzzaworks") return;
+    if (owner.toLowerCase() === "pzzaworks" || !candidates.has(name.toLowerCase())) return;
     const [original, candidate] = await Promise.all([lookup(`${owner}/${name}`), lookup(`pzzaworks/${name}`)]);
     if (!original || !candidate || !Number.isSafeInteger(original.id) || original.id !== candidate.id ||
         !/^pzzaworks\/[A-Za-z0-9_.-]+$/i.test(candidate.fullName)) return;
@@ -231,6 +247,15 @@ const WORKTREE_FUNC =
 
 // Run a script on a device: locally for "" (or via the configured devbox when
 // this agent is a receiver), else over ssh.
+function projectSshArgs(target, script) {
+  return [
+    "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", "-o", "StrictHostKeyChecking=accept-new",
+    "-o", "ControlMaster=auto", "-o", "ControlPath=~/.ssh/pzza-mux-%C",
+    "-o", "ControlPersist=120", "-o", "ServerAliveInterval=10", "-o", "ServerAliveCountMax=2",
+    target, script,
+  ];
+}
+
 function runOn(host, script, timeout) {
   return new Promise((resolve) => {
     const cb = (err, stdout, stderr) =>
@@ -245,14 +270,7 @@ function runOn(host, script, timeout) {
       const target = host || DEVBOX;
       execFile(
         "ssh",
-        [
-          "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", "-o", "StrictHostKeyChecking=accept-new",
-          // Reuse the same connection as terminal tiles instead of paying for
-          // a fresh SSH handshake each time the projects panel opens.
-          "-o", "ControlMaster=auto", "-o", "ControlPath=~/.ssh/pzza-mux-%C",
-          "-o", "ControlPersist=120", "-o", "ServerAliveInterval=30", "-o", "ServerAliveCountMax=3",
-          target, script,
-        ],
+        projectSshArgs(target, script),
         opts,
         cb,
       );
@@ -269,13 +287,14 @@ function prelude(rootE) {
     ROOT_FUNC + WORKTREE_FUNC +
     `root=$(r=$(${rootE}) && cd "$r" 2>/dev/null && pwd -P) || { echo PZZA_NOROOT; exit 0; }; ` +
     `case "$root" in "$h"|"$h"/*) ;; *) echo PZZA_DENIED; exit 3;; esac; ` +
-    `command -v git >/dev/null 2>&1 || { echo PZZA_NOGIT; exit 0; }; `
+    `command -v git >/dev/null 2>&1 || { echo PZZA_NOGIT; exit 0; }; ` +
+    `GIT_TERMINAL_PROMPT=0; GCM_INTERACTIVE=never; export GIT_TERMINAL_PROMPT GCM_INTERACTIVE; `
   );
 }
 
 // One line per repo, tab-separated:
 //   rel  origin  default  branch  head  modified  untracked  ahead  behind  stash  lastCommitTs  envs
-// "-" marks an unknown value. envs is "name:sha256prefix:mtime" triples joined
+// "-" marks an unknown value. envs is "name:sha256:mtime" triples joined
 // by "," for every .env / .env.* file at the repo root: the hash tells whether
 // two devices hold the same content, the mtime decides which copy wins.
 function scanScript(rootE) {
@@ -307,7 +326,7 @@ function scanScript(rootE) {
     `info=$(git -C "$d" log -1 --format='%h %ct' 2>/dev/null); ` +
     `head="\${info% *}"; ts="\${info##* }"; [ -n "$head" ] || head=-; [ -n "$ts" ] || ts=0; ` +
     `envs=; for f in "$d"/.env "$d"/.env.*; do [ -f "$f" ] || continue; case "$f" in *.example|*.sample|*.template) continue;; esac; ` +
-    `sum=$( (sha256sum "$f" 2>/dev/null || shasum -a 256 "$f" 2>/dev/null) | cut -c1-12); mt=$(stat -c %Y "$f" 2>/dev/null || stat -f %m "$f" 2>/dev/null || echo 0); envs="$envs\${envs:+,}\${f##*/}:$sum:$mt"; done; ` +
+    `[ ! -L "$f" ] || continue; sum=$( (sha256sum "$f" 2>/dev/null || shasum -a 256 "$f" 2>/dev/null) | cut -d ' ' -f 1); [ "\${#sum}" = 64 ] || continue; mt=$(stat -c %Y "$f" 2>/dev/null || stat -f %m "$f" 2>/dev/null || echo 0); envs="$envs\${envs:+,}\${f##*/}:$sum:$mt"; done; ` +
     `printf '%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n' "$rel" "$origin" "$def" "$br" "$head" "$mod" "$unt" "$ab" "$stash" "$ts" "$envs"; }; ` +
     `find "$root" -mindepth 1 -maxdepth ${SCAN_DEPTH} ${prune} -prune -o -type d -print 2>/dev/null | ` +
     `{ n=0; while IFS= read -r d; do [ -e "$d/.git" ] || continue; ` +
@@ -329,14 +348,25 @@ const SYNC_FUNCS =
   `if pz_linked_worktree "$d"; then pz_r "$d" skipped "linked worktree; left alone"; return; fi; ` +
   `actual=$(git -C "$d" remote get-url origin 2>/dev/null); ` +
   `[ "$actual" = "$expected" ] || { pz_r "$d" failed "origin changed since scan; left alone"; return; }; ` +
-  `if [ -n "$(git -C "$d" ls-files --unmerged)" ] || [ -f "$(git -C "$d" rev-parse --absolute-git-dir)/MERGE_HEAD" ] || [ -d "$(git -C "$d" rev-parse --absolute-git-dir)/rebase-merge" ] || [ -d "$(git -C "$d" rev-parse --absolute-git-dir)/rebase-apply" ]; then pz_r "$d" failed "unfinished merge or rebase; left alone"; return; fi; ` +
-  `if ! out=$(git -C "$d" fetch --quiet --prune origin 2>&1); then pz_r "$d" failed "fetch: $(pz_tail "$out")"; return; fi; ` +
-  `if [ "$do_switch" = 1 ]; then git -C "$d" remote set-head origin -a >/dev/null 2>&1; fi; ` +
+  `gitdir=$(git -C "$d" rev-parse --absolute-git-dir) || { pz_r "$d" failed "repository no longer exists"; return; }; ` +
+  `if [ -n "$(git -C "$d" ls-files --unmerged)" ] || [ -f "$gitdir/MERGE_HEAD" ] || [ -d "$gitdir/rebase-merge" ] || [ -d "$gitdir/rebase-apply" ]; then pz_r "$d" failed "unfinished merge or rebase; left alone"; return; fi; ` +
   `was=$(git -C "$d" rev-parse --abbrev-ref HEAD 2>/dev/null); before=$(git -C "$d" rev-parse HEAD 2>/dev/null); stashed=; ` +
-  `if [ "$do_switch" = 1 ]; then def=$(git -C "$d" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null); def="\${def#origin/}"; ` +
+  `if [ "$do_switch" != 1 ] && [ "$was" = HEAD ]; then pz_r "$d" skipped "detached HEAD"; return; fi; ` +
+  // The advertised commit proves whether a transfer is necessary. Cached
+  // tracking refs alone cannot tell us whether another device just pushed.
+  `if ! remote=$(git -C "$d" ls-remote --quiet --symref origin HEAD "refs/heads/$was" 2>&1); then pz_r "$d" failed "check origin: $(pz_tail "$remote")"; return; fi; ` +
+  `if [ "$do_switch" = 1 ]; then def=$(printf '%s\\n' "$remote" | awk '$1 == "ref:" && $3 == "HEAD" { sub(/^refs\\/heads\\//,"",$2); print $2; exit }'); ` +
   `if [ -z "$def" ]; then pz_r "$d" skipped "no default branch on origin"; return; fi; ` +
-  `else def=$was; if [ "$def" = HEAD ]; then pz_r "$d" skipped "detached HEAD"; return; fi; ` +
-  `git -C "$d" rev-parse --verify --quiet "origin/$def" >/dev/null || { pz_r "$d" skipped "$def has no origin branch"; return; }; fi; ` +
+  `remote_head=$(printf '%s\\n' "$remote" | awk '$2 == "HEAD" && $1 != "ref:" { print $1; exit }'); ` +
+  `else def=$was; remote_head=$(printf '%s\\n' "$remote" | awk -v ref="refs/heads/$def" '$2 == ref { print $1; exit }'); fi; ` +
+  `if [ -z "$remote_head" ]; then pz_r "$d" skipped "$def has no origin branch"; return; fi; ` +
+  `tracking=$(git -C "$d" rev-parse --verify --quiet "refs/remotes/origin/$def"); ` +
+  `if [ "$was" = "$def" ] && [ "$tracking" = "$remote_head" ] && git -C "$d" merge-base --is-ancestor "$remote_head" "$before" 2>/dev/null; then pz_r "$d" current "$def; origin already integrated, working files left alone"; return; fi; ` +
+  `if ! out=$(git -C "$d" fetch --quiet --prune origin 2>&1); then pz_r "$d" failed "fetch: $(pz_tail "$out")"; return; fi; ` +
+  `git -C "$d" rev-parse --verify --quiet "refs/remotes/origin/$def" >/dev/null || { pz_r "$d" skipped "$def disappeared from origin"; return; }; ` +
+  `if [ "$do_switch" = 1 ]; then git -C "$d" symbolic-ref refs/remotes/origin/HEAD "refs/remotes/origin/$def"; fi; ` +
+  `if [ "$was" != "$(git -C "$d" rev-parse --abbrev-ref HEAD)" ] || [ "$before" != "$(git -C "$d" rev-parse HEAD)" ]; then pz_r "$d" failed "checkout changed during sync; left alone"; return; fi; ` +
+  `if [ "$was" = "$def" ] && git -C "$d" merge-base --is-ancestor "refs/remotes/origin/$def" "$before" 2>/dev/null; then pz_r "$d" current "$def; origin already integrated, working files left alone"; return; fi; ` +
   // Tracked and untracked files: park them in a durable stash so the checkout can proceed,
   // or report the tree as dirty and leave it alone when stashing is off.
   // A dedicated ref keeps each snapshot reachable after stash reflog expiry.
@@ -362,8 +392,7 @@ const SYNC_FUNCS =
 
 // Repositories with overlapping paths must finish before either starts another
 // batch: a parent checkout can otherwise race a nested repository's worktree.
-export function syncScript(rootE, plan, opts) {
-  const flags = `${opts.stashDirty ? 1 : 0} ${opts.switchToDefault ? 1 : 0}`;
+function syncBatches(plan) {
   const batches = [];
   let batch = [];
   for (const step of plan) {
@@ -375,6 +404,12 @@ export function syncScript(rootE, plan, opts) {
     batch.push(step);
   }
   if (batch.length) batches.push(batch);
+  return batches;
+}
+
+export function syncScript(rootE, plan, opts) {
+  const flags = `${opts.stashDirty ? 1 : 0} ${opts.switchToDefault ? 1 : 0}`;
+  const batches = syncBatches(plan);
   const steps = batches.map((items) => items.map(({ rel, action, origin }) => {
     const call = action === "clone" ? `pz_clone ${shQuote(origin)} ${shQuote(rel)}` : `pz_update ${shQuote(rel)} ${flags} ${shQuote(origin)}`;
     return `(${call}) &`;
@@ -397,34 +432,44 @@ async function mapConcurrent(items, limit, work) {
 // Copy one env file between devices through this agent: read it from the
 // source, stream it into the target. Content lives in memory only for the
 // duration of the copy and is never logged or persisted here.
-export function envWriteScript(rootE, rel, name) {
+export function envWriteScript(rootE, rel, name, expectedHash) {
+  const verify = expectedHash === undefined ? "" : expectedHash === null
+    ? `[ ! -e "$file" ] || { echo 'destination changed since scan' >&2; exit 1; }; `
+    : `current=$( (sha256sum "$file" 2>/dev/null || shasum -a 256 "$file" 2>/dev/null) | cut -d ' ' -f 1); [ "$current" = ${shQuote(expectedHash)} ] || { echo 'destination changed since scan' >&2; exit 1; }; `;
   return prelude(rootE) + `cd "$root" && ! pz_linked_worktree ${shQuote(rel)} && cd ${shQuote(rel)} || exit 1; ` +
     `case "$(pwd -P)" in "$root"|"$root"/*) ;; *) exit 1;; esac; umask 077; ` +
     `file=${shQuote(name)}; [ ! -L "$file" ] || exit 1; ` +
+    `tmp=$(mktemp "./.pzza-env.XXXXXX") || exit 1; trap 'rm -f "$tmp"' EXIT HUP INT TERM; cat > "$tmp" || exit 1; ` +
+    `[ ! -L "$file" ] || exit 1; if [ -f "$file" ] && cmp -s "$tmp" "$file"; then exit 0; fi; ` + verify +
     `gitdir=$(git rev-parse --absolute-git-dir) || exit 1; ` +
     `[ ! -L "$gitdir/pzza-env-backups" ] && mkdir -p "$gitdir/pzza-env-backups" && chmod 700 "$gitdir/pzza-env-backups" || exit 1; ` +
-    `tmp=$(mktemp "./.pzza-env.XXXXXX") || exit 1; trap 'rm -f "$tmp"' EXIT HUP INT TERM; cat > "$tmp" || exit 1; ` +
     `if [ -e "$file" ]; then [ -f "$file" ] && [ ! -L "$file" ] || exit 1; backup=$(mktemp "$gitdir/pzza-env-backups/$file.XXXXXX") || exit 1; mv "$file" "$backup" && chmod 600 "$backup" || exit 1; fi; ` +
     `ln "$tmp" "$file"`;
 
 }
 
-async function copyEnv(rootE, src, dst, srcRel, rel, name) {
-  const srcFile = `${shQuote(srcRel)}/${shQuote(name)}`;
-  const read = await runOn(src, prelude(rootE) + `cd "$root" && ! pz_linked_worktree ${shQuote(srcRel)} && cat ${srcFile}`, SCAN_TIMEOUT_MS);
+async function copyEnv(rootE, src, dst, srcRel, rel, name, expected) {
+  const read = await runOn(src, prelude(rootE) + `cd "$root" && ! pz_linked_worktree ${shQuote(srcRel)} && cd ${shQuote(srcRel)} || exit 1; ` +
+    `case "$(pwd -P)" in "$root"|"$root"/*) ;; *) exit 1;; esac; [ ! -L ${shQuote(name)} ] && cat ${shQuote(name)}`, SCAN_TIMEOUT_MS);
   if (!read.ok || deviceError(read)) return deviceError(read) || read.stderr.trim() || "read failed";
   // A newest-but-empty file must not wipe a populated copy elsewhere.
   if (read.stdout.trim() === "") return "source file is empty, not copied";
-  const script = envWriteScript(rootE, rel, name);
+  if (expected?.sourceHash && createHash("sha256").update(read.stdout).digest("hex") !== expected.sourceHash) return "source changed since scan; scan again before copying";
+  const script = envWriteScript(rootE, rel, name, expected?.targetHash);
   return new Promise((resolve) => {
     const useSsh = dst || IS_CLIENT;
     const child = useSsh
-      ? spawn("ssh", ["-o", "BatchMode=yes", "-o", "ConnectTimeout=8", "-o", "StrictHostKeyChecking=accept-new", dst || DEVBOX, script])
+      ? spawn("ssh", projectSshArgs(dst || DEVBOX, script))
       : spawn("sh", ["-c", script]);
     let err = "";
-    child.stderr.on("data", (c) => (err += c));
-    child.on("error", (e) => resolve(e.message));
-    child.on("close", (code) => resolve(code === 0 ? null : err.trim() || `exit ${code}`));
+    let timedOut = false;
+    const timer = setTimeout(() => { timedOut = true; child.kill(); }, SCAN_TIMEOUT_MS);
+    const finish = (error) => { clearTimeout(timer); resolve(error); };
+    child.stderr.on("data", (c) => { err = (err + c).slice(-4096); });
+    child.stdout.resume();
+    child.stdin.on("error", () => { /* The close event reports a refused or interrupted write. */ });
+    child.on("error", (e) => finish(e.message));
+    child.on("close", (code) => finish(timedOut ? "environment transfer timed out" : code === 0 ? null : err.trim() || `exit ${code}`));
     child.stdin.end(read.stdout);
   });
 }
@@ -463,7 +508,7 @@ export function planEnvSync(scan, gitResults, opts = normalizeOptions()) {
         if (w.device.id === best.device.id) continue;
         const e = w.envs.find((x) => x.name === name);
         if (e && e.hash === best.env.hash) continue;
-        jobs.push({ projectId: p.id, target: w.device, rel: w.rel, srcRel: best.rel, name, from: best.device });
+        jobs.push({ projectId: p.id, target: w.device, rel: w.rel, srcRel: best.rel, name, from: best.device, sourceHash: best.env.hash, targetHash: e?.hash ?? null });
       }
     }
   }
@@ -570,7 +615,7 @@ function normalizeDevices(list) {
 // where the device root is the path the requested root resolved to there.
 // The HTTP route passes `redact` so credentials in origin URLs never reach the
 // app; the sync keeps the raw URL because the clone needs it.
-export async function scanProjects(body, { redact: strip = false, onProgress } = {}) {
+export async function scanProjects(body, { redact: strip = false, onProgress, freshOrigins = false } = {}) {
   const rootE = rootExpr(body.root);
   if (!rootE) return { error: "invalid projects root" };
   const devices = normalizeDevices(body.devices);
@@ -579,8 +624,8 @@ export async function scanProjects(body, { redact: strip = false, onProgress } =
   let repos = 0;
   const report = () => onProgress?.({ completed: finished.length, total: devices.length, repos, finished: [...finished] });
   report();
-  const results = await Promise.all(
-    devices.map(async (d) => {
+  const results = await mapConcurrent(
+    devices, DEVICE_CONCURRENCY, async (d) => {
       // Share only in-flight reads. Every completed refresh scans again so
       // filesystem changes and post-sync results are never hidden by a TTL.
       const key = JSON.stringify([d.host || (IS_CLIENT ? DEVBOX : ""), rootE]);
@@ -601,9 +646,9 @@ export async function scanProjects(body, { redact: strip = false, onProgress } =
       repos += parsed.repos.length;
       report();
       return { ...d, error, root: parsed.root, repos: parsed.repos };
-    }),
+    },
   );
-  return reconcileGithubOrigins({ root: String(body.root), devices: results });
+  return reconcileGithubOrigins({ root: String(body.root), devices: results }, freshOrigins ? name => githubRepository(name, true) : undefined);
 }
 
 // Decide what each device has to do for every repo in the union. A repo only
@@ -661,21 +706,29 @@ export async function syncProjects(body, { scan = scanProjects, run = runOn, cop
 async function performSync(body, operation, { scan: scanDevices, run, copy }) {
   const rootE = rootExpr(body.root);
   if (!rootE) return { error: "invalid projects root" };
-  const scan = await scanDevices(body);
+  // Cached aliases speed up browsing, but a sync must revalidate redirects
+  // before using repository identity to copy files between devices.
+  const scan = await scanDevices(body, { freshOrigins: true });
   if (scan.error) return scan;
   const opts = migrateProjectOptions(body.options, scan);
   const planned = planSync(scan, opts);
-  const devices = await Promise.all(
-    planned.map(async (d) => {
+  const devices = await mapConcurrent(
+    planned, DEVICE_CONCURRENCY, async (d) => {
       const base = { id: d.id, name: d.name, host: d.host, envs: [] };
       if (d.error) return { ...base, error: d.error, results: [] };
       if (d.plan.length === 0) return { ...base, error: null, results: d.skipped };
       const chunks = [];
       const started = new Set();
-      for (const step of d.plan) {
+      let unavailable = null;
+      for (const batch of syncBatches(d.plan)) {
         if (operation.cancelled) break;
-        started.add(step.rel);
-        chunks.push(await run(d.host, syncScript(rootE, [step], opts), SYNC_TIMEOUT_MS));
+        for (const step of batch) started.add(step.rel);
+        const chunk = await run(d.host, syncScript(rootE, batch, opts), SYNC_TIMEOUT_MS);
+        chunks.push(chunk);
+        // A disconnected device cannot run later batches. Keep reports from
+        // completed repositories and stop paying the connection timeout again.
+        unavailable = deviceError(chunk);
+        if (unavailable) break;
       }
       const res = { ok: chunks.every(item => item.ok), stdout: chunks.map(item => item.stdout).join("\n"), stderr: chunks.map(item => item.stderr).join("\n"), error: chunks.find(item => item.error)?.error };
       const error = deviceError(res);
@@ -691,12 +744,12 @@ async function performSync(body, operation, { scan: scanDevices, run, copy }) {
       const seen = new Set(results.map((r) => r.rel));
       for (const p of d.plan) if (!seen.has(p.rel)) {
         const skipped = operation.cancelled && !started.has(p.rel);
-        results.push({ projectId: p.projectId, rel: p.rel, status: skipped ? "skipped" : "failed", detail: skipped ? "cancelled before this repository started" : error || "no result (timed out?)" });
+        results.push({ projectId: p.projectId, rel: p.rel, status: skipped ? "skipped" : "failed", detail: skipped ? "cancelled before this repository started" : redact(unavailable || error || "repository did not finish before the connection closed or timed out") });
       }
       results.push(...d.skipped);
       results.sort((a, b) => a.rel.localeCompare(b.rel));
       return { ...base, error: results.length ? null : error, results };
-    }),
+    },
   );
 
   const gitResults = new Map(devices.map((d) => [d.id, d.results]));
@@ -705,7 +758,7 @@ async function performSync(body, operation, { scan: scanDevices, run, copy }) {
   // when smaller transfers complete before earlier ones.
   const copied = await mapConcurrent(jobs, ENV_CONCURRENCY, async (job) => {
     if (operation.cancelled) return { projectId: job.projectId, rel: job.rel, name: job.name, from: job.from.name, status: "skipped", detail: "cancelled" };
-    const err = await copy(rootE, job.from.host, job.target.host, job.srcRel, job.rel, job.name);
+    const err = await copy(rootE, job.from.host, job.target.host, job.srcRel, job.rel, job.name, { sourceHash: job.sourceHash, targetHash: job.targetHash });
     return { projectId: job.projectId, rel: job.rel, name: job.name, from: job.from.name, status: err ? "failed" : "copied", detail: redact(err || "") };
   });
   for (let i = 0; i < jobs.length; i++) {

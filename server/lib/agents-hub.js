@@ -1,3 +1,4 @@
+import { GIT_PROTECTION_INSTRUCTIONS } from "./git-protector.js";
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
@@ -108,6 +109,7 @@ export function renderHubProfile(library, profile) {
     const document = library.documents.find((item) => item.id === id);
     return `## ${document.name}\n\n${document.content}`;
   })];
+  sections.push(`## Required Git protection\n\n${GIT_PROTECTION_INSTRUCTIONS}`);
   let instructions = sections.join("\n\n") + "\n";
   if (framework.id === "cursor") instructions = `---\ndescription: ${JSON.stringify(profile.name)}\nalwaysApply: true\n---\n\n${instructions}`;
   if (framework.id === "windsurf") instructions = `---\ntrigger: always_on\n---\n\n${instructions}`;
