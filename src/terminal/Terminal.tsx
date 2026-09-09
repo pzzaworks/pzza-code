@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebglAddon } from "@xterm/addon-webgl";
@@ -16,9 +16,8 @@ import { HAS_TAURI } from "../tauriEnv";
 import { uploadPasteImage } from "../serverApi";
 import { sessionDisplayName, type TileStatus } from "../sessionMeta";
 import { registerContextMenu, clipboardPaste } from "../ui/ContextMenu";
-import { registerDictationTarget, useDictation } from "../state/dictation";
+import { registerDictationTarget } from "../state/dictation";
 import { notify } from "../state/notifications";
-import { DictationPreview } from "../ui/Dictation";
 import { createTerminalSignals } from "./notificationSignals";
 
 // Copy text to the OS clipboard. navigator.clipboard only exists in a secure
@@ -77,9 +76,6 @@ const snappedLineHeight = (fontSize: number) => Math.round(fontSize * LINE_RATIO
 // React's reconcile loop. Transport depends on where the app runs: Rust PTY
 // under Tauri, the devbox WebSocket server in a plain browser.
 export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, active, onStatus }: Props) {
-  const recording = useDictation(state => state.recording?.tileId === tileId ? state.recording : null);
-  const [dictationCaret, setDictationCaret] = useState({ left: 8, top: 8, maxWidth: 440 });
-  const measureDictationCaret = useRef<(() => void) | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<XTerm | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -381,23 +377,6 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
       const onVisibilityChange = () => updateRendererVisibility();
       document.addEventListener("visibilitychange", onVisibilityChange);
 
-      const positionDictation = () => {
-        if (useDictation.getState().recording?.tileId !== tileId) return;
-        const screen = container.querySelector<HTMLElement>(".xterm-screen");
-        if (!screen) return;
-        const bounds = screen.getBoundingClientRect();
-        const parent = container.getBoundingClientRect();
-        const row = term.buffer.active.baseY + term.buffer.active.cursorY - term.buffer.active.viewportY;
-        const left = Math.max(0, Math.min(parent.width - 120, bounds.left - parent.left + term.buffer.active.cursorX * bounds.width / term.cols));
-        const top = Math.max(0, Math.min(parent.height - 32, bounds.top - parent.top + row * bounds.height / term.rows));
-        const maxWidth = Math.max(100, parent.width - left - 8);
-        setDictationCaret(previous => previous.left === left && previous.top === top && previous.maxWidth === maxWidth ? previous : { left, top, maxWidth });
-      };
-      measureDictationCaret.current = positionDictation;
-      const cursorListener = term.onCursorMove(positionDictation);
-      const renderListener = term.onRender(positionDictation);
-      const scrollListener = term.onScroll(positionDictation);
-
       let exited = false;
       let unregisterDictation: (() => void) | undefined;
       if (HAS_TAURI) {
@@ -526,10 +505,6 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
 
       return () => {
         unregisterDictation?.();
-        cursorListener.dispose();
-        renderListener.dispose();
-        scrollListener.dispose();
-        measureDictationCaret.current = null;
         container.removeEventListener("paste", onPaste, true);
         container.removeEventListener("copy", onCopy, true);
         container.removeEventListener("mousedown", selectDown, true);
@@ -639,10 +614,5 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
     };
   }, [refreshNonce]);
 
-  useEffect(() => { if (recording) measureDictationCaret.current?.(); }, [recording]);
-
-  return <>
-    <div ref={containerRef} className="term-surface" />
-    {recording && <DictationPreview tileId={tileId} style={dictationCaret} />}
-  </>;
+  return <div ref={containerRef} className="term-surface" />;
 }
