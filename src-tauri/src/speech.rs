@@ -25,7 +25,7 @@ mod native {
     use std::path::Path;
     use std::{mem, ptr::{null, NonNull}};
     use std::sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc, Mutex,
     };
     use std::time::{Duration, Instant};
@@ -57,7 +57,9 @@ mod native {
         }
 
         fn recognize(&mut self, audio: &[f32], language: &str, capture: &Arc<Capture>) -> Result<(), String> {
-            let result = self.decoder.full(recognition_params(language, capture), audio);
+            let mut params = recognition_params(language, capture);
+            params.set_audio_ctx(audio_context(audio.len()));
+            let result = self.decoder.full(params, audio);
             if capture.cancel.load(Ordering::Acquire) { return Ok(()); }
             if let Err(error) = result {
                 self.decoder = self.context.create_state().map_err(|error| format!("Could not reset speech decoder: {error}"))?;
@@ -65,6 +67,12 @@ mod native {
             }
             Ok(())
         }
+    }
+
+    fn audio_context(samples: usize) -> i32 {
+        // Each encoder frame covers 20 ms. Keep generous padding for short
+        // speech and expand with the utterance instead of encoding 30 s every time.
+        (samples.div_ceil(320).saturating_add(100).div_ceil(128) * 128).clamp(768, 1500) as i32
     }
 
     unsafe extern "C" fn recording_cancelled(data: *mut std::ffi::c_void) -> bool {
@@ -108,6 +116,7 @@ mod native {
         rate: Mutex<u32>,
         error: Mutex<Option<String>>,
         received: AtomicBool,
+        captured_samples: AtomicUsize,
         finished: AtomicBool,
     }
 
@@ -176,6 +185,8 @@ mod native {
         level: Option<f32>,
         #[serde(skip_serializing_if = "Option::is_none")]
         error: Option<&'a str>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        active: Option<bool>,
     }
 
     fn emit(
@@ -195,8 +206,17 @@ mod native {
                     text,
                     level,
                     error,
+                    active: None,
                 },
             );
+        }
+    }
+
+    fn emit_processing(app: &AppHandle, capture: &Capture, active: bool) {
+        if !capture.cancel.load(Ordering::Acquire) {
+            let _ = app.emit("dictation", Event {
+                id: &capture.id, kind: "processing", text: None, level: None, error: None, active: Some(active),
+            });
         }
     }
 
@@ -244,6 +264,7 @@ mod native {
             if capture.stop.load(Ordering::Acquire) { return Ok(()); }
             if !args.data.buffer.is_empty() { capture.received.store(true, Ordering::Release); }
             if let Ok(mut samples) = capture.samples.lock() {
+                let before = samples.len();
                 for frame in args.data.buffer.chunks_exact(channels) {
                     if samples.len() >= maximum {
                         if let Ok(mut error) = capture.error.lock() { *error = Some("Recognition could not keep up with the microphone. Try a shorter recording.".into()); }
@@ -252,6 +273,7 @@ mod native {
                     }
                     samples.push(frame.iter().sum::<f32>() / channels as f32);
                 }
+                capture.captured_samples.fetch_add(samples.len() - before, Ordering::Release);
             }
             Ok(())
         }).map_err(|_| "Could not initialize microphone capture")?;
@@ -344,7 +366,10 @@ mod native {
         let state = app.state::<SpeechState>();
         let mut context = state.context.lock().map_err(|_| "Speech model lock failed")?;
         let engine = context.as_mut().ok_or("Speech model is not loaded")?;
-        transcribe_samples(engine, capture, language, window, &samples, rate, finalizing)
+        emit_processing(app, capture, true);
+        let result = transcribe_samples(engine, capture, language, window, &samples, rate, finalizing);
+        emit_processing(app, capture, false);
+        result
     }
 
     fn transcribe_samples(
@@ -460,7 +485,20 @@ mod native {
                 id: "speech-test".into(), stop: AtomicBool::new(false), cancel: AtomicBool::new(false),
                 closed: AtomicBool::new(false), samples: Mutex::new(Vec::new()), rate: Mutex::new(16_000),
                 error: Mutex::new(None), received: AtomicBool::new(false), finished: AtomicBool::new(false),
+                captured_samples: AtomicUsize::new(0),
             })
+        }
+
+        #[test]
+        fn encoder_window_keeps_padding_without_truncating_long_speech() {
+            assert_eq!(audio_context(16_000), 768);
+            assert_eq!(audio_context(160_000), 768);
+            assert!(audio_context(240_000) >= 850);
+            for seconds in 1..=27 {
+                let context = audio_context(seconds * 16_000) as usize;
+                assert!(context <= 1500);
+                assert!(context * 320 >= (seconds + 2) * 16_000);
+            }
         }
 
         #[test]
@@ -511,7 +549,7 @@ mod native {
             let mut committed = String::new();
             let mut offset = 0;
             let mut live_updates = 0;
-            for incoming in samples.chunks(16_000) {
+            for incoming in samples.chunks(4_000) {
                 capture.samples.lock().unwrap().extend_from_slice(incoming);
                 offset += incoming.len();
                 let audio = capture.samples.lock().unwrap().clone();
@@ -568,16 +606,26 @@ mod native {
             let audio_app = app.clone();
             let audio_capture = capture.clone();
             let microphone = std::thread::spawn(move || capture_audio(audio_app, audio_capture, input_device_id));
-            let mut last = Instant::now();
+            let mut processed_samples = 0;
             let mut committed = String::new();
             let mut window = TranscriptWindow::default();
             while !capture.closed.load(Ordering::Acquire) {
                 if capture.cancel.load(Ordering::Acquire) {
                     capture.stop.store(true, Ordering::Release);
                 }
-                if !capture.stop.load(Ordering::Acquire)
-                    && last.elapsed() >= Duration::from_millis(900)
-                {
+                let captured_samples = capture.captured_samples.load(Ordering::Acquire);
+                let rate = match capture.rate.lock() {
+                    Ok(rate) => *rate as usize,
+                    Err(_) => {
+                        capture.stop.store(true, Ordering::Release);
+                        let _ = microphone.join();
+                        return Err("Audio lock failed".into());
+                    }
+                };
+                if !capture.stop.load(Ordering::Acquire) && captured_samples.saturating_sub(processed_samples) >= rate / 4 {
+                    // Decode each new quarter-second of audio as soon as the engine
+                    // is free, including audio captured while the last decode ran.
+                    processed_samples = captured_samples;
                     match transcribe(&app, &capture, &mut language, &mut window, false) {
                         Ok(transcript) => {
                             let preview = format!("{} {}", committed, transcript.preview)
@@ -599,7 +647,6 @@ mod native {
                             return Err(error);
                         }
                     }
-                    last = Instant::now();
                 }
                 std::thread::sleep(Duration::from_millis(30));
             }
@@ -722,6 +769,7 @@ mod native {
             rate: Mutex::new(16_000),
             error: Mutex::new(None),
             received: AtomicBool::new(false),
+            captured_samples: AtomicUsize::new(0),
             finished: AtomicBool::new(false),
         });
         *active = Some(capture.clone());
