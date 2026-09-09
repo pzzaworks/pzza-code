@@ -648,7 +648,7 @@ test("sync batches independent repositories in the actual service and stops retr
     run: async (_host, script, timeout) => {
       const names = [...script.matchAll(/\(pz_update '([^']+)'/g)].map(match => match[1]);
       batches.push(names);
-      assert.equal(timeout, 60_000);
+      assert.equal(timeout, 15 * 60_000, "background transfers must retain time for larger repositories");
       return { ok: true, stdout: names.map(rel => `PZZA_R\t${rel}\tcurrent\t\n`).join(""), stderr: "" };
     },
   });
