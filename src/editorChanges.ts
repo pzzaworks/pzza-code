@@ -7,8 +7,12 @@ export function registerEditorDiscard(id: string, check: DiscardCheck): () => vo
 }
 
 export async function confirmEditorDiscard(ids?: string[]): Promise<boolean> {
+  if (hasSavingEditors(ids)) return false;
+  const snapshot = () => [...files.entries()].filter(([id]) => !ids || ids.includes(id)).map(([id, read]) => ({ id, ...read() }));
+  const before = JSON.stringify(snapshot());
   for (const [id, check] of checks) {
     if ((!ids || ids.includes(id)) && !await check()) return false;
+    if (hasSavingEditors(ids) || JSON.stringify(snapshot()) !== before) return false;
   }
   return true;
 }
@@ -32,12 +36,12 @@ export function remapFilePath(value: string | undefined, source: string, destina
   return destination ? destination + value.slice(source.length) : undefined;
 }
 
-interface EditorFileState { host?: string; path?: string; saving: boolean; dirty?: boolean }
+interface EditorFileState { host?: string; path?: string; saving: boolean; dirty?: boolean; revision?: string | number }
 const files = new Map<string, () => EditorFileState>();
 const mutations = new Set<FileMutation>();
 export function registerEditorFile(id: string, read: () => EditorFileState): () => void {
   files.set(id, read);
-  return () => { files.delete(id); };
+  return () => { if (files.get(id) === read) files.delete(id); };
 }
 function affects(mutation: FileMutation, file: EditorFileState): boolean {
   return (mutation.host || "") === (file.host || "") && !!file.path &&
@@ -55,6 +59,10 @@ export function beginFileMutation(mutation: FileMutation, { allowDirty = true }:
 }
 export function fileMutationPending(host: string | undefined, path: string): boolean {
   return [...mutations].some((mutation) => affects(mutation, { host, path, saving: false }));
+}
+
+export function hasSavingEditors(ids?: readonly string[]): boolean {
+  return [...files.entries()].some(([id, read]) => (!ids || ids.includes(id)) && read().saving);
 }
 
 export function hasUnsavedEditors(ids?: readonly string[]): boolean {

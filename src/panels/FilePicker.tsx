@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowUp,
   ChevronRight,
@@ -106,58 +106,58 @@ export function FilePicker({
   const filterRef = useRef<HTMLInputElement>(null);
   const editRef = useRef<HTMLInputElement>(null);
 
-  const nav = (path: string | undefined, h: string) => {
+  const request = useRef<{ generation: number; controller?: AbortController; path?: string; host: string }>({ generation: 0, host });
+  const selection = useRef<{ path: string; host: string; generation: number } | null>(null);
+  const nav = useCallback((path: string | undefined, h: string) => {
+    request.current.controller?.abort();
+    const controller = new AbortController();
+    const generation = request.current.generation + 1;
+    request.current = { generation, controller, path, host: h };
+    selection.current = null;
+    setDir(null);
+    setParent("");
+    setEntries([]);
+    setFilter("");
+    setCursor(-1);
     setLoading(true);
     setError(null);
     setEditing(false);
-    listDir(path, h)
-      .then((r) => {
-        setDir(r.path);
-        setParent(r.parent);
-        setEntries(r.entries);
-        setFilter("");
-        setCursor(-1);
-        listRef.current?.scrollTo({ top: 0 });
-      })
-      .catch((e) => {
-        // A missing start directory should not dead-end: fall back to home.
-        if (path) {
-          nav(undefined, h);
-          return;
-        }
-        setError(String(e?.message || e));
-      })
-      .finally(() => setLoading(false));
-  };
+    const current = () => !controller.signal.aborted && request.current.generation === generation;
+    void listDir(path, h, controller.signal).then(result => {
+      if (!current()) return;
+      selection.current = { path: result.path, host: h, generation };
+      setDir(result.path);
+      if (!path) setHome(result.path);
+      setParent(result.parent);
+      setEntries(result.entries);
+      listRef.current?.scrollTo({ top: 0 });
+    }).catch((reason: unknown) => {
+      if (current()) setError(reason instanceof Error ? reason.message : "Could not list this folder.");
+    }).finally(() => { if (current()) setLoading(false); });
+  }, []);
 
-  const loadHome = (h: string) =>
-    listDir(undefined, h)
-      .then((r) => setHome(r.path))
-      .catch(() => setHome(""));
-
-  useEffect(() => {
+  useLayoutEffect(() => {
+    setCurHost(host);
+    setHome("");
     if (open) {
-      setCurHost(host);
-      void loadHome(host);
       nav(start, host);
-      setTimeout(() => filterRef.current?.focus(), 50);
+      filterRef.current?.focus();
     } else {
       setDir(null);
       setFilter("");
       setEditing(false);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open]);
+    return () => { request.current.controller?.abort(); selection.current = null; };
+  }, [open, host, start, nav]);
 
-  useEffect(() => {
-    if (editing) setTimeout(() => editRef.current?.select(), 0);
-  }, [editing]);
+  useEffect(() => { if (editing) editRef.current?.select(); }, [editing]);
 
   const switchHost = (h: string) => {
     setCurHost(h);
-    void loadHome(h);
+    setHome("");
     nav(undefined, h);
   };
+  const canPick = !!(open && !loading && !error && dir && selection.current?.host === curHost && selection.current.generation === request.current.generation);
 
   const toggleHidden = () => {
     setShowHidden((v) => {
@@ -181,11 +181,14 @@ export function FilePicker({
   const hiddenCount = entries.filter((e) => (mode === "file" || e.dir) && e.name.startsWith(".")).length;
 
   const pick = (p: string) => {
-    onPick(p, curHost);
+    const selected = selection.current;
+    if (!canPick || !selected || selected.generation !== request.current.generation || selected.host !== curHost || request.current.controller?.signal.aborted) return;
+    onPick(p, selected.host);
     onClose();
   };
   const openEntry = (e: DirEntry) => {
-    const p = join(dir ?? "", e.name);
+    if (!canPick || !dir) return;
+    const p = join(dir, e.name);
     if (e.dir) nav(p, curHost);
     else pick(p);
   };
@@ -196,6 +199,7 @@ export function FilePicker({
   // Keyboard: arrows move the cursor, Enter opens/picks, Backspace goes up
   // when the filter is empty, Escape is handled by the modal.
   const onKey = (e: React.KeyboardEvent) => {
+    if (!canPick || (e.target !== filterRef.current && !(e.target instanceof Element && e.target.closest(".fp-list")))) return;
     if (e.key === "ArrowDown") {
       e.preventDefault();
       setCursor((c) => Math.min(shown.length - 1, c + 1));
@@ -270,6 +274,7 @@ export function FilePicker({
         </div>
 
         <div className="fp-crumbs">
+          <button type="button" className="fp-tool" onClick={() => nav(undefined, curHost)} title="Device home" aria-label="Device home"><House size={14} /></button>
           <button type="button" className="fp-tool" onClick={goUp} disabled={!dir || !parent || parent === dir} title="Up one level (Backspace)">
             <ArrowUp size={14} />
           </button>
@@ -320,11 +325,11 @@ export function FilePicker({
 
         <div className="fp-list" ref={listRef}>
           {loading ? (
-            <div className="fp-status">
+            <div className="fp-status" role="status">
               <Loader2 size={15} className="sw-spin" /> Loading…
             </div>
           ) : error ? (
-            <div className="fp-status fp-status-err">{error}</div>
+            <div className="fp-status fp-status-err" role="alert"><span>{error}</span><button type="button" className="btn btn-sm" onClick={() => nav(request.current.path, curHost)}>Retry</button></div>
           ) : shown.length === 0 ? (
             <div className="fp-status muted">
               {filter
@@ -366,7 +371,7 @@ export function FilePicker({
             Cancel
           </button>
           {mode === "folder" ? (
-            <button className="btn btn-sm btn-accent" onClick={() => dir && pick(dir)} disabled={!dir}>
+            <button className="btn btn-sm btn-accent" onClick={() => dir && pick(dir)} disabled={!canPick}>
               <FolderOpen size={13} />
               Use this folder
             </button>

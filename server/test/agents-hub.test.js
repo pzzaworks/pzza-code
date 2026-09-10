@@ -3,7 +3,10 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
-import { createAgentsHub, runHubTarget } from "../lib/agents-hub.js";
+import { Readable } from "node:stream";
+import { EventEmitter } from "node:events";
+import { createAgentsHub, createAgentsHubRouter, runHubTarget } from "../lib/agents-hub.js";
+import { skillImportError } from "../lib/skill-import.js";
 
 const skillText = "---\nname: review\ndescription: Review the current changes\n---\nRead the changes carefully.\n";
 async function fixture(t, options = {}) {
@@ -127,7 +130,9 @@ test("imports preserve full bundles and reject a concurrent library revision", a
   await assert.rejects(request, /changed during import/);
   const imported = await f.hub.importSkill({ revision: 1, sourceUrl: "https://github.com/example/skills", subpath: "review" });
   assert.equal(imported.skills.length, 2);
-  assert.equal(imported.skills[1].files[0].contentBase64, "AA==");
+  assert.equal(imported.skills[1].files[0].contentBase64, undefined);
+  assert.equal(imported.skills[1].files[0].bytes, 1);
+  assert.equal(f.hub.state().skills[1].files[0].contentBase64, "AA==");
 });
 
 test("adopting existing files is explicit, shows prior content and keeps private backups", async (t) => {
@@ -177,6 +182,124 @@ test("bounded metadata and item updates preserve binary assets without returning
   assert.equal(updated.revision, 2);
   assert.equal(f.hub.state().skills[0].files[1].contentBase64, f.library.skills[0].files[1].contentBase64);
   assert.equal(Buffer.from(f.hub.state().skills[0].files[0].contentBase64, "base64").toString(), skillText + "Additional review guidance.");
+});
+
+test("atomic edits preserve four global-derived documents and asset metadata cannot overwrite bundles", async t => {
+  const f = await fixture(t);
+  const documents = [f.library.documents[0], ...Array.from({ length: 3 }, (_, index) => ({ ...f.library.documents[0], id: `global-${index}`, content: `Original device guidance ${index}` }))];
+  f.hub.save({ ...f.library, documents });
+  const original = f.hub.state();
+  assert.throws(() => f.hub.update({ revision: 1, kind: "skill", item: f.hub.summary().skills[0] }), /Invalid skill/);
+  assert.throws(() => f.hub.update({ revision: 1, kind: "skill", item: f.hub.item({ kind: "skill", id: "review" }).item }), /Invalid skill asset/);
+  assert.throws(() => f.hub.save(editable(f.hub.summary())), /Invalid instruction/);
+  const saved = f.hub.update({ revision: 1, changes: [{ op: "update", kind: "skill", item: { id: "review", content: skillText + "More checks." } }, { op: "update", kind: "profile", item: { id: "reviewer", name: "Updated reviewer" } }] });
+  assert.equal(saved.revision, 2);
+  assert.deepEqual(f.hub.state().documents, original.documents);
+  assert.deepEqual(f.hub.state().skills[0].files.slice(1), original.skills[0].files.slice(1));
+  assert.throws(() => f.hub.update({ revision: 1, kind: "document", item: { id: "base", content: "Stale" } }), /changed/);
+  assert.throws(() => f.hub.update({ revision: 2, changes: [{ op: "update", kind: "document", item: { id: "base", content: "Must not persist" } }, { op: "remove", kind: "skill", id: "missing" }] }), /not found/);
+  assert.deepEqual(f.hub.state().documents, original.documents);
+  assert.equal(f.hub.state().revision, 2);
+});
+
+test("removal and framework changes atomically detach only reviewed profile references", async t => {
+  const f = await fixture(t);
+  f.hub.save(f.library);
+  assert.throws(() => f.hub.remove({ revision: 1, kind: "document", id: "base" }), /attachments/);
+  assert.equal(f.hub.state().documents.length, 1);
+  assert.throws(() => f.hub.update({ revision: 1, kind: "document", item: { id: "base", framework: "codex" } }), /attachments/);
+  const updated = f.hub.update({ revision: 1, kind: "document", item: { id: "base", framework: "codex" }, detachReferences: true });
+  assert.deepEqual(updated.profiles[0].instructionIds, []);
+  assert.deepEqual(updated.profiles[0].skillIds, ["review"]);
+  const removed = f.hub.remove({ revision: 2, kind: "skill", id: "review", detachReferences: true });
+  assert.equal(removed.skills.length, 0);
+  assert.deepEqual(removed.profiles[0].skillIds, []);
+  assert.equal(removed.documents.length, 1);
+  assert.throws(() => f.hub.remove({ revision: 2, kind: "profile", id: "reviewer" }), /changed/);
+});
+
+test("repository and folder imports are idempotent and explicit updates preserve stable IDs", async t => {
+  let inspections = 0;
+  const f = await fixture(t, { inspectSkill: async input => { inspections++; return { ...input, name: "Imported", content: `${skillText}${inspections}`, files: [{ path: "LICENSE", contentBase64: Buffer.from(`License ${inspections}`).toString("base64") }], commit: String(inspections).repeat(40) }; } });
+  f.hub.save(f.library);
+  const source = { sourceUrl: "https://github.com/Example/Skills.git/", subpath: "skills/review" };
+  const first = await f.hub.importSkill({ revision: 1, ...source });
+  const id = first.imported.id;
+  const repeated = await f.hub.importSkill({ revision: 2, ...source });
+  assert.equal(inspections, 1); assert.equal(repeated.revision, 2); assert.equal(repeated.imported.id, id); assert.equal(repeated.imported.status, "existing");
+  const canonical = await f.hub.importSkill({ revision: 2, sourceUrl: "https://github.com/example/skills", subpath: "skills/review" });
+  assert.equal(canonical.imported.id, id);
+  f.hub.update({ revision: 2, kind: "profile", item: { id: "reviewer", skillIds: [id, "review"] } });
+  const updated = await f.hub.importSkill({ revision: 3, ...source, updateId: id });
+  assert.equal(updated.imported.status, "updated"); assert.equal(updated.imported.id, id); assert.equal(updated.skills.length, 2);
+  assert.deepEqual(updated.profiles[0].skillIds, [id, "review"]);
+  assert.equal(f.hub.state().skills.find(skill => skill.id === id).content, `${skillText}2`);
+  assert.equal(f.hub.state().documents[0].content, f.library.documents[0].content);
+  await assert.rejects(f.hub.importSkill({ revision: 4, ...source, subpath: "different", updateId: id }), /exact source/);
+  await assert.rejects(f.hub.importSkill({ revision: 3, ...source, updateId: id }), /changed/);
+});
+
+test("simultaneous duplicate imports converge but cancelled imports and racing updates do not commit", async t => {
+  let release;
+  const wait = new Promise(resolve => { release = resolve; });
+  const f = await fixture(t, { inspectSkill: async () => { await wait; return { name: "Imported", content: skillText, commit: "a".repeat(40) }; } });
+  const source = { sourceUrl: "https://github.com/example/skills", subpath: "review" };
+  const one = f.hub.importSkill({ revision: 0, ...source });
+  const two = f.hub.importSkill({ revision: 0, ...source });
+  release();
+  const results = await Promise.all([one, two]);
+  assert.equal(results[0].imported.id, results[1].imported.id); assert.equal(f.hub.state().skills.length, 1); assert.equal(f.hub.state().revision, 1);
+  const update = f.hub.importSkill({ revision: 1, ...source, updateId: results[0].imported.id });
+  f.hub.update({ revision: 1, kind: "skill", item: { id: results[0].imported.id, name: "Concurrent edit" } });
+  await assert.rejects(update, /changed during import/);
+  const cancellation = new AbortController();
+  const cancelled = f.hub.importSkill({ revision: 2, ...source, subpath: "other" }, { signal: cancellation.signal });
+  cancellation.abort();
+  await assert.rejects(cancelled, /abort/i);
+  assert.equal(f.hub.state().skills.length, 1); assert.equal(f.hub.state().revision, 2);
+});
+
+test("asset inspection is revision checked, UTF-8 boundary safe and page bounded", async t => {
+  const f = await fixture(t);
+  const text = "﻿" + "a".repeat(16379) + "世界" + "z".repeat(17000);
+  f.hub.save({ ...f.library, skills: [{ ...f.library.skills[0], files: [...f.library.skills[0].files, { path: "references/large.txt", contentBase64: Buffer.from(text).toString("base64") }] }] });
+  const first = f.hub.asset({ revision: 1, id: "review", path: "references/large.txt" });
+  assert.equal(first.encoding, "utf8"); assert.ok(first.nextOffset <= 16384); assert.equal(first.hasMore, true);
+  let content = first.content, offset = first.nextOffset;
+  while (offset < first.bytes) {
+    const page = f.hub.asset({ revision: 1, id: "review", path: first.path, offset });
+    assert.ok(page.nextOffset > offset); assert.ok(Buffer.byteLength(page.content) <= 16384);
+    content += page.content; offset = page.nextOffset;
+  }
+  assert.equal(content, text);
+  assert.equal(f.hub.asset({ revision: 1, id: "review", path: "assets/data.bin" }).content, null);
+  assert.throws(() => f.hub.asset({ revision: 1, id: "review", path: first.path, length: 65537 }), /64 KiB/);
+  assert.throws(() => f.hub.asset({ revision: 1, id: "review", path: "../outside" }), /not found/);
+  assert.throws(() => f.hub.asset({ revision: 0, id: "review", path: first.path }), /changed/);
+});
+
+test("router retains safe known import errors and forwards client disconnect cancellation", async t => {
+  const f = await fixture(t, { inspectSkill: async () => { throw skillImportError("The selected skill folder does not exist at this commit.", 404, "SOURCE_NOT_FOUND"); } });
+  const call = (hub, endpoint, input, res = new EventEmitter()) => {
+    let output;
+    const req = Readable.from([Buffer.from(JSON.stringify(input))]);
+    req.headers = { "content-type": "application/json" }; req.method = "POST";
+    const route = createAgentsHubRouter(hub, (_res, status, value) => { res.writableEnded = true; output = { status, value }; });
+    const done = route(req, res, new URL(`http://localhost/agents-hub/${endpoint}`)).then(() => output);
+    return { res, done };
+  };
+  const failure = await call(f.hub, "import-skill", { revision: 0, sourceUrl: "https://github.com/example/skills", subpath: "missing" }).done;
+  assert.equal(failure.status, 404); assert.equal(failure.value.code, "SOURCE_NOT_FOUND"); assert.match(failure.value.error, /folder does not exist/);
+  let started;
+  const ready = new Promise(resolve => { started = resolve; });
+  const cancelled = await fixture(t, { inspectSkill: async (_input, { signal }) => {
+    started();
+    await new Promise((resolve, reject) => signal.addEventListener("abort", () => reject(skillImportError("Skill import was cancelled.", 499, "IMPORT_CANCELLED")), { once: true }));
+  } });
+  const pending = call(cancelled.hub, "import-skill", { revision: 0, sourceUrl: "https://github.com/example/skills", subpath: "demo" });
+  await ready; pending.res.emit("close");
+  assert.equal((await pending.done).value.code, "IMPORT_CANCELLED");
+  assert.equal(cancelled.hub.state().revision, 0);
 });
 
 test("large valid binary assets avoid regex stack overflow and oversized library saves fail before writing", async (t) => {

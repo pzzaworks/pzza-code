@@ -6,6 +6,7 @@
 import { DEVBOX, IS_CLIENT } from "./config.js";
 import { sh, shOn, shQuote, SSH_TOKEN } from "./shell.js";
 import { tmuxCommand } from "./tmux-client.js";
+import { quickChatAttachmentGuard } from "./quick-chat.js";
 import { hostOk, tokenOk } from "./http.js";
 
 const OUTPUT_HIGH = 256 * 1024;
@@ -122,7 +123,7 @@ export async function startPtyBridge(server) {
             ws.close(1008, "invalid host");
             return;
           }
-          attachedHost = msg.host || "";
+          attachedHost = msg.host === undefined && IS_CLIENT ? DEVBOX : msg.host || "";
           const name = String(msg.name || "").trim();
           if (!name || name === "undefined") {
             ws.close();
@@ -132,9 +133,16 @@ export async function startPtyBridge(server) {
           const rows = msg.rows || 24;
 
           const hasWin = msg.window !== undefined && msg.window !== null;
-          const tmux = tmuxCommand(attachedHost || undefined);
+          const tmux = tmuxCommand(attachedHost);
           let attach;
-          if (hasWin) {
+          if (msg.managedChat !== undefined) {
+            if (name !== "pzza-quick-chat" || hasWin || !msg.managedChat || typeof msg.managedChat !== "object") {
+              ws.close(1008, "invalid managed attachment");
+              return;
+            }
+            attach = quickChatAttachmentGuard(msg.managedChat.agent, msg.managedChat.identity, tmux) +
+              `exec ${tmux} -u attach -t ${shQuote(msg.managedChat.identity.split(":")[0])}`;
+          } else if (hasWin) {
             // A specific window: view it through a grouped session so it can show a
             // different window than other clients. Cleaned up explicitly on close
             // (destroy-unattached would kill it before we manage to attach).
@@ -163,9 +171,9 @@ export async function startPtyBridge(server) {
           const hasLocale = ["LC_ALL", "LC_CTYPE", "LANG"].some((k) => process.env[k]);
           const ptyEnv = { ...process.env, ...(hasLocale ? {} : { LANG: "en_US.UTF-8" }), COLORTERM: "truecolor" };
           if (process.env.PZZA_TMUX_SOCKET !== undefined) delete ptyEnv.TMUX;
-          if (attachedHost || IS_CLIENT) {
+          if (attachedHost) {
             delete ptyEnv.PZZA_TMUX_SOCKET;
-            term = pty.spawn("ssh", ["-tt", attachedHost || DEVBOX, `sh -lc ${shQuote(attach)}`], {
+            term = pty.spawn("ssh", ["-tt", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", "-o", "StrictHostKeyChecking=yes", attachedHost, `sh -lc ${shQuote(attach)}`], {
               name: "xterm-256color",
               cols,
               rows,

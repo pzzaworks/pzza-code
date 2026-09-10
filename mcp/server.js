@@ -13,6 +13,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { TOOLS } from "./lib/tools.js";
 import { toolResult } from "./lib/results.js";
+import { redactTerminalOutput } from "../server/lib/terminal-redaction.js";
 import { GIT_PROTECTION_INSTRUCTIONS } from "../server/lib/git-protection-policy.js";
 
 const server = new Server(
@@ -31,7 +32,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
     const result = await tool.run(req.params.arguments ?? {});
     return toolResult(tool.name, result);
   } catch (e) {
-    return { content: [{ type: "text", text: `error: ${e.message}` }], isError: true };
+    return { content: [{ type: "text", text: JSON.stringify({ error: { code: typeof e.code === "string" && /^[A-Z_]{1,80}$/.test(e.code) ? e.code : "TOOL_FAILED", status: Number.isInteger(e.status) ? e.status : 500, message: redactTerminalOutput(String(e.message || "Tool failed")).text.slice(0, 4096), ...(typeof e.requestId === "string" && /^[a-f0-9-]{36}$/.test(e.requestId) ? { requestId: e.requestId } : {}) } }) }], isError: true };
   }
 });
 

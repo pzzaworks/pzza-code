@@ -40,6 +40,7 @@ import { deviceOs, doctor, sshHosts } from "./lib/system.js";
 import { mcpConfigs, mcpInstall } from "./lib/mcp.js";
 import { createAppControl, createAppControlRouter } from "./lib/app-control.js";
 import { createBridge, createBridgeRouter } from "./lib/bridge.js";
+import { takeNativeConsentKey } from "./lib/bridge-consent.js";
 import { createAgentsHub, createAgentsHubRouter } from "./lib/agents-hub.js";
 import { installAgent } from "./lib/install.js";
 import { filesRouter } from "./lib/files.js";
@@ -56,7 +57,7 @@ const remoteUsage = createRemoteUsage();
 const repairMcp = createMcpRepair();
 const appControl = createAppControl();
 const appControlRouter = createAppControlRouter(appControl, json);
-const bridge = createBridge({ stateDir: STATE_DIR, appControl });
+const bridge = createBridge({ stateDir: STATE_DIR, appControl, nativeConsentKey: takeNativeConsentKey() });
 const bridgeRouter = createBridgeRouter(bridge, json);
 const agentsHubRouter = createAgentsHubRouter(createAgentsHub({ stateDir: STATE_DIR }), json);
 const server = http.createServer(async (req, res) => {

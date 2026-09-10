@@ -9,6 +9,7 @@ import { ThemeSettings } from "./ThemeSettings";
 import { DictationLanguageSelect } from "../ui/DictationLanguageSelect";
 import { Select } from "../ui/Select";
 import { useEffect } from "react";
+import { confirmAction } from "../ui/ConfirmDialog";
 
 export const generalSections = [
   { id: "appearance", label: "Appearance" },
@@ -179,6 +180,10 @@ function AppearanceSection() {
         <span className="switch-knob" />
       </button>
     </Row>
+    {enabled ? <Row label="Text visibility" hint={`${options.textVisibility === 100 ? "Maximum text contrast" : `${options.textVisibility}% · preserve text hierarchy`}. Filled controls retain contrast-safe text.`}>
+      <input aria-label="Text visibility" type="range" min={0} max={100} step={1} value={options.textVisibility} aria-valuetext={`${options.textVisibility}% visibility boost`}
+        onChange={(event) => setOptions({ textVisibility: Number(event.target.value) })} />
+    </Row> : null}
     <details className="settings-disclosure transparency-details">
       <summary>Transparency controls</summary>
       <div className="settings-disclosure-body">
@@ -253,7 +258,9 @@ function TerminalSection() {
       <Row label="Programs may set clipboard" hint="Allow clipboard writes through OSC 52. Enable only for trusted programs.">
         <button
           className={`switch ${osc52 ? "switch-on" : ""}`}
-          onClick={() => setOsc52(!osc52)}
+          onClick={async () => {
+            if (osc52 || await confirmAction({ title: "Allow terminal clipboard writes?", message: "Programs running in your terminals will be able to replace your clipboard using OSC 52. Enable this only for programs you trust.", confirmLabel: "Allow clipboard writes" })) setOsc52(!osc52);
+          }}
           role="switch"
           aria-label="Programs may set clipboard"
           aria-checked={osc52}

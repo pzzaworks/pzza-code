@@ -1,4 +1,4 @@
-import { confirmEditorDiscard } from "../editorChanges";
+import { confirmUnsavedWork } from "./unsavedWork";
 import { create } from "zustand";
 import { checkForUpdate, relaunchApp, type AvailableUpdate } from "../updater";
 import { HAS_TAURI } from "../tauriEnv";
@@ -87,7 +87,7 @@ export const useUpdates = create<UpdateState>((set, get) => ({
       set({ status: { kind: "error", msg: errMsg(e) } });
     }
   },
-  relaunch: async () => { if (await confirmEditorDiscard()) await relaunchApp(); },
+  relaunch: async () => { if (await confirmUnsavedWork()) { window.dispatchEvent(new Event("pzza:quick-chat-cancel")); await relaunchApp(); } },
   dismiss: () => {
     const st = get().status;
     if (st.kind === "available" || st.kind === "ready") set({ dismissed: st.update.version });

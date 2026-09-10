@@ -7,6 +7,19 @@ import { useEffect, useRef, useState } from "react";
 import { useNotifications, NOTIFICATION_EVENTS, NOTIFICATION_EVENT_CATEGORIES, type NotificationEvent, type Notice, type NotificationCategory } from "../state/notifications";
 import { useStore } from "../state/store";
 import { DEFAULT_WORKSPACE_ID } from "../workspaces";
+import { confirmAction } from "../ui/ConfirmDialog";
+
+let clearingHistory: Promise<boolean> | null = null;
+export function clearNotificationHistory(): Promise<boolean> {
+  if (clearingHistory) return clearingHistory;
+  const ids = useNotifications.getState().items.map(item => item.id);
+  if (!ids.length) return Promise.resolve(true);
+  clearingHistory = confirmAction({ title: "Clear notification history?", message: "This permanently removes all notifications currently in your history on this device. Notifications received while you decide will be kept.", confirmLabel: "Clear history", danger: true }).then(accepted => {
+    if (accepted) ids.forEach(id => useNotifications.getState().remove(id));
+    return accepted;
+  }).finally(() => { clearingHistory = null; });
+  return clearingHistory;
+}
 
 export function openNotice(item: Notice) {
   useNotifications.getState().read(item.id);
@@ -49,7 +62,7 @@ function NotificationToggle({ label, hint, checked, onChange, disabled = false }
 const categoryLabels: Record<NotificationCategory, string> = { sync: "Sync", terminal: "Terminals", bridge: "Device bridge", devices: "Devices", app: "App activity" };
 
 export function NotificationsSettings({ page }: { page: "activity" | "preferences" }) {
-  const { items, preferences, configure, read, clear } = useNotifications();
+  const { items, preferences, configure, read } = useNotifications();
   const [unreadOnly, setUnreadOnly] = useState(false);
   const [category, setCategory] = useState<NotificationCategory | "all">("all");
   const [limit, setLimit] = useState(15);
@@ -122,7 +135,7 @@ export function NotificationsSettings({ page }: { page: "activity" | "preference
         </div>
         <div className="notification-category" role="group" aria-label="Notification category"><Select value={category} options={[{ value: "all", label: "All categories" }, ...Object.entries(categoryLabels).map(([value, label]) => ({ value, label }))]} onChange={value => { if (value === "all" || value in categoryLabels) { setCategory(value as NotificationCategory | "all"); setLimit(15); } }} /></div>
       </div>
-      <div className="notification-history-actions"><span>{filtered.length} {filtered.length === 1 ? "notification" : "notifications"}</span><div><button className="btn btn-sm" disabled={!unread} onClick={() => read()}>Mark all read</button><button className="btn btn-sm" disabled={!items.length} onClick={clear}>Clear history</button></div></div>
+      <div className="notification-history-actions"><span>{filtered.length} {filtered.length === 1 ? "notification" : "notifications"}</span><div><button className="btn btn-sm" disabled={!unread} onClick={() => read()}>Mark all read</button><button className="btn btn-sm" disabled={!items.length} onClick={() => void clearNotificationHistory()}>Clear history</button></div></div>
       {filtered.length ? <Rows items={filtered.slice(0, limit)} readOnly /> : <div className="settings-empty"><Bell size={22} /><strong>{unreadOnly ? "No unread activity" : "No activity here yet"}</strong><p>{category === "all" ? "New notifications will appear here." : "Try another category to see more activity."}</p></div>}
       <ScrollMore hasMore={limit < filtered.length} loadMore={() => setLimit(value => value + 15)} />
     </section>}
