@@ -173,7 +173,7 @@ interface ConsoleState {
 
   loadSessions: () => Promise<void>;
   openSession: (name: string, cwd?: string, host?: string) => void;
-  openWindow: (w: RemoteWindow, displayName: string) => void;
+  openWindow: (w: RemoteWindow, displayName: string, host?: string) => void;
   closeTile: (id: string) => void;
   reorderTile: (fromId: string, toId: string) => void;
   moveTileToEnd: (id: string) => void;
@@ -509,16 +509,17 @@ export const useStore = create<ConsoleState>((set, get) => ({
       return { tiles, activeId: id, refreshNonce: state.refreshNonce + 1 };
     }),
 
-  openWindow: (w, displayName) =>
+  openWindow: (w, displayName, host) =>
     set((state) => {
       if (w.session === QUICK_CHAT_SESSION) return state;
-      const id = `${w.session}::w::${w.window}`;
+      const id = `${host ? `${host}::` : ""}${w.session}::w::${w.window}`;
       if (state.tiles.some((t) => t.id === id)) return { activeId: id };
       const tile: Session = {
         id,
         name: displayName,
         session: w.session,
         window: w.window,
+        ...(host !== undefined ? { host } : {}),
         command: w.command,
         path: w.path,
       };

@@ -223,6 +223,8 @@ interface TreeItem { path: string; name: string; isDir: boolean }
 type Operation = { kind: "rename" | "delete" | "move"; item: TreeItem; destination?: string };
 interface TreeActions {
   revision: number;
+  expanded: ReadonlySet<string>;
+  toggle: (path: string) => void;
   busy: boolean;
   menu: (item: TreeItem, x: number, y: number) => void;
   drag: (item: TreeItem | null) => void;
@@ -237,7 +239,7 @@ function TreeNode({ path, name, isDir, depth, activePath, onOpenFile, host }: {
   onOpenFile: (path: string) => void; host?: string;
 }) {
   const actions = useContext(TreeContext);
-  const [expanded, setExpanded] = useState(false);
+  const expanded = actions?.expanded.has(path) ?? false;
   const [children, setChildren] = useState<DirEntry[] | null>(null);
   const [error, setError] = useState("");
   const [over, setOver] = useState(false);
@@ -257,7 +259,7 @@ function TreeNode({ path, name, isDir, depth, activePath, onOpenFile, host }: {
       title={name}
       disabled={actions?.busy}
       aria-expanded={isDir ? expanded : undefined}
-      onClick={() => isDir ? setExpanded((value) => !value) : onOpenFile(path)}
+      onClick={() => isDir ? actions?.toggle(path) : onOpenFile(path)}
       onMouseDown={(event) => event.stopPropagation()}
       onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); actions?.menu(item, event.clientX, event.clientY); }}
       onKeyDown={(event) => {
@@ -298,12 +300,29 @@ function TreeNode({ path, name, isDir, depth, activePath, onOpenFile, host }: {
   </>;
 }
 
-export function FolderTree({ root, activePath, onOpenFile, host }: {
+export function FolderTree({ root, activePath, onOpenFile, host, control }: {
   root: string; activePath?: string; onOpenFile: (path: string) => void; host?: string;
+  control?: { revision: number; path?: string; expanded?: boolean };
 }) {
   const [children, setChildren] = useState<DirEntry[] | null>(null);
   const [resolvedRoot, setResolvedRoot] = useState(root);
   const [revision, setRevision] = useState(0);
+  const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
+  useEffect(() => { setExpanded(new Set()); }, [root, host]);
+  useEffect(() => {
+    if (!control?.revision) return;
+    setRevision(value => value + 1);
+    const selectedPath = control.path;
+    if (!selectedPath) return;
+    setExpanded(current => {
+      const next = new Set(current);
+      if (control.expanded) {
+        let path = selectedPath;
+        while (path && path !== resolvedRoot && path.startsWith(resolvedRoot + "/")) { next.add(path); path = path.slice(0, path.lastIndexOf("/")); }
+      } else next.delete(selectedPath);
+      return next;
+    });
+  }, [control, resolvedRoot]);
   const [listingError, setListingError] = useState("");
   const [menu, setMenu] = useState<{ item: TreeItem; x: number; y: number } | null>(null);
   const [operation, setOperation] = useState<Operation | null>(null);
@@ -341,7 +360,8 @@ export function FolderTree({ root, activePath, onOpenFile, host }: {
     return !!source && !busy && directory !== source.path && !directory.startsWith(source.path + "/") && join(directory, source.name) !== source.path;
   };
   const actions: TreeActions = {
-    revision, busy,
+    revision, busy, expanded,
+    toggle: path => setExpanded(current => { const next = new Set(current); if (next.has(path)) next.delete(path); else next.add(path); return next; }),
     menu: (item, x, y) => { if (!busy) setMenu({ item, x, y }); },
     drag: (item) => { dragged.current = item; setMenu(null); },
     canDrop,
@@ -360,7 +380,7 @@ export function FolderTree({ root, activePath, onOpenFile, host }: {
     setBusy(true); setError("");
     let release: (() => void) | undefined;
     try {
-      release = beginFileMutation({ host, path: operation.item.path });
+      release = beginFileMutation({ host, path: operation.item.path }, { allowDirty: operation.kind !== "delete" });
       if (operation.kind === "delete") {
         await deleteFile(resolvedRoot, operation.item.path, host);
         notifyFileMutation({ host, path: operation.item.path });

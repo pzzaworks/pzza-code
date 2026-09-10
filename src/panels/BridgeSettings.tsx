@@ -3,9 +3,9 @@ import { deviceHost } from "../devices";
 import { Select } from "../ui/Select";
 import { useDelayedLoading } from "../ui/useDelayedLoading";
 import { AsyncButton } from "../ui/AsyncButton";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Copy, Plus, X, RefreshCw, Loader2, Save, Ban } from "lucide-react";
-import { BRIDGE_CAPABILITIES, fetchBridgePeerIdentity, fetchBridgeState, fetchBridgeJobs, fetchBridgeAudit, saveBridgeConfig, approveBridgeJob, cancelBridgeJob, type BridgeState, type BridgeConfig, type BridgePeer, type BridgeJob, type BridgeAuditEntry } from "../bridgeApi";
+import { BRIDGE_CAPABILITIES, connectBridgeDevice, resumeBridgeConnection, getPendingBridgeConnectionId, dismissPendingBridgeConnection, BridgeConnectionPendingError, testBridgeConnection, fetchBridgePeerIdentity, fetchBridgeState, fetchBridgeJobs, fetchBridgeAudit, saveBridgeConfig, approveBridgeJob, cancelBridgeJob, type BridgeState, type BridgeConfig, type BridgePeer, type BridgeJob, type BridgeAuditEntry, type BridgeConnectionResult } from "../bridgeApi";
 import "./BridgeSettings.css";
 
 export function BridgeSettings({ active = true, page = "access" }: { active?: boolean; page?: "access" | "activity" }) {
@@ -17,6 +17,7 @@ export function BridgeSettings({ active = true, page = "access" }: { active?: bo
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [pendingAction, setPendingAction] = useState<string | null>(null);
+  const [now, setNow] = useState(Date.now);
   const toggleSpinner = useDelayedLoading(pendingAction === "toggle");
   const [note, setNote] = useState("");
   const [pairing, setPairing] = useState("");
@@ -24,16 +25,35 @@ export function BridgeSettings({ active = true, page = "access" }: { active?: bo
   const [host, setHost] = useState("");
   const [projectId, setProjectId] = useState("");
   const [root, setRoot] = useState("");
+  const [remoteProjectId, setRemoteProjectId] = useState("");
+  const [remoteRoot, setRemoteRoot] = useState("");
+  const [verifiedIdentity, setVerifiedIdentity] = useState<{ host: string; id: string } | null>(null);
+  const [connectionId, setConnectionId] = useState(getPendingBridgeConnectionId);
+  const [connectionMissing, setConnectionMissing] = useState(false);
+  const cleanConfig = useRef<{ json: string; hash: string } | null>(null);
+  const dirty = !!state && !!draft && JSON.stringify(draft) !== JSON.stringify(state.config);
   const report = (e: unknown) => setError(e instanceof Error ? e.message : "Bridge request failed.");
+  const acceptSavedState = (value: BridgeState) => {
+    cleanConfig.current = { json: JSON.stringify(value.config), hash: value.configHash };
+    setState(value); setDraft(value.config); setJobs(value.jobs); setAudit(value.audit ?? []);
+  };
   useEffect(() => {
     if (!active) return;
     let alive = true;
     void fetchBridgeState().then(value => {
       if (!alive) return;
-      setState(value); setDraft(current => current ?? value.config); setJobs(value.jobs); setAudit(value.audit ?? []); setError(null);
+      const previousClean = cleanConfig.current;
+      setState(value);
+      setDraft(current => {
+        if (current && JSON.stringify(current) !== previousClean?.json) return current;
+        cleanConfig.current = { json: JSON.stringify(value.config), hash: value.configHash };
+        return value.config;
+      });
+      setJobs(value.jobs); setAudit(value.audit ?? []); setError(null);
     }).catch(e => { if (alive) report(e); });
     let timer: ReturnType<typeof setTimeout>;
     const poll = async () => {
+      if (document.visibilityState !== "hidden") setNow(Date.now());
       if (page === "activity" && document.visibilityState !== "hidden") {
         try {
           const [jobState, auditState] = await Promise.all([fetchBridgeJobs(), fetchBridgeAudit()]);
@@ -48,11 +68,38 @@ export function BridgeSettings({ active = true, page = "access" }: { active?: bo
   const save = async (config: BridgeConfig, action = "save") => {
     setPendingAction(action); setBusy(true); setError(null); setNote("");
     try {
-      const value = await saveBridgeConfig(config);
-      setState(value); setDraft(value.config); setJobs(value.jobs); setAudit(value.audit ?? []); setNote("Bridge settings saved on this device.");
+      if (!cleanConfig.current) throw new Error("Reload bridge settings before saving.");
+      const value = await saveBridgeConfig(config, cleanConfig.current.hash);
+      acceptSavedState(value); setNote("Bridge settings saved on this device.");
+    } catch (e) { report(e); } finally { setBusy(false); setPendingAction(null); }
+  };
+  const reload = async () => {
+    setPendingAction("reload"); setBusy(true); setError(null); setNote("");
+    try {
+      acceptSavedState(await fetchBridgeState());
+      setNote("Loaded current bridge settings. Unsaved edits were discarded.");
     } catch (e) { report(e); } finally { setBusy(false); setPendingAction(null); }
   };
   const updatePeer = (id: string, changes: Partial<BridgePeer>) => setDraft(current => current && ({ ...current, peers: current.peers.map(peer => peer.id === id ? { ...peer, ...changes } : peer) }));
+  const acceptConnection = (result: BridgeConnectionResult) => {
+    acceptSavedState(result.state);
+    setPairing(""); setVerifiedIdentity(null);
+    setNote(`Connection verified. Remote projects: ${result.connection.projects.map(project => project.id).join(", ")}. Permissions: ${result.connection.capabilities.join(", ")}. Expires ${new Date(result.connection.expiresAt).toLocaleString()}. This device grants no incoming project permissions.`);
+  };
+  const connect = async () => {
+    if (!verifiedIdentity || verifiedIdentity.host !== host.trim() || connectionId) return;
+    setPendingAction("pair"); setBusy(true); setError(null); setNote("");
+    try {
+      acceptConnection(await connectBridgeDevice({ host: host.trim(), identityId: verifiedIdentity.id, label: label.trim(), localLabel: devices.find(device => !deviceHost(device))?.name ?? "This Device", project: { id: remoteProjectId.trim(), root: remoteRoot.trim() }, capabilities: ["files.read", "terminal.read"], expiresAt: Date.now() + 8 * 3600000 }));
+    } catch (e) { report(e); } finally { setConnectionId(getPendingBridgeConnectionId()); setBusy(false); setPendingAction(null); }
+  };
+  const checkConnection = async () => {
+    if (!connectionId) return;
+    setPendingAction("pair-status"); setBusy(true); setError(null); setNote("");
+    try { acceptConnection(await resumeBridgeConnection(connectionId)); setConnectionMissing(false); }
+    catch (e) { setConnectionMissing(e instanceof BridgeConnectionPendingError && e.noLongerRetained); report(e); }
+    finally { setConnectionId(getPendingBridgeConnectionId()); setBusy(false); setPendingAction(null); }
+  };
   const pair = () => {
     if (!draft || !state) return;
     try {
@@ -75,14 +122,15 @@ export function BridgeSettings({ active = true, page = "access" }: { active?: bo
   return <section className="settings-page bridge-settings">
     <div hidden={page !== "access"}>
     <div className="settings-row"><div className="settings-row-copy"><span>Enable device bridge</span><small>Allow paired devices to use approved projects.</small></div>
-      <button type="button" className={`switch ${state?.config.enabled ? "switch-on" : ""}`} role="switch" aria-label="Enable device bridge" aria-checked={state?.config.enabled ?? false} disabled={!state || busy} aria-busy={pendingAction === "toggle"} onClick={() => state && void save({ ...state.config, enabled: !state.config.enabled }, "toggle")}><span className="switch-knob async-switch-knob">{toggleSpinner ? <Loader2 size={12} className="async-spinner" aria-hidden="true" /> : null}</span></button>
+      <button type="button" className={`switch ${state?.config.enabled ? "switch-on" : ""}`} role="switch" aria-label="Enable device bridge" aria-checked={state?.config.enabled ?? false} disabled={!state || busy || dirty} aria-busy={pendingAction === "toggle"} onClick={() => state && void save({ ...state.config, enabled: !state.config.enabled }, "toggle")}><span className="switch-knob async-switch-knob">{toggleSpinner ? <Loader2 size={12} className="async-spinner" aria-hidden="true" /> : null}</span></button>
     </div>
-    <p className="bridge-notice">Disabled by default. Turning it off revokes access and cancels bridge jobs.</p>
+    <p className="bridge-notice">Turning it off revokes access and cancels bridge jobs. Save project and permission edits before changing the bridge switch.</p>
     <details className="bridge-disclosure"><summary>Execution and access scope</summary><p>Builds, terminal control, and UI tests execute code as this device’s user. Use a dedicated OS account for stronger isolation; these grants do not restrict SSH login itself.</p></details>
     </div>
     {error && <p className="bridge-error" role="alert">{error}</p>}
     {note && <p className="bridge-note" role="status">{note}</p>}
-    {!state || !draft ? <AsyncButton className="btn" loading={busy || (!state && !error)} icon={RefreshCw} onClick={() => { setPendingAction("connect"); setBusy(true); void fetchBridgeState().then(value => { setState(value); setDraft(value.config); setJobs(value.jobs); setAudit(value.audit ?? []); setError(null); }).catch(report).finally(() => { setBusy(false); setPendingAction(null); }); }}>{error ? "Retry connection" : "Connect to device agent"}</AsyncButton> : <>
+    {connectionId && <div className="bridge-card"><p role="status">Pairing outcome is pending confirmation. Checking does not repeat grants.</p><code className="bridge-fingerprint">{connectionId}</code><AsyncButton className="btn btn-sm" icon={RefreshCw} loading={pendingAction === "pair-status"} disabled={busy || dirty} onClick={() => void checkConnection()}>Check pairing status</AsyncButton>{dirty && <p>Save or reload current edits before checking pairing status.</p>}{connectionMissing && <><p>The operation is no longer retained. Review both devices' bridge settings and revoke any unwanted grants before dismissing tracking.</p><button className="btn btn-sm" disabled={busy} onClick={() => { dismissPendingBridgeConnection(connectionId); setConnectionId(null); setConnectionMissing(false); setError(null); setNote("Pending tracking dismissed. No device grants were changed."); }}>I reviewed both devices - dismiss tracking</button></>}</div>}
+    {!state || !draft ? <AsyncButton className="btn" loading={busy || (!state && !error)} icon={RefreshCw} onClick={() => void reload()}>{error ? "Retry connection" : "Connect to device agent"}</AsyncButton> : <>
       <div hidden={page !== "access"}>
       <div className="settings-section bridge-card">
         <div className="settings-row"><div className="settings-row-copy"><span>Pairing identity</span><small>Copy this device’s public identity to its peer.</small></div><AsyncButton className="btn btn-sm" loading={pendingAction === "copy"} disabled={busy} icon={Copy} iconSize={13} onClick={() => { setPendingAction("copy"); setBusy(true); void navigator.clipboard.writeText(JSON.stringify(state.identity)).then(() => setNote("Public device identity copied.")).catch(report).finally(() => { setBusy(false); setPendingAction(null); }); }}>Copy identity</AsyncButton></div>
@@ -96,24 +144,35 @@ export function BridgeSettings({ active = true, page = "access" }: { active?: bo
           setDraft({ ...draft, projects: [...draft.projects, { id: projectId.trim(), root: root.trim() }] }); setProjectId(""); setRoot("");
         }}><Plus size={13} /> Add project</button>
       </div>
-      <div className="settings-section bridge-card"><h4>Pair a device</h4><p>Add identities on both devices. Permissions below grant incoming access to this device; the other device controls its own grants.</p>
-        {devices.some(device => deviceHost(device)) ? <div className="settings-form bridge-form"><label>Connected device<Select value={host} options={[{ value: "", label: "Choose a device" }, ...devices.filter(device => deviceHost(device)).map(device => ({ value: deviceHost(device), label: device.name }))]} onChange={value => { setHost(value); setLabel(devices.find(device => deviceHost(device) === value)?.name ?? ""); setPairing(""); }} /></label><AsyncButton className="btn btn-sm" disabled={busy || !host.trim()} loading={pendingAction === "identity"} icon={RefreshCw} onClick={() => { setPendingAction("identity"); setBusy(true); setError(null); void fetchBridgePeerIdentity(host.trim()).then(value => { setPairing(JSON.stringify(value.identity)); setNote("Verified this identity through the device's trusted SSH connection. Add it below and choose its access permissions."); }).catch(report).finally(() => { setBusy(false); setPendingAction(null); }); }}>Read pairing identity</AsyncButton></div> : null}
-        <div className="settings-form bridge-form"><label>Device name<input value={label} onChange={e => setLabel(e.target.value)} placeholder="MacBook" /></label><label>Verified SSH alias<input value={host} onChange={e => setHost(e.target.value)} placeholder="macbook" /></label></div>
+      <div className="settings-section bridge-card"><h4>Connect to a device project</h4><p>Verify the connected device, then choose the exact project you want to read. Setup pairs both agents and tests their signed connection.</p>
+        {devices.some(device => deviceHost(device)) ? <div className="settings-form bridge-form"><label>Connected device<Select value={host} options={[{ value: "", label: "Choose a device" }, ...devices.filter(device => deviceHost(device)).map(device => ({ value: deviceHost(device), label: device.name }))]} onChange={value => { setHost(value); setLabel(devices.find(device => deviceHost(device) === value)?.name ?? ""); setPairing(""); setVerifiedIdentity(null); }} /></label><AsyncButton className="btn btn-sm" disabled={busy || !host.trim()} loading={pendingAction === "identity"} icon={RefreshCw} onClick={() => { setPendingAction("identity"); setBusy(true); setError(null); void fetchBridgePeerIdentity(host.trim()).then(value => { setPairing(JSON.stringify(value.identity)); setVerifiedIdentity({ host: host.trim(), id: value.identity.id }); setNote("Device identity verified through trusted SSH. Choose its project folder below to connect with read-only access."); }).catch(report).finally(() => { setBusy(false); setPendingAction(null); }); }}>Read pairing identity</AsyncButton></div> : null}
+        <div className="settings-form bridge-form"><label>Device name<input value={label} onChange={e => setLabel(e.target.value)} placeholder="MacBook" /></label><label>Verified SSH alias<input value={host} onChange={e => { setHost(e.target.value); setVerifiedIdentity(null); }} placeholder="macbook" /></label></div>
+        {verifiedIdentity?.host === host.trim() && <div className="bridge-card">
+          <div className="settings-form bridge-form"><label>Project ID on device<input value={remoteProjectId} onChange={e => setRemoteProjectId(e.target.value)} placeholder="my-app" /></label><label>Project folder on device<input value={remoteRoot} onChange={e => setRemoteRoot(e.target.value)} placeholder="/home/user/projects/my-app" /></label></div>
+          <p>Read project files and project terminal output for 8 hours. No file edits, terminal commands, builds, or submissions. No incoming project permissions are granted to this device.</p>
+          {dirty && <p>Save your current bridge edits before connecting.</p>}
+          <AsyncButton className="btn btn-accent" loading={pendingAction === "pair"} disabled={busy || dirty || !!connectionId || !remoteProjectId.trim() || !remoteRoot.trim() || !label.trim()} onClick={() => void connect()}>Pair and verify read-only access</AsyncButton>
+        </div>}
+        <details className="bridge-disclosure"><summary>Manual incoming pairing</summary><p>For incoming access, add this identity here and add this device identity in the other device’s bridge settings. Choose local project grants below.</p>
         <label className="settings-field bridge-field">Public pairing identity<textarea value={pairing} onChange={e => setPairing(e.target.value)} rows={3} spellCheck={false} /></label>
         <p>SSH host keys must already be verified. Leave the alias blank for incoming access only. Pairing does not connect until an action is requested.</p>
-        <button className="btn btn-sm" disabled={!pairing.trim() || !label.trim() || busy} onClick={pair}><Plus size={13} /> Add paired device</button>
+        <button className="btn btn-sm" disabled={!pairing.trim() || !label.trim() || busy} onClick={pair}><Plus size={13} /> Add paired device</button></details>
       </div>
       {draft.peers.map(peer => <details className="settings-section bridge-card bridge-peer" key={peer.id}>
-        <summary><span>{peer.label}</span><span className="bridge-peer-status">{peer.enabled ? "Access enabled" : "Access disabled"}</span></summary>
-        <div className="settings-row"><div className="settings-row-copy"><span>Incoming access</span><small>Applies to the projects and permissions below.</small></div><label className="bridge-check"><input type="checkbox" checked={peer.enabled} onChange={e => updatePeer(peer.id, { enabled: e.target.checked })} /> Allow bridge access</label></div>
+        <summary><span>{peer.label}</span><span className="bridge-peer-status">{dirty ? "Unsaved access changes" : !state.config.enabled ? "Bridge disabled" : !peer.enabled ? "Access disabled" : !peer.expiresAt || peer.expiresAt <= now ? "Access expired" : peer.capabilities.length && peer.projectIds.length ? "Project access enabled" : "Connected without local project access"}</span></summary>
+        <div className="settings-row"><div className="settings-row-copy"><span>Device pairing</span><small>Incoming project access is limited to the selections below.</small></div><label className="bridge-check"><input type="checkbox" checked={peer.enabled} onChange={e => updatePeer(peer.id, { enabled: e.target.checked })} /> Enable pairing</label></div>
         <code className="bridge-fingerprint">{peer.id}</code>
+        {peer.host && <AsyncButton className="btn btn-sm" loading={pendingAction === `test:${peer.id}`} disabled={busy || dirty || !state.config.enabled || !peer.enabled} icon={RefreshCw} onClick={() => {
+          setPendingAction(`test:${peer.id}`); setBusy(true); setError(null);
+          void testBridgeConnection(peer.id).then(connection => setNote(`Verified ${peer.label}: ${connection.projects.map(project => project.id).join(", ") || "no project grants"}. Permissions: ${connection.capabilities.join(", ") || "none"}. Expires ${new Date(connection.expiresAt).toLocaleString()}.`)).catch(report).finally(() => { setBusy(false); setPendingAction(null); });
+        }}>Test connection</AsyncButton>}
         <div className="settings-form bridge-form"><label>SSH alias<input value={peer.host} onChange={e => updatePeer(peer.id, { host: e.target.value })} /></label><label>Agent port<input type="number" min={1024} max={65535} value={peer.port} onChange={e => updatePeer(peer.id, { port: Number(e.target.value) })} /></label></div>
         <div className="bridge-expiry"><span>{peer.expiresAt ? `Access expires ${new Date(peer.expiresAt).toLocaleString()}` : "No access expiry set"}</span><select aria-label={`Extend access for ${peer.label}`} value="" onChange={e => updatePeer(peer.id, { expiresAt: Date.now() + Number(e.target.value) * 3600000 })}><option value="" disabled>Set expiry…</option><option value="1">In 1 hour</option><option value="8">In 8 hours</option><option value="24">In 1 day</option><option value="168">In 7 days</option></select></div>
         <fieldset><legend>Projects</legend>{draft.projects.length === 0 && <p>Add a project first.</p>}{draft.projects.map(project => <label className="bridge-check" key={project.id}><input type="checkbox" checked={peer.projectIds.includes(project.id)} onChange={e => updatePeer(peer.id, { projectIds: e.target.checked ? [...peer.projectIds, project.id] : peer.projectIds.filter(id => id !== project.id) })} />{project.id}</label>)}</fieldset>
         <fieldset><legend>Permissions</legend><div className="bridge-permissions">{BRIDGE_CAPABILITIES.map(([capability, title]) => <label className="bridge-check" key={capability}><input type="checkbox" checked={peer.capabilities.includes(capability)} onChange={e => updatePeer(peer.id, { capabilities: e.target.checked ? [...peer.capabilities, capability] : peer.capabilities.filter(item => item !== capability) })} />{title}</label>)}</div></fieldset>
-        <AsyncButton className="btn btn-danger btn-sm" loading={pendingAction === `revoke:${peer.id}`} icon={Ban} disabled={busy} onClick={() => void save({ ...state.config, peers: state.config.peers.filter(item => item.id !== peer.id) }, `revoke:${peer.id}`)}>Revoke device now</AsyncButton>
+        <AsyncButton className="btn btn-danger btn-sm" loading={pendingAction === `revoke:${peer.id}`} icon={Ban} disabled={busy || dirty} onClick={() => void save({ ...state.config, peers: state.config.peers.filter(item => item.id !== peer.id) }, `revoke:${peer.id}`)}>Revoke device now</AsyncButton>
       </details>)}
-      <div className="settings-actions bridge-save"><span>Project and permission edits apply when saved.</span><AsyncButton className="btn btn-accent" loading={pendingAction === "save"} icon={Save} disabled={busy || JSON.stringify(draft) === JSON.stringify(state.config)} onClick={() => void save(draft)}>Save bridge settings</AsyncButton></div>
+      <div className="settings-actions bridge-save"><span>Project and permission edits apply when saved. Reloading discards unsaved edits.</span><AsyncButton className="btn" loading={pendingAction === "reload"} icon={RefreshCw} disabled={busy} onClick={() => void reload()}>Reload saved settings</AsyncButton><AsyncButton className="btn btn-accent" loading={pendingAction === "save"} icon={Save} disabled={busy || JSON.stringify(draft) === JSON.stringify(state.config)} onClick={() => void save(draft)}>Save bridge settings</AsyncButton></div>
       </div>
       <div hidden={page !== "activity"}>
       <div className="settings-section bridge-card"><h4>Jobs and approvals <span className="bridge-count">{jobs.length}</span></h4><p>Closing this panel keeps jobs running. Approvals are only available here, never through remote MCP.</p>

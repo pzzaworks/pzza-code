@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Bell,
   Monitor,
@@ -33,8 +33,11 @@ import { HAS_TAURI } from "./tauriEnv";
 import { startUpdateChecks } from "./state/updates";
 import { Modal } from "./ui/Modal";
 import { confirmEditorDiscard, hasUnsavedEditors } from "./editorChanges";
+import { registerAppControlHandler, registerAppControlState } from "./appControlRuntime";
 import { useAppControl } from "./appControl";
 import { initializeDictation } from "./state/dictation";
+import { NEW_SESSION_SHORTCUT, newItemShortcut } from "./shortcuts";
+import { announceMenu } from "./ui/menuBus";
 
 export default function App() {
   useEffect(() => startUpdateChecks(), []);
@@ -51,6 +54,7 @@ export default function App() {
   const [syncRequest, setSyncRequest] = useState(0);
   const [syncing, setSyncing] = useState(false);
   const [sessionDialogOpen, setSessionDialogOpen] = useState(false);
+  const [newWorkspaceRequest, setNewWorkspaceRequest] = useState(0);
   const remoteDesktop = useRemoteDesktop();
   const [portsLoading, setPortsLoading] = useState(false);
   const [menuError, setMenuError] = useState<string | null>(null);
@@ -58,10 +62,63 @@ export default function App() {
   const [helpRequest, setHelpRequest] = useState<HelpRequest | undefined>();
   const [settingsSection, setSettingsSection] = useState<SettingsSection>("general");
   const openSettings = (section: SettingsSection) => {
+    announceMenu("settings");
+    setSessionDialogOpen(false);
+    setWizardOpen(false);
     setSettingsSection(section);
     setSettingsOpen(true);
     setToolsOpen(false);
   };
+  const openNewSession = useCallback(() => {
+    announceMenu("new-session-dialog");
+    setSettingsOpen(false);
+    setToolsOpen(false);
+    setSessionDialogOpen(true);
+  }, []);
+  const openNewWorkspace = useCallback(() => {
+    announceMenu("ws-tabs");
+    setSettingsOpen(false);
+    setToolsOpen(false);
+    setSessionDialogOpen(false);
+    setNewWorkspaceRequest(request => request + 1);
+  }, []);
+  const navigationRef = useRef({ settingsOpen, settingsSection, sessionDialogOpen, wizardOpen, openSettings, openNewSession, openNewWorkspace });
+  navigationRef.current = { settingsOpen, settingsSection, sessionDialogOpen, wizardOpen, openSettings, openNewSession, openNewWorkspace };
+  useEffect(() => {
+    const cleanups = [
+      registerAppControlState("navigation", () => {
+        const state = navigationRef.current;
+        return { settingsOpen: state.settingsOpen, settingsSection: state.settingsSection, sessionDialogOpen: state.sessionDialogOpen, setupOpen: state.wizardOpen };
+      }),
+      registerAppControlHandler("navigate", args => {
+        announceMenu("app-navigation");
+        setSettingsOpen(false); setSessionDialogOpen(false); setToolsOpen(false); setWizardOpen(false);
+        if (args.target === "new_session") navigationRef.current.openNewSession();
+        if (args.target === "new_workspace") navigationRef.current.openNewWorkspace();
+        if (args.target === "setup") setWizardOpen(true);
+        return { target: args.target };
+      }),
+      registerAppControlHandler("open_help", args => {
+        const topic = args.topic;
+        if (typeof topic !== "string" || !HELP_SECTIONS.some(group => group.topics.some(id => id === topic))) throw new Error("Unknown help topic.");
+        setHelpRequest({ topic, serial: Date.now() });
+        navigationRef.current.openSettings("help");
+        return { topic };
+      }),
+    ];
+    return () => cleanups.forEach(cleanup => cleanup());
+  }, [setWizardOpen]);
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      const item = newItemShortcut(event);
+      if (!item) return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (!event.repeat) (item === "session" ? openNewSession : openNewWorkspace)();
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [openNewSession, openNewWorkspace]);
   useEffect(() => {
     if (!HAS_TAURI) return;
     let disposed = false;
@@ -77,7 +134,8 @@ export default function App() {
         }
         return;
       }
-      if (payload === "new-session") { setSettingsOpen(false); setSessionDialogOpen(true); return; }
+      if (payload === "new-session") { openNewSession(); return; }
+      if (payload === "new-workspace") { openNewWorkspace(); return; }
       if (["general", "about", "notifications", "devices", "sync", "remote", "mcp", "help", "agents-hub"].includes(payload)) {
         setSessionDialogOpen(false);
         openSettings(payload as SettingsSection);
@@ -89,7 +147,7 @@ export default function App() {
       if (!disposed) setMenuError(error instanceof Error ? error.message : "Could not connect the application menu.");
     });
     return () => { disposed = true; unlisten?.(); };
-  }, []);
+  }, [openNewSession, openNewWorkspace]);
   useEffect(() => {
     const section = (event: Event) => {
       const value: unknown = (event as CustomEvent).detail;
@@ -207,7 +265,7 @@ export default function App() {
             <span className="brand-version">v{__APP_VERSION__}</span>
           </div>
 
-          <WorkspaceTabs />
+            <WorkspaceTabs openRequest={newWorkspaceRequest} />
 
           <div className="topbar-spacer" />
 
@@ -233,7 +291,7 @@ export default function App() {
                   }} />
                   {syncing ? <span className="toolbar-sync-indicator" role="status" aria-label="Sync in progress" /> : null}
                 </div>
-                <Dropdown icon={Monitor} title="Remote desktop" loading={remoteDesktop.busy} width={180}>
+                <Dropdown icon={Monitor} title="Remote desktop" controlId="remote_desktop" loading={remoteDesktop.busy} width={180} align="end" compact>
                   {(close) => <>
                     <button type="button" className="menu-item" disabled={remoteDesktop.busy} onClick={() => { close(); void remoteDesktop.openSaved(); }}>
                       <Monitor size={16} strokeWidth={1.9} />
@@ -245,20 +303,20 @@ export default function App() {
                     </button>
                   </>}
                 </Dropdown>
-                <Dropdown icon={EthernetPort} title="Port forwarding" width={320} loading={portsLoading}>
+                <Dropdown icon={EthernetPort} title="Port forwarding" controlId="port_forwarding" width={320} loading={portsLoading} align="end" compact>
                   {(close, open) => <PortsMenu active={open && !settingsOpen} onLoadingChange={setPortsLoading} onOpenSettings={() => { close(); openSettings("ports"); }} />}
                 </Dropdown>
-                <Dropdown icon={Gauge} title="Agent usage" width={320}>
+                <Dropdown icon={Gauge} title="Agent usage" controlId="usage" width={320}>
                   <UsageMenu />
                 </Dropdown>
                 <div className="notification-toolbar">
-                  <Dropdown icon={Bell} title="Notifications" width={380} panelClassName="notifications-panel">
+                  <Dropdown icon={Bell} title="Notifications" controlId="notifications" width={380} panelClassName="notifications-panel">
                     {(close) => <LatestNotifications viewAll={() => { close(); openSettings("notifications"); }} />}
                   </Dropdown>
                   {unreadNotifications ? <span className="notification-badge" aria-label={`${unreadNotifications} unread notifications`} /> : null}
                 </div>
                 <IconButton icon={SettingsIcon} title="Settings" onClick={() => openSettings("general")} />
-                <Dropdown icon={Plus} title="New session" label="New session" width={340}>
+                <Dropdown icon={Plus} title="New session" controlId="new_session" label="New session" width={340} shortcut={NEW_SESSION_SHORTCUT}>
                   {(close) => <SessionMenu close={close} />}
                 </Dropdown>
               </div>
@@ -270,7 +328,7 @@ export default function App() {
 
         <div className="body">
           <main className="canvas">
-            <Canvas onNewSession={() => setSessionDialogOpen(true)} />
+            <Canvas onNewSession={openNewSession} />
           </main>
         </div>
       </div>
@@ -286,7 +344,7 @@ export default function App() {
           }
         }}
       />
-      <SettingsHub helpRequest={helpRequest} open={settingsOpen} section={settingsSection} onSectionChange={setSettingsSection} onClose={() => setSettingsOpen(false)} syncRequest={syncRequest} onSyncingChange={setSyncing} />
+      <SettingsHub onOpen={openSettings} helpRequest={helpRequest} open={settingsOpen} section={settingsSection} onSectionChange={setSettingsSection} onClose={() => setSettingsOpen(false)} syncRequest={syncRequest} onSyncingChange={setSyncing} />
     </ThemeProvider>
   );
 }

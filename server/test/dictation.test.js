@@ -73,10 +73,18 @@ test("dictation opt-in, native events, pinned insertion and cancellation", async
   assert.equal(storage.get("pzza.dictation.enabled"), "true");
   const inserted = [];
   const focused = [];
-  const register = (tileId, insert) => registerDictationTarget(tileId, { insert, focus: () => focused.push(tileId) });
+  const previews = new Map();
+  const register = (tileId, insert) => registerDictationTarget(tileId, {
+    insert,
+    focus: () => focused.push(tileId),
+    preview: (text) => previews.set(tileId, text),
+    clearPreview: () => previews.delete(tileId),
+  });
   const unregister = register("first", (text) => { inserted.push(text); return true; });
   register("second", () => { assert.fail("Transcript reached wrong terminal"); });
   await useDictation.getState().start("first");
+  assert.equal(useDictation.getState().recording.phase, "loading");
+  assert.equal(useDictation.getState().recording.error, null);
   assert.deepEqual(focused, ["first"], "starting dictation focuses the target even if its tile is already active");
   const id = useDictation.getState().recording.id;
   assert.equal(calls.find(call => call.command === "speech_start").args.inputDeviceId, null, "new installations follow the system default microphone");
@@ -95,6 +103,7 @@ test("dictation opt-in, native events, pinned insertion and cancellation", async
   emit("dictation", { id, kind: "partial", text: "Merhaba world" });
   assert.equal(focused.length, 2, "audio updates do not repeatedly steal focus");
   assert.deepEqual(inserted, [], "partials must never be sent to terminal");
+  assert.equal(previews.get("first"), "Merhaba world");
   await useDictation.getState().start("second");
   assert.equal(useDictation.getState().recording.id, id);
   await useDictation.getState().stop();

@@ -4,7 +4,7 @@ import { deviceHost } from "../devices";
 import { AsyncButton } from "../ui/AsyncButton";
 import { useEffect, useState } from "react";
 import { Check, Copy, Download, RefreshCw } from "lucide-react";
-import { fetchMcpConfig, mcpInstall, type McpConfig } from "../serverApi";
+import { useMcpSettings } from "../state/mcpSettings";
 
 const ENABLED_KEY = "pzza.mcp.enabled";
 
@@ -13,8 +13,9 @@ const ENABLED_KEY = "pzza.mcp.enabled";
 export function McpMenu() {
   const devices = useStore(state => state.devices);
   const health = useIntegrationHealth(state => state.devices);
-  const check = useIntegrationHealth(state => state.check);
-  const [cfg, setCfg] = useState<McpConfig | null>(null);
+  const checkAll = useIntegrationHealth(state => state.checkAll);
+  const checking = useIntegrationHealth(state => state.batch?.status === "running");
+  const { config: cfg, notes: note, busy, agentHost, mcpPath, error: configError, select, load, install, copy } = useMcpSettings();
   const [enabled, setEnabled] = useState(() => {
     try {
       return localStorage.getItem(ENABLED_KEY) !== "0";
@@ -22,21 +23,10 @@ export function McpMenu() {
       return true;
     }
   });
-  const [note, setNote] = useState<Record<string, string>>({});
-  const [busy, setBusy] = useState<string | null>(null);
-  const [agentHost, setAgentHost] = useState("");
-  const [mcpPath, setMcpPath] = useState("");
-  const [configError, setConfigError] = useState<string | null>(null);
-
   useEffect(() => {
-    let disposed = false;
-    const timer = setTimeout(() => {
-      fetchMcpConfig(agentHost.trim(), mcpPath.trim()).then((value) => {
-        if (!disposed) { setCfg(value); setConfigError(null); }
-      }).catch(() => { if (!disposed) { setCfg(null); setConfigError("Check the SSH host and MCP script path."); } });
-    }, 200);
-    return () => { disposed = true; clearTimeout(timer); };
-  }, [agentHost, mcpPath]);
+    const timer = setTimeout(() => { void load().catch(() => {}); }, 200);
+    return () => clearTimeout(timer);
+  }, [agentHost, mcpPath, load]);
 
   const toggle = () => {
     const next = !enabled;
@@ -49,27 +39,6 @@ export function McpMenu() {
     window.dispatchEvent(new CustomEvent("pzza:mcp-enabled-changed", { detail: { enabled: next } }));
   };
 
-  const add = async (fw: string) => {
-    setBusy(fw);
-    try {
-      const r = await mcpInstall(fw);
-      setNote((n) => ({ ...n, [fw]: r.ok ? "added ✓" : r.error || "failed" }));
-    } catch {
-      setNote((n) => ({ ...n, [fw]: "failed" }));
-    } finally {
-      setBusy(null);
-    }
-  };
-
-  const copy = async (fw: string, config: string) => {
-    try {
-      await navigator.clipboard.writeText(config);
-      setNote((n) => ({ ...n, [fw]: "copied ✓" }));
-    } catch {
-      setNote((n) => ({ ...n, [fw]: "copy failed" }));
-    }
-  };
-
   const frameworks = cfg ? Object.entries(cfg.frameworks) : [];
 
   return (
@@ -78,7 +47,7 @@ export function McpMenu() {
       <div className="settings-row">
         <div className="settings-row-copy">
           <span>Allow app window control</span>
-          <small>Control editor panels, tile focus and layouts.</small>
+          <small>Control sessions, workspaces, editors, and app settings.</small>
         </div>
         <button
           className={`switch ${enabled ? "switch-on" : ""}`}
@@ -95,11 +64,11 @@ export function McpMenu() {
       <section className="settings-section" aria-label="Connection">
       <div className="settings-form">
       <label className="settings-field"><span>App SSH host</span>
-        <input className="field-input" value={agentHost} onChange={(event) => setAgentHost(event.target.value)} placeholder="Local app (default)" spellCheck={false} /><small>Optional SSH target for an app on another device.</small>
+        <input className="field-input" disabled={busy !== null} value={agentHost} onChange={(event) => select({ agentHost: event.target.value })} placeholder="Local app (default)" spellCheck={false} /><small>Optional SSH target for an app on another device.</small>
       </label>
       {agentHost.trim() ? <>
         <label className="settings-field"><span>MCP script path</span>
-          <input className="field-input" value={mcpPath} onChange={(event) => setMcpPath(event.target.value)} placeholder="/absolute/path/to/mcp/server.js" spellCheck={false} />
+          <input className="field-input" disabled={busy !== null} value={mcpPath} onChange={(event) => select({ mcpPath: event.target.value })} placeholder="/absolute/path/to/mcp/server.js" spellCheck={false} />
         </label>
         <p className="set-note">Copy this configuration into the agent on another device. That device needs Node.js, the installed MCP package, and key-based SSH access to the app host with its host key already trusted. The app must be running. Credentials stay on the app host; no public port is opened. Tools use the app host's device names and SSH access.</p>
       </> : null}
@@ -108,7 +77,7 @@ export function McpMenu() {
 
       </section>
       <section className="settings-section" aria-label="Integration health">
-        <div className="settings-row"><div className="settings-row-copy"><span>Automatic startup repairs</span><small>Check installed server commands on each device every minute. Preserve configuration and private backups when a repair is needed.</small></div><AsyncButton className="btn btn-sm" icon={RefreshCw} loading={devices.some(device => health[deviceHost(device)]?.checking)} onClick={() => { for (const device of devices) void check(deviceHost(device), device.name, true); }}>Check now</AsyncButton></div>
+        <div className="settings-row"><div className="settings-row-copy"><span>Automatic startup repairs</span><small>Check installed server commands on each device every minute. Preserve configuration and private backups when a repair is needed.</small></div><AsyncButton className="btn btn-sm" icon={RefreshCw} loading={checking || devices.some(device => health[deviceHost(device)]?.checking)} onClick={() => { checkAll(devices.map(device => ({ host: deviceHost(device), name: device.name }))); }}>Check now</AsyncButton></div>
         {devices.map(device => {
           const value = health[deviceHost(device)];
           return <details key={device.id} className="bridge-disclosure"><summary>{device.name} · {value?.checking ? "Checking…" : value?.error ? "Unavailable" : value?.results.some(result => result.status === "unresolved") ? "Needs attention" : value?.results.some(result => result.status === "repaired") ? "Repaired" : value?.results.length ? "Ready" : "No servers configured"}</summary>
@@ -127,13 +96,13 @@ export function McpMenu() {
               <div className="settings-row-copy"><span>{fw.label}</span>{note[key] ? <small role="status">{note[key]}</small> : null}</div>
               <div className="settings-actions">
                 {fw.cli && !agentHost.trim() ? (
-                  <AsyncButton className="btn btn-accent btn-sm" onClick={() => add(key)} loading={busy === key} disabled={busy !== null || !enabled} icon={Download} iconSize={13}>
+                  <AsyncButton className="btn btn-accent btn-sm" onClick={() => install(key).catch(() => {})} loading={busy === key} disabled={busy !== null || !enabled} icon={Download} iconSize={13}>
                     Add
                   </AsyncButton>
                 ) : null}
                 <button
                   className="btn btn-sm"
-                  onClick={() => copy(key, fw.config)}
+                  onClick={() => { void copy(key).catch(() => {}); }}
                   disabled={Boolean(agentHost.trim()) && !mcpPath.trim().startsWith("/")}
                   title="Copy configuration" aria-label={`Copy ${fw.label} configuration`}
                 >

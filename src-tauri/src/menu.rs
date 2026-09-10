@@ -19,7 +19,10 @@ pub fn install(app: &tauri::AppHandle) -> tauri::Result<()> {
             )?;
         }
         let items: &[(&str, &str, Option<&str>)] = match title.as_str() {
-            "File" => &[("new-session", "New Session…", Some("CmdOrCtrl+N"))],
+            "File" => &[
+                ("new-session", "New Session…", Some("CmdOrCtrl+N")),
+                ("new-workspace", "New Workspace…", Some("CmdOrCtrl+Shift+N")),
+            ],
             "View" => &[
                 (
                     "font-increase",

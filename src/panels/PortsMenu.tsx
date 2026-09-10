@@ -44,11 +44,31 @@ function fwdSave(key: string, v: string) {
   }
 }
 
-const useForwardConfig = create<{ serverId: string; clientId: string; enabled: boolean }>(() => ({
+export const useForwardConfig = create<{ serverId: string; clientId: string; enabled: boolean }>(() => ({
   serverId: fwdLoad("pzza.fwd.serverDev", ""),
   clientId: fwdLoad("pzza.fwd.clientDev", "this-mac"),
   enabled: fwdLoad("pzza.fwd.enabled", "1") !== "0",
 }));
+
+export function updateForwardConfig(patch: Partial<ReturnType<typeof useForwardConfig.getState>>): void {
+  const next = { ...useForwardConfig.getState(), ...patch };
+  fwdSave("pzza.fwd.serverDev", next.serverId); fwdSave("pzza.fwd.clientDev", next.clientId); fwdSave("pzza.fwd.enabled", next.enabled ? "1" : "0");
+  useForwardConfig.setState(next);
+}
+let forwardingQueue: Promise<unknown> = Promise.resolve();
+export function reconcileSelectedForwarding(host: string, enabled: boolean, isActive: () => boolean = () => true): Promise<ForwardStatus> {
+  const operation = forwardingQueue.catch(() => undefined).then(async () => {
+    const check = () => { if (!isActive()) throw new Error("Forwarding view changed."); };
+    check();
+    const scan = await forwardScan(host, DEFAULT_SKIP, DEFAULT_MIN_PORT);
+    const ports = enabled ? scan.wanted.filter(port => !scan.forwarded.includes(port)) : scan.forwarded;
+    for (const port of ports) { check(); await forwardSet(host, port, enabled); }
+    check();
+    return ports.length ? forwardScan(host, DEFAULT_SKIP, DEFAULT_MIN_PORT) : scan;
+  });
+  forwardingQueue = operation;
+  return operation;
+}
 
 function ForwardConfig({
   serverId,
@@ -86,12 +106,10 @@ export function PortsMenu({ active = true, onLoadingChange, onOpenSettings }: {
   const serverId = configuredServer || devices.find((device) => device.id !== "this-mac")?.id || devices[0]?.id || "";
   const clientId = useForwardConfig((state) => state.clientId);
   const onServer = (v: string) => {
-    useForwardConfig.setState({ serverId: v });
-    fwdSave("pzza.fwd.serverDev", v);
+    updateForwardConfig({ serverId: v });
   };
   const onClient = (v: string) => {
-    useForwardConfig.setState({ clientId: v });
-    fwdSave("pzza.fwd.clientDev", v);
+    updateForwardConfig({ clientId: v });
   };
 
   const server = devices.find((d) => d.id === serverId);
@@ -109,10 +127,10 @@ export function PortsMenu({ active = true, onLoadingChange, onOpenSettings }: {
   return (
     <div className={showControls ? "settings-page ports-settings" : "menu-body"}>
       {showControls ? <ForwardConfig serverId={serverId} clientId={clientId} onServer={onServer} onClient={onClient} /> : <>
-        <div className="menu-title">Port forwarding</div>
-        <p className="small muted">{server?.name ?? "Source device"} → {devices.find(device => device.id === clientId)?.name ?? "Receiver"}</p>
+        <div className="menu-head-title">Port forwarding</div>
+        <p className="ports-menu-route">{server?.name ?? "Source device"} → {devices.find(device => device.id === clientId)?.name ?? "Receiver"}</p>
       </>}
-      <section className={showControls ? "settings-section" : undefined} aria-label="Live services">
+      <section className={showControls ? "settings-section" : "ports-menu-services"} aria-label="Live services">
       {HAS_TAURI ? (
         <TauriPorts pollingActive={active} serverHost={serverHost} clientIsLocal={clientIsLocal} showControls={showControls} onLoadingChange={onLoadingChange} />
       ) : (
@@ -341,15 +359,7 @@ function TauriPorts({ serverHost, clientIsLocal, pollingActive, showControls, on
       const task = scanQueue.current.then(async () => {
         if (!alive) return;
         try {
-          const scan = await forwardScan(host, DEFAULT_SKIP, DEFAULT_MIN_PORT);
-          if (!alive) return;
-          const ports = enabled ? scan.wanted.filter(port => !scan.forwarded.includes(port)) : scan.forwarded;
-          for (const port of ports) {
-            if (!alive) return;
-            await forwardSet(host, port, enabled);
-          }
-          if (!alive) return;
-          const next = ports.length ? await forwardScan(host, DEFAULT_SKIP, DEFAULT_MIN_PORT) : scan;
+          const next = await reconcileSelectedForwarding(host, enabled, () => alive);
           if (alive) { setStatus(next); setError(""); }
         } catch {
           if (alive) setError("Could not update forwarding. Check the source device and SSH connection. Retrying…");
@@ -378,8 +388,7 @@ function TauriPorts({ serverHost, clientIsLocal, pollingActive, showControls, on
       <div className="ports-status-spacer" />
       {showControls ? <ForwardSwitch enabled={enabled} loading={loading} onToggle={() => {
         setLoading(true);
-        useForwardConfig.setState({ enabled: !enabled });
-        fwdSave("pzza.fwd.enabled", enabled ? "0" : "1");
+        updateForwardConfig({ enabled: !enabled });
       }} /> : null}
     </div>
     {error ? <p className="small pad" role="alert">{error}</p> : null}

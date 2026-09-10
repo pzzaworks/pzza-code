@@ -1,5 +1,5 @@
 import { AsyncButton } from "../ui/AsyncButton";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { MessageSquare, RotateCw, X } from "lucide-react";
 import { create } from "zustand";
 import { deviceHost, THIS_MAC } from "../devices";
@@ -33,7 +33,7 @@ interface QuickChatPreferences {
   update: (change: Partial<Defaults>) => void;
 }
 
-const useQuickChatPreferences = create<QuickChatPreferences>((set, get) => ({
+export const useQuickChatPreferences = create<QuickChatPreferences>((set, get) => ({
   defaults: readDefaults(),
   notice: "",
   update: change => {
@@ -70,12 +70,14 @@ export function QuickChatSettings() {
 
 type Chat = Awaited<ReturnType<typeof openQuickChat>> & { deviceName: string };
 const prepareChat = createQuickChatPreparation(openQuickChat, closeQuickChat);
+export const useQuickChatView = create<{ open: boolean; busy: boolean; chat: Chat | null; error: string }>(() => ({ open: false, busy: false, chat: null, error: "" }));
 
 export function QuickChat({ onOpenSettings }: { onOpenSettings?: () => void }) {
   const devices = useStore(state => state.devices);
-  const [chat, setChat] = useState<Chat | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [message, setMessage] = useState("");
+  const { chat, busy, error: message, open: panelOpen } = useQuickChatView();
+  const setChat = (value: Chat) => useQuickChatView.setState({ chat: value });
+  const setBusy = (value: boolean) => useQuickChatView.setState({ busy: value });
+  const setMessage = (value: string) => useQuickChatView.setState({ error: value });
   const inflight = useRef(false);
 
   const launch = useCallback(async () => {
@@ -100,10 +102,11 @@ export function QuickChat({ onOpenSettings }: { onOpenSettings?: () => void }) {
   }, [chat, devices]);
 
   useEffect(() => { void launch(); }, [launch]);
+  useEffect(() => { if (panelOpen) void launch(); }, [panelOpen, launch]);
 
   const command = chat ? attachCommand({ host: chat.host || null }, chat.session) : null;
-  return <Dropdown icon={MessageSquare} title="Quick Chat" width={620} keepMounted preload={Boolean(chat)} loading={busy}
-    panelClassName="quick-chat-panel" onOpen={() => {
+  return <Dropdown controlId="quick_chat" icon={MessageSquare} title="Quick Chat" width={620} keepMounted preload={Boolean(chat)} loading={busy}
+    panelClassName="quick-chat-panel" controlledOpen={panelOpen} onOpenChange={value => useQuickChatView.setState({ open: value })} onOpen={() => {
       if (!chat) void launch();
     }}>
     {(dismiss, open) => <>

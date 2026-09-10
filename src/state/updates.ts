@@ -27,7 +27,7 @@ interface UpdateState {
   dismissed: string | null; // version whose banner was closed this session
   setAutoUpdate: (v: boolean) => void;
   // manual = surfaced to the user (Settings); background failures stay quiet.
-  check: (manual?: boolean) => Promise<void>;
+  check: (manual?: boolean, installAutomatically?: boolean) => Promise<void>;
   install: () => Promise<void>;
   relaunch: () => Promise<void>;
   dismiss: () => void;
@@ -58,7 +58,7 @@ export const useUpdates = create<UpdateState>((set, get) => ({
     // Turning it on with an update already waiting installs it right away.
     if (v && get().status.kind === "available") void get().install();
   },
-  check: async (manual = false) => {
+  check: async (manual = false, installAutomatically = true) => {
     if (!HAS_TAURI) return;
     const { kind } = get().status;
     if (kind === "checking" || kind === "installing" || kind === "ready") return;
@@ -70,7 +70,7 @@ export const useUpdates = create<UpdateState>((set, get) => ({
         return;
       }
       set({ status: { kind: "available", update } });
-      if (get().autoUpdate) await get().install();
+      if (installAutomatically && get().autoUpdate) await get().install();
     } catch (e) {
       set({ status: manual ? { kind: "error", msg: errMsg(e) } : { kind: "idle" } });
     }

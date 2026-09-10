@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { registerAppControlHandler, registerAppControlState } from "../appControlRuntime";
 import { createPortal } from "react-dom";
 import { Bot, Info, ChevronDown, Bell, Blocks, CircleQuestionMark, FolderSync, HardDrive, Settings, X } from "lucide-react";
 import { AgentsHubContent, agentsHubSections, type AgentsHubSection } from "./AgentsHub";
@@ -35,9 +36,10 @@ interface Props {
   section: SettingsSection;
   onSectionChange: (section: SettingsSection) => void;
   onClose: () => void;
+  onOpen: (section: SettingsSection) => void;
 }
 
-export function SettingsHub({ open, section, onSectionChange, onClose, syncRequest = 0, onSyncingChange, helpRequest }: Props) {
+export function SettingsHub({ open, section, onSectionChange, onOpen, onClose, syncRequest = 0, onSyncingChange, helpRequest }: Props) {
   const [generalSection, setGeneralSection] = useState<GeneralSection>("appearance");
   const [notificationPage, setNotificationPage] = useState<"activity" | "preferences">("activity");
   const [agentsSection, setAgentsSection] = useState<AgentsHubSection>("instructions");
@@ -53,6 +55,37 @@ export function SettingsHub({ open, section, onSectionChange, onClose, syncReque
   const [syncVisited, setSyncVisited] = useState(false);
   const [mcpVisited, setMcpVisited] = useState(false);
   const [portsVisited, setPortsVisited] = useState(false);
+  const controlRef = useRef({ open, section, generalSection, notificationPage, agentsSection, helpSection, connectionTab, syncPage, onOpen });
+  controlRef.current = { open, section, generalSection, notificationPage, agentsSection, helpSection, connectionTab, syncPage, onOpen };
+  useEffect(() => {
+    const pages: Record<SettingsSection, readonly string[]> = {
+      general: generalSections.map(item => item.id), notifications: ["activity", "preferences"],
+      "agents-hub": agentsHubSections.map(item => item.id), devices: [], sync: ["repositories", "preferences"],
+      mcp: ["mcp", "bridge", "bridge-activity"], help: HELP_SECTIONS.map(item => item.id), about: [], remote: [], ports: [], "quick-chat": [],
+    };
+    const cleanups = [
+      registerAppControlState("settings", () => {
+        const current = controlRef.current;
+        return { open: current.open, section: current.section, pages, page: current.section === "general" ? current.generalSection : current.section === "notifications" ? current.notificationPage : current.section === "agents-hub" ? current.agentsSection : current.section === "help" ? current.helpSection : current.section === "mcp" ? current.connectionTab : current.section === "sync" ? current.syncPage : null };
+      }),
+      registerAppControlHandler("open_settings", args => {
+        const target = args.section as SettingsSection;
+        const page = args.page as string | undefined;
+        if (page !== undefined && !pages[target].includes(page)) throw new Error("Unknown page for this settings section. Read settings.pages for supported pages.");
+        if (page !== undefined) {
+          if (target === "general") setGeneralSection(page as GeneralSection);
+          if (target === "notifications") setNotificationPage(page as "activity" | "preferences");
+          if (target === "agents-hub") setAgentsSection(page as AgentsHubSection);
+          if (target === "help") setHelpSection(page as HelpSection);
+          if (target === "mcp") setConnectionTab(page as "mcp" | "bridge" | "bridge-activity");
+          if (target === "sync") setSyncPage(page as "repositories" | "preferences");
+        }
+        controlRef.current.onOpen(target);
+        return { section: target, page: page ?? null };
+      }),
+    ];
+    return () => cleanups.forEach(cleanup => cleanup());
+  }, []);
   const parentSection = section === "quick-chat" ? "agents-hub" : section === "remote" || section === "ports" ? "mcp" : section;
   const dialog = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -66,7 +99,6 @@ export function SettingsHub({ open, section, onSectionChange, onClose, syncReque
     if (open && section === "mcp") setMcpVisited(true);
     if (open && section === "ports") setPortsVisited(true);
   }, [open, section, syncRequest]);
-  useEffect(() => { if (open && section === "notifications") setNotificationPage("activity"); }, [open, section]);
   useEffect(() => {
     if (!open) return;
     const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -119,7 +151,7 @@ export function SettingsHub({ open, section, onSectionChange, onClose, syncReque
               {agentsVisited || (open && section === "agents-hub") ? <div hidden={!open || section !== "agents-hub"}><AgentsHubContent section={agentsSection} onSectionChange={setAgentsSection} active={open && section === "agents-hub"} onOpenSession={onClose} /></div> : null}
               {open && section === "devices" ? <DevicesMenu /> : null}
               {/* The same sync instance owns the scan across navigation and closing. */}
-              {syncVisited || syncRequest > 0 || (open && section === "sync") ? <div hidden={!open || section !== "sync"}><ProjectsMenu page={syncPage} syncRequest={syncRequest} onSyncingChange={onSyncingChange} /></div> : null}
+              {syncVisited || syncRequest > 0 || (open && section === "sync") ? <div hidden={!open || section !== "sync"}><ProjectsMenu active={open && section === "sync"} page={syncPage} syncRequest={syncRequest} onSyncingChange={onSyncingChange} /></div> : null}
               {open && section === "quick-chat" ? <QuickChatSettings /> : null}
               {portsVisited || (open && section === "ports") ? <div hidden={!open || section !== "ports"}><PortsMenu active={open && section === "ports"} /></div> : null}
               {open && section === "remote" ? <RdpMenu close={onClose} /> : null}

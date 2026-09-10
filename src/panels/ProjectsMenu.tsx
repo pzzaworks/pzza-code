@@ -1,7 +1,8 @@
+import { registerAppControlHandler, registerAppControlState } from "../appControlRuntime";
 import { AsyncButton } from "../ui/AsyncButton";
 import { notify } from "../state/notifications";
 import { Modal } from "../ui/Modal";
-import { deviceExclusions, projectSettings } from "../projectSettings";
+import { DEFAULT_PROJECT_ROOT, bindProjectOperations, summarizeProjectSync, updateProjectSyncPreferences, useProjectSyncPreferences } from "../state/projectSync";
 import { hasUnsavedEditors } from "../editorChanges";
 import { DeviceIcon } from "../ui/DeviceIcon";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
@@ -10,7 +11,6 @@ import { useStore } from "../state/store";
 import { THIS_MAC, type Device } from "../devices";
 import { PathField } from "../ui/PathField";
 import {
-  DEFAULT_SYNC_OPTIONS,
   listDir,
   scanProjects,
   syncProjects,
@@ -49,42 +49,6 @@ function ScanProgress({ progress }: { progress: ProjectScanProgress | null }) {
 // every repo to origin's default branch and copies the newest env files around;
 // the outcome lands back on the same lines.
 
-const ROOT_KEY = "pzza.projectsRoot";
-const DEFAULT_ROOT = "~/Projects";
-
-function loadRoot(): string {
-  try {
-    return localStorage.getItem(ROOT_KEY) || DEFAULT_ROOT;
-  } catch {
-    return DEFAULT_ROOT;
-  }
-}
-function saveRoot(v: string): void {
-  try {
-    localStorage.setItem(ROOT_KEY, v);
-  } catch {
-    /* ignore */
-  }
-}
-
-const OPTS_KEY = "pzza.sync.options";
-const DEVICES_OFF_KEY = "pzza.sync.devicesOff";
-
-function loadJson(key: string): unknown {
-  try {
-    const raw = localStorage.getItem(key);
-    return raw ? JSON.parse(raw) : null;
-  } catch {
-    return null;
-  }
-}
-function saveJson(key: string, v: unknown): void {
-  try {
-    localStorage.setItem(key, JSON.stringify(v));
-  } catch {
-    /* ignore */
-  }
-}
 
 function Switch({ on, onToggle, title, small }: { on: boolean; onToggle: () => void; title: string; small?: boolean }) {
   return (
@@ -164,12 +128,12 @@ function projectTree(rows: Row[]): ProjectFolder {
   return root;
 }
 
-function ProjectTree({ folder, renderRow }: { folder: ProjectFolder; renderRow: (row: Row) => ReactNode }) {
+function ProjectTree({ folder, renderRow, expanded, onExpand }: { folder: ProjectFolder; renderRow: (row: Row) => ReactNode; expanded: Set<string>; onExpand: (path: string, open: boolean) => void }) {
   return <>
     {[...folder.folders.values()].sort((a, b) => a.name.localeCompare(b.name)).map((child) => (
-      <details className="pj-folder" key={child.path} open>
+      <details className="pj-folder" key={child.path} open={expanded.has(child.path)} onToggle={event => { if (event.target === event.currentTarget) onExpand(child.path, event.currentTarget.open); }}>
         <summary><ChevronRight size={13} className="pj-chev" /><Folder size={14} /><span>{child.name}</span><small>{child.count}</small></summary>
-        <div className="pj-folder-content"><ProjectTree folder={child} renderRow={renderRow} /></div>
+        <div className="pj-folder-content"><ProjectTree folder={child} renderRow={renderRow} expanded={expanded} onExpand={onExpand} /></div>
       </details>
     ))}
     {folder.rows.map(renderRow)}
@@ -533,7 +497,9 @@ function ProjectCard({
   const slash = row.rel.lastIndexOf("/");
   return (
     <div className={`pj-card ${enabled ? "" : "pj-card-off"}`}>
-      <div className="pj-card-head" role="button" tabIndex={0} onClick={onToggle} onKeyDown={(e) => e.key === "Enter" && onToggle()}>
+      <div className="pj-card-head" role="button" tabIndex={0} aria-expanded={open} onClick={onToggle} onKeyDown={(event) => {
+        if (event.target === event.currentTarget && (event.key === "Enter" || event.key === " ")) { event.preventDefault(); onToggle(); }
+      }}>
         <ChevronRight size={13} className={`muted-icon pj-chev ${open ? "flip" : ""}`} />
         <span className="pj-rel" title={row.rel}>
           {row.rel.slice(slash + 1)}
@@ -552,7 +518,7 @@ function ProjectCard({
           </span>
         </span>
       </div>
-      <div className="pj-lines">
+      {open ? <><div className="pj-lines">
         {devices.map((d) => (
           <DeviceLine
             key={d.id}
@@ -569,7 +535,7 @@ function ProjectCard({
           />
         ))}
       </div>
-      {open ? <RowDetails row={row} devices={devices} /> : null}
+      <RowDetails row={row} devices={devices} /></> : null}
     </div>
   );
 }
@@ -587,16 +553,17 @@ function explainError(msg: string): string {
 }
 
 interface ProjectsMenuProps {
+  active?: boolean;
   page?: "repositories" | "preferences";
   syncRequest?: number;
   onSyncingChange?: (syncing: boolean) => void;
 }
 
-export function ProjectsMenu({ page = "repositories", syncRequest = 0, onSyncingChange }: ProjectsMenuProps) {
+export function ProjectsMenu({ active = true, page = "repositories", syncRequest = 0, onSyncingChange }: ProjectsMenuProps) {
   const devices = useStore((s) => s.devices);
   const refs = useMemo(() => devices.map(toRef), [devices]);
 
-  const [root, setRoot] = useState(loadRoot);
+  const root = useProjectSyncPreferences(state => state.root);
   const [scan, setScan] = useState<ProjectScan | null>(null);
   const [sync, setSync] = useState<ProjectSync | null>(null);
   const [scanning, setScanning] = useState(false);
@@ -611,26 +578,22 @@ export function ProjectsMenu({ page = "repositories", syncRequest = 0, onSyncing
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<Filter>("all");
   const [open, setOpen] = useState<Set<string>>(() => new Set());
-  const [opts, setOpts] = useState<SyncOptions>(() => projectSettings(loadJson(OPTS_KEY), DEFAULT_SYNC_OPTIONS));
-  const [devicesOff, setDevicesOff] = useState<string[]>(() => deviceExclusions(loadJson(DEVICES_OFF_KEY)));
+  const [expandedFolders, setExpandedFolders] = useState<Set<string>>(() => new Set());
+  const expandFolder = (path: string, expanded: boolean) => setExpandedFolders(current => {
+    if (current.has(path) === expanded) return current;
+    const next = new Set(current); if (expanded) next.add(path); else next.delete(path); return next;
+  });
+  const opts = useProjectSyncPreferences(state => state.options);
+  const devicesOff = useProjectSyncPreferences(state => state.devicesOff);
   const [excludeText, setExcludeText] = useState(() => opts.envExclude.join(", "));
 
   useEffect(() => { onSyncingChange?.(syncing); }, [syncing, onSyncingChange]);
 
-  const patchOpts = (patch: Partial<SyncOptions>) =>
-    setOpts((o) => {
-      const next = { ...o, ...patch };
-      saveJson(OPTS_KEY, next);
-      return next;
-    });
+  const patchOpts = (patch: Partial<SyncOptions>) => updateProjectSyncPreferences({ options: { ...opts, ...patch } });
   const setRepo = (projectId: string, patch: { enabled?: boolean; env?: boolean }) =>
     patchOpts({ repos: { ...opts.repos, [projectId]: { ...(opts.repos[projectId] ?? { enabled: true, env: true }), ...patch } } });
-  const toggleDevice = (id: string) =>
-    setDevicesOff((list) => {
-      const next = list.includes(id) ? list.filter((x) => x !== id) : [...list, id];
-      saveJson(DEVICES_OFF_KEY, next);
-      return next;
-    });
+  const toggleDevice = (id: string) => updateProjectSyncPreferences({ devicesOff: devicesOff.includes(id) ? devicesOff.filter(value => value !== id) : [...devicesOff, id] });
+  useEffect(() => { setExcludeText(opts.envExclude.join(", ")); }, [opts.envExclude]);
   const syncRefs = refs.filter((r) => !devicesOff.includes(r.id));
 
   const runScan = useCallback(async () => {
@@ -646,8 +609,10 @@ export function ProjectsMenu({ page = "repositories", syncRequest = 0, onSyncing
         if (!controller.signal.aborted) setScanProgress(progress);
       }, controller.signal);
       if (!controller.signal.aborted) setScan(result);
+      return !controller.signal.aborted;
     } catch (e) {
       if (!controller.signal.aborted) setError(explainError(String((e as Error)?.message || e)));
+      return false;
     } finally {
       if (!controller.signal.aborted) setScanning(false);
     }
@@ -666,11 +631,9 @@ export function ProjectsMenu({ page = "repositories", syncRequest = 0, onSyncing
 
   useEffect(() => {
     if (!scan) return;
-    setOpts((current) => {
-      const next = migrateRepoOptions(current, scan);
-      if (next !== current) saveJson(OPTS_KEY, next);
-      return next;
-    });
+    const current = useProjectSyncPreferences.getState().options;
+    const next = migrateRepoOptions(current, scan);
+    if (next !== current) updateProjectSyncPreferences({ options: next });
   }, [scan]);
 
   // The root is the same folder relative to home on every device, so a picked
@@ -687,12 +650,11 @@ export function ProjectsMenu({ page = "repositories", syncRequest = 0, onSyncing
       setError("Pick a folder inside your home directory so the same path exists on every device.");
       return;
     }
-    setRoot(next);
-    saveRoot(next);
+    updateProjectSyncPreferences({ root: next });
   };
 
   const runSync = async () => {
-    if (syncInFlight.current || scanning || !scan || syncRefs.length === 0) return;
+    if (syncInFlight.current || scanning || !scan || syncRefs.length === 0) return false;
     syncInFlight.current = true;
     setSyncing(true);
     setError(null);
@@ -705,13 +667,15 @@ export function ProjectsMenu({ page = "repositories", syncRequest = 0, onSyncing
       syncOperation.current = operationId;
       const result = await syncProjects(root, syncRefs, migrated, operationId);
       setSync(result);
-      const failures = result.devices.reduce((count, device) => count + (device.error ? 1 : 0) + device.results.filter(item => item.status === "failed").length + device.envs.filter(item => item.status === "failed").length, 0);
-      notify({ category: "sync", event: failures ? "sync-error" : "sync-completed", title: result.cancelled ? "Sync cancelled" : failures ? "Sync needs attention" : "Sync completed", body: result.cancelled ? "Active repositories finished safely; remaining work was skipped." : failures ? `${failures} errors across ${result.devices.length} devices. Open Sync to review.` : `Finished syncing ${result.devices.length} devices.`, target: { section: "sync" } });
+      const summary = summarizeProjectSync(result);
+      notify({ category: "sync", event: summary.needsAttention ? "sync-error" : "sync-completed", title: summary.title, body: summary.body, target: { section: "sync" } });
       // Refresh so branches/behind counts reflect the new state.
       await runScan();
+      return summary.complete;
     } catch (e) {
       notify({ category: "sync", event: "sync-error", title: "Sync failed", body: explainError(String((e as Error)?.message || e)), target: { section: "sync" } });
       setError(explainError(String((e as Error)?.message || e)));
+      return false;
     } finally {
       syncOperation.current = null;
       setCancelling(false);
@@ -726,6 +690,10 @@ export function ProjectsMenu({ page = "repositories", syncRequest = 0, onSyncing
     try { await cancelProjectSync(syncOperation.current); }
     catch (cause) { setError(cause instanceof Error ? cause.message : "Cancellation failed"); setCancelling(false); }
   };
+
+  const operationsRef = useRef({ scan: runScan, sync: runSync, cancel: cancelSync, snapshot: () => ({ scanning, syncing, error, scan, sync }) });
+  operationsRef.current = { scan: runScan, sync: runSync, cancel: cancelSync, snapshot: () => ({ scanning, syncing, error, scan, sync }) };
+  useEffect(() => bindProjectOperations({ scan: () => operationsRef.current.scan(), sync: () => operationsRef.current.sync(), cancel: () => operationsRef.current.cancel(), snapshot: () => operationsRef.current.snapshot() }), []);
 
   const rows = useMemo(() => scan
     ? buildRows(scan, migrateRepoOptions(opts, scan), devicesOff)
@@ -743,6 +711,32 @@ export function ProjectsMenu({ page = "repositories", syncRequest = 0, onSyncing
   const shown = filter === "attention" ? rows.filter(needsAttention) : rows;
   const tree = projectTree(shown);
   const attention = rows.filter(needsAttention).length;
+  const viewRef = useRef({ active, page, rows, filter, open, expandedFolders });
+  viewRef.current = { active, page, rows, filter, open, expandedFolders };
+  useEffect(() => {
+    const folders = () => [...new Set(viewRef.current.rows.flatMap(row => {
+      const segments = row.rel.split("/").slice(0, -1);
+      return segments.map((_, index) => "/" + segments.slice(0, index + 1).join("/"));
+    }))];
+    const snapshot = () => {
+      const current = viewRef.current;
+      return { available: current.active && current.page === "repositories", filter: current.filter, expandedFolders: [...current.expandedFolders], expandedProjects: [...current.open], folders: folders(), projects: current.rows.map(row => ({ id: row.projectId, path: row.rel })) };
+    };
+    const cleanups = [registerAppControlState("syncView", snapshot), registerAppControlHandler("get_sync_view", snapshot),
+      registerAppControlHandler("set_sync_view", args => {
+        const current = viewRef.current;
+        if (!current.active || current.page !== "repositories") throw new Error("Open the Sync repositories page first.");
+        const expanded = args.expandedFolders as string[] | undefined;
+        const projects = args.expandedProjects as string[] | undefined;
+        if (expanded?.some(path => !folders().includes(path))) throw new Error("Choose folder paths from get_sync_view.");
+        if (projects?.some(id => !current.rows.some(row => row.projectId === id))) throw new Error("Choose project IDs from get_sync_view.");
+        if (typeof args.filter === "string") setFilter(args.filter as Filter);
+        if (expanded) setExpandedFolders(new Set(expanded));
+        if (projects) setOpen(new Set(projects));
+        return { configured: true };
+      })];
+    return () => cleanups.forEach(cleanup => cleanup());
+  }, []);
 
   const busy = scanning || syncing;
   const toggle = (projectId: string) =>
@@ -763,7 +757,7 @@ export function ProjectsMenu({ page = "repositories", syncRequest = 0, onSyncing
           <span>Projects folder</span>
           <fieldset className="pj-root-field" disabled={busy}>
             <PathField value={root} mode="folder" hosts={refs.map((r) => ({ label: r.name, host: r.host }))}
-              placeholder={DEFAULT_ROOT} title="Projects root: the same folder, relative to home, on every device"
+              placeholder={DEFAULT_PROJECT_ROOT} title="Projects root: the same folder, relative to home, on every device"
               pickerTitle="Projects root" className="pj-root" onChange={(path, host) => void pickRoot(path, host)} />
           </fieldset>
         </label>
@@ -852,7 +846,7 @@ export function ProjectsMenu({ page = "repositories", syncRequest = 0, onSyncing
             {rows.length === 0 ? `No git repos under ${root} on any device.` : "Everything is in sync."}
           </p>
         ) : (
-          <ProjectTree folder={tree} renderRow={(row) => (
+          <ProjectTree folder={tree} expanded={expandedFolders} onExpand={expandFolder} renderRow={(row) => (
             <ProjectCard
               key={row.projectId}
               row={row}

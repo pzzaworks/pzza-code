@@ -1,5 +1,12 @@
 import { useEffect, useRef, useState } from "react";
+import { initTerminalAppControlHandlers } from "./appControlTerminal";
+import { initIntegrationAppControlHandlers } from "./appControlIntegrations";
+import { initCoreAppControlHandlers } from "./appControlCore";
+import { initDeviceAppControlHandlers } from "./appControlDevice";
+import { initEditorAppControlHandlers } from "./appControlEditor";
 import { useStore } from "./state/store";
+import { executeAppControlRuntime, readAppControlRuntime, runAppControlExecution, finishAppControlReport, discardAppControlReport } from "./appControlRuntime";
+import { hasIcon } from "./workspaceIcons";
 import { HAS_TAURI } from "./tauriEnv";
 import { hasUnsavedEditors } from "./editorChanges";
 import { ALL_WORKSPACE_ID, DEFAULT_WORKSPACE_ID } from "./workspaces";
@@ -14,6 +21,9 @@ const context: AppControlContext = {
   hasUnsavedEditor: (id) => hasUnsavedEditors([id]),
   defaultWorkspaceId: DEFAULT_WORKSPACE_ID,
   allWorkspaceId: ALL_WORKSPACE_ID,
+  isWorkspaceIcon: hasIcon,
+  executeRuntime: executeAppControlRuntime,
+  readRuntime: readAppControlRuntime,
 };
 
 function pause(delay: number, signal: AbortSignal): Promise<void> {
@@ -26,6 +36,10 @@ function pause(delay: number, signal: AbortSignal): Promise<void> {
 }
 
 export function useAppControl(): void {
+  useEffect(() => {
+    const cleanups = [initCoreAppControlHandlers(), initTerminalAppControlHandlers(), initDeviceAppControlHandlers(), initEditorAppControlHandlers(), initIntegrationAppControlHandlers()];
+    return () => cleanups.forEach(cleanup => cleanup());
+  }, []);
   const [enabled, setEnabled] = useState(storedEnabled);
   const [pageSession, setPageSession] = useState(0);
   const enabledRef = useRef(enabled);
@@ -78,7 +92,7 @@ export function useAppControl(): void {
           if (!outcome) {
             try {
               if (Date.now() >= command.expiresAt) throw new Error("App control command expired before execution.");
-              outcome = { result: executeAppControl(command.action, command.args, context) };
+              outcome = { result: await runAppControlExecution(command.id, () => executeAppControl(command.action, command.args, context)) };
             }
             catch (error) { outcome = { error: error instanceof Error ? error.message : "App control command failed." }; }
             const bytes = JSON.stringify(outcome).length * 2;
@@ -91,9 +105,11 @@ export function useAppControl(): void {
               if (!oldest) break;
               completedBytes -= oldest[1].bytes;
               completed.delete(oldest[0]);
+              discardAppControlReport(oldest[0]);
             }
           }
           await reportAppControl(clientId, command.id, outcome, signal);
+          await finishAppControlReport(command.id);
         } catch {
           if (signal.aborted || !enabledRef.current) break;
           // A restarted agent has forgotten this client. Registration is
@@ -107,6 +123,7 @@ export function useAppControl(): void {
     void run();
     const stop = () => {
       controller.abort();
+      for (const id of completed.keys()) discardAppControlReport(id);
       // Wait for an in-flight registration to settle before unregistering, so
       // teardown cannot leave a just-registered ghost client behind.
       void Promise.resolve(registering).catch(() => {}).then(() => unregisterAppControl(clientId)).catch(() => {});

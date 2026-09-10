@@ -6,7 +6,7 @@ export function runMcpRepair(host = "", apply = true) {
   if (host && !SSH_TOKEN.test(host)) return Promise.reject(new Error("Invalid device host"));
   const args = host ? ["-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=3", "-o", "ConnectionAttempts=1", "-o", "StrictHostKeyChecking=yes", "-o", "ForwardAgent=no", "-o", "PermitLocalCommand=no", "--", host, `python3 -c ${shQuote(MCP_REPAIR_TARGET)}`] : ["-c", MCP_REPAIR_TARGET];
   return new Promise((resolve, reject) => {
-    const child = execFile(host ? "ssh" : "python3", args, { timeout: 12000, maxBuffer: 2 * 1024 * 1024 }, (error, stdout) => {
+    const child = execFile(host ? "ssh" : "python3", args, { timeout: apply ? 45000 : 12000, maxBuffer: 2 * 1024 * 1024 }, (error, stdout) => {
       if (error) return reject(new Error("Cannot check this device. Trusted SSH access and Python 3 are required."));
       try { resolve(JSON.parse(stdout)); } catch { reject(new Error("Invalid integration health response")); }
     });

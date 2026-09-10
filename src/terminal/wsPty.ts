@@ -1,7 +1,8 @@
 import { wsUrl } from "../serverApi";
 
 export interface WsPtyHandle {
-  write(data: string): void;
+  write(data: string): boolean;
+  ready(): boolean;
   resize(cols: number, rows: number): void;
   close(): void;
 }
@@ -37,19 +38,20 @@ export function openWsPty(
     ws.close();
   };
   const send = (obj: unknown) => {
-    if (closed) return;
+    if (closed) return false;
     const str = JSON.stringify(obj);
     const bytes = encoder.encode(str).length;
     if (queuedBytes + ws.bufferedAmount + bytes > inputLimit) {
       fail("Terminal input is congested. Reconnect before sending more input.");
-      return;
+      return false;
     }
     if (open && ws.readyState === WebSocket.OPEN) {
-      try { ws.send(str); } catch { fail("Terminal connection closed while sending input."); }
+      try { ws.send(str); } catch { fail("Terminal connection closed while sending input."); return false; }
     } else {
       queue.push(str);
       queuedBytes += bytes;
     }
+    return true;
   };
 
   ws.onopen = () => {
@@ -84,6 +86,7 @@ export function openWsPty(
 
   return {
     write: (data) => send({ type: "input", data }),
+    ready: () => !closed && open && ws.readyState === WebSocket.OPEN,
     resize: (cols2, rows2) => send({ type: "resize", cols: cols2, rows: rows2 }),
     close: () => {
       closed = true; // intentional detach, not a failure

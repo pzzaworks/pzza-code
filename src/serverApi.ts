@@ -285,12 +285,18 @@ export async function createSession(
   name: string,
   cwd?: string,
   account?: { provider: string; dir: string },
+  host?: string,
 ): Promise<void> {
-  await agentFetch(`${SERVER_HTTP}/create`, {
+  const response = await agentFetch(`${SERVER_HTTP}/create`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name, cwd, account }),
+    body: JSON.stringify({ name, cwd, account, host }),
+    signal: AbortSignal.timeout(20000),
   });
+  if (!response.ok) {
+    const value: unknown = await response.json().catch(() => null);
+    throw new Error(value && typeof value === "object" && "error" in value && typeof value.error === "string" ? value.error : "Could not create the session.");
+  }
 }
 
 export async function openQuickChat(host: string, agent: "claude" | "codex"): Promise<{ session: string; host: string; agent: "claude" | "codex" }> {
@@ -440,17 +446,19 @@ export async function listDir(
 }
 
 export interface SpendWindow {
-  cost: number;
+  cost: number | null; // null when any tokens lack verified rates
+  pricedCost: number; // known subtotal, not a complete estimate when cost is null
   tokens: number;
+  unpricedTokens: number;
+  unpricedModels: string[];
 }
-export interface SpendDay {
+export interface SpendDay extends SpendWindow {
   day: string; // YYYY-MM-DD
-  cost: number;
-  tokens: number;
 }
 export interface AccountSpend {
   provider: "claude" | "codex";
   label: string;
+  pricingBasis: "standard-api-short-context";
   today: SpendWindow;
   yesterday: SpendWindow;
   window: SpendWindow;
@@ -775,7 +783,7 @@ export async function bridgeRequest<T>(path: string, body?: unknown): Promise<T>
   if (!response.ok) {
     const value: unknown = await response.json().catch(() => null);
     const message = value && typeof value === "object" && "error" in value && typeof value.error === "string" ? value.error : `Bridge request failed (${response.status})`;
-    throw new Error(message);
+    throw Object.assign(new Error(message), { status: response.status });
   }
   return response.json();
 }
@@ -806,7 +814,7 @@ export interface McpRepairResult {
 export async function repairMcp(host = "", fresh = false): Promise<{ results: McpRepairResult[] }> {
   const response = await agentFetch(`${SERVER_HTTP}/mcp/repair`, {
     method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ host, fresh }), signal: AbortSignal.timeout(15000),
+    body: JSON.stringify({ host, fresh }), signal: AbortSignal.timeout(50000),
   });
   if (!response.ok) {
     const value: unknown = await response.json().catch(() => null);
