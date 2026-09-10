@@ -103,7 +103,7 @@ export function WorkspaceTabs({ openRequest = 0 }: { openRequest?: number }) {
   useEffect(() => {
     if (!addOpen) return;
     const onKey = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
+      if (event.key !== "Escape" || document.querySelector(".modal-backdrop:not([hidden])")) return;
       event.preventDefault();
       setAddOpen(false);
       setPickerOpen(false);
@@ -191,7 +191,8 @@ export function WorkspaceTabs({ openRequest = 0 }: { openRequest?: number }) {
           position: "fixed" as const,
           left: Math.max(8, Math.min(rect.left, window.innerWidth - width - 8)),
           top: rect.bottom + 5,
-          width,
+          width: Math.min(width, window.innerWidth - 16),
+          maxHeight: Math.max(80, window.innerHeight - rect.bottom - 16),
           zIndex: 300,
         }
       : { display: "none" as const };
@@ -311,7 +312,7 @@ export function WorkspaceTabs({ openRequest = 0 }: { openRequest?: number }) {
 
       {addOpen
         ? createPortal(
-            <div className="menu menu-panel pzza-portal" style={dropStyle(addRect)}>
+            <div className="menu menu-panel pzza-portal creation-panel new-workspace-panel" style={dropStyle(addRect, 420)}>
               <div className="menu-body">
                 <div className="menu-title">New workspace <kbd className="kbd" aria-hidden="true">{NEW_WORKSPACE_SHORTCUT.label}</kbd></div>
                 <div className="ws-chip">

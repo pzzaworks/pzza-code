@@ -55,21 +55,29 @@ test("config generation preserves the newest target and install output is never 
   await assert.rejects(store.install("unknown-framework"), /requires copying/);
 });
 
-test("bridge settings preserve the draft revision and reject stale saves", async () => {
+test("bridge settings preserve the draft revision through native consent and reject stale saves", async t => {
   const config = { enabled: false, peers: [], projects: [] };
   const originalHash = "a".repeat(64);
+  const previousNative = window.__TAURI_INTERNALS__;
+  const previousMarker = globalThis.isTauri;
+  t.after(() => { window.__TAURI_INTERNALS__ = previousNative; globalThis.isTauri = previousMarker; });
+  globalThis.isTauri = true;
   let request;
-  globalThis.fetch = async (url, options) => {
-    request = { path: new URL(url).pathname, body: JSON.parse(options.body) };
-    return Response.json({ error: "Bridge settings changed. Read their current state before saving." }, { status: 409 });
-  };
+  window.__TAURI_INTERNALS__ = { invoke: async (command, args) => {
+    request = { command, body: args.request };
+    throw "Bridge settings changed. Read their current state before saving.";
+  } };
   await assert.rejects(saveBridgeConfig(config, originalHash), /settings changed/);
-  assert.equal(request.path, "/bridge/configure");
-  assert.deepEqual(request.body, { config, expectedConfigHash: originalHash });
+  assert.equal(request.command, "bridge_local_decide");
+  assert.deepEqual(request.body, { kind: "config", config, expectedConfigHash: originalHash });
   const currentHash = "b".repeat(64);
-  globalThis.fetch = async (_url, options) => {
-    assert.deepEqual(JSON.parse(options.body), { config, expectedConfigHash: currentHash });
-    return Response.json({ config, configHash: currentHash, jobs: [] });
+  window.__TAURI_INTERNALS__.invoke = async (command, args) => {
+    assert.equal(command, "bridge_local_decide");
+    assert.deepEqual(args.request, { kind: "config", config, expectedConfigHash: currentHash });
+    return { config, configHash: currentHash, jobs: [] };
   };
   assert.equal((await saveBridgeConfig(config, currentHash)).configHash, currentHash);
+  globalThis.isTauri = false;
+  delete window.__TAURI_INTERNALS__;
+  await assert.rejects(saveBridgeConfig(config, currentHash), /receiving desktop app/);
 });

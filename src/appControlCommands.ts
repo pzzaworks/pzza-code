@@ -128,7 +128,7 @@ export function executeAppControl(action: string, args: Record<string, unknown>,
       if (args.osc52Clipboard !== undefined) state.setOsc52Clipboard(args.osc52Clipboard as boolean);
       if (args.semiTransparent !== undefined) state.setSemiTransparent(args.semiTransparent as boolean);
       const options: Partial<TransparencyOptions> = {};
-      for (const key of ["opacity", "blur", "saturation", "surfaceOpacity", "desktopBlurRadius"] as const) if (args[key] !== undefined) options[key] = args[key] as number;
+      for (const key of ["opacity", "blur", "saturation", "surfaceOpacity", "textVisibility", "desktopBlurRadius"] as const) if (args[key] !== undefined) options[key] = args[key] as number;
       if (args.desktopBlur !== undefined) options.desktopBlur = args.desktopBlur as boolean;
       if (Object.keys(options).length) state.setTransparencyOptions(options);
       return appControlSnapshot(context);

@@ -184,6 +184,19 @@ test("close and appearance commands reject unsafe input before state mutation", 
   assert.deepEqual(f.writes, [["theme", "light"], ["close", f.id]]);
 });
 
+test("text visibility uses the shared appearance setting and validates its range before mutation", () => {
+  const f = fixture();
+  f.state.setTransparencyOptions = options => { f.writes.push(options); };
+  for (const textVisibility of [-1, 101, 1.5, "50"]) {
+    assert.throws(() => f.run("configure_appearance", { textVisibility }));
+  }
+  assert.deepEqual(f.writes, []);
+  f.run("configure_appearance", { textVisibility: 0 });
+  f.run("configure_appearance", { textVisibility: 65 });
+  f.run("configure_appearance", { textVisibility: 100 });
+  assert.deepEqual(f.writes, [{ textVisibility: 0 }, { textVisibility: 65 }, { textVisibility: 100 }]);
+});
+
 test("app snapshots explicitly select public device fields and never include editor content", () => {
   const f = fixture();
   f.state.devices = [{ id: "remote", name: "Remote", host: "dev", user: "user", credential: "private marker" }];

@@ -137,7 +137,7 @@ button {
   }
 }
 .icon-btn-accent {
-  color: var(--accent);
+  color: var(--accent-foreground, var(--accent));
 }
 
 /* Brand: pzzaworks logo fused with a terminal frame */
@@ -457,7 +457,7 @@ button {
 .ws-delete {
   width: 100%;
   margin-top: 10px;
-  color: var(--danger);
+  color: var(--danger-foreground, var(--danger));
 }
 .ws-delete:hover {
   border-color: var(--danger);
@@ -498,7 +498,7 @@ button {
 }
 .ws-tab-close:hover {
   background: var(--border);
-  color: var(--danger);
+  color: var(--danger-foreground, var(--danger));
 }
 .ws-tab-add {
   width: 26px;
@@ -726,7 +726,7 @@ button {
   color: var(--muted);
 }
 .ws-add:hover {
-  color: var(--accent);
+  color: var(--accent-foreground, var(--accent));
   border-color: var(--accent);
 }
 
@@ -792,7 +792,7 @@ button {
   background: color-mix(in srgb, var(--text) 14%, transparent);
 }
 .icon-btn-danger:hover:not(:disabled) {
-  color: var(--danger);
+  color: var(--danger-foreground, var(--danger));
 }
 .muted-icon {
   color: var(--muted);
@@ -1092,7 +1092,7 @@ button {
   color: var(--muted);
 }
 .code-err {
-  color: var(--danger);
+  color: var(--danger-foreground, var(--danger));
 }
 .code-dirty {
   display: inline-block;
@@ -1230,7 +1230,7 @@ button {
   color: color-mix(in srgb, var(--text) 88%, var(--muted));
 }
 .md-preview a {
-  color: var(--accent);
+  color: var(--accent-foreground, var(--accent));
 }
 .md-preview code {
   font-family: ui-monospace, Menlo, monospace;
@@ -1533,7 +1533,7 @@ button {
 }
 .usage-err {
   font-size: 11.5px;
-  color: var(--danger);
+  color: var(--danger-foreground, var(--danger));
 }
 .usage-spend {
   display: flex;
@@ -1626,7 +1626,7 @@ button {
   font-weight: 650;
 }
 .doc-nav-item.on svg {
-  color: var(--accent);
+  color: var(--accent-foreground, var(--accent));
   opacity: 1;
 }
 .doc-content {
@@ -1680,7 +1680,7 @@ button {
 .doc-note > svg {
   flex: 0 0 auto;
   margin-top: 2px;
-  color: var(--accent);
+  color: var(--accent-foreground, var(--accent));
 }
 .doc-note b {
   color: var(--text);
@@ -2031,7 +2031,7 @@ button {
   color: var(--text);
 }
 .help-sec-head svg {
-  color: var(--accent);
+  color: var(--accent-foreground, var(--accent));
 }
 .help-list {
   display: flex;
@@ -2070,7 +2070,7 @@ button {
   color: var(--muted);
 }
 .help-foot svg {
-  color: var(--accent);
+  color: var(--accent-foreground, var(--accent));
 }
 @media (max-width: 560px) {
   .help-item {
@@ -2334,7 +2334,7 @@ button {
 .sw-row-hint {
   margin-top: 3px;
   font-size: 11.5px;
-  color: var(--accent);
+  color: var(--accent-foreground, var(--accent));
 }
 .sw-ic {
   flex: 0 0 auto;
@@ -2347,7 +2347,7 @@ button {
   color: #d9a441;
 }
 .sw-fail {
-  color: var(--danger);
+  color: var(--danger-foreground, var(--danger));
 }
 .sw-spin {
   animation: sw-rot 0.9s linear infinite;
@@ -2636,7 +2636,7 @@ button {
   color: var(--muted);
 }
 .scan-err {
-  color: var(--danger);
+  color: var(--danger-foreground, var(--danger));
 }
 .scan-row {
   display: flex;
@@ -2702,7 +2702,7 @@ button {
   font-weight: 600;
   letter-spacing: 0.3px;
   text-transform: uppercase;
-  color: var(--accent);
+  color: var(--accent-foreground, var(--accent));
   background: color-mix(in srgb, var(--accent) 16%, transparent);
   border-radius: 6px;
   padding: 1px 6px;
@@ -2753,7 +2753,7 @@ button {
   color: var(--text);
 }
 .tile-btn-danger:hover {
-  color: var(--danger);
+  color: var(--danger-foreground, var(--danger));
 }
 .tile-btn-on {
   background: color-mix(in srgb, var(--text) 16%, transparent);
@@ -2862,7 +2862,7 @@ button {
 .link {
   border: none;
   background: none;
-  color: var(--accent);
+  color: var(--accent-foreground, var(--accent));
   font-size: 12px;
   cursor: pointer;
   padding: 0;
@@ -2892,6 +2892,10 @@ button {
   opacity: 0.6;
   cursor: default;
 }
+
+/* Text visibility changes foreground roles, never whole-panel opacity. */
+:root[data-transparency="on"][data-text-visibility="on"] .modal.settings-hub { --muted: var(--visibility-settings-muted); }
+:root[data-text-visibility="on"] :is(.modal-title, .menu-title, .set-title, .settings-section > h3, .settings-section > h4, .notification-title strong) { color: var(--heading-text); }
 
 /* ---------- Settings modal ---------- */
 .modal-backdrop {
@@ -2945,9 +2949,13 @@ button {
   font-size: 14px;
 }
 .modal-title-icon {
-  color: var(--accent);
+  color: var(--accent-foreground, var(--accent));
 }
+.confirmation-backdrop { z-index: 1000; }
+.confirmation-message { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.6; }
+.modal :is(button, input, textarea, select, a):focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
 .modal-body {
+  min-height: 0;
   overflow-y: auto;
   padding: 8px 18px 18px;
 }
@@ -3011,7 +3019,7 @@ button {
   border-color: var(--text);
 }
 .btn-danger {
-  color: var(--danger);
+  color: var(--danger-foreground, var(--danger));
   border-color: color-mix(in srgb, var(--danger) 45%, var(--border));
 }
 .btn-danger:hover:not(:disabled) {
@@ -3075,6 +3083,40 @@ button {
   border-radius: 1px;
   opacity: 0.9;
 }
+.usage-daily-details {
+  color: var(--muted);
+  font-size: 11px;
+}
+.usage-daily-details summary {
+  cursor: pointer;
+  width: fit-content;
+}
+.usage-daily-details summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.usage-daily-scroll {
+  max-height: 180px;
+  overflow: auto;
+  margin-top: 6px;
+}
+.usage-daily-details table {
+  width: 100%;
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+}
+.usage-daily-details caption {
+  text-align: left;
+  padding-bottom: 5px;
+}
+.usage-daily-details th,
+.usage-daily-details td {
+  padding: 3px 4px;
+  text-align: right;
+  color: var(--text);
+}
+.usage-daily-details th:first-child { text-align: left; }
+.usage-daily-details thead th { color: var(--muted); }
 /* Update available bar, under the top bar. */
 .update-banner {
   display: flex;
@@ -3302,7 +3344,7 @@ button {
   color: var(--muted);
 }
 .port-state.on {
-  color: var(--success);
+  color: var(--success-foreground, var(--success));
 }
 .btn-sm {
   height: 26px;
@@ -3407,7 +3449,7 @@ button {
 }
 .mcp-note {
   font-size: 11px;
-  color: var(--success);
+  color: var(--success-foreground, var(--success));
 }
 .mcp-path {
   display: flex;
@@ -3690,6 +3732,21 @@ button {
   margin-bottom: 12px;
 }
 
+/* Creation forms share room for their fields and keep actions reachable. */
+.creation-dialog { width: 420px; max-height: min(720px, calc(100dvh - 32px)); }
+.menu-panel.creation-panel { width: 420px; max-width: calc(100vw - 16px); max-height: min(720px, calc(100dvh - 64px)); padding: 18px; overscroll-behavior: contain; }
+.new-session-form { gap: 6px; padding-block: 8px; }
+.new-session-form .ns-row { min-height: 40px; }
+.new-session-form .ns-row-control { max-width: 240px; min-width: 0; }
+.new-session-form .ns-input { min-width: 0; }
+.new-session-form .ns-bar { flex: 0 0 48px; }
+.new-session-form .session-picker { max-height: min(380px, 48dvh); }
+.new-workspace-panel .ws-chip { margin-block: 10px 18px; }
+.new-workspace-panel .ws-add-btn { position: sticky; bottom: -1px; flex-shrink: 0; min-height: 36px; background: var(--surface); }
+.path-field:disabled { opacity: 0.5; cursor: not-allowed; }
+.fp-status-err { gap: 12px; overflow-wrap: anywhere; }
+.settings-hub-sublink { gap: 7px; }
+
 /* New-session device/workspace rows */
 .ns-row {
   display: flex;
@@ -3906,7 +3963,7 @@ button {
   white-space: nowrap;
 }
 .pj-device-err .pj-device-n {
-  color: var(--danger);
+  color: var(--danger-foreground, var(--danger));
 }
 .pj-filter {
   display: inline-flex;
@@ -3934,7 +3991,7 @@ button {
   background: var(--surface-alt);
 }
 .pj-filter-warn:not(.on) b {
-  color: var(--warning);
+  color: var(--warning-foreground, var(--warning));
 }
 .pj-error {
   margin: 0 0 10px;
@@ -4050,13 +4107,13 @@ button {
   letter-spacing: 0.4px;
 }
 .pj-env-synced .pj-env-state {
-  color: var(--success);
+  color: var(--success-foreground, var(--success));
 }
 .pj-env-differs .pj-env-state {
-  color: var(--danger);
+  color: var(--danger-foreground, var(--danger));
 }
 .pj-env-partial .pj-env-state {
-  color: var(--warning);
+  color: var(--warning-foreground, var(--warning));
 }
 .pj-lines {
   display: flex;
@@ -4133,19 +4190,19 @@ button {
   white-space: nowrap;
 }
 .pj-ok {
-  color: var(--success);
+  color: var(--success-foreground, var(--success));
 }
 .pj-warn {
-  color: var(--warning);
+  color: var(--warning-foreground, var(--warning));
 }
 .pj-bad {
-  color: var(--danger);
+  color: var(--danger-foreground, var(--danger));
 }
 .pj-dim {
   color: var(--muted);
 }
 .pj-acc {
-  color: var(--accent);
+  color: var(--accent-foreground, var(--accent));
 }
 .pj-outcome {
   display: inline-flex;
@@ -4173,13 +4230,13 @@ button {
 }
 .pj-out-cloned,
 .pj-out-updated {
-  color: var(--success);
+  color: var(--success-foreground, var(--success));
 }
 .pj-out-stashed {
-  color: var(--warning);
+  color: var(--warning-foreground, var(--warning));
 }
 .pj-out-env {
-  color: var(--success);
+  color: var(--success-foreground, var(--success));
 }
 .pj-outcomes {
   display: inline-flex;
@@ -4193,7 +4250,7 @@ button {
   max-width: 100%;
 }
 .pj-out-failed {
-  color: var(--danger);
+  color: var(--danger-foreground, var(--danger));
   max-width: 70%;
 }
 .pj-out-failed .pj-outcome-detail {
@@ -4246,7 +4303,7 @@ button {
 }
 .path-field-icon {
   flex: 0 0 auto;
-  color: var(--accent);
+  color: var(--accent-foreground, var(--accent));
 }
 .path-field-value {
   font-family: ui-monospace, Menlo, monospace;
@@ -4332,7 +4389,7 @@ button {
   cursor: default;
 }
 .fp-tool.on {
-  color: var(--accent);
+  color: var(--accent-foreground, var(--accent));
 }
 .fp-crumbs {
   display: flex;
@@ -4443,7 +4500,7 @@ button {
   opacity: 0.7;
 }
 .fp-folder {
-  color: var(--accent);
+  color: var(--accent-foreground, var(--accent));
   flex: 0 0 auto;
 }
 .fp-file {
@@ -4471,7 +4528,7 @@ button {
   color: var(--muted);
 }
 .fp-status-err {
-  color: var(--danger);
+  color: var(--danger-foreground, var(--danger));
 }
 .fp-foot {
   display: flex;
@@ -4721,7 +4778,7 @@ html[data-transparency="on"] .tile-code { background: transparent; }
 .device-info-os > span > span { color: var(--muted); font-size: 11px; }
 .device-info-health { display: flex; flex-wrap: wrap; align-items: center; gap: 7px 12px; margin-top: 12px; font-size: 11px; color: var(--muted); }
 .device-info-status { font-weight: 600; }
-.device-info-reachable { color: var(--success); }
+.device-info-reachable { color: var(--success-foreground, var(--success)); }
 .device-info-error { margin: 10px 0 0; color: var(--muted); font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
 .device-info-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px 20px; margin: 18px 0 0; }
 .device-info-item { min-width: 0; }
@@ -4793,7 +4850,7 @@ html[data-transparency="on"] .tile-code { background: transparent; }
 .dictation-download > span { display: flex; align-items: center; gap: 6px; }
 .dictation-download progress { width: 100%; height: 6px; accent-color: var(--accent); }
 .dictation-download small { color: var(--muted); }
-.dictation-error { margin: 8px 0 0; font-size: 12px; line-height: 1.4; color: var(--danger); }
+.dictation-error { margin: 8px 0 0; font-size: 12px; line-height: 1.4; color: var(--danger-foreground, var(--danger)); }
 .dictation-licenses { margin-top: 8px; color: var(--muted); font-size: 11px; }
 .dictation-licenses summary { cursor: pointer; }
 .dictation-licenses pre { max-height: 180px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 10px; }
@@ -4816,7 +4873,7 @@ html[data-transparency="on"] .tile-code { background: transparent; }
 .app-context-menu { position: fixed; width: 220px; max-width: calc(100vw - 16px); max-height: calc(100vh - 16px); overflow: auto; padding: 5px; outline: none; }
 .app-context-menu .menu-item { width: 100%; border-radius: 5px; }
 .app-context-menu .menu-item:focus-visible { outline: 1px solid var(--muted); background: var(--surface-alt); }
-.context-error { padding: 8px; color: var(--danger); font-size: 12px; overflow-wrap: anywhere; }
+.context-error { padding: 8px; color: var(--danger-foreground, var(--danger)); font-size: 12px; overflow-wrap: anywhere; }
 
 .notification-toolbar { position: relative; }
 .notification-badge { position: absolute; top: 2px; right: 2px; width: 7px; height: 7px; aspect-ratio: 1; box-sizing: border-box; pointer-events: none; border-radius: 50%; background: var(--success); }
@@ -4871,9 +4928,9 @@ input[type="checkbox"]:disabled { opacity: .45; cursor: not-allowed; }
 :root[data-appearance="light"] .ft-folder { color: var(--muted); }
 :root[data-appearance="light"] .doc-note-tip { background: color-mix(in srgb, var(--success) 9%, var(--bg)); border-color: color-mix(in srgb, var(--success) 32%, var(--border)); }
 :root[data-appearance="light"] .doc-note-tip svg,
-:root[data-appearance="light"] .sw-ok { color: var(--success); }
-:root[data-appearance="light"] .sw-warn { color: var(--warning); }
-:root[data-appearance="light"] .update-err { color: var(--danger); }
+:root[data-appearance="light"] .sw-ok { color: var(--success-foreground, var(--success)); }
+:root[data-appearance="light"] .sw-warn { color: var(--warning-foreground, var(--warning)); }
+:root[data-appearance="light"] .update-err { color: var(--danger-foreground, var(--danger)); }
 :root[data-appearance="light"] .sw-log { background: var(--surface-alt); color: var(--text); }
 :root[data-appearance="light"] .notification-badge { background: var(--success); }
 
@@ -4908,7 +4965,7 @@ input[type="checkbox"]:disabled { opacity: .45; cursor: not-allowed; }
 :root[data-appearance="light"] :is(.menu-item-on, .cselect-item-on, .btn-on):hover { background: var(--selected); }
 :root[data-appearance="light"] :is(.menu-item, .cselect-item, .icon-btn, .dismiss-btn, .port-row):hover { background: var(--hover); }
 :root[data-appearance="light"] :is(.btn-accent, .menu-item-on.btn-accent) { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
-:root[data-appearance="light"] .btn-danger { color: var(--danger); background: color-mix(in srgb, var(--danger) 6%, var(--surface)); border-color: color-mix(in srgb, var(--danger) 65%, var(--surface)); }
+:root[data-appearance="light"] .btn-danger { color: var(--danger-foreground, var(--danger)); background: color-mix(in srgb, var(--danger) 6%, var(--surface)); border-color: color-mix(in srgb, var(--danger) 65%, var(--surface)); }
 :root[data-appearance="light"] :is(button, input, textarea, summary, a):focus-visible { outline-color: var(--focus-ring); }
 :root[data-appearance="light"] .switch { background: #e3e7ed; border-color: var(--control-border); box-shadow: inset 0 0 0 1px var(--control-border); }
 :root[data-appearance="light"] .switch-on { background: var(--accent); box-shadow: none; }
@@ -4929,7 +4986,7 @@ input[type="checkbox"]:disabled { opacity: .45; cursor: not-allowed; }
 :root[data-appearance="light"] .btn-accent { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
 :root[data-appearance="light"] .btn-accent:hover:not(:disabled) { background: #0550ae; border-color: #0550ae; }
 :root[data-appearance="light"] .btn-on { background: var(--selected); border-color: var(--focus-ring); color: var(--selected-text); }
-:root[data-appearance="light"] .btn-danger { background: var(--surface); border-color: var(--border); color: var(--danger); }
+:root[data-appearance="light"] .btn-danger { background: var(--surface); border-color: var(--border); color: var(--danger-foreground, var(--danger)); }
 :root[data-appearance="light"] .btn-danger:hover:not(:disabled) { background: #fff1f1; border-color: var(--danger); }
 :root[data-appearance="light"] :is(.icon-btn, .dismiss-btn) { color: var(--muted); }
 :root[data-appearance="light"] :is(.icon-btn, .dismiss-btn):hover { color: var(--text); }

@@ -4,8 +4,8 @@ import { MessageSquare, RotateCw, X } from "lucide-react";
 import { create } from "zustand";
 import { deviceHost, THIS_MAC } from "../devices";
 import { attachCommand } from "../connection";
-import { closeQuickChat, openQuickChat } from "../serverApi";
-import { createQuickChatPreparation } from "../state/quickChatSession";
+import { openQuickChat } from "../serverApi";
+import { createQuickChatPreparation, type AttachmentStatus } from "../state/quickChatSession";
 import { useStore } from "../state/store";
 import { Terminal } from "../terminal/Terminal";
 import { DeviceIcon } from "../ui/DeviceIcon";
@@ -41,7 +41,9 @@ export const useQuickChatPreferences = create<QuickChatPreferences>((set, get) =
     let notice = "";
     try { localStorage.setItem(KEY, JSON.stringify(defaults)); }
     catch { notice = "Your choice applies now, but could not be saved on this device."; }
+    const previous = get().defaults;
     set({ defaults, notice });
+    if (previous.deviceId !== defaults.deviceId || previous.agent !== defaults.agent) window.dispatchEvent(new Event("pzza:quick-chat-cancel"));
   },
 }));
 
@@ -63,18 +65,20 @@ export function QuickChatSettings() {
       {notice && <p className="set-note" role="status">{notice}</p>}
     </section>
     <section className="settings-section">
-      <div className="settings-row-copy"><span>Keep your conversation</span><small>Hiding the dropdown keeps your chat running. A fresh chat starts when the app launches. Device and agent changes apply on the next launch.</small></div>
+      <div className="settings-row-copy"><span>Keep your conversation</span><small>Hiding the dropdown keeps your chat running. Reopening the app reuses its existing conversation. Device and agent choices apply on the next launch; changing them stops current attachment retries.</small></div>
     </section>
   </div>;
 }
 
 type Chat = Awaited<ReturnType<typeof openQuickChat>> & { deviceName: string };
-const prepareChat = createQuickChatPreparation(openQuickChat, closeQuickChat);
-export const useQuickChatView = create<{ open: boolean; busy: boolean; chat: Chat | null; error: string }>(() => ({ open: false, busy: false, chat: null, error: "" }));
+const prepareChat = createQuickChatPreparation(openQuickChat);
+export const useQuickChatView = create<{
+  open: boolean; busy: boolean; chat: Chat | null; error: string; attachment: AttachmentStatus | null; retryToken: number;
+}>(() => ({ open: false, busy: false, chat: null, error: "", attachment: null, retryToken: 0 }));
 
 export function QuickChat({ onOpenSettings }: { onOpenSettings?: () => void }) {
   const devices = useStore(state => state.devices);
-  const { chat, busy, error: message, open: panelOpen } = useQuickChatView();
+  const { chat, busy, error: message, open: panelOpen, attachment, retryToken } = useQuickChatView();
   const setChat = (value: Chat) => useQuickChatView.setState({ chat: value });
   const setBusy = (value: boolean) => useQuickChatView.setState({ busy: value });
   const setMessage = (value: string) => useQuickChatView.setState({ error: value });
@@ -104,7 +108,7 @@ export function QuickChat({ onOpenSettings }: { onOpenSettings?: () => void }) {
   useEffect(() => { void launch(); }, [launch]);
   useEffect(() => { if (panelOpen) void launch(); }, [panelOpen, launch]);
 
-  const command = chat ? attachCommand({ host: chat.host || null }, chat.session) : null;
+  const command = chat ? attachCommand({ host: chat.host || null }, chat.session, undefined, undefined, chat) : null;
   return <Dropdown controlId="quick_chat" icon={MessageSquare} title="Quick Chat" width={620} keepMounted preload={Boolean(chat)} loading={busy}
     panelClassName="quick-chat-panel" controlledOpen={panelOpen} onOpenChange={value => useQuickChatView.setState({ open: value })} onOpen={() => {
       if (!chat) void launch();
@@ -125,10 +129,14 @@ export function QuickChat({ onOpenSettings }: { onOpenSettings?: () => void }) {
       {message && <p className="quick-chat-message" role="status">{message}</p>}
       {chat && command && <div className="quick-chat-terminal">
         <Terminal key={`${chat.host}::${chat.session}`} tileId={`quick-chat:${chat.host}`} name={chat.session} host={chat.host}
-          cmd={command.cmd} args={command.args} active={open} />
+          cmd={command.cmd} args={command.args} active={open} managedChat={chat} retryToken={retryToken}
+          onAttachment={value => useQuickChatView.setState({ attachment: value })} />
       </div>}
       {chat && <div className="quick-chat-footer">
-        <span className="muted">Hiding keeps your chat running.</span>
+        <span className="muted" role="status" aria-live="polite">{attachment?.phase === "retrying"
+          ? `Reconnecting (${attachment.attempt}/6)${attachment.delayMs ? ` in ${(attachment.delayMs / 1000).toFixed(1)}s` : ""}. ${attachment.message}`
+          : attachment?.phase === "disconnected" || attachment?.phase === "connecting" ? attachment.message : "Connected. Hiding keeps your chat running."}</span>
+        {attachment?.phase === "disconnected" && <button type="button" className="btn" onClick={() => useQuickChatView.setState(state => ({ retryToken: state.retryToken + 1 }))}>Retry attachment</button>}
       </div>}
     </>}
   </Dropdown>;

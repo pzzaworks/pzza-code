@@ -25,15 +25,15 @@ export const SKILL_CATALOG: readonly SkillCatalogEntry[] = [
     "checkedAt": "2026-09-08"
   },
   {
-    "id": "playwright",
+    "id": "playwright-cli",
     "name": "Playwright browser automation",
-    "description": "Navigate real browsers, capture screenshots, and inspect UI flows with a bundled CLI wrapper.",
-    "sourceUrl": "https://github.com/openai/skills",
-    "subpath": "skills/.curated/playwright",
+    "description": "Test real browser flows, inspect pages and capture screenshots with the official browser CLI skill.",
+    "sourceUrl": "https://github.com/microsoft/playwright-cli",
+    "subpath": "skills/playwright-cli",
     "license": "Apache-2.0",
-    "licenseUrl": "https://github.com/openai/skills/blob/main/skills/.curated/playwright/LICENSE.txt",
-    "stars": 26340,
-    "checkedAt": "2026-09-08"
+    "licenseUrl": "https://github.com/microsoft/playwright-cli/blob/main/LICENSE",
+    "stars": 13207,
+    "checkedAt": "2026-09-10"
   },
   {
     "id": "react-best-practices",
@@ -43,9 +43,26 @@ export const SKILL_CATALOG: readonly SkillCatalogEntry[] = [
     "subpath": "skills/react-best-practices",
     "license": "MIT",
     "licenseUrl": "https://github.com/vercel-labs/agent-skills/blob/main/README.md#license",
-    "stars": 30967,
-    "checkedAt": "2026-09-08"
+    "stars": 31026,
+    "checkedAt": "2026-09-10"
   },
+  {
+    "id": "web-design-guidelines",
+    "name": "Web design guidelines",
+    "description": "Review web interfaces for accessibility, usability and interaction quality.",
+    "sourceUrl": "https://github.com/vercel-labs/agent-skills",
+    "subpath": "skills/web-design-guidelines",
+    "license": "MIT",
+    "licenseUrl": "https://github.com/vercel-labs/agent-skills/blob/main/README.md#license",
+    "stars": 31026,
+    "checkedAt": "2026-09-10"
+  },
+  ...[
+    { id: "social", name: "Social media strategy", description: "Plan platform-specific social content, publishing cadence and measurement without automatic publication." },
+    { id: "content-strategy", name: "Content strategy", description: "Research audiences and shape an editorial strategy with clear goals and reviewable evidence." },
+    { id: "copywriting", name: "Marketing copywriting", description: "Draft clear, audience-specific marketing copy and calls to action for human review." },
+    { id: "copy-editing", name: "Copy editing", description: "Review marketing copy for clarity, voice, structure and unsupported claims." },
+  ].map(entry => ({ ...entry, sourceUrl: "https://github.com/coreyhaines31/marketingskills", subpath: `skills/${entry.id}`, license: "MIT", licenseUrl: "https://github.com/coreyhaines31/marketingskills/blob/main/LICENSE", stars: 49360, checkedAt: "2026-09-10" })),
   {
     "id": "systematic-debugging",
     "name": "Systematic debugging",

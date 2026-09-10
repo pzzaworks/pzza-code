@@ -16,25 +16,42 @@ if ! ${tmux} has-session -t '=pzza-quick-chat' 2>/dev/null; then
 fi
 owner=$(${tmux} show-environment -t '=pzza-quick-chat' PZZA_QUICK_CHAT_AGENT 2>/dev/null) || exit 44
 case "$owner" in
-  PZZA_QUICK_CHAT_AGENT=claude) printf 'claude' ;;
-  PZZA_QUICK_CHAT_AGENT=codex) printf 'codex' ;;
+  PZZA_QUICK_CHAT_AGENT=claude|PZZA_QUICK_CHAT_AGENT=codex) ;;
   *) exit 44 ;;
-esac`;
+esac
+identity=$(${tmux} display-message -p -t '=pzza-quick-chat:' '#{session_id}:#{session_created}:#{pid}') || exit 45
+printf '%s\\n%s' "\${owner#*=}" "$identity"`;
 }
 
 export function openQuickChat(body, run = execFile) {
-  return runQuickChat(body, false, run);
+  return runQuickChat(body, "open", run);
 }
 
 export function closeQuickChat(body, run = execFile) {
-  return runQuickChat(body, true, run);
+  return runQuickChat(body, "close", run);
 }
 
-function runQuickChat(body, closing, run) {
+// This probe never starts a process. Identity guards against attaching to a
+// different conversation that reused the fixed name after termination.
+export function verifyQuickChat(body, run = execFile) {
+  return runQuickChat(body, "verify", run);
+}
+
+export function quickChatAttachmentGuard(agent, identity, tmux = "tmux") {
+  if ((agent !== "claude" && agent !== "codex") || !/^\$[0-9]+:[0-9]+:[0-9]+$/.test(identity)) throw new Error("Invalid Quick Chat identity.");
+  return `${tmux} has-session -t '=pzza-quick-chat' 2>/dev/null || exit 45; ` +
+    `[ "$(${tmux} show-environment -t '=pzza-quick-chat' PZZA_QUICK_CHAT_AGENT 2>/dev/null)" = ${shQuote(`PZZA_QUICK_CHAT_AGENT=${agent}`)} ] || exit 44; ` +
+    `[ "$(${tmux} display-message -p -t '=pzza-quick-chat:' '#{session_id}:#{session_created}:#{pid}' 2>/dev/null)" = ${shQuote(identity)} ] || exit 45; `;
+}
+
+function runQuickChat(body, operation, run) {
+  const closing = operation === "close";
+  const verifying = operation === "verify";
   if (!body || typeof body !== "object" || Array.isArray(body) ||
-      Object.keys(body).some(key => key !== "host" && (closing || key !== "agent")) ||
+      Object.keys(body).some(key => !["host", ...(!closing ? ["agent"] : []), ...(verifying ? ["identity"] : [])].includes(key)) ||
       typeof body.host !== "string" || (body.host && !SSH_TOKEN.test(body.host)) ||
-      (!closing && body.agent !== "claude" && body.agent !== "codex")) {
+      (!closing && body.agent !== "claude" && body.agent !== "codex") ||
+      (verifying && (typeof body.identity !== "string" || !/^\$[0-9]+:[0-9]+:[0-9]+$/.test(body.identity)))) {
     return Promise.reject(Object.assign(new Error("Choose a valid device and agent."), { status: 400 }));
   }
   const tmux = tmuxCommand(body.host);
@@ -44,7 +61,7 @@ owner=$(${tmux} show-environment -t '=pzza-quick-chat' PZZA_QUICK_CHAT_AGENT 2>/
 case "$owner" in
   PZZA_QUICK_CHAT_AGENT=claude|PZZA_QUICK_CHAT_AGENT=codex) ${tmux} kill-session -t '=pzza-quick-chat' ;;
   *) exit 44 ;;
-esac` : quickChatCommand(body.agent, body.host);
+esac` : verifying ? quickChatAttachmentGuard(body.agent, body.identity, tmux) : quickChatCommand(body.agent, body.host);
   // Explicit empty host always means this device, including receiver mode.
   const args = body.host ? ["-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5",
     "-o", "StrictHostKeyChecking=yes", "-o", "ForwardAgent=no", "-o", "ClearAllForwardings=yes",
@@ -56,24 +73,26 @@ esac` : quickChatCommand(body.agent, body.host);
           41: "tmux is not installed or is not on this device's PATH.",
           42: "The selected agent is not installed or is not on this device's PATH.",
           43: "Quick Chat could not start. Check the agent installation and login on this device.",
-          44: "A session named pzza-quick-chat already exists but is not a managed Quick Chat session.",
+          44: "A session named pzza-quick-chat already exists but is not the expected managed Quick Chat session.",
+          45: "This Quick Chat conversation ended or was replaced. It cannot be reattached.",
         }[error.code] ?? "Could not reach this device or open Quick Chat. Retry or choose another device. Check SSH access and the trusted host key for remote devices.";
         reject(Object.assign(new Error(message), { status: 503 }));
         return;
       }
       if (closing) { resolve({ closed: true }); return; }
-      const agent = String(stdout).trim();
-      if (agent !== "claude" && agent !== "codex") {
+      if (verifying) { resolve({ verified: true }); return; }
+      const [agent, identity, extra] = String(stdout).trim().split("\n");
+      if ((agent !== "claude" && agent !== "codex") || !/^\$[0-9]+:[0-9]+:[0-9]+$/.test(identity ?? "") || extra !== undefined) {
         reject(Object.assign(new Error("The device returned an invalid Quick Chat response."), { status: 502 }));
         return;
       }
-      resolve({ session: QUICK_CHAT_SESSION, host: body.host, agent });
+      resolve({ session: QUICK_CHAT_SESSION, host: body.host, agent, identity });
     });
   });
 }
 
 export async function quickChatRouter(req, res, url, json) {
-  if (url.pathname !== "/quick-chat/open" && url.pathname !== "/quick-chat/close") return false;
+  if (!["/quick-chat/open", "/quick-chat/close", "/quick-chat/verify"].includes(url.pathname)) return false;
   if (req.method !== "POST") { json(res, 405, { error: "Use POST." }); return true; }
   const timer = setTimeout(() => req.destroy(), 5000);
   try {
@@ -89,7 +108,8 @@ export async function quickChatRouter(req, res, url, json) {
     let value;
     try { value = JSON.parse(body); }
     catch { json(res, 400, { error: "Invalid request." }); return true; }
-    json(res, 200, await (url.pathname === "/quick-chat/close" ? closeQuickChat(value) : openQuickChat(value)));
+    const execute = url.pathname === "/quick-chat/close" ? closeQuickChat : url.pathname === "/quick-chat/verify" ? verifyQuickChat : openQuickChat;
+    json(res, 200, await execute(value));
   } catch (error) {
     if (!res.destroyed) json(res, error.status ?? 503, { error: error.message });
   } finally { clearTimeout(timer); }

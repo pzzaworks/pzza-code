@@ -5,7 +5,7 @@ import { syncBuiltinESMExports } from "node:module";
 import path from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
-import { ACTIVITY_PROBE_SCRIPT, detectSessionActivity, interpreterEntrypoint } from "../lib/session-activity.js";
+import { ACTIVITY_PROBE_SCRIPT, configuredModelSelection, detectSessionActivity, foregroundModelSelection, interpreterEntrypoint, normalizeEffectiveModel, processModelSelectors } from "../lib/session-activity.js";
 import { sessionActivity } from "../lib/tmux.js";
 import { shQuote } from "../lib/shell.js";
 
@@ -32,8 +32,8 @@ test("foreground detection is scoped to active pane, window, tty and ancestry", 
     processRow({ pid: 50, ppid: 40, pgid: 50, tty: "ttys001", executable: "/bin/codex" }),
     processRow({ pid: 22, ppid: 10, pgid: 20, tty: "pts/other", executable: "/bin/claude" })];
   assert.deepEqual(detectSessionActivity(panes, processes), [
-    { session: "renamed session", window: 0, active: true, command: "bash" },
-    { session: "renamed session", window: 1, active: false, command: "codex" },
+    { session: "renamed session", window: 0, active: true, command: "bash", effectiveModel: null, effectiveProvider: null, effectiveModelEvidence: null },
+    { session: "renamed session", window: 1, active: false, command: "codex", effectiveModel: null, effectiveProvider: null, effectiveModelEvidence: null },
   ]);
 });
 
@@ -50,6 +50,94 @@ test("native installations and exact wrapper entrypoints work without exposing a
   for (const argv of [["node", "-e", "codex"], ["node", "--eval=code", native.entrypoint], ["node", "-pcode", native.entrypoint]]) {
     assert.equal(interpreterEntrypoint(argv), "");
   }
+});
+
+test("effective model metadata uses exact foreground selectors and selected-account settings", async () => {
+  const direct = processRow({
+    pid: 20,
+    ppid: 10,
+    pgid: 20,
+    command: "claude",
+    executable: "/usr/local/bin/claude",
+    argv: ["claude", "--model", "gpt-5.1", "private prompt"],
+  });
+  assert.deepEqual(detectSessionActivity([pane()], [processRow(), direct])[0], {
+    session: "renamed session",
+    window: 0,
+    active: true,
+    command: "claude",
+    effectiveModel: "gpt-5.1",
+    effectiveProvider: "codex",
+    effectiveModelEvidence: "configured",
+  });
+  assert.equal(JSON.stringify(detectSessionActivity([pane()], [processRow(), direct])).includes("private prompt"), false);
+  assert.equal(foregroundModelSelection(["claude", "--prompt", "please use --model=gpt-5.1"]).declared, false);
+
+  const files = new Map([
+    ["/home/pzza/.claude-work/settings.json", JSON.stringify({ env: { ANTHROPIC_MODEL: "claude-sonnet-5" } })],
+    ["/home/pzza/.claude-proxy/settings.json", JSON.stringify({ env: { ANTHROPIC_MODEL: "gpt-5.2" } })],
+    ["/home/pzza/.claude/settings.json", JSON.stringify({ env: { ANTHROPIC_MODEL: "claude-mythos-5-1" } })],
+  ]);
+  const reads = [];
+  const fs = {
+    realpath: async (file) => file,
+    lstat: async (file) => {
+      const content = files.get(file);
+      if (content === undefined) throw new Error("not found");
+      return { isFile: () => true, isSymbolicLink: () => false, size: content.length };
+    },
+    readFile: async (file) => {
+      reads.push(file);
+      return files.get(file);
+    },
+  };
+  const modelPath = {
+    join: (...parts) => parts.join("/"),
+    dirname: (value) => value.slice(0, value.lastIndexOf("/")) || "/",
+    basename: (value) => value.slice(value.lastIndexOf("/") + 1),
+  };
+  const proxyModel = await configuredModelSelection({}, "/home/pzza/.claude-proxy", fs, { homedir: () => "/home/pzza" }, modelPath);
+  assert.deepEqual(proxyModel, { effectiveModel: "gpt-5.2", effectiveProvider: "codex", effectiveModelEvidence: "configured" });
+  assert.deepEqual(reads, ["/home/pzza/.claude-proxy/settings.json"]);
+  reads.length = 0;
+  assert.deepEqual(
+    await configuredModelSelection({}, "", fs, { homedir: () => "/home/pzza" }, modelPath),
+    { effectiveModel: "claude-mythos-5-1", effectiveProvider: "claude", effectiveModelEvidence: "configured" },
+  );
+  assert.deepEqual(reads, ["/home/pzza/.claude/settings.json"]);
+
+  const selectors = processModelSelectors(["claude"], "OTHER=not-returned\0ANTHROPIC_MODEL=gpt-5.2\0CLAUDE_CONFIG_DIR=/home/pzza/.claude-proxy\0");
+  assert.deepEqual(selectors, {
+    modelDeclared: true,
+    metadata: { effectiveModel: "gpt-5.2", effectiveProvider: "codex", effectiveModelEvidence: "configured" },
+    accountDirectory: "/home/pzza/.claude-proxy",
+  });
+  const configured = processRow({ pid: 20, ppid: 10, pgid: 20, command: "claude", executable: "/usr/local/bin/claude", ...selectors.metadata });
+  assert.equal(detectSessionActivity([pane({ effectiveModel: "claude-opus-5", effectiveProvider: "claude", effectiveModelEvidence: "reported" })], [processRow(), configured])[0].effectiveProvider, "codex");
+  const flagPrecedence = processRow({
+    pid: 20,
+    ppid: 10,
+    pgid: 20,
+    command: "claude",
+    executable: "/usr/local/bin/claude",
+    argv: ["claude", "--model", "claude-opus-5"],
+    ...selectors.metadata,
+  });
+  assert.equal(detectSessionActivity([pane()], [processRow(), flagPrecedence])[0].effectiveProvider, "claude");
+  const unknown = processRow({ pid: 20, ppid: 10, pgid: 20, command: "claude", executable: "/usr/local/bin/claude", argv: ["claude", "--model", "proxy-codex"], ...selectors.metadata });
+  assert.equal(detectSessionActivity([pane()], [processRow(), unknown])[0].effectiveProvider, null);
+
+  const foregroundWithoutModel = processRow({ pid: 20, ppid: 10, pgid: 20, command: "claude", executable: "/usr/local/bin/claude" });
+  const backgroundCodexModel = processRow({ pid: 30, ppid: 10, pgid: 30, command: "claude", executable: "/usr/local/bin/claude", argv: ["claude", "--model", "gpt-5-codex"] });
+  assert.equal(detectSessionActivity([pane()], [processRow(), foregroundWithoutModel, backgroundCodexModel])[0].effectiveProvider, null);
+  for (const model of ["gpt-5", "gpt-5.1", "gpt-5.2-codex-max", "gpt-4o-mini"]) assert.equal(normalizeEffectiveModel(model)?.provider, "codex");
+  for (const model of ["claude-fable-5-1", "claude-mythos-5-1"]) assert.equal(normalizeEffectiveModel(model)?.provider, "claude");
+  assert.equal(normalizeEffectiveModel("proxy-codex"), null);
+
+  const remote = detectSessionActivity([{ ...pane(), command: "claude", effectiveModel: "GPT-5-CODEX", effectiveProvider: "codex", effectiveModelEvidence: "reported" }], []);
+  assert.equal(remote[0].effectiveModelEvidence, "reported");
+  const stale = detectSessionActivity([{ ...pane(), command: "claude", effectiveModel: "gpt-5-codex", effectiveProvider: "codex", effectiveModelEvidence: "reported" }], [processRow()]);
+  assert.equal(stale[0].effectiveProvider, null);
 });
 
 test("fallback accepts only known executable labels and preserves existing tool icons", () => {
@@ -75,8 +163,24 @@ test("activity requests deduplicate in flight, cache briefly, refresh after expi
     const first = sessionActivity("fixture-device");
     const same = sessionActivity("fixture-device");
     assert.equal(first, same);
-    callbacks[0](null, JSON.stringify([{ session: "one", window: 2, active: false, command: "node --private-data" }]));
-    assert.deepEqual(await first, [{ session: "one", window: 2, active: false, command: "" }]);
+    callbacks[0](null, JSON.stringify([{
+      session: "one",
+      window: 2,
+      active: false,
+      command: "claude",
+      effectiveModel: "gpt-5-codex",
+      effectiveProvider: "codex",
+      effectiveModelEvidence: "reported",
+    }]));
+    assert.deepEqual(await first, [{
+      session: "one",
+      window: 2,
+      active: false,
+      command: "claude",
+      effectiveModel: "gpt-5-codex",
+      effectiveProvider: "codex",
+      effectiveModelEvidence: "reported",
+    }]);
     assert.deepEqual(await sessionActivity("fixture-device"), await first);
     assert.equal(calls, 1);
     const clock = t.mock.method(Date, "now", () =>  Date.prototype.getTime.call(new Date()) + 1001);

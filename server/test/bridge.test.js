@@ -12,7 +12,7 @@ const executor = () => ({
   calls: [], revoked: [],
   async execute(action, args, context) { this.calls.push({ action, args, context }); return { ok: true }; },
   async listJobs() { return []; },
-  async getJob(jobId, peerId) { return { jobId, peerId }; },
+  async getJob(jobId, peerId) { return { jobId, peerId, action: "terminal.read", projectId: "project" }; },
   async approve(jobId, approved) { return { jobId, approved }; },
   async cancel(jobId, peerId) { return { jobId, peerId }; },
   async revokePeer(peerId) { this.revoked.push(peerId); },
@@ -24,7 +24,7 @@ async function pair(t, realExecutor = false) {
   let clock = timestamp;
   let captured;
   let transformResponse = (response) => response;
-  const right = createBridge({ stateDir: path.join(directory, "right"), executor: realExecutor ? undefined : rightExecutor, now: () => clock });
+  const right = createBridge({ stateDir: path.join(directory, "right"), executor: realExecutor ? undefined : rightExecutor, now: () => clock, nativeConsentKey: crypto.randomBytes(32).toString("hex") });
   const left = createBridge({ stateDir: path.join(directory, "left"), executor: leftExecutor, now: () => clock,
     transport: async (_, request) => { captured = request; return transformResponse(await right.receiveSigned(request)); } });
   t.after(async () => { await left.close(); await right.close(); await fs.rm(directory, { recursive: true, force: true }); });
@@ -187,9 +187,9 @@ test("paired real executors read and atomically write only a granted project", a
   await f.right.configure({ ...f.rightConfig, peers: [{ ...f.rightConfig.peers[0], capabilities: ["files.read", "files.write"] }] });
   const read = await f.left.dispatch({ peerId: f.rightIdentity.id, action: "files.read", args: { projectId: "project", path: "example.txt" } });
   assert.equal(Buffer.from(read.content, "base64").toString(), "before");
-  await f.left.dispatch({ peerId: f.rightIdentity.id, action: "files.write", args: { projectId: "project", path: "example.txt", content: "after", expectedSha256: read.sha256 } });
+  await f.left.dispatch({ peerId: f.rightIdentity.id, action: "files.write", args: { requestId: crypto.randomUUID(), projectId: "project", path: "example.txt", content: "after", expectedSha256: read.sha256 } });
   assert.equal(await fs.readFile(file, "utf8"), "after");
-  await assert.rejects(f.left.dispatch({ peerId: f.rightIdentity.id, action: "files.write", args: { projectId: "project", path: "example.txt", content: "stale", expectedSha256: read.sha256 } }), /changed/);
+  await assert.rejects(f.left.dispatch({ peerId: f.rightIdentity.id, action: "files.write", args: { requestId: crypto.randomUUID(), projectId: "project", path: "example.txt", content: "stale", expectedSha256: read.sha256 } }), /changed/);
   await assert.rejects(f.left.dispatch({ peerId: f.rightIdentity.id, action: "files.read", args: { projectId: "project", path: "../outside" } }), /outside/);
   assert.deepEqual(await f.left.dispatch({ peerId: f.rightIdentity.id, action: "jobs.list", args: {} }), { jobs: [] });
 });
@@ -270,7 +270,8 @@ test("an unchanged expired grant cannot block revoking another peer or disabling
 
 async function setupConnection(t, options = {}) {
   const directory = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'pzza-bridge-connect-')));
-  const right = createBridge({ stateDir: path.join(directory, 'right'), executor: executor() });
+  const consentKey = crypto.randomBytes(32).toString("hex");
+  const right = createBridge({ stateDir: path.join(directory, 'right'), executor: executor(), nativeConsentKey: consentKey });
   let remoteFailures = false;
   const calls = [];
   const left = createBridge({ stateDir: path.join(directory, 'left'), executor: executor(), now: options.now,
@@ -280,7 +281,11 @@ async function setupConnection(t, options = {}) {
       if (endpoint === '/bridge/state') return right.state();
       assert.equal(endpoint, '/bridge/pair-grant');
       if (remoteFailures && body.operation === 'remove') throw new Error('Disconnected');
-      const result = await right.pairGrant(body);
+      let result = await right.pairGrant(body);
+      if (result.status === "waiting_approval") {
+        await right.localDecision({ kind: "approval", approvalId: result.approval.id, digest: result.approval.digest, approved: true }, { headers: { "x-pzza-native-consent": consentKey }, socket: { remoteAddress: "127.0.0.1" } });
+        result = await right.state();
+      }
       if (options.dropGrantResponse && body.operation === 'add') throw Object.assign(new Error('Connection dropped after saving'), { status: 502 });
       return result;
     },
@@ -498,7 +503,8 @@ test('settings routes cannot restore revoked access from stale or unchecked draf
   const current = await f.right.state();
   assert.equal(current.config.peers.length, 0);
   const saved = await call('configure', { config: { ...current.config, enabled: false }, expectedConfigHash: current.configHash });
-  assert.equal(saved.status, 200);
-  assert.equal(saved.value.config.enabled, false);
-  assert.equal(saved.value.config.peers.length, 0);
+  assert.equal(saved.status, 202);
+  assert.equal(saved.value.status, "waiting_approval");
+  assert.equal(saved.value.approval.config.enabled, false);
+  assert.equal(saved.value.approval.config.peers.length, 0);
 });
