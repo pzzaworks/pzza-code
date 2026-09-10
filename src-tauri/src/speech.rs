@@ -26,7 +26,7 @@ mod native {
     use std::{mem, ptr::{null, NonNull}};
     use std::sync::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
-        Arc, Mutex,
+        Arc, Mutex, TryLockError,
     };
     use std::time::{Duration, Instant};
     use tauri::{AppHandle, Emitter, Manager};
@@ -38,6 +38,48 @@ mod native {
     pub struct SpeechState {
         context: Mutex<Option<Engine>>,
         active: Mutex<Option<Arc<Capture>>>,
+        worker: Mutex<Option<std::thread::JoinHandle<()>>>,
+        shutting_down: Arc<AtomicBool>,
+    }
+
+    impl SpeechState {
+        // Never hold the event loop while inference or CoreAudio finishes.
+        // A timeout leaves the engine owned and exit disallowed, not leaked
+        // into Metal's process-global destructor (which asserts on live buffers).
+        pub fn shutdown(&self, timeout: Duration) -> Result<(), String> {
+            self.shutting_down.store(true, Ordering::Release);
+            let deadline = Instant::now() + timeout;
+            if let Some(capture) = self.active.lock().map_err(|_| "Speech session lock failed")?.as_ref() {
+                capture.cancel.store(true, Ordering::Release);
+                capture.stop.store(true, Ordering::Release);
+            }
+            let mut worker = self.worker.lock().map_err(|_| "Speech worker lock failed")?;
+            while worker.as_ref().is_some_and(|worker| !worker.is_finished()) {
+                if Instant::now() >= deadline {
+                    return Err("Dictation is still stopping; native resources remain protected".into());
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            if let Some(worker) = worker.take() {
+                worker.join().map_err(|_| "Dictation worker failed while stopping")?;
+            }
+            drop(worker);
+            loop {
+                match self.context.try_lock() {
+                    Ok(mut context) => {
+                        // Explicitly release the decoder and context before C++
+                        // atexit finalization. Tauri exits without dropping state.
+                        context.take();
+                        return Ok(());
+                    }
+                    Err(TryLockError::Poisoned(_)) => return Err("Speech model lock failed".into()),
+                    Err(TryLockError::WouldBlock) if Instant::now() < deadline => {
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(TryLockError::WouldBlock) => return Err("Speech preparation is still stopping; native resources remain protected".into()),
+                }
+            }
+        }
     }
 
     struct Engine {
@@ -46,7 +88,7 @@ mod native {
     }
 
     impl Engine {
-        fn load(model: &Path) -> Result<Self, String> {
+        fn load(model: &Path, cancel: Arc<AtomicBool>) -> Result<Self, String> {
             let mut parameters = WhisperContextParameters::default();
             parameters.flash_attn(true);
             let context = WhisperContext::new_with_params(
@@ -56,7 +98,7 @@ mod native {
             let mut engine = Self { context, decoder };
             // Compile the live decoder's Metal kernels during preparation so
             // the first spoken words do not pay that startup cost.
-            let warmup = Arc::new(Capture::new(String::new()));
+            let warmup = Arc::new(Capture { cancel, ..Capture::new(String::new()) });
             engine.recognize(&[0.0; 16_000], "en", &warmup, false)?;
             Ok(engine)
         }
@@ -92,7 +134,23 @@ mod native {
     unsafe extern "C" fn recording_cancelled(data: *mut std::ffi::c_void) -> bool {
         // The caller keeps this Arc allocation alive throughout synchronous decoding.
         // Only an atomic flag is read, including when the engine calls from a worker thread.
-        unsafe { &*data.cast::<Capture>() }.cancel.load(Ordering::Acquire)
+        let capture = unsafe { &*data.cast::<Capture>() };
+        #[cfg(test)]
+        {
+            capture.decoding.store(true, Ordering::Release);
+            // Hold the opt-in regression at a real native cancellation point
+            // until OS Quit arrives, rather than racing a short GPU decode.
+            if capture.wait_for_cancellation {
+                let deadline = Instant::now() + Duration::from_secs(5);
+                while !capture.cancel.load(Ordering::Acquire) && Instant::now() < deadline {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+            }
+        }
+        let cancelled = capture.cancel.load(Ordering::Acquire);
+        #[cfg(test)]
+        if cancelled { capture.cancellation_seen.store(true, Ordering::Release); }
+        cancelled
     }
 
     fn recognition_params<'a>(language: &'a str, capture: &'a Arc<Capture>) -> FullParams<'a, 'a> {
@@ -124,7 +182,7 @@ mod native {
     struct Capture {
         id: String,
         stop: AtomicBool,
-        cancel: AtomicBool,
+        cancel: Arc<AtomicBool>,
         closed: AtomicBool,
         samples: Mutex<Vec<f32>>,
         rate: Mutex<u32>,
@@ -132,15 +190,27 @@ mod native {
         received: AtomicBool,
         captured_samples: AtomicUsize,
         finished: AtomicBool,
+        #[cfg(test)]
+        decoding: AtomicBool,
+        #[cfg(test)]
+        cancellation_seen: AtomicBool,
+        #[cfg(test)]
+        wait_for_cancellation: bool,
     }
 
     impl Capture {
         fn new(id: String) -> Self {
             Self {
-                id, stop: AtomicBool::new(false), cancel: AtomicBool::new(false),
+                id, stop: AtomicBool::new(false), cancel: Arc::new(AtomicBool::new(false)),
                 closed: AtomicBool::new(false), samples: Mutex::new(Vec::new()),
                 rate: Mutex::new(16_000), error: Mutex::new(None), received: AtomicBool::new(false),
                 captured_samples: AtomicUsize::new(0), finished: AtomicBool::new(false),
+                #[cfg(test)]
+                decoding: AtomicBool::new(false),
+                #[cfg(test)]
+                cancellation_seen: AtomicBool::new(false),
+                #[cfg(test)]
+                wait_for_cancellation: false,
             }
         }
     }
@@ -251,10 +321,17 @@ mod native {
             .context
             .lock()
             .map_err(|_| "Speech model lock failed")?;
+        if state.shutting_down.load(Ordering::Acquire) {
+            return Err("The application is shutting down".into());
+        }
         if context.is_none() {
             whisper_rs::install_logging_hooks();
             let path = crate::speech_model::model_path(app)?;
-            *context = Some(Engine::load(&path)?);
+            let engine = Engine::load(&path, state.shutting_down.clone())?;
+            if state.shutting_down.load(Ordering::Acquire) {
+                return Err("The application is shutting down".into());
+            }
+            *context = Some(engine);
         }
         Ok(())
     }
@@ -874,7 +951,7 @@ mod native {
                 .map(|sample| f32::from_le_bytes(sample.try_into().unwrap())).collect();
             assert!(samples.iter().all(|sample| sample.is_finite()), "PCM samples must be finite");
             let preparing = Instant::now();
-            let mut engine = Engine::load(Path::new(&model)).unwrap();
+            let mut engine = Engine::load(Path::new(&model), Arc::new(AtomicBool::new(false))).unwrap();
             let preparation_seconds = preparing.elapsed().as_secs_f64();
             let capture = capture();
             *capture.rate.lock().unwrap() = rate;
@@ -1052,6 +1129,105 @@ mod native {
         }
     }
 
+    #[cfg(test)]
+    mod shutdown_tests {
+        use super::*;
+        use std::sync::mpsc;
+
+        #[test]
+        fn shutdown_cancels_and_joins_an_active_worker() {
+            let state = SpeechState::default();
+            let capture = Arc::new(Capture::new("shutdown-test".into()));
+            *state.active.lock().unwrap() = Some(capture.clone());
+            let worker_capture = capture.clone();
+            *state.worker.lock().unwrap() = Some(std::thread::spawn(move || {
+                while !worker_capture.cancel.load(Ordering::Acquire) {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                worker_capture.finished.store(true, Ordering::Release);
+            }));
+            state.shutdown(Duration::from_secs(1)).unwrap();
+            assert!(capture.stop.load(Ordering::Acquire));
+            assert!(capture.finished.load(Ordering::Acquire));
+            assert!(state.worker.lock().unwrap().is_none());
+            assert!(state.shutting_down.load(Ordering::Acquire));
+            state.shutdown(Duration::ZERO).unwrap();
+        }
+
+        #[test]
+        fn shutdown_timeout_retains_worker_ownership_for_retry() {
+            let state = SpeechState::default();
+            let (release, waiting) = mpsc::channel();
+            *state.worker.lock().unwrap() = Some(std::thread::spawn(move || {
+                waiting.recv_timeout(Duration::from_secs(2)).unwrap();
+            }));
+            assert!(state.shutdown(Duration::from_millis(10)).is_err());
+            assert!(state.worker.lock().unwrap().is_some());
+            release.send(()).unwrap();
+            state.shutdown(Duration::from_secs(1)).unwrap();
+            assert!(state.worker.lock().unwrap().is_none());
+        }
+
+        #[test]
+        fn preparation_lock_timeout_does_not_claim_cleanup_completed() {
+            let state = SpeechState::default();
+            let held = state.context.lock().unwrap();
+            assert!(state.shutdown(Duration::from_millis(10)).is_err());
+            drop(held);
+            state.shutdown(Duration::ZERO).unwrap();
+        }
+    }
+
+    #[cfg(test)]
+    pub fn prepare_shutdown_regression(app: &AppHandle, model: &Path, in_flight: bool) {
+        let state = app.state::<SpeechState>();
+        *state.context.lock().unwrap() = Some(Engine::load(model, state.shutting_down.clone()).unwrap());
+        if !in_flight { return; }
+        let capture = Arc::new(Capture {
+            wait_for_cancellation: true,
+            ..Capture::new("native-shutdown-regression".into())
+        });
+        *state.active.lock().unwrap() = Some(capture.clone());
+        let worker_capture = capture.clone();
+        let handle = app.clone();
+        *state.worker.lock().unwrap() = Some(std::thread::spawn(move || {
+            let state = handle.state::<SpeechState>();
+            let audio: Vec<f32> = (0..480_000).map(|i| ((i as f32) * 0.07).sin() * 0.1).collect();
+            state.context.lock().unwrap().as_mut().unwrap()
+                .recognize(&audio, "en", &worker_capture, false).unwrap();
+            worker_capture.finished.store(true, Ordering::Release);
+        }));
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !capture.decoding.load(Ordering::Acquire) {
+            assert!(Instant::now() < deadline, "Native decoder did not begin");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(!capture.finished.load(Ordering::Acquire), "Native decoder already finished");
+    }
+
+    #[cfg(test)]
+    pub fn assert_cancelled_quit_regression(app: &AppHandle) {
+        prepare(app).unwrap();
+        let state = app.state::<SpeechState>();
+        assert!(!state.shutting_down.load(Ordering::Acquire));
+        let capture = Arc::new(Capture::new("cancelled-quit-regression".into()));
+        state.context.lock().unwrap().as_mut().unwrap()
+            .recognize(&[0.0; 16_000], "en", &capture, false).unwrap();
+    }
+
+    #[cfg(test)]
+    pub fn assert_shutdown_regression(app: &AppHandle, in_flight: bool) {
+        let state = app.state::<SpeechState>();
+        assert!(state.context.lock().unwrap().is_none());
+        assert!(state.worker.lock().unwrap().is_none());
+        if in_flight {
+            let capture = state.active.lock().unwrap().clone().unwrap();
+            assert!(capture.cancel.load(Ordering::Acquire));
+            assert!(capture.cancellation_seen.load(Ordering::Acquire), "Native inference must observe cancellation before exit");
+            assert!(capture.finished.load(Ordering::Acquire));
+        }
+    }
+
     fn supported_language(language: &str) -> bool {
         language == "auto"
             || ((2..=3).contains(&language.len())
@@ -1125,13 +1301,20 @@ mod native {
             .active
             .lock()
             .map_err(|_| "Speech session lock failed")?;
-        if active.is_some() {
+        if state.shutting_down.load(Ordering::Acquire) {
+            return Err("The application is shutting down".into());
+        }
+        let mut worker = state.worker.lock().map_err(|_| "Speech worker lock failed")?;
+        if active.is_some() || worker.as_ref().is_some_and(|worker| !worker.is_finished()) {
             return Err("Dictation is already running. Wait for it to finish.".into());
+        }
+        if let Some(previous) = worker.take() {
+            previous.join().map_err(|_| "The previous dictation worker failed")?;
         }
         let capture = Arc::new(Capture::new(id));
         *active = Some(capture.clone());
         let worker_app = app.clone();
-        std::thread::spawn(move || run(worker_app, capture, language, input_device_id));
+        *worker = Some(std::thread::spawn(move || run(worker_app, capture, language, input_device_id)));
         Ok(())
     }
 

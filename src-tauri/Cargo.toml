@@ -34,6 +34,16 @@ objc2-core-audio = { version = "0.3", default-features = false, features = ["std
 objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFString"] }
 whisper-rs = { version = "=0.16.0", features = ["metal"] }
 
+[[test]]
+name = "native_terminal_drop"
+path = "tests/native_terminal_drop.rs"
+harness = false
+
+[[test]]
+name = "native_shutdown"
+path = "tests/native_shutdown.rs"
+harness = false
+
 [profile.release]
 codegen-units = 1
 lto = true

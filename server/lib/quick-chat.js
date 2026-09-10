@@ -9,18 +9,35 @@ export function quickChatCommand(agent, host = "") {
   // A fixed name and atomic tmux creation prevent duplicate sessions, even
   // across concurrent clients. The session environment identifies our session.
   const tmux = tmuxCommand(host);
+  const launcher = agent === "codex" ? "pz" : "claude";
+  const create = agent === "codex" ? `
+  login_shell=""
+  if command -v getent >/dev/null 2>&1; then
+    login_shell=$(getent passwd "$(id -u)" 2>/dev/null | cut -d: -f7)
+  fi
+  if [ -z "$login_shell" ] && command -v dscl >/dev/null 2>&1; then
+    login_shell=$(dscl . -read "/Users/$(id -un)" UserShell 2>/dev/null | cut -d' ' -f2)
+  fi
+  case "$login_shell" in
+    */bash|*/zsh) [ -x "$login_shell" ] || exit 46 ;;
+    *) exit 46 ;;
+  esac
+  "$login_shell" -lic ${shQuote("command -v pz >/dev/null 2>&1")} >/dev/null 2>&1 || exit 42
+  ${tmux} new-session -d -s pzza-quick-chat -x 160 -y 45 -c "$HOME" -e PZZA_QUICK_CHAT_AGENT=${agent} -e PZZA_QUICK_CHAT_LAUNCHER=${launcher} -e "PATH=$PATH" "$login_shell" -lic ${shQuote("pz")} 2>/dev/null || ${tmux} has-session -t '=pzza-quick-chat' 2>/dev/null || exit 43` : `
+  executable=$(command -v claude) || exit 42
+  ${tmux} new-session -d -s pzza-quick-chat -x 160 -y 45 -c "$HOME" -e PZZA_QUICK_CHAT_AGENT=${agent} -e PZZA_QUICK_CHAT_LAUNCHER=${launcher} -e "PATH=$PATH" sh -c ${shQuote('exec "$1"')} quick-chat "$executable" 2>/dev/null || ${tmux} has-session -t '=pzza-quick-chat' 2>/dev/null || exit 43`;
   return `command -v tmux >/dev/null 2>&1 || exit 41
-if ! ${tmux} has-session -t '=pzza-quick-chat' 2>/dev/null; then
-  executable=$(command -v ${agent}) || exit 42
-  ${tmux} new-session -d -s pzza-quick-chat -x 160 -y 45 -c "$HOME" -e PZZA_QUICK_CHAT_AGENT=${agent} -e "PATH=$PATH" sh -c ${shQuote('exec "$1"')} quick-chat "$executable" 2>/dev/null || ${tmux} has-session -t '=pzza-quick-chat' 2>/dev/null || exit 43
+if ! ${tmux} has-session -t '=pzza-quick-chat' 2>/dev/null; then${create}
 fi
 owner=$(${tmux} show-environment -t '=pzza-quick-chat' PZZA_QUICK_CHAT_AGENT 2>/dev/null) || exit 44
-case "$owner" in
-  PZZA_QUICK_CHAT_AGENT=claude|PZZA_QUICK_CHAT_AGENT=codex) ;;
+launcher=$(${tmux} show-environment -t '=pzza-quick-chat' PZZA_QUICK_CHAT_LAUNCHER 2>/dev/null || true)
+case "$owner:$launcher" in
+  PZZA_QUICK_CHAT_AGENT=claude:PZZA_QUICK_CHAT_LAUNCHER=claude|PZZA_QUICK_CHAT_AGENT=codex:PZZA_QUICK_CHAT_LAUNCHER=pz) ;;
+  PZZA_QUICK_CHAT_AGENT=claude:|PZZA_QUICK_CHAT_AGENT=codex:) launcher="PZZA_QUICK_CHAT_LAUNCHER=\${owner#*=}" ;;
   *) exit 44 ;;
 esac
 identity=$(${tmux} display-message -p -t '=pzza-quick-chat:' '#{session_id}:#{session_created}:#{pid}') || exit 45
-printf '%s\\n%s' "\${owner#*=}" "$identity"`;
+printf '%s\\n%s\\n%s' "\${owner#*=}" "\${launcher#*=}" "$identity"`;
 }
 
 export function openQuickChat(body, run = execFile) {
@@ -58,8 +75,9 @@ function runQuickChat(body, operation, run) {
   const command = closing ? `command -v tmux >/dev/null 2>&1 || exit 41
 if ! ${tmux} has-session -t '=pzza-quick-chat' 2>/dev/null; then exit 0; fi
 owner=$(${tmux} show-environment -t '=pzza-quick-chat' PZZA_QUICK_CHAT_AGENT 2>/dev/null) || exit 44
-case "$owner" in
-  PZZA_QUICK_CHAT_AGENT=claude|PZZA_QUICK_CHAT_AGENT=codex) ${tmux} kill-session -t '=pzza-quick-chat' ;;
+launcher=$(${tmux} show-environment -t '=pzza-quick-chat' PZZA_QUICK_CHAT_LAUNCHER 2>/dev/null || true)
+case "$owner:$launcher" in
+  PZZA_QUICK_CHAT_AGENT=claude:PZZA_QUICK_CHAT_LAUNCHER=claude|PZZA_QUICK_CHAT_AGENT=codex:PZZA_QUICK_CHAT_LAUNCHER=pz|PZZA_QUICK_CHAT_AGENT=claude:|PZZA_QUICK_CHAT_AGENT=codex:) ${tmux} kill-session -t '=pzza-quick-chat' ;;
   *) exit 44 ;;
 esac` : verifying ? quickChatAttachmentGuard(body.agent, body.identity, tmux) : quickChatCommand(body.agent, body.host);
   // Explicit empty host always means this device, including receiver mode.
@@ -71,22 +89,28 @@ esac` : verifying ? quickChatAttachmentGuard(body.agent, body.identity, tmux) : 
       if (error) {
         const message = {
           41: "tmux is not installed or is not on this device's PATH.",
-          42: "The selected agent is not installed or is not on this device's PATH.",
-          43: "Quick Chat could not start. Check the agent installation and login on this device.",
+          42: body.agent === "codex"
+            ? "pz is unavailable from this device user's login shell."
+            : "Claude is not installed or is not on this device's PATH.",
+          43: "Quick Chat could not start. Check the launcher installation and login on this device.",
           44: "A session named pzza-quick-chat already exists but is not the expected managed Quick Chat session.",
           45: "This Quick Chat conversation ended or was replaced. It cannot be reattached.",
+          46: "pz Quick Chat requires this device user to have Bash or Zsh as their login shell.",
         }[error.code] ?? "Could not reach this device or open Quick Chat. Retry or choose another device. Check SSH access and the trusted host key for remote devices.";
         reject(Object.assign(new Error(message), { status: 503 }));
         return;
       }
       if (closing) { resolve({ closed: true }); return; }
       if (verifying) { resolve({ verified: true }); return; }
-      const [agent, identity, extra] = String(stdout).trim().split("\n");
-      if ((agent !== "claude" && agent !== "codex") || !/^\$[0-9]+:[0-9]+:[0-9]+$/.test(identity ?? "") || extra !== undefined) {
+      const [agent, launcher, identity, extra] = String(stdout).trim().split("\n");
+      const validLauncher = (agent === "claude" && launcher === "claude") ||
+        (agent === "codex" && (launcher === "codex" || launcher === "pz"));
+      if ((agent !== "claude" && agent !== "codex") || !validLauncher ||
+          !/^\$[0-9]+:[0-9]+:[0-9]+$/.test(identity ?? "") || extra !== undefined) {
         reject(Object.assign(new Error("The device returned an invalid Quick Chat response."), { status: 502 }));
         return;
       }
-      resolve({ session: QUICK_CHAT_SESSION, host: body.host, agent, identity });
+      resolve({ session: QUICK_CHAT_SESSION, host: body.host, agent, launcher, identity });
     });
   });
 }

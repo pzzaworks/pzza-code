@@ -213,119 +213,12 @@ pub fn release_drop(
     Ok(())
 }
 
-// The macOS runtime consumes every native drag when file handling is enabled,
-// even drags that contain no files. A per-webview subclass routes those back to
-// WebKit so editor selections, tiles, and workspace tabs keep their HTML DnD.
+// The native runtime consumes even non-file drags when file handling is enabled.
+// Preserve HTML DnD by routing those through WebKit without changing the view's
+// runtime/KVO class. This module is also exercised by the isolated native test.
 #[cfg(target_os = "macos")]
-mod macos_selective {
-    use objc2::runtime::{AnyClass, AnyObject, Bool, ClassBuilder, Sel};
-    use objc2::{msg_send, sel};
-    use std::sync::OnceLock;
-    static CLASS: OnceLock<&'static AnyClass> = OnceLock::new();
-    static BASE: OnceLock<&'static AnyClass> = OnceLock::new();
-    #[link(name = "AppKit", kind = "framework")]
-    extern "C" {
-        static NSFilenamesPboardType: *mut AnyObject;
-    }
-
-    fn dispatch(info: *mut AnyObject) -> &'static AnyClass {
-        // This is OS drag metadata, not a renderer-provided filename or path.
-        let files = unsafe {
-            let pasteboard: *mut AnyObject = msg_send![info, draggingPasteboard];
-            let value: *mut AnyObject =
-                msg_send![pasteboard, propertyListForType: NSFilenamesPboardType];
-            if value.is_null() {
-                false
-            } else {
-                let count: usize = msg_send![value, count];
-                count > 0
-            }
-        };
-        if files {
-            BASE.get().copied().expect("drop subclass registered")
-        } else {
-            AnyClass::get(c"WKWebView").expect("webview class registered")
-        }
-    }
-    extern "C" fn entered(this: *mut AnyObject, _: Sel, info: *mut AnyObject) -> usize {
-        unsafe { msg_send![super(this, dispatch(info)), draggingEntered: info] }
-    }
-    extern "C" fn updated(this: *mut AnyObject, _: Sel, info: *mut AnyObject) -> usize {
-        unsafe { msg_send![super(this, dispatch(info)), draggingUpdated: info] }
-    }
-    extern "C" fn perform(this: *mut AnyObject, _: Sel, info: *mut AnyObject) -> Bool {
-        unsafe { msg_send![super(this, dispatch(info)), performDragOperation: info] }
-    }
-    extern "C" fn exited(this: *mut AnyObject, _: Sel, info: *mut AnyObject) {
-        unsafe { msg_send![super(this, dispatch(info)), draggingExited: info] }
-    }
-    pub unsafe fn install(pointer: *mut std::ffi::c_void) -> Result<(), String> {
-        let view = pointer
-            .cast::<AnyObject>()
-            .as_ref()
-            .ok_or("Native webview unavailable.")?;
-        let base = view.class();
-        if CLASS.get().is_some_and(|class| *class == base) {
-            return Ok(());
-        }
-        if BASE.get().is_some_and(|class| *class != base) {
-            return Err("Unsupported native webview class.".into());
-        }
-        let class = if let Some(class) = CLASS.get() {
-            *class
-        } else {
-            let mut builder = ClassBuilder::new(c"PzzaSelectiveFileDrop", base)
-                .ok_or("Cannot register native file drops.")?;
-            builder.add_method(
-                sel!(draggingEntered:),
-                entered as extern "C" fn(*mut AnyObject, Sel, *mut AnyObject) -> usize,
-            );
-            builder.add_method(
-                sel!(draggingUpdated:),
-                updated as extern "C" fn(*mut AnyObject, Sel, *mut AnyObject) -> usize,
-            );
-            builder.add_method(
-                sel!(performDragOperation:),
-                perform as extern "C" fn(*mut AnyObject, Sel, *mut AnyObject) -> Bool,
-            );
-            builder.add_method(
-                sel!(draggingExited:),
-                exited as extern "C" fn(*mut AnyObject, Sel, *mut AnyObject),
-            );
-            let class = builder.register();
-            let _ = BASE.set(base);
-            let _ = CLASS.set(class);
-            class
-        };
-        // Adds no ivars and inherits destruction unchanged. Only these four drag
-        // methods differ; each forwards using its original native ABI.
-        AnyObject::set_class(view, class);
-        Ok(())
-    }
-
-    #[test]
-    fn drag_callback_abis_match_the_installed_webkit() {
-        use objc2::Encode;
-        let webkit = AnyClass::get(c"WKWebView").expect("WebKit linked by the desktop runtime");
-        for (selector, returns) in [
-            (sel!(draggingEntered:), usize::ENCODING.to_string()),
-            (sel!(draggingUpdated:), usize::ENCODING.to_string()),
-            (sel!(performDragOperation:), Bool::ENCODING.to_string()),
-            (sel!(draggingExited:), "v".to_string()),
-        ] {
-            let method = webkit
-                .instance_method(selector)
-                .expect("native drag callback exists");
-            assert_eq!(method.arguments_count(), 3);
-            assert_eq!(method.return_type().to_string_lossy(), returns);
-            assert!(method
-                .argument_type(2)
-                .unwrap()
-                .to_string_lossy()
-                .starts_with('@'));
-        }
-    }
-}
+#[path = "terminal_drop/macos.rs"]
+mod macos_selective;
 
 pub fn init<R: Runtime>() -> tauri::plugin::TauriPlugin<R> {
     tauri::plugin::Builder::new("terminal-drop")
