@@ -1,3 +1,4 @@
+import { Info } from "lucide-react";
 import type { AccountSpend, SpendDay, SpendWindow } from "../serverApi";
 
 function fmtCost(c: number): string {
@@ -53,7 +54,7 @@ export function UsageSpend({ spend, color }: { spend: AccountSpend; color: strin
   );
   return (
     <div className="usage-detail" title="Standard short-context API-equivalent estimates from local token counts. Long-context and service-tier adjustments are not included.">
-      <div className="muted">API estimate (short context), not billed spend.</div>
+      <p className="usage-estimate-note" role="note"><Info size={12} aria-hidden="true" /><span>API estimate (short context), not billed spend.</span></p>
       <div className="usage-detail-row">
         <span className="usage-detail-label">Token trend</span>
         <Trend days={spend.days} color={color} />
