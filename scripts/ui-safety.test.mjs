@@ -2,16 +2,15 @@ import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { chromium } from 'playwright';
 import { createServer } from 'vite';
 import react from '@vitejs/plugin-react';
 import { transform } from 'esbuild';
 
-// Supply an installed browser runtime/executable to run real isolated UI tests.
+// Install the matching browser with npm run test:ui:install.
 // No browser profile, app state, device credentials or live backend is reused.
-let chromium;
-try { ({ chromium } = await import(process.env.PZZA_BROWSER_MODULE ? pathToFileURL(resolve(process.env.PZZA_BROWSER_MODULE)).href : 'playwright')); } catch { /* Optional local browser harness. */ }
 const root = fileURLToPath(new URL('..', import.meta.url));
 const fixture = `
 import React, { useState } from 'react';
@@ -77,7 +76,6 @@ app.render(<ThemeProvider>{mode === 'dialogs' ? <Dialogs /> : mode === 'pending'
 `;
 let server, browser, origin, scratch;
 before(async () => {
-  if (!chromium) return;
   scratch = await mkdtemp(join(tmpdir(), 'pzza-ui-safety-'));
   server = await createServer({ root, configFile: false, logLevel: 'error', cacheDir: join(scratch, 'vite'), define: { __APP_VERSION__: JSON.stringify('test') }, plugins: [react(), {
     name: 'ui-safety-fixture',
@@ -90,11 +88,13 @@ before(async () => {
   browser = await chromium.launch({ headless: true, ...(process.env.PZZA_BROWSER_EXECUTABLE ? { executablePath: process.env.PZZA_BROWSER_EXECUTABLE } : {}) });
 });
 after(async () => { await browser?.close(); await server?.close(); if (scratch) await rm(scratch, { recursive: true, force: true }); });
-const options = { skip: !chromium, timeout: 25000 };
+const options = { timeout: 25000 };
 async function pageFor(t, mode, extra = '') {
   const context = await browser.newContext({ viewport: { width: 900, height: 700 } });
   t.after(() => context.close());
   const page = await context.newPage();
+  // Cold fixture compilation needs a separate budget from UI interactions.
+  page.setDefaultNavigationTimeout(15000);
   page.setDefaultTimeout(6000);
   await page.route('**/*', route => {
     const url = new URL(route.request().url());
