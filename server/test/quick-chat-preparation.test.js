@@ -26,7 +26,7 @@ test("startup reuses the conversation without closing it and deduplicates matchi
   const calls = [];
   const prepare = createQuickChatPreparation(async (host, agent) => {
     calls.push([host, agent]);
-    return { session: "pzza-quick-chat", host, agent, identity: "$1:100:200" };
+    return { session: "pzza-quick-chat", host, agent, launcher: agent === "codex" ? "pz" : "claude", identity: "$1:100:200" };
   });
   const first = prepare("", "claude");
   assert.equal(prepare("", "claude"), first);
@@ -37,7 +37,7 @@ test("startup reuses the conversation without closing it and deduplicates matchi
   let attempts = 0;
   const retry = createQuickChatPreparation(async (host, agent) => {
     if (++attempts === 1) throw new Error("Device unavailable");
-    return { session: "pzza-quick-chat", host, agent, identity: "$1:100:200" };
+    return { session: "pzza-quick-chat", host, agent, launcher: agent === "codex" ? "pz" : "claude", identity: "$1:100:200" };
   });
   await assert.rejects(retry("", "claude"), /Device unavailable/);
   assert.equal((await retry("", "claude")).agent, "claude");
