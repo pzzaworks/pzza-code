@@ -343,9 +343,30 @@ export async function createSession(
   }
 }
 
-export interface QuickChatSession { session: string; host: string; agent: "claude" | "codex"; identity: string }
+export type QuickChatAgent = "claude" | "codex";
+export type QuickChatLauncher = "claude" | "codex" | "pz";
+export interface QuickChatSession {
+  session: string;
+  host: string;
+  // The profile that owns the managed conversation. It is not a claim about
+  // the process currently running behind a proxy launcher.
+  agent: QuickChatAgent;
+  launcher: QuickChatLauncher;
+  identity: string;
+}
 
-export async function openQuickChat(host: string, agent: "claude" | "codex"): Promise<QuickChatSession> {
+function isQuickChatResponse(value: unknown, host: string): value is QuickChatSession {
+  return Boolean(value && typeof value === "object" &&
+    "session" in value && value.session === "pzza-quick-chat" &&
+    "host" in value && value.host === host &&
+    "agent" in value && (value.agent === "claude" || value.agent === "codex") &&
+    "launcher" in value &&
+      ((value.agent === "claude" && value.launcher === "claude") ||
+       (value.agent === "codex" && (value.launcher === "codex" || value.launcher === "pz"))) &&
+    "identity" in value && typeof value.identity === "string" && /^\$[0-9]+:[0-9]+:[0-9]+$/.test(value.identity));
+}
+
+export async function openQuickChat(host: string, agent: QuickChatAgent): Promise<QuickChatSession> {
   const response = await agentFetch(`${SERVER_HTTP}/quick-chat/open`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -354,12 +375,8 @@ export async function openQuickChat(host: string, agent: "claude" | "codex"): Pr
   });
   const value: unknown = await response.json();
   if (!response.ok) throw new Error(value && typeof value === "object" && "error" in value && typeof value.error === "string" ? value.error : "Could not open Quick Chat.");
-  if (!value || typeof value !== "object" || !("session" in value) || value.session !== "pzza-quick-chat" ||
-      !("host" in value) || value.host !== host || !("agent" in value) || value.agent !== agent ||
-      !("identity" in value) || typeof value.identity !== "string" || !/^\$[0-9]+:[0-9]+:[0-9]+$/.test(value.identity)) {
-    throw new Error("Invalid Quick Chat response.");
-  }
-  return { session: value.session, host, agent, identity: value.identity };
+  if (!isQuickChatResponse(value, host)) throw new Error("Invalid Quick Chat response.");
+  return value;
 }
 
 export async function verifyQuickChat(host: string, agent: "claude" | "codex", identity: string, signal?: AbortSignal): Promise<void> {
