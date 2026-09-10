@@ -1,6 +1,6 @@
 [package]
 name = "pzzacode"
-version = "0.2.30"
+version = "0.2.31"
 description = "PzzaCode - every terminal, every agent, one grid"
 authors = ["Berke (pzzaworks)"]
 edition = "2021"
