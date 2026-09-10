@@ -59,9 +59,15 @@ test("Hub errors retain actionable status and public code", async () => {
 });
 
 test("Quick Chat validates launcher and managed session identity", async () => {
-  globalThis.fetch = async () => json({ session: "pzza-quick-chat", host: "devbox", agent: "codex", identity: "$1:22:33" });
-  assert.equal((await api.openQuickChat("devbox", "codex")).identity, "$1:22:33");
-  await assert.rejects(api.openQuickChat("devbox", "claude"), /Invalid Quick Chat response/);
+  globalThis.fetch = async () => json({ session: "pzza-quick-chat", host: "devbox", agent: "codex", launcher: "pz", identity: "$1:22:33" });
+  const chat = await api.openQuickChat("devbox", "codex");
+  assert.equal(chat.identity, "$1:22:33");
+  assert.equal(chat.launcher, "pz");
+  // Reusing a managed conversation reports its actual owning profile rather
+  // than pretending a changed preference restarted it.
+  assert.equal((await api.openQuickChat("devbox", "claude")).agent, "codex");
+  globalThis.fetch = async () => json({ session: "pzza-quick-chat", host: "devbox", agent: "codex", launcher: "claude", identity: "$1:22:33" });
+  await assert.rejects(api.openQuickChat("devbox", "codex"), /Invalid Quick Chat response/);
   globalThis.fetch = async () => json({ verified: true });
   await api.verifyQuickChat("devbox", "codex", "$1:22:33");
   await assert.rejects(api.verifyQuickChat("devbox", "codex", "unknown"), /identity is unavailable/);

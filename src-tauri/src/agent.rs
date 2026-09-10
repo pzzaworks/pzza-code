@@ -271,17 +271,21 @@ fn spawn_agent_process(
     cmd.spawn()
 }
 
-pub fn stop(app: &AppHandle) {
+pub fn stop(app: &AppHandle) -> Result<(), String> {
     if let Some(state) = app.try_state::<AgentState>() {
         // Signal the watchdog before killing, so it does not respawn the agent
         // during shutdown.
         state.shutting_down.store(true, Ordering::SeqCst);
-        let child = state.child.lock().unwrap().take();
+        let child = state.child.lock().map_err(|_| "Device agent lock failed")?.take();
         if let Some(mut child) = child {
             drop(child.stdin.take());
-            let _ = terminate_agent(&mut child, Duration::from_secs(5));
+            if let Err(error) = terminate_agent(&mut child, Duration::from_secs(5)) {
+                *state.child.lock().map_err(|_| "Device agent lock failed")? = Some(child);
+                return Err(format!("Could not reap the device agent: {error}"));
+            }
         }
     }
+    Ok(())
 }
 
 fn terminate_agent(child: &mut Child, grace: Duration) -> std::io::Result<ExitStatus> {

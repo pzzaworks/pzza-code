@@ -61,7 +61,7 @@ test("standalone clients retain default routing and remote commands discard loca
     assert.ok(!args.at(-1).includes("/tmp/local socket"));
     assert.ok(!args.at(-1).includes("-N -S"));
     assert.equal(options.env.PZZA_TMUX_SOCKET, undefined);
-    callback(null, "claude\n$1:100:200");
+    callback(null, "claude\nclaude\n$1:100:200");
   });
 });
 
