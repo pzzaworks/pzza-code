@@ -13,7 +13,9 @@ import { runBrowserPreview } from "./browserPreview";
 import { installMouseSelection } from "./mouseSelection";
 import { createOutputScheduler } from "./outputScheduler";
 import { HAS_TAURI } from "../tauriEnv";
-import { uploadPasteImage } from "../serverApi";
+import { discardTerminalDrop, uploadPasteImage, uploadTerminalDrop, verifyQuickChat } from "../serverApi";
+import { createAttachmentRecovery, type AttachmentStatus } from "../state/quickChatSession";
+import { readNativeDrop, registerTerminalDropTarget, releaseNativeDrop, shellQuotePaths, validateDroppedFiles, type TerminalDrop } from "./fileDrop";
 import { sessionDisplayName, type TileStatus } from "../sessionMeta";
 import { registerContextMenu, clipboardPaste, readClipboardData } from "../ui/ContextMenu";
 import { registerDictationTarget, useDictation } from "../state/dictation";
@@ -62,6 +64,9 @@ interface Props {
   window?: number;
   active?: boolean;
   onStatus?: (s: TileStatus) => void;
+  managedChat?: { agent: "claude" | "codex"; identity: string };
+  onAttachment?: (status: AttachmentStatus) => void;
+  retryToken?: number;
 }
 
 // Desired line spacing. We snap the actual line height so that
@@ -77,7 +82,10 @@ const snappedLineHeight = (fontSize: number) => Math.round(fontSize * LINE_RATIO
 // One live terminal tile. xterm owns its own WebGL canvas, so it lives outside
 // React's reconcile loop. Transport depends on where the app runs: Rust PTY
 // under Tauri, the devbox WebSocket server in a plain browser.
-export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, active, onStatus }: Props) {
+export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, active, onStatus, managedChat, onAttachment, retryToken = 0 }: Props) {
+  const attachmentStatusRef = useRef(onAttachment);
+  attachmentStatusRef.current = onAttachment;
+  const retryRef = useRef<(() => void) | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<XTerm | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -402,83 +410,107 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
       document.addEventListener("visibilitychange", onVisibilityChange);
 
       let exited = false;
+      let connectionEpoch = 0;
+      let attachmentReady = !managedChat;
+      let pasteController = new AbortController();
       let unregisterDictation: (() => void) | undefined;
-      if (HAS_TAURI) {
-        spawnPty({ cmd, args, cwd, cols: term.cols, rows: term.rows }, writeOutput, (code) => {
-          if (disposed) return;
-          notificationSignals.processExit(code);
-          exited = true;
-          tauriId = null;
-          unregisterDictation?.();
-          clearTimeout(idleTimer);
-          onStatus?.(code === 0 ? "idle" : "failed");
-        })
-          .then((id) => {
-            if (disposed) return killPty(id);
-            if (exited) return;
-            tauriId = id;
-            term.onData((d) => {
-              if (exited || disposed) return;
-              lastWrite = writePty(id, d);
-              void lastWrite.catch((error: unknown) => {
-                if (!disposed) reportError(error instanceof Error ? error.message : "Terminal input failed.");
-              });
-            });
-            unregisterDictation = registerDictationTarget(tileId, {
-              focus: () => { if (!disposed && tauriId !== null) term.focus(); },
-              preview: text => { composition.suspend(!activeRef.current || !document.hasFocus()); composition.preview(text); },
-              clearPreview: composition.clear,
-              insert: async (text) => {
-                if (disposed || tauriId === null) return false;
-                const previousWrite = lastWrite;
-                composition.beginConfirmedWrite();
-                term.paste(text);
-                if (lastWrite === previousWrite) return false;
-                await lastWrite;
-                return true;
-              },
-            });
-            term.onResize(({ cols, rows }) => { if (!exited && !disposed) void resizePty(id, cols, rows).catch(() => {}); });
-          })
-          .catch((err) => term.writeln(`\r\n[pty spawn failed] ${err}\r\n`));
-      } else {
-        ws = openWsPty(
-          name,
-          term.cols,
-          term.rows,
-          cwd,
-          (bytes, consumed) => {
-            gotData = true;
-            writeOutput(bytes, consumed);
-          },
-          (message) => {
-            if (!disposed) {
-              reportError(message);
-              onStatus?.("failed");
-            }
-            // Server unreachable and nothing streamed yet: show the preview so the
-            // tile is not a dead black box.
-            if (!gotData && !previewDispose) previewDispose = runBrowserPreview(term);
-          },
-          () => {
-            // pty exited on the server side.
-            if (!disposed) onStatus?.("failed");
-          },
-          win,
-          host,
-        );
-        term.onData((d) => {
-          lastWrite = ws?.write(d) ? Promise.resolve() : Promise.reject(new Error("Terminal connection closed while sending input."));
-          void lastWrite.catch(() => { if (!disposed) reportError("Terminal connection closed while sending input."); });
+      let recovery: ReturnType<typeof createAttachmentRecovery> | undefined;
+      const detachTransport = () => {
+        connectionEpoch++;
+        exited = true;
+        attachmentReady = !managedChat;
+        pasteController.abort();
+        pasteController = new AbortController();
+        cancelDictationInput();
+        unregisterDictation?.();
+        unregisterDictation = undefined;
+        if (tauriId !== null) void killPty(tauriId).catch(() => {});
+        tauriId = null;
+        ws?.close();
+        ws = null;
+      };
+      const transportFailed = (message: string, code?: number) => {
+        if (disposed) return;
+        clearTimeout(idleTimer);
+        onStatus?.("failed");
+        if (recovery) recovery.failed(message);
+        else {
+          if (code !== undefined) notificationSignals.processExit(code);
+          detachTransport();
+          reportError(message);
+        }
+      };
+      const attachTransport = async (signal?: AbortSignal) => {
+        if (disposed || signal?.aborted) return;
+        exited = false;
+        const epoch = ++connectionEpoch;
+        const current = () => !disposed && !signal?.aborted && epoch === connectionEpoch;
+        const data = (bytes: Uint8Array, consumed: () => void) => {
+          if (!current()) { consumed(); return; }
+          gotData = true;
+          attachmentReady = true;
+          recovery?.ready();
+          writeOutput(bytes, consumed);
+        };
+        if (HAS_TAURI) {
+          const id = await spawnPty({ cmd, args, cwd, cols: term.cols, rows: term.rows }, data, code => {
+            if (current()) transportFailed("The terminal attachment closed.", code);
+          });
+          if (!current() || exited) { await killPty(id); return; }
+          tauriId = id;
+          unregisterDictation = registerDictationTarget(tileId, {
+            focus: () => { if (current() && tauriId !== null) term.focus(); },
+            preview: text => { composition.suspend(!activeRef.current || !document.hasFocus()); composition.preview(text); },
+            clearPreview: composition.clear,
+            insert: async text => {
+              if (!current() || tauriId === null || !attachmentReady) return false;
+              const previousWrite = lastWrite;
+              composition.beginConfirmedWrite();
+              term.paste(text);
+              if (lastWrite === previousWrite) return false;
+              await lastWrite;
+              return true;
+            },
+          });
+        } else {
+          ws = openWsPty(name, term.cols, term.rows, cwd, data, message => {
+            if (!current()) return;
+            transportFailed(message);
+            if (!managedChat && !gotData && !previewDispose) previewDispose = runBrowserPreview(term);
+          }, () => { if (current()) transportFailed("The terminal attachment closed."); }, win, host, managedChat);
+        }
+      };
+      const inputListener = term.onData(text => {
+        if (disposed || exited || !attachmentReady) return;
+        const epoch = connectionEpoch;
+        if (HAS_TAURI) {
+          if (tauriId === null) return;
+          lastWrite = writePty(tauriId, text);
+        } else lastWrite = ws?.write(text) ? Promise.resolve() : Promise.reject(new Error("Terminal connection closed while sending input."));
+        void lastWrite.catch((error: unknown) => {
+          if (!disposed && epoch === connectionEpoch) transportFailed(error instanceof Error ? error.message : "Terminal input failed.");
         });
-        term.onResize(({ cols, rows }) => ws?.resize(cols, rows));
-      }
-
-      const pasteController = new AbortController();
+      });
+      const transportResize = term.onResize(({ cols, rows }) => {
+        if (exited || disposed) return;
+        if (tauriId !== null) void resizePty(tauriId, cols, rows).catch(() => {});
+        else ws?.resize(cols, rows);
+      });
+      if (managedChat) {
+        recovery = createAttachmentRecovery({
+          verify: signal => verifyQuickChat(host ?? "", managedChat.agent, managedChat.identity, signal),
+          attach: attachTransport, detach: detachTransport,
+          status: status => { if (!disposed) attachmentStatusRef.current?.(status); },
+        });
+        retryRef.current = recovery.retry;
+        recovery.start();
+      } else void attachTransport().catch((error: unknown) => transportFailed(error instanceof Error ? error.message : "Terminal attachment failed."));
+      const cancelRecovery = () => recovery?.stop();
+      window.addEventListener("pzza:quick-chat-cancel", cancelRecovery);
       let pasteQueue = Promise.resolve();
-      const connected = () => !disposed && !exited && (HAS_TAURI ? tauriId !== null : !!ws?.ready());
-      const insert = async (text: string, guarded: boolean) => {
-        if (!connected()) throw new Error("Terminal is not connected yet. Retry after it connects.");
+      const connected = () => !disposed && !exited && attachmentReady && (HAS_TAURI ? tauriId !== null : !!ws?.ready());
+      const insert = async (text: string, guarded: boolean, epoch = connectionEpoch) => {
+        if (!connected() || epoch !== connectionEpoch) throw new Error("Terminal is not connected to the same attachment. Retry after it connects.");
         if (guarded) validateTerminalPaste(text, term.modes.bracketedPasteMode);
         if (!text) return;
         cancelDictationInput();
@@ -488,6 +520,8 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
         await lastWrite;
       };
       const performPaste = async (clipboard: DataTransfer, guarded: boolean) => {
+        const epoch = connectionEpoch;
+        const signal = pasteController.signal;
         const images = Array.from(clipboard.items).filter(item => item.type.startsWith("image/")).map(item => item.getAsFile()).filter((file): file is File => file !== null);
         const text = clipboard.getData("text");
         if (guarded && images.length > 4) throw new Error("Paste at most four images at once.");
@@ -496,14 +530,21 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
           if (!connected()) throw new Error("Terminal disconnected before the image was pasted.");
           if (image.size > 20 * 1024 * 1024) throw new Error("Images must be 20 MB or smaller.");
           const target = HAS_TAURI ? host ?? "" : host;
-          const imagePath = await uploadPasteImage(image, target, pasteController.signal);
+          signal.throwIfAborted();
+          const imagePath = await uploadPasteImage(image, target, signal);
           if (!imagePath.startsWith("/") || imagePath.length > 4096 || /[\x00-\x1f\x7f]/.test(imagePath)) throw new Error("The device returned an invalid image path.");
           // Paths are quoted and use the same bracketed-paste handling as text.
-          await insert("'" + imagePath.replace(/'/g, "'\\''") + "' ", guarded);
+          await insert(shellQuotePaths([imagePath]), guarded, epoch);
         }
       };
       const enqueuePaste = (work: () => Promise<void>) => {
-        const task = pasteQueue.then(work);
+        const epoch = connectionEpoch;
+        const signal = pasteController.signal;
+        const task = pasteQueue.then(() => {
+          signal.throwIfAborted();
+          if (epoch !== connectionEpoch) throw new Error("The terminal connection changed before this paste.");
+          return work();
+        });
         pasteQueue = task.catch(() => {});
         return task;
       };
@@ -515,6 +556,37 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
         void enqueuePaste(() => performPaste(clipboard, false)).catch((error: unknown) => { if (!disposed) reportError(error instanceof Error ? error.message : "Paste failed."); });
       };
       container.addEventListener("paste", onPaste, true);
+      const performDrop = async (drop: TerminalDrop) => {
+        const epoch = connectionEpoch;
+        const signal = pasteController.signal;
+        if (!connected()) throw new Error("Connect this terminal before dropping files.");
+        const native = "native" in drop ? drop.native : undefined;
+        if (native && HAS_TAURI && !host) {
+          validateDroppedFiles(native.files);
+          await insert(shellQuotePaths(native.files.map(file => file.path)), false, epoch);
+          return;
+        }
+        const files = "files" in drop ? drop.files : await readNativeDrop(drop.native, signal);
+        validateDroppedFiles(files);
+        signal.throwIfAborted();
+        const uploaded = await uploadTerminalDrop(files, HAS_TAURI ? host ?? "" : host, signal);
+        try {
+          signal.throwIfAborted();
+          await insert(shellQuotePaths(uploaded.paths), false, epoch);
+        } catch (error: unknown) {
+          try { await discardTerminalDrop(uploaded.id); }
+          catch { reportError("The drop was not pasted, but its temporary copy could not be removed. Reconnect the device to clean it up."); }
+          throw error;
+        }
+      };
+      const unregisterDrop = registerTerminalDropTarget(container, drop => {
+        cancelDictationInput();
+        if (useStore.getState().tiles.some(tile => tile.id === tileId)) useStore.getState().setActive(tileId);
+        term.focus();
+        void enqueuePaste(() => performDrop(drop)).catch((error: unknown) => {
+          if (!disposed) reportError(error instanceof Error ? error.message : "File drop failed.");
+        }).finally(() => { if ("native" in drop) void releaseNativeDrop(drop.native).catch(() => {}); });
+      });
 
       const unregisterControl = registerTerminalAppControl(tileId, createTerminalAppController({
         state: () => ({ connected: connected(), cols: term.cols, rows: term.rows, bufferLines: term.buffer.active.length, viewportY: term.buffer.active.viewportY, hasSelection: term.hasSelection(), bracketedPasteMode: term.modes.bracketedPasteMode }),
@@ -562,6 +634,13 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
       resizeObserver.observe(container);
 
       return () => {
+        disposed = true;
+        recovery?.stop();
+        retryRef.current = null;
+        window.removeEventListener("pzza:quick-chat-cancel", cancelRecovery);
+        inputListener.dispose();
+        transportResize.dispose();
+        unregisterDrop();
         unregisterControl();
         unregisterDictation?.();
         manualKey.dispose();
@@ -607,8 +686,11 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
     };
     queueMicrotask(() => { if (!cancelled) cleanup = initialize(); });
     return () => { cancelled = true; cleanup?.(); };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    if (retryToken > 0) retryRef.current?.();
+  }, [retryToken]);
 
   useEffect(() => {
     const term = termRef.current;

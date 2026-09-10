@@ -25,17 +25,17 @@ function estimateDescription(w: SpendWindow): string {
 
 function Trend({ days, color }: { days: SpendDay[]; color: string }) {
   if (!days.length) return null;
-  const max = Math.max(...days.map((d) => d.cost ?? 0), 0.01);
+  // Token counts remain measurable even when a model's price is unavailable.
+  // A missing rate must not turn a day into an invented full-height spend bar.
+  const max = Math.max(...days.map((day) => day.tokens), 1);
   return (
-    <div className="usage-trend" role="img" aria-label="Daily API-equivalent estimates, last 30 days. Outlined bars have unavailable or partial pricing.">
-      {days.map((d) => (
+    <div className="usage-trend" role="img" aria-label="Daily token usage, last 30 days. Bar height represents tokens, not cost; pricing availability does not affect the bars.">
+      {days.map((day) => (
         <span
-          key={d.day}
+          key={day.day}
           className="usage-trend-bar"
-          style={d.cost === null
-            ? { height: "100%", border: `1px dashed ${color}`, boxSizing: "border-box" }
-            : { height: `${Math.max(2, Math.round((d.cost / max) * 100))}%`, background: color }}
-          title={`${d.day} · ${estimateDescription(d)}`}
+          style={{ height: `${day.tokens > 0 ? Math.max(2, Math.round((day.tokens / max) * 100)) : 0}%`, background: color }}
+          title={`${day.day} · ${fmtTokens(day.tokens)} tokens · ${estimateDescription(day)}`}
         />
       ))}
     </div>
@@ -55,9 +55,21 @@ export function UsageSpend({ spend, color }: { spend: AccountSpend; color: strin
     <div className="usage-detail" title="Standard short-context API-equivalent estimates from local token counts. Long-context and service-tier adjustments are not included.">
       <div className="muted">API estimate (short context), not billed spend.</div>
       <div className="usage-detail-row">
-        <span className="usage-detail-label">Usage trend</span>
+        <span className="usage-detail-label">Token trend</span>
         <Trend days={spend.days} color={color} />
       </div>
+      {spend.days.length > 0 && <details className="usage-daily-details">
+        <summary>Daily breakdown</summary>
+        <div className="usage-daily-scroll">
+          <table>
+            <caption>Daily token usage and API-equivalent estimates</caption>
+            <thead><tr><th scope="col">Day</th><th scope="col">Tokens</th><th scope="col">Estimate</th></tr></thead>
+            <tbody>{spend.days.map(day => <tr key={day.day}>
+              <th scope="row">{day.day}</th><td>{fmtTokens(day.tokens)}</td><td title={estimateDescription(day)}>{estimateLabel(day)}</td>
+            </tr>)}</tbody>
+          </table>
+        </div>
+      </details>}
       {row("Today", spend.today)}
       {row("Yesterday", spend.yesterday)}
       {row("Last 30 days", spend.window)}
