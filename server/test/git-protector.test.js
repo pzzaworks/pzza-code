@@ -30,6 +30,135 @@ async function stage(root, filename, content = "private configuration\n") {
   await git(root, "add", "--", filename);
 }
 
+async function bareRepository(t, prefix = "pzza-git-remote-") {
+  const root = await mkdtemp(path.join(os.tmpdir(), prefix));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await git(root, "init", "--bare", "-q", "-b", "main");
+  return root;
+}
+
+async function protectedRemote(t) {
+  const root = await repository(t);
+  const remote = await bareRepository(t);
+  await git(root, "remote", "add", "origin", remote);
+  await git(root, "push", "-qu", "origin", "main");
+  const base = await git(root, "rev-parse", "HEAD");
+  const result = await runGitProtection({ path: root, operation: "commit" });
+  assert.equal(result.approved, true);
+  return { root, remote, base };
+}
+
+async function unpublishedRemovedHistory(root, base) {
+  await stage(root, ".env.production");
+  const unsafeTree = await git(root, "write-tree");
+  const unsafe = await git(root, "commit-tree", unsafeTree, "-p", base, "-m", "Imported sensitive history");
+  await git(root, "rm", "--cached", ".env.production");
+  const removedTree = await git(root, "write-tree");
+  const head = await git(root, "commit-tree", removedTree, "-p", unsafe, "-m", "Remove sensitive history");
+  await git(root, "update-ref", "refs/heads/main", head);
+  await git(root, "reset", "--hard", "-q", "main");
+  return { unsafe, head };
+}
+
+async function protectedRemoteWithPublishedSensitiveHistory(t) {
+  const root = await repository(t);
+  const remote = await bareRepository(t, "pzza-published-history-");
+  await git(root, "remote", "add", "origin", remote);
+  await stage(root, ".env.production");
+  await git(root, "commit", "-qm", "Publish configuration before protection");
+  await git(root, "rm", ".env.production");
+  await git(root, "commit", "-qm", "Remove published configuration before protection");
+  const base = await git(root, "rev-parse", "HEAD");
+  await git(root, "push", "-qu", "origin", "main");
+  assert.equal((await runGitProtection({ path: root, operation: "commit" })).approved, true);
+  return { root, remote, base };
+}
+
+async function rejectedGit(root, args, env = process.env) {
+  const error = await new Promise((resolve) => {
+    const child = execFile("git", args, { cwd: root, env, timeout: 30000 }, (failure, stdout, stderr) => {
+      if (failure) Object.assign(failure, { stdout, stderr });
+      resolve(failure || null);
+    });
+    child.stdin?.on("error", () => {});
+    child.stdin?.end();
+  });
+  assert.ok(error, `git ${args.join(" ")} should be rejected`);
+  return error;
+}
+
+async function hookPushWorker(root, remoteUrl, updates, env) {
+  const module = new URL("../lib/git-protector.js", import.meta.url).href;
+  const source = `import { gitProtectionWorker } from ${JSON.stringify(module)};
+let input = "";
+for await (const chunk of process.stdin) input += chunk;
+try { process.stdout.write(JSON.stringify(await gitProtectionWorker(JSON.parse(input)))); }
+catch (error) { process.stderr.write(error.message); process.exitCode = 1; }`;
+  return new Promise((resolve, reject) => {
+    const child = execFile(process.execPath, ["--input-type=module", "-e", source], { cwd: root, env, timeout: 30000 }, (error, stdout, stderr) => {
+      if (error) return reject(new Error(`Hook worker failed: ${stderr || error.message}`));
+      try { resolve(JSON.parse(stdout)); } catch { reject(new Error("Hook worker returned an invalid response")); }
+    });
+    child.stdin?.on("error", () => {});
+    child.stdin?.end(JSON.stringify({ path: root, operation: "hook_push", remote: "origin", remoteUrl, updates }));
+  });
+}
+
+function gitErrorOutput(error) {
+  return `${error.stdout || ""}${error.stderr || ""}${error.message || ""}`;
+}
+
+function generatedToken() {
+  return "ghp_" + crypto.randomBytes(27).toString("hex").slice(0, 36);
+}
+
+async function gitLookupBoundary(t, mode, output = "") {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "pzza-git-ls-remote-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const stateFile = path.join(directory, "state.json");
+  const realGit = (await execute("/bin/sh", ["-c", "command -v git"], { timeout: 5000 })).stdout.trim();
+  await writeFile(stateFile, JSON.stringify({ mode, output, calls: 0, urlCalls: 0, arguments: [] }));
+  await writeFile(path.join(directory, "git"), `#!${process.execPath}
+const fs = require("node:fs");
+const { spawnSync } = require("node:child_process");
+const args = process.argv.slice(2);
+if (args.includes("ls-remote") && args.includes("--get-url") && process.env.PZZA_GIT_LOOKUP_MODE === "rewrite") {
+  const state = JSON.parse(fs.readFileSync(process.env.PZZA_GIT_LOOKUP_STATE, "utf8"));
+  state.urlCalls += 1;
+  fs.writeFileSync(process.env.PZZA_GIT_LOOKUP_STATE, JSON.stringify(state));
+  process.stdout.write(state.output);
+  return;
+}
+if (args.includes("ls-remote") && !args.includes("--get-url")) {
+  const state = JSON.parse(fs.readFileSync(process.env.PZZA_GIT_LOOKUP_STATE, "utf8"));
+  state.calls += 1;
+  state.arguments.push(args);
+  fs.writeFileSync(process.env.PZZA_GIT_LOOKUP_STATE, JSON.stringify(state));
+  if (state.mode === "error") { process.stderr.write("controlled ls-remote failure\\n"); process.exit(72); }
+  if (state.mode === "timeout") { setTimeout(() => process.exit(0), 15000); }
+  else process.stdout.write(state.output);
+  return;
+}
+const result = spawnSync(process.env.PZZA_GIT_TEST_REAL_GIT, args, {
+  env: process.env,
+  input: fs.readFileSync(0), encoding: "buffer", maxBuffer: 32 * 1024 * 1024,
+});
+process.stdout.write(result.stdout || "");
+process.stderr.write(result.stderr || "");
+process.exitCode = result.status ?? 1;
+`, { mode: 0o700 });
+  return {
+    env: {
+      ...process.env,
+      PATH: `${directory}${path.delimiter}${process.env.PATH}`,
+      PZZA_GIT_LOOKUP_STATE: stateFile,
+      PZZA_GIT_LOOKUP_MODE: mode,
+      PZZA_GIT_TEST_REAL_GIT: realGit,
+    },
+    state: async () => JSON.parse(await readFile(stateFile, "utf8")),
+  };
+}
+
 test("protection rejects internal operations and invalid device/repository input", async () => {
   await assert.rejects(runGitProtection({ operation: "hook_push", path: "/tmp" }), /Invalid/);
   await assert.rejects(runGitProtection({ operation: "commit", path: "/tmp", host: "-oProxyCommand=anything" }), /Invalid/);
@@ -183,6 +312,128 @@ test("pre-push blocks unpublished sensitive history, including a new remote bran
   await assert.rejects(git(root, "push", "origin", "HEAD:refs/heads/new-branch"));
 });
 
+test("pre-push trusts only the actual destination HEAD for an atomic branch and annotated tag", async t => {
+  const root = await repository(t);
+  const remote = await bareRepository(t, "pzza-published-history-");
+  await git(root, "remote", "add", "origin", remote);
+  await stage(root, ".env.production");
+  await git(root, "commit", "-qm", "Publish then remove configuration");
+  await git(root, "rm", ".env.production");
+  await git(root, "commit", "-qm", "Remove published configuration");
+  const published = await git(root, "rev-parse", "HEAD");
+  await git(root, "push", "-qu", "origin", "main");
+  assert.equal(await git(remote, "rev-parse", "HEAD"), published);
+
+  const previousHook = path.join(root, ".git", "hooks", "pre-push");
+  const invocation = path.join(root, ".git", "pre-push-invocation");
+  await writeFile(previousHook, `#!/bin/sh
+printf '%s\\n%s\\n' "$1" "$2" > ${JSON.stringify(invocation)}
+`, { mode: 0o700 });
+  assert.equal((await runGitProtection({ path: root, operation: "commit" })).approved, true);
+  const hooks = await git(root, "config", "--path", "--get", "core.hooksPath");
+  assert.match(await readFile(path.join(hooks, "pre-push"), "utf8"), /remoteUrl: process\.argv\[3\] \|\| ''/);
+
+  await stage(root, "release.txt", "Safe release contents.\n");
+  await git(root, "commit", "-qm", "Prepare safe release");
+  const head = await git(root, "rev-parse", "HEAD");
+  await git(root, "tag", "-a", "release-v1", "-m", "Release v1");
+  const tag = await git(root, "rev-parse", "refs/tags/release-v1^{tag}");
+  await git(root, "push", "-q", "--atomic", "origin", "main", "refs/tags/release-v1");
+
+  assert.equal(await git(remote, "rev-parse", "HEAD"), head);
+  assert.equal(await git(remote, "rev-parse", "refs/tags/release-v1^{tag}"), tag);
+  assert.equal(await git(remote, "rev-parse", "refs/tags/release-v1^{commit}"), head);
+  assert.equal(await readFile(invocation, "utf8"), `origin\n${remote}\n`);
+});
+
+test("pre-push blocks unpublished removed contents and direct or nested secret tag annotations", async t => {
+  {
+    const { root, remote, base } = await protectedRemote(t);
+    await unpublishedRemovedHistory(root, base);
+    const error = await rejectedGit(root, ["push", "origin", "main"]);
+    assert.match(gitErrorOutput(error), /\.env\.production/);
+    assert.equal(await git(remote, "rev-parse", "refs/heads/main"), base);
+    const featureError = await rejectedGit(root, ["push", "origin", "HEAD:refs/heads/feature"]);
+    assert.match(gitErrorOutput(featureError), /\.env\.production/);
+    await assert.rejects(git(remote, "rev-parse", "--verify", "refs/heads/feature"));
+  }
+
+  {
+    const { root, remote, base } = await protectedRemote(t);
+    const directToken = generatedToken();
+    await git(root, "tag", "-a", "direct-secret-tag", "-m", `Direct annotation ${directToken}`);
+    const directError = await rejectedGit(root, ["push", "origin", "refs/tags/direct-secret-tag"]);
+    assert.match(gitErrorOutput(directError), /tag annotation/);
+    assert.equal(gitErrorOutput(directError).includes(directToken), false);
+    await assert.rejects(git(remote, "rev-parse", "--verify", "refs/tags/direct-secret-tag"));
+
+    const nestedToken = generatedToken();
+    await git(root, "tag", "-a", "nested-secret-inner", "-m", `Nested annotation ${nestedToken}`);
+    const inner = await git(root, "rev-parse", "refs/tags/nested-secret-inner^{tag}");
+    await git(root, "tag", "-a", "nested-secret-tag", "-m", "Safe outer annotation", inner);
+    const nestedError = await rejectedGit(root, ["push", "origin", "refs/tags/nested-secret-tag"]);
+    assert.match(gitErrorOutput(nestedError), /tag annotation/);
+    assert.equal(gitErrorOutput(nestedError).includes(nestedToken), false);
+    await assert.rejects(git(remote, "rev-parse", "--verify", "refs/tags/nested-secret-tag"));
+
+    const blob = await git(root, "hash-object", "-w", "readme.txt");
+    await git(root, "tag", "-a", "blob-target-tag", "-m", "Invalid tag target", blob);
+    await rejectedGit(root, ["push", "origin", "refs/tags/blob-target-tag"]);
+    await assert.rejects(git(remote, "rev-parse", "--verify", "refs/tags/blob-target-tag"));
+    assert.equal(await git(remote, "rev-parse", "refs/heads/main"), base);
+  }
+});
+
+test("untrusted destination advertisements fall back to a sensitive full-history scan", async t => {
+  const { root, remote, base } = await protectedRemoteWithPublishedSensitiveHistory(t);
+
+  await git(root, "push", "-q", "origin", "HEAD:refs/heads/trusted-feature");
+  assert.equal(await git(remote, "rev-parse", "refs/heads/trusted-feature"), base);
+
+  const advertisements = [
+    ["invalid", "not an ls-remote record\n"],
+    ["duplicate", `${base}\tHEAD\n${base}\tHEAD\n`],
+    ["oversized", "x".repeat(128 * 1024)],
+    ["mismatched", `${base}\tHEAD\n${base}\trefs/heads/feature\n`],
+    ["unknown", `${"f".repeat(40)}\tHEAD\n`],
+    ["error", ""],
+    ["timeout", ""],
+  ];
+  const updates = `refs/heads/main ${base} refs/heads/feature ${"0".repeat(40)}\n`;
+  for (const [mode, output] of advertisements) {
+    const boundary = await gitLookupBoundary(t, mode, output);
+    const result = await hookPushWorker(root, remote, updates, boundary.env);
+    assert.equal(result.approved, false, mode);
+    assert.ok(result.findings.some(finding => finding.path === ".env.production"), mode);
+    const state = await boundary.state();
+    assert.equal(state.calls, 1, mode);
+    assert.deepEqual(state.arguments[0].slice(state.arguments[0].indexOf("ls-remote") + 1), ["--", remote, "HEAD", "refs/heads/feature"], mode);
+    assert.equal(await git(remote, "rev-parse", "refs/heads/main"), base, mode);
+    await assert.rejects(git(remote, "rev-parse", "--verify", "refs/heads/feature"));
+  }
+
+  const rewritten = await gitLookupBoundary(t, "rewrite", `${remote}-rewritten\n`);
+  const result = await hookPushWorker(root, remote, updates, rewritten.env);
+  assert.equal(result.approved, false);
+  assert.ok(result.findings.some(finding => finding.path === ".env.production"));
+  const rewriteState = await rewritten.state();
+  assert.equal(rewriteState.urlCalls, 1);
+  assert.equal(rewriteState.calls, 0);
+  await assert.rejects(git(remote, "rev-parse", "--verify", "refs/heads/feature"));
+});
+
+test("pre-push ignores replacement objects while scanning unpublished history", async t => {
+  const { root, remote, base } = await protectedRemote(t);
+  const { unsafe, head } = await unpublishedRemovedHistory(root, base);
+  const replacement = await git(root, "commit-tree", await git(root, "rev-parse", `${base}^{tree}`), "-p", base, "-m", "Replacement");
+  await git(root, "replace", unsafe, replacement);
+  assert.doesNotMatch(await git(root, "log", "--raw", "--format=", `${base}..${head}`), /\.env\.production/);
+
+  const error = await rejectedGit(root, ["push", "origin", "main"]);
+  assert.match(gitErrorOutput(error), /\.env\.production/);
+  assert.equal(await git(remote, "rev-parse", "refs/heads/main"), base);
+});
+
 test("protection rejects symbolic-link hook directories without overwriting their target", async (t) => {
   const root = await repository(t);
   const outside = await mkdtemp(path.join(os.tmpdir(), "pzza-hook-target-"));
@@ -251,7 +502,9 @@ test("new push destinations cannot use tracking refs from a different fetch URL 
   await git(root, "push", "-qu", "origin", "main");
   assert.equal((await runGitProtection({ path: root, operation: "commit" })).approved, true);
   await git(root, "remote", "set-url", "--push", "origin", destination);
-  await assert.rejects(git(root, "push", "origin", "main"));
+  const error = await rejectedGit(root, ["push", "origin", "main"]);
+  assert.match(gitErrorOutput(error), /\.env\.production/);
+  assert.doesNotMatch(gitErrorOutput(error), /could not verify this operation/i);
   assert.equal(await git(destination, "for-each-ref", "--format=%(objectname)"), "");
 });
 
