@@ -6,33 +6,13 @@ import { BRIDGE_TOOLS } from "./bridge-tools.js";
 import { AGENTS_HUB_TOOLS } from "./agents-hub-tools.js";
 import { GIT_TOOLS } from "./git-tools.js";
 
-const clientId = { type: "string", description: "Explicit app client ID from app_list_clients" };
-const tileId = { type: "string", description: "Tile ID from app_get_state" };
-const layout = { type: "string", enum: ["full", "side-by-side", "stacked"] };
-function appTool(name, description, action, properties = {}, required = []) {
-  return {
-    name, description,
-    inputSchema: { type: "object", properties: { clientId, ...properties }, required: ["clientId", ...required], additionalProperties: false },
-    run: ({ clientId: selectedClient, ...args }) => post("/app/control/command", { clientId: selectedClient, action, args }),
-  };
-}
+import { APP_TOOLS } from "./app-tools.js";
 
 const TOOLS = [
   ...BRIDGE_TOOLS,
   ...AGENTS_HUB_TOOLS,
   ...GIT_TOOLS,
-  {
-    name: "app_list_clients",
-    description: "List live app windows that enabled agent control. Select an explicit clientId for UI commands.",
-    inputSchema: { type: "object", properties: {}, additionalProperties: false },
-    run: () => get("/app/control/clients"),
-  },
-  appTool("app_get_state", "Read the selected app window's workspace, tiles and panel state.", "get_state"),
-  appTool("app_focus_tile", "Focus an existing tile in the selected app window.", "focus_tile", { tileId }, ["tileId"]),
-  appTool("app_open_editor", "Open a tile editor, optionally selecting its root and file path.", "open_editor", { tileId, path: { type: "string" }, root: { type: "string" }, layout }, ["tileId"]),
-  appTool("app_close_editor", "Close a tile's editor panel.", "close_editor", { tileId }, ["tileId"]),
-  appTool("app_set_layout", "Set the editor layout in an existing tile.", "set_layout", { tileId, layout }, ["tileId", "layout"]),
-  appTool("app_set_columns", "Set the workspace grid column count.", "set_columns", { columns: { type: "integer", minimum: 1, maximum: 8 } }, ["columns"]),
+  ...APP_TOOLS,
   {
     name: "device_info",
     description: "Inspect operating system, CPU, memory and network addresses on the app host or an SSH device.",
@@ -84,24 +64,25 @@ const TOOLS = [
   {
     name: "create_session",
     description:
-      "Create a new detached tmux session on this device, optionally bound to a Claude/Codex account.",
+      "Create a new detached tmux session on the selected device, optionally bound to a Claude/Codex account.",
     inputSchema: {
       type: "object",
       properties: {
-        name: { type: "string", description: "Session name" },
+        name: { type: "string", minLength: 1, maxLength: 128, pattern: "^[A-Za-z0-9_-]+$", description: "Session name" },
+        host: { type: "string", maxLength: 128, description: "Trusted SSH alias; empty selects the app host" },
         cwd: { type: "string", description: "Working directory (optional)" },
         account: {
           type: "object",
           description: "Optional agent account to bind: { provider, dir }.",
           properties: {
-            provider: { type: "string" },
+            provider: { type: "string", enum: ["claude", "codex"] },
             dir: { type: "string" },
           },
         },
       },
       required: ["name"],
     },
-    run: (a) => post("/create", { name: a.name, cwd: a.cwd, account: a.account }),
+    run: (a) => post("/create", { name: a.name, cwd: a.cwd, account: a.account, host: a.host }),
   },
   {
     name: "kill_session",
@@ -172,8 +153,22 @@ const TOOLS = [
   {
     name: "mcp_config",
     description: "Show the MCP server path and which agent frameworks it is wired into.",
-    inputSchema: { type: "object", properties: {} },
-    run: () => get("/mcp/config"),
+    annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
+    inputSchema: { type: "object", properties: {
+      agentHost: { type: "string", maxLength: 128, pattern: "^(?:[A-Za-z0-9._][A-Za-z0-9._@-]*)?$" },
+      mcpPath: { type: "string", maxLength: 4096, pattern: "^(?:/[^\\u0000-\\u001f\\u007f]*)?$" },
+    }, additionalProperties: false },
+    run: a => get(`/mcp/config${qs({ agentHost: a.agentHost, mcpPath: a.mcpPath })}`),
+  },
+  {
+    name: "repair_integrations",
+    description: "Check and repair installed MCP launcher paths on the app host or a trusted SSH device, preserving private backups. Only the pinned official Railway MCP dependency may be provisioned automatically.",
+    annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
+    inputSchema: { type: "object", properties: {
+      host: { type: "string", maxLength: 128, pattern: "^(?:[A-Za-z0-9._][A-Za-z0-9._@-]*)?$" },
+      fresh: { type: "boolean" },
+    }, additionalProperties: false },
+    run: a => post("/mcp/repair", { host: a.host ?? "", fresh: a.fresh !== false }),
   },
   {
     name: "mcp_install",

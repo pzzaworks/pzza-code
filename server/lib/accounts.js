@@ -1,12 +1,11 @@
 // Claude / Codex agent accounts on this device: discovery, identity, OAuth/token
-// reading, and the env arg that points an agent CLI at a specific account.
+// reading for the selected account.
 import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { shQuote } from "./shell.js";
 
 export function jwtClaims(token) {
   try {
@@ -127,14 +126,4 @@ export function listAccounts() {
     }
     return { provider: acc.provider, label: acc.label, dir: acc.dir, email, plan };
   });
-}
-
-// Env var that points an agent CLI at a specific account's config dir.
-export function accountEnvArg(account) {
-  if (!account || typeof account.dir !== "string") return "";
-  const dir = path.resolve(account.dir);
-  const home = os.homedir();
-  if (!home || !dir.startsWith(home) || !fs.existsSync(dir)) return "";
-  const key = account.provider === "codex" ? "CODEX_HOME" : "CLAUDE_CONFIG_DIR";
-  return ` -e ${shQuote(`${key}=${dir}`)}`;
 }

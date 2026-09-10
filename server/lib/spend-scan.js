@@ -19,6 +19,9 @@ const PRICING = {
   "claude-sonnet-4-6": [3.0, 15.0],
   "claude-sonnet-4-5": [3.0, 15.0],
   "claude-haiku-4-5": [1.0, 5.0],
+  // Standard short-context API rates, verified 2026-09-10:
+  // https://developers.openai.com/api/docs/pricing
+  "gpt-6-astra": [10.0, 50.0],
   "gpt-5.6-sol": [4.0, 20.0],
   "gpt-5.6-terra": [2.0, 12.0],
   "gpt-5.6-luna": [0.2, 1.2],
@@ -62,7 +65,7 @@ function modelRates(model, day) {
 
 function bucketCost(b, model, day) {
   const rates = modelRates(model, day);
-  if (!rates) return 0;
+  if (!rates) return null;
   const [ri, wo] = rates;
   return (
     (b[0] * ri +
@@ -321,6 +324,26 @@ async function parseTranscript(provider, file, st, prev) {
   }
 }
 
+function emptySpendWindow() {
+  return { cost: 0, pricedCost: 0, tokens: 0, unpricedTokens: 0, unpricedModels: [] };
+}
+
+function addSpend(total, buckets, model, day) {
+  const tokens = buckets.reduce((a, b) => a + b, 0);
+  if (!tokens) return;
+  const cost = bucketCost(buckets, model, day);
+  total.tokens += tokens;
+  if (cost === null) {
+    total.unpricedTokens += tokens;
+    if (!total.unpricedModels.includes(model)) total.unpricedModels.push(model);
+    total.unpricedModels.sort();
+  } else {
+    total.pricedCost += cost;
+  }
+  // A known subtotal is useful, but must never masquerade as a complete total.
+  total.cost = total.unpricedTokens ? null : total.pricedCost;
+}
+
 // All discovery, parsing, and disk cache work runs in the scan worker.
 export async function scanSpend(now) {
   const dayStr = (ms) => {
@@ -352,24 +375,13 @@ export async function scanSpend(now) {
       nextCache[file] = entry;
       mergeDays(days, entry.days);
     }
-    const win = { today: [0, 0], yesterday: [0, 0], window: [0, 0] };
+    const win = { today: emptySpendWindow(), yesterday: emptySpendWindow(), window: emptySpendWindow() };
     for (const [day, models] of Object.entries(days)) {
       const inWindow = new Date(`${day}T00:00:00`).getTime() >= horizon;
       for (const [model, buckets] of Object.entries(models)) {
-        const cost = bucketCost(buckets, model, day);
-        const tokens = buckets.reduce((a, b) => a + b, 0);
-        if (day === dayToday) {
-          win.today[0] += cost;
-          win.today[1] += tokens;
-        }
-        if (day === dayYesterday) {
-          win.yesterday[0] += cost;
-          win.yesterday[1] += tokens;
-        }
-        if (inWindow) {
-          win.window[0] += cost;
-          win.window[1] += tokens;
-        }
+        if (day === dayToday) addSpend(win.today, buckets, model, day);
+        if (day === dayYesterday) addSpend(win.yesterday, buckets, model, day);
+        if (inWindow) addSpend(win.window, buckets, model, day);
       }
     }
     // Per-day totals across models for the trailing window (oldest first), for
@@ -378,20 +390,17 @@ export async function scanSpend(now) {
     const series = [];
     for (let i = SPEND_WINDOW_DAYS - 1; i >= 0; i--) {
       const day = dayStr(now - i * 86400000);
-      let cost = 0;
-      let tokens = 0;
+      const total = emptySpendWindow();
       for (const [model, buckets] of Object.entries(days[day] || {})) {
-        cost += bucketCost(buckets, model, day);
-        tokens += buckets.reduce((a, b) => a + b, 0);
+        addSpend(total, buckets, model, day);
       }
-      series.push({ day, cost, tokens });
+      series.push({ day, ...total });
     }
     data.push({
       provider: acc.provider,
       label: acc.label,
-      today: { cost: win.today[0], tokens: win.today[1] },
-      yesterday: { cost: win.yesterday[0], tokens: win.yesterday[1] },
-      window: { cost: win.window[0], tokens: win.window[1] },
+      pricingBasis: "standard-api-short-context",
+      ...win,
       days: series,
     });
   }

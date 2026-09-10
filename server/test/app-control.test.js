@@ -3,6 +3,7 @@ import test from "node:test";
 import http from "node:http";
 import { once } from "node:events";
 import { createAppControl, createAppControlRouter, validateCommand } from "../lib/app-control.js";
+import { APP_COMMANDS } from "../lib/app-control-schema.js";
 import { TOOLS } from "../../mcp/lib/tools.js";
 
 test("UI command is acknowledged by the selected live client only", async () => {
@@ -96,7 +97,8 @@ test("strict UI action and argument validation rejects unsafe or unsupported req
 
 test("MCP UI tools require explicit clients and expose no page-content automation", () => {
   const tools = TOOLS.filter((tool) => tool.name.startsWith("app_"));
-  assert.equal(tools.length, 7);
+  assert.equal(tools.length, Object.keys(APP_COMMANDS).length + 1);
+  assert.deepEqual(new Set(tools.filter(tool => tool.name !== "app_list_clients").map(tool => tool.name.slice(4))), new Set(Object.keys(APP_COMMANDS)));
   for (const tool of tools.filter((tool) => tool.name !== "app_list_clients")) assert.ok(tool.inputSchema.required.includes("clientId"));
   assert.ok(!tools.some((tool) => /click|evaluate|inspect/.test(tool.name)));
 });
@@ -116,4 +118,22 @@ test("isolated HTTP broker routes registration, commands and actual UI results",
   assert.equal((await post("result", { clientId: "window", id: command.id, result: { columns: 3 } })).status, 200);
   assert.deepEqual(await (await pending).json(), { columns: 3 });
   assert.equal((await post("register", { clientId: "bad", label: "x".repeat(1024 * 1024) })).status, 413);
+});
+
+test("array uniqueness ignores object key order and rejects duplicate nested preferences", () => {
+  assert.throws(() => validateCommand("configure_notifications", { categories: [{ category: "sync", enabled: true }, { enabled: true, category: "sync" }] }), /unique/);
+  assert.throws(() => validateCommand("configure_notifications", { categories: [{ category: "sync", enabled: true, unknown: true }] }), /Unknown/);
+});
+
+test("app tool annotations distinguish explicit reads, mutations and destructive operations", () => {
+  for (const action of ["get_state", "editor_read_buffer", "terminal_read_output", "get_integrations"]) {
+    const tool = TOOLS.find(item => item.name === `app_${action}`);
+    assert.equal(tool.annotations.readOnlyHint, true, action);
+    assert.equal(tool.annotations.destructiveHint, false, action);
+  }
+  for (const action of ["terminate_tile", "editor_discard", "editor_delete_file", "terminal_submit", "close_app"]) {
+    const tool = TOOLS.find(item => item.name === `app_${action}`);
+    assert.equal(tool.annotations.readOnlyHint, false, action);
+    assert.equal(tool.annotations.destructiveHint, true, action);
+  }
 });

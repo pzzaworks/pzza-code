@@ -5,7 +5,7 @@ import { useStore } from "../state/store";
 import { Modal } from "../ui/Modal";
 import { useExclusiveMenu } from "../ui/menuBus";
 import { ALL_WORKSPACE_ID, DEFAULT_WORKSPACE_ID, WORKSPACE_COLORS } from "../workspaces";
-import { altBadge, digitFromCode } from "../shortcuts";
+import { altBadge, digitFromCode, NEW_WORKSPACE_SHORTCUT } from "../shortcuts";
 import { workspaceIcon, DEFAULT_WORKSPACE_ICON } from "../workspaceIcons";
 import { IconPicker } from "../ui/IconPicker";
 import { SESSION_DND, SESSION_TILE_DND, sessionDisplayName } from "../sessionMeta";
@@ -19,7 +19,7 @@ interface PendingMove {
   wsId: string;
 }
 
-export function WorkspaceTabs() {
+export function WorkspaceTabs({ openRequest = 0 }: { openRequest?: number }) {
   const workspaces = useStore((s) => s.workspaces);
   const workspaceId = useStore((s) => s.activeWorkspaceId);
   const setWorkspace = useStore((s) => s.setWorkspace);
@@ -93,6 +93,25 @@ export function WorkspaceTabs() {
   const dragEndedAt = useRef(-Infinity);
   const [pending, setPending] = useState<PendingMove | null>(null);
   const ref = useRef<HTMLDivElement>(null);
+  const addButtonRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (!openRequest || !addButtonRef.current) return;
+    setSettingsFor(null);
+    setAddRect(addButtonRef.current.getBoundingClientRect());
+    setAddOpen(true);
+  }, [openRequest]);
+  useEffect(() => {
+    if (!addOpen) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      setAddOpen(false);
+      setPickerOpen(false);
+      addButtonRef.current?.focus();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [addOpen]);
 
   const closeMenus = useCallback(() => {
     setSettingsFor(null);
@@ -266,13 +285,16 @@ export function WorkspaceTabs() {
 
       <div className="ws-tab-wrap ws-tabs-add-wrap">
         <button
+          ref={addButtonRef}
           className="ws-tab-add"
           onClick={(e) => {
             const wasOpen = addOpen;
             setAddOpen(!wasOpen);
             if (!wasOpen) setAddRect(e.currentTarget.getBoundingClientRect());
           }}
-          title="New workspace"
+          title={`New workspace (${NEW_WORKSPACE_SHORTCUT.label})`}
+          aria-label="New workspace"
+          aria-keyshortcuts={NEW_WORKSPACE_SHORTCUT.keys}
         >
           <Plus size={15} strokeWidth={2.2} />
         </button>
@@ -291,7 +313,7 @@ export function WorkspaceTabs() {
         ? createPortal(
             <div className="menu menu-panel pzza-portal" style={dropStyle(addRect)}>
               <div className="menu-body">
-                <div className="menu-title">New workspace</div>
+                <div className="menu-title">New workspace <kbd className="kbd" aria-hidden="true">{NEW_WORKSPACE_SHORTCUT.label}</kbd></div>
                 <div className="ws-chip">
                   <button
                     className={`ws-chip-avatar ${pickerOpen ? "on" : ""}`}

@@ -1,3 +1,4 @@
+import { registerAppControlHandler, registerAppControlState } from "../appControlRuntime";
 import { ArrowUpRight, Bell, X } from "lucide-react";
 import { requestDesktopAlerts } from "../desktopNotifications";
 import { Select } from "../ui/Select";
@@ -7,7 +8,7 @@ import { useNotifications, NOTIFICATION_EVENTS, NOTIFICATION_EVENT_CATEGORIES, t
 import { useStore } from "../state/store";
 import { DEFAULT_WORKSPACE_ID } from "../workspaces";
 
-function openNotice(item: Notice) {
+export function openNotice(item: Notice) {
   useNotifications.getState().read(item.id);
   if (item.target?.section) window.dispatchEvent(new CustomEvent("pzza-notification-section", { detail: item.target.section }));
   if (item.target?.tileId) {
@@ -52,6 +53,25 @@ export function NotificationsSettings({ page }: { page: "activity" | "preference
   const [unreadOnly, setUnreadOnly] = useState(false);
   const [category, setCategory] = useState<NotificationCategory | "all">("all");
   const [limit, setLimit] = useState(15);
+  const [eventsExpanded, setEventsExpanded] = useState(false);
+  const viewRef = useRef({ page, unreadOnly, category, limit, eventsExpanded });
+  viewRef.current = { page, unreadOnly, category, limit, eventsExpanded };
+  useEffect(() => {
+    const snapshot = () => ({ ...viewRef.current });
+    const cleanups = [registerAppControlState("notificationView", snapshot), registerAppControlHandler("get_notification_view", snapshot),
+      registerAppControlHandler("set_notification_view", args => {
+        const current = viewRef.current;
+        if (args.eventsExpanded !== undefined && current.page !== "preferences") throw new Error("Open notification preferences to expand individual events.");
+        if ((args.unreadOnly !== undefined || args.category !== undefined || args.limit !== undefined) && current.page !== "activity") throw new Error("Open notification activity to set history filters.");
+        if (typeof args.unreadOnly === "boolean") setUnreadOnly(args.unreadOnly);
+        if (typeof args.category === "string") setCategory(args.category as NotificationCategory | "all");
+        if (args.unreadOnly !== undefined || args.category !== undefined) setLimit(15);
+        if (typeof args.limit === "number") setLimit(args.limit);
+        if (typeof args.eventsExpanded === "boolean") setEventsExpanded(args.eventsExpanded);
+        return { configured: true };
+      })];
+    return () => cleanups.forEach(cleanup => cleanup());
+  }, []);
   const [permissionError, setPermissionError] = useState("");
   const [permissionPending, setPermissionPending] = useState(false);
   const permissionRequest = useRef(0);
@@ -86,7 +106,7 @@ export function NotificationsSettings({ page }: { page: "activity" | "preference
       <section className="settings-section" aria-label="Activity categories">
         <h3 className="set-title">Include in activity</h3>
         {(Object.keys(categoryLabels) as NotificationCategory[]).map(key => <NotificationToggle key={key} label={categoryLabels[key]} checked={preferences.categories[key]} onChange={checked => configure({ categories: { ...preferences.categories, [key]: checked } })} />)}
-        <details className="settings-disclosure notification-events"><summary>Individual events</summary><div className="notification-event-groups settings-disclosure-body">
+        <details className="settings-disclosure notification-events" open={eventsExpanded} onToggle={event => setEventsExpanded(event.currentTarget.open)}><summary>Individual events</summary><div className="notification-event-groups settings-disclosure-body">
           {(Object.keys(categoryLabels) as NotificationCategory[]).map(category => <fieldset className="notification-event-group" key={category}>
             <legend>{categoryLabels[category]}{!preferences.categories[category] ? <span>Category disabled</span> : null}</legend>
             {(Object.entries(NOTIFICATION_EVENTS) as [NotificationEvent, string][]).filter(([event]) => NOTIFICATION_EVENT_CATEGORIES[event] === category).map(([event, label]) => <NotificationToggle key={event} label={label} checked={preferences.events[event] !== false} disabled={!preferences.categories[category]} onChange={checked => configure({ events: { ...preferences.events, [event]: checked } })} />)}

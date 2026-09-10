@@ -43,7 +43,10 @@ function affects(mutation: FileMutation, file: EditorFileState): boolean {
   return (mutation.host || "") === (file.host || "") && !!file.path &&
     (file.path === mutation.path || file.path.startsWith(mutation.path + "/"));
 }
-export function beginFileMutation(mutation: FileMutation): () => void {
+export function beginFileMutation(mutation: FileMutation, { allowDirty = true }: { allowDirty?: boolean } = {}): () => void {
+  if (!allowDirty && [...files.values()].some((read) => { const file = read(); return file.dirty && affects(mutation, file); })) {
+    throw new Error("Save or discard affected editor buffers before deleting their files.");
+  }
   if ([...files.values()].some((read) => { const file = read(); return file.saving && affects(mutation, file); })) {
     throw new Error("Wait for the file to finish saving before moving or deleting it.");
   }

@@ -37,6 +37,72 @@ test("protection rejects internal operations and invalid device/repository input
   assert.equal(toolResult("git_protect", { approved: false, findings: [] }).isError, true);
 });
 
+async function remoteLaunch(t, runtime) {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "pzza-protection-runtime-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const home = path.join(directory, "home with 'quoted' spaces");
+  const bin = path.join(directory, "bin");
+  const remoteBin = path.join(directory, "remote-bin");
+  for (const folder of [home, bin, remoteBin]) await mkdir(folder);
+  const node = runtime === "managed" ? path.join(home, ".local/bin/node")
+    : runtime === "nvm" ? path.join(home, ".nvm/versions/node/v24.15.0/bin/node")
+      : runtime === "path" ? path.join(remoteBin, "node") : null;
+  if (node) {
+    await mkdir(path.dirname(node), { recursive: true });
+    await symlink(process.execPath, node);
+  }
+  const profileMarker = path.join(home, "profile-ran");
+  for (const filename of [".profile", ".bashrc", ".zshrc"]) await writeFile(path.join(home, filename), 'printf sourced > "$HOME/profile-ran"\n');
+  const captured = path.join(directory, "ssh-args.json");
+  // Hide host-system runtimes at the executable-check boundary so this fixture
+  // exercises NVM even on a development machine with a system-wide Node install.
+  const isolatedChecks = 'test() { case "$2" in "$HOME"/*) command test "$@" ;; *) return 1 ;; esac; }; ';
+  await writeFile(path.join(bin, "ssh"), `#!${process.execPath}
+const fs = require('node:fs');
+const { spawnSync } = require('node:child_process');
+const args = process.argv.slice(2);
+fs.writeFileSync(${JSON.stringify(captured)}, JSON.stringify(args.slice(0, -1)));
+const result = spawnSync('/bin/sh', ['-c', ${JSON.stringify(isolatedChecks)} + args.at(-1)], {
+  env: { ...process.env, HOME: ${JSON.stringify(home)}, PATH: ${JSON.stringify(remoteBin)} },
+  input: fs.readFileSync(0), encoding: 'utf8', timeout: 5000
+});
+process.stdout.write(result.stdout || '');
+process.exitCode = result.status ?? 1;
+`, { mode: 0o700 });
+  const module = new URL("../lib/git-protector.js", import.meta.url).href;
+  const script = `import { runGitProtection } from ${JSON.stringify(module)};
+    runGitProtection({ host: 'fixture-device', path: 'relative', operation: 'commit' })
+      .then(result => process.stdout.write(JSON.stringify(result)))
+      .catch(() => { process.stderr.write('Protection could not verify this device'); process.exitCode = 1; });`;
+  const check = async () => {
+    const { stdout } = await execute(process.execPath, ["--input-type=module", "-e", script], {
+      env: { ...process.env, HOME: home, XDG_CONFIG_HOME: home, PATH: bin }, timeout: 10000,
+    });
+    return JSON.parse(stdout);
+  };
+  return { check, captured, profileMarker };
+}
+
+for (const runtime of ["path", "managed", "nvm"]) {
+  test(`remote protection launches its real worker with the ${runtime} runtime and a minimal SSH PATH`, async t => {
+    const boundary = await remoteLaunch(t, runtime);
+    const result = await boundary.check();
+    assert.equal(result.approved, false);
+    assert.match(result.error, /absolute repository path is required/);
+    assert.deepEqual(await readFile(boundary.captured, "utf8").then(JSON.parse), [
+      "-T", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", "-o", "ConnectTimeout=5",
+      "-o", "ForwardAgent=no", "-o", "PermitLocalCommand=no", "--", "fixture-device",
+    ]);
+    await assert.rejects(readFile(boundary.profileMarker), /ENOENT/);
+  });
+}
+
+test("remote protection fails closed when no runtime can be found", async t => {
+  const boundary = await remoteLaunch(t, "none");
+  await assert.rejects(boundary.check(), /Protection could not verify this device/);
+  await assert.rejects(readFile(boundary.profileMarker), /ENOENT/);
+});
+
 test("staged environment variants, credentials, and private-key paths block without returning contents", async (t) => {
   const root = await repository(t);
   const content = `private-content-${crypto.randomUUID()}`;

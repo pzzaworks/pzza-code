@@ -7,14 +7,15 @@ import { loadLanguage } from "@uiw/codemirror-extensions-langs";
 import { Eye, FolderOpen, FolderTree as FolderTreeIcon, Loader2, PanelLeft, Save, X } from "lucide-react";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
-import { fileRawUrl, readFile, writeFile } from "../serverApi";
+import { deleteFile, fileRawUrl, listDir, moveFile, readFile, writeFile } from "../serverApi";
 import { useStore } from "../state/store";
 import { FolderTree } from "./FileTree";
 import { FilePicker } from "../panels/FilePicker";
 import { Modal } from "../ui/Modal";
-import { fileMutationPending, onFileMutation, registerEditorDiscard, registerEditorFile, remapFilePath } from "../editorChanges";
+import { beginFileMutation, fileMutationPending, notifyFileMutation, onFileMutation, registerEditorDiscard, registerEditorFile, remapFilePath } from "../editorChanges";
 import { copyImageToClipboard } from "../imageClipboard";
 import { CodeLayoutMenu } from "./CodeLayoutMenu";
+import { createEditorAppController, registerEditorAppControl } from "../appControlEditor";
 
 // file extension -> the key codemirror-extensions-langs' loadLanguage expects.
 // Those keys are extension-style ("ts", "rs", "sh"), not full language names, so
@@ -65,6 +66,7 @@ export function TileCodePanel({ tileId }: { tileId: string }) {
   const closeTileFile = useStore((s) => s.closeTileFile);
 
   const [treeOpen, setTreeOpen] = useState(true);
+  const [treeControl, setTreeControl] = useState<{ revision: number; path?: string; expanded?: boolean }>({ revision: 0 });
   const [pickerOpen, setPickerOpen] = useState(false);
 
   const [content, setContent] = useState("");
@@ -80,8 +82,22 @@ export function TileCodePanel({ tileId }: { tileId: string }) {
 
   const [discardOpen, setDiscardOpen] = useState(false);
   const discardResolve = useRef<((answer: boolean) => void) | null>(null);
-  const snapshot = useRef({ dirty, saving, content, loaded, path: code?.path });
-  snapshot.current = { dirty, saving, content, loaded, path: code?.path };
+  const loadedKey = useRef("");
+  const bufferKey = JSON.stringify([host, code?.path]);
+  const revision = useRef({ key: bufferKey, value: crypto.randomUUID() });
+  if (revision.current.key !== bufferKey) revision.current = { key: bufferKey, value: crypto.randomUUID() };
+  const snapshot = useRef({ dirty, saving, content, loaded, error, path: code?.path });
+  snapshot.current = { dirty, saving, content, loaded: loaded && loadedKey.current === bufferKey, error, path: code?.path };
+  const viewSnapshot = useRef({ tree: treeOpen, preview, folderPicker: pickerOpen });
+  viewSnapshot.current = { tree: treeOpen, preview, folderPicker: pickerOpen };
+  const copying = useRef(false);
+  const changeContent = useCallback((value: string, changed: boolean) => {
+    snapshot.current.content = value;
+    snapshot.current.dirty = changed;
+    revision.current.value = crypto.randomUUID();
+    setContent(value);
+    setDirty(changed);
+  }, []);
   const preservedPath = useRef<string | null>(null);
   const answerDiscard = (answer: boolean) => {
     discardResolve.current?.(answer);
@@ -136,13 +152,16 @@ export function TileCodePanel({ tileId }: { tileId: string }) {
   useEffect(() => {
     if (path && preservedPath.current === path) {
       preservedPath.current = null;
+      loadedKey.current = bufferKey;
+      snapshot.current.loaded = true;
       return;
     }
     preservedPath.current = null;
     if (!path || isBinary) {
       // Binary files are previewed straight from their raw URL - no text load.
       setLoaded(true);
-      setContent("");
+      loadedKey.current = bufferKey;
+      changeContent("", false);
       setError(null);
       setDirty(false);
       return;
@@ -156,7 +175,7 @@ export function TileCodePanel({ tileId }: { tileId: string }) {
       .then((r) => {
         if (!alive) return;
         if (r.tooLarge) setError("File is too large to open here.");
-        else setContent(r.content);
+        else { loadedKey.current = bufferKey; changeContent(r.content, false); }
       })
       .catch((e) => alive && setError(String(e?.message || e)))
       .finally(() => alive && setLoaded(true));
@@ -164,21 +183,6 @@ export function TileCodePanel({ tileId }: { tileId: string }) {
       alive = false;
     };
   }, [path, host]);
-
-  const save = useCallback(async () => {
-    if (!path || !dirty || saving) return;
-    if (fileMutationPending(host, path)) { setError("Wait for the file operation to finish before saving."); return; }
-    snapshot.current.saving = true;
-    setSaving(true);
-    try {
-      await writeFile(path, content, host);
-      if (snapshot.current.path === path && snapshot.current.content === content) setDirty(false);
-    } catch (e) {
-      setError(String((e as Error)?.message || e));
-    } finally {
-      setSaving(false);
-    }
-  }, [dirty, saving, content, path, host]);
 
   const extensions = useMemo(() => {
     const ext = path ? extOf(path) : "";
@@ -193,6 +197,98 @@ export function TileCodePanel({ tileId }: { tileId: string }) {
     () => (preview && isMd ? DOMPurify.sanitize(marked.parse(content) as string) : ""),
     [preview, isMd, content],
   );
+
+  const copyImage = useCallback(async () => {
+    const image = imageRef.current;
+    if (!image || !image.complete || image.naturalWidth === 0) throw new Error("Wait for an image preview to finish loading.");
+    if (copying.current) throw new Error("Image copy is already running.");
+    copying.current = true;
+    setCopyingImage(true); setCopyStatus(null);
+    try {
+      await copyImageToClipboard(image);
+      setCopyStatus("Image copied to this device's clipboard.");
+    } catch (cause) {
+      setCopyStatus(cause instanceof Error ? cause.message : "Image copy failed.");
+      throw cause;
+    } finally { copying.current = false; setCopyingImage(false); }
+  }, []);
+  const controller = useMemo(() => {
+    const scopedPath = async (requested?: string) => {
+      const root = useStore.getState().tileCode[tileId]?.root;
+      if (!root) throw new Error("Open an editor folder first.");
+      const resolved = (await listDir(root, host)).path;
+      let path = requested ?? resolved;
+      if (root.startsWith("~") && (path === root || path.startsWith(root + "/"))) path = resolved + path.slice(root.length);
+      if (path.split("/").includes("..") || (path !== resolved && !path.startsWith(resolved + "/"))) throw new Error("File operations must stay inside the editor folder.");
+      return { root: resolved, path };
+    };
+    return createEditorAppController({
+      read: () => {
+        const current = snapshot.current;
+        const path = current.path;
+        return { ...current, revision: revision.current.value, root: useStore.getState().tileCode[tileId]?.root, host,
+          binary: !!path && /\.(png|jpe?g|gif|webp|avif|bmp|ico|svg|pdf)$/i.test(path),
+          markdown: !!path && /\.(md|markdown)$/i.test(path), failed: !!current.error && !current.dirty, ...viewSnapshot.current };
+      },
+      change: changeContent,
+      busy: value => { snapshot.current.saving = value; setSaving(value); },
+      save: async (path, content) => {
+        if (fileMutationPending(host, path)) throw new Error("Wait for the file operation to finish before saving.");
+        try {
+          await writeFile(path, content, host);
+          snapshot.current.error = null; setError(null);
+        } catch (cause) {
+          const message = cause instanceof Error ? cause.message : "File save failed.";
+          snapshot.current.error = message; setError(message);
+          throw cause;
+        }
+      },
+      reload: async path => {
+        const result = await readFile(path, host);
+        if (result.tooLarge) throw new Error("File is too large to open here.");
+        snapshot.current.error = null; setError(null);
+        return result.content;
+      },
+      close: () => closeTileFile(tileId),
+      view: settings => {
+        if (settings.tree !== undefined) { viewSnapshot.current.tree = settings.tree; setTreeOpen(settings.tree); }
+        if (settings.preview !== undefined) { viewSnapshot.current.preview = settings.preview; setPreview(settings.preview); }
+        if (settings.folderPicker !== undefined) { viewSnapshot.current.folderPicker = settings.folderPicker; setPickerOpen(settings.folderPicker); }
+      },
+      copyImage,
+      list: async path => listDir((await scopedPath(path)).path, host),
+      move: async (path, destination) => {
+        const source = await scopedPath(path);
+        const target = await scopedPath(destination);
+        const release = beginFileMutation({ host, path: source.path });
+        try {
+          const result = await moveFile(source.root, source.path, target.path, host);
+          notifyFileMutation({ host, path: source.path, destination: result.path });
+          return result;
+        } finally { release(); }
+      },
+      remove: async path => {
+        const source = await scopedPath(path);
+        const release = beginFileMutation({ host, path: source.path }, { allowDirty: false });
+        try {
+          const result = await deleteFile(source.root, source.path, host);
+          notifyFileMutation({ host, path: source.path });
+          return result;
+        } finally { release(); }
+      },
+      treeAction: async (path, expanded) => {
+        const selected = await scopedPath(path);
+        if (path) await listDir(selected.path, host);
+        viewSnapshot.current.tree = true; setTreeOpen(true);
+        setTreeControl(current => ({ revision: current.revision + 1, path: path ? selected.path : undefined, expanded }));
+      },
+    });
+  }, [tileId, host, changeContent, closeTileFile, copyImage]);
+  useEffect(() => registerEditorAppControl(tileId, controller), [tileId, controller]);
+  const save = useCallback(async () => {
+    try { await controller.execute("editor_save", { expectedRevision: revision.current.value }); }
+    catch (cause) { setError(cause instanceof Error ? cause.message : "File save failed."); }
+  }, [controller]);
 
   if (!root) {
     return (
@@ -292,6 +388,7 @@ export function TileCodePanel({ tileId }: { tileId: string }) {
           <div className="code-tile-tree">
             <FolderTree
               root={root}
+              control={treeControl}
               host={host}
               activePath={path}
               onOpenFile={(p) => { if (p !== path) void navigate(() => setTileCodePath(tileId, p)); }}
@@ -313,14 +410,7 @@ export function TileCodePanel({ tileId }: { tileId: string }) {
             <div className="code-preview code-preview-img">
               <img ref={imageRef} crossOrigin="anonymous" src={fileRawUrl(path, host)} alt={baseName(path)} />
               <div className="image-copy-actions">
-                <button className="btn btn-sm" type="button" disabled={copyingImage} onClick={() => {
-                  if (!imageRef.current) return;
-                  setCopyingImage(true);
-                  setCopyStatus(null);
-                  void copyImageToClipboard(imageRef.current).then(() => setCopyStatus("Image copied to this device's clipboard."))
-                    .catch((error: unknown) => setCopyStatus(error instanceof Error ? error.message : "Image copy failed."))
-                    .finally(() => setCopyingImage(false));
-                }}>{copyingImage ? "Copying image…" : "Copy image"}</button>
+                <button className="btn btn-sm" type="button" disabled={copyingImage} onClick={() => { void copyImage().catch(() => {}); }}>{copyingImage ? "Copying image…" : "Copy image"}</button>
                 {copyStatus ? <span role="status">{copyStatus}</span> : null}
               </div>
             </div>
@@ -342,8 +432,7 @@ export function TileCodePanel({ tileId }: { tileId: string }) {
               height="100%"
               style={{ height: "100%" }}
               onChange={(v) => {
-                setContent(v);
-                setDirty(true);
+                changeContent(v, true);
               }}
             />
           )}

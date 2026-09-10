@@ -56,10 +56,12 @@ function savedInputDevice(): InputDeviceSelection | null {
 interface TranscriptTarget {
   insert: (text: string) => boolean | Promise<boolean>;
   focus: () => void;
+  preview: (text: string) => void;
+  clearPreview: () => void;
 }
 const targets = new Map<string, TranscriptTarget>();
 let finalizingId: string | undefined;
-let delivery = { id: "", text: "", transcript: "", pending: Promise.resolve(), failed: false };
+let delivery = { id: "", text: "", transcript: "", pending: Promise.resolve(), failed: false, writing: false };
 let initialization: Promise<void> | undefined;
 let preparation: Promise<void> | undefined;
 let downloadPending = false;
@@ -70,6 +72,23 @@ const message = (error: unknown) => error instanceof Error ? error.message : Str
 // A transcript is data, never terminal control input or an implicit Enter key.
 export function dictationText(text: string): string {
   return text.replace(/[\r\n\t\u2028\u2029]+/g, " ").replace(/[\x00-\x1f\x7f-\x9f]/g, "").trim();
+}
+
+export function dictationPendingText(preview: string, committed: string): string {
+  return preview.startsWith(committed) ? preview.slice(committed.length) : "";
+}
+
+function renderPreview(id: string) {
+  const current = useDictation.getState().recording;
+  if (!current || current.id !== id || delivery.id !== id) return;
+  const target = targets.get(current.tileId);
+  if (!target) return;
+  if (current.phase !== "listening" || delivery.failed) {
+    target.clearPreview();
+    return;
+  }
+  if (delivery.writing) return;
+  target.preview(dictationPendingText(current.text, delivery.text));
 }
 
 function deliverTranscript(id: string, text: string, final: boolean) {
@@ -83,15 +102,25 @@ function deliverTranscript(id: string, text: string, final: boolean) {
     if (final && !text && !pipeline.text) {
       throw new Error(current.text ? "Recognition ended before it could confirm the remaining words. Please repeat them." : "No speech was recognized. Check your microphone input and try again.");
     }
-    if (suffix && !await targets.get(current.tileId)?.insert(suffix)) throw new Error("The terminal did not confirm insertion. Check its text before recording again.");
+    const target = targets.get(current.tileId);
+    if (suffix) {
+      pipeline.writing = true;
+      target?.clearPreview();
+      try {
+        if (!await target?.insert(suffix)) throw new Error("The terminal did not confirm insertion. Check its text before recording again.");
+      } finally { pipeline.writing = false; }
+    }
     pipeline.text = text;
     const latest = useDictation.getState().recording;
     if (!latest || latest.id !== id) return;
+    if (final) target?.clearPreview();
     useDictation.setState({ recording: final ? null : { ...latest, committed: text } });
+    if (!final) renderPreview(id);
   }).catch((error: unknown) => {
     pipeline.failed = true;
     const current = useDictation.getState().recording;
     if (!current || current.id !== id) return;
+    targets.get(current.tileId)?.clearPreview();
     useDictation.setState({ recording: { ...current, phase: "error", text: current.text.startsWith(pipeline.transcript) ? current.text : pipeline.transcript, level: 0, processing: false, error: message(error) } });
     void invoke<void>("speech_stop", { id, cancel: true }).catch(() => {});
   });
@@ -101,6 +130,7 @@ export function registerDictationTarget(tileId: string, target: TranscriptTarget
   targets.set(tileId, target);
   return () => {
     if (targets.get(tileId) !== target) return;
+    target.clearPreview();
     targets.delete(tileId);
     if (useDictation.getState().recording?.tileId === tileId) void useDictation.getState().cancel();
   };
@@ -130,6 +160,7 @@ export function initializeDictation(): Promise<void> {
         if (final) finalizingId = current.id;
         deliverTranscript(current.id, dictationText(payload.text ?? ""), final);
       } else if (payload.kind === "error") {
+        targets.get(current.tileId)?.clearPreview();
         useDictation.setState({ recording: { ...current, phase: "error", level: 0, processing: false, error: payload.error ?? "Dictation failed. Check microphone access in System Settings." } });
       } else if (payload.kind === "processing") {
         useDictation.setState({ recording: { ...current, processing: payload.active === true } });
@@ -137,10 +168,12 @@ export function initializeDictation(): Promise<void> {
         if (current.phase === "listening") useDictation.setState({ recording: { ...current, level: Math.max(0, Math.min(1, payload.level ?? 0)) } });
       } else if (payload.kind === "partial") {
         useDictation.setState({ recording: { ...current, text: dictationText(payload.text ?? current.text) } });
+        renderPreview(current.id);
       } else if (current.phase !== "finalizing") {
         // The microphone permission prompt can blur the terminal after start.
         if (payload.kind === "listening" && current.phase === "loading") targets.get(current.tileId)?.focus();
         useDictation.setState({ recording: { ...current, phase: payload.kind } });
+        if (payload.kind === "finalizing") targets.get(current.tileId)?.clearPreview();
       }
     }));
     cleanups.push(await listen<DownloadEvent>("dictation-download", ({ payload }) => {
@@ -207,7 +240,7 @@ export const useDictation = create<DictationState>((set, get) => ({
   start: async (tileId) => {
     if (!DICTATION_SUPPORTED || !get().enabled || get().model !== "ready" || get().recording) return;
     const id = crypto.randomUUID();
-    delivery = { id, text: "", transcript: "", pending: Promise.resolve(), failed: false };
+    delivery = { id, text: "", transcript: "", pending: Promise.resolve(), failed: false, writing: false };
     set({ recording: { id, tileId, phase: "loading", text: "", committed: "", level: 0, processing: false, error: null } });
     try {
       await cancellation;
@@ -215,6 +248,7 @@ export const useDictation = create<DictationState>((set, get) => ({
       if (get().recording?.id !== id) return;
       const target = targets.get(tileId);
       if (!target) throw new Error("Wait for this terminal to connect before recording.");
+      target.clearPreview();
       target.focus();
       await invoke<void>("speech_start", { id, language: get().language, inputDeviceId: get().inputDevice?.id ?? null });
     } catch (error) {
@@ -226,6 +260,7 @@ export const useDictation = create<DictationState>((set, get) => ({
     const current = get().recording;
     if (!current) return;
     if (current.phase !== "listening") { await get().cancel(); return; }
+    targets.get(current.tileId)?.clearPreview();
     targets.get(current.tileId)?.focus();
     set({ recording: { ...current, phase: "finalizing", level: 0 } });
     try { await invoke<void>("speech_stop", { id: current.id, cancel: false }); }
@@ -236,6 +271,7 @@ export const useDictation = create<DictationState>((set, get) => ({
   cancel: async () => {
     const current = get().recording;
     if (!current) return;
+    targets.get(current.tileId)?.clearPreview();
     set({ recording: null });
     // The control can reset immediately; new capture waits for native cleanup.
     const pending = (cancellation ?? Promise.resolve()).then(() => invoke<void>("speech_stop", { id: current.id, cancel: true }));

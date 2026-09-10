@@ -13,6 +13,9 @@ const REQUEST_LIFETIME = 60_000;
 const GRANT_LIFETIME = 30 * 86400_000;
 const NONCE_LIMIT = 4096;
 const AUDIT_LIMIT = 200;
+const CONNECTION_LIMIT = 32;
+const CONNECTION_RETENTION = 3600_000;
+const CONNECTION_ID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 const AUDIT_OUTCOMES = ["received", "accepted", "denied", "failed"];
 const HOST = /^[A-Za-z0-9._][A-Za-z0-9._@-]{0,127}$/;
 const ID = /^[a-f0-9]{64}$/;
@@ -20,6 +23,7 @@ const PROJECT_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 const fail = (message, status = 400) => Object.assign(new Error(message), { status });
 const object = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
 const exactKeys = (value, allowed) => object(value) && Object.keys(value).every((key) => allowed.includes(key));
+const configHash = (config) => crypto.createHash("sha256").update(canonicalEnvelope(config)).digest("hex");
 
 const CONTROL_ACTIONS = ["bridge.describe", "jobs.list", "jobs.get", "jobs.cancel"];
 function controlArguments(action, args) {
@@ -149,6 +153,14 @@ export function createBridge({ stateDir, executor: suppliedExecutor, transport =
   let updating = false;
   let closing = false;
   let closePromise;
+  let pairing = false;
+  let connectionWork;
+  const connections = new Map();
+  const pruneConnections = () => {
+    for (const [id, { operation }] of connections) {
+      if (operation.status !== "pending" && operation.updatedAt + CONNECTION_RETENTION <= now()) connections.delete(id);
+    }
+  };
   const initialize = () => {
     if (initialized) return initialized;
     if (!stateDir) throw fail("Bridge state directory is missing", 503);
@@ -263,7 +275,7 @@ export function createBridge({ stateDir, executor: suppliedExecutor, transport =
 
   const state = async () => {
     const { identity, config } = initialize();
-    return { identity: { ...identity }, config: structuredClone(config), jobs: await executor.listJobs(), audit: structuredClone(initialize().audit) };
+    return { identity: { ...identity }, config: structuredClone(config), configHash: configHash(config), jobs: await executor.listJobs(), audit: structuredClone(initialize().audit) };
   };
   const configure = async (value) => {
     const current = initialize();
@@ -358,13 +370,136 @@ export function createBridge({ stateDir, executor: suppliedExecutor, transport =
     if (!crypto.verify(null, Buffer.from(responseBytes), parsePublicIdentity(peer.publicKey).key, Buffer.from(response.signature, "base64"))) throw fail("Device response signature is invalid", 502);
     return result.result;
   };
+  const peerIdentity = async (host) => {
+    if (!HOST.test(host || "")) throw fail("Choose a valid trusted SSH device");
+    const remote = await agentRequest(host, "/bridge/state");
+    const parsed = parsePublicIdentity(remote?.identity?.publicKey);
+    if (parsed.id !== remote.identity.id || parsed.id === initialize().identity.id) throw fail("The device returned an invalid or local identity");
+    return { identity: { id: parsed.id, publicKey: parsed.publicKey }, config: remote.config };
+  };
+  const pairGrant = async (request) => {
+    if (!exactKeys(request, ["operation", "expectedIdentityId", "expectedConfigHash", "peer", "project", "peerId", "projectId", "restoreEnabled"])) throw fail("Invalid pairing grant");
+    const current = initialize();
+    if (request.expectedIdentityId !== current.identity.id || request.expectedConfigHash !== configHash(current.config)) throw fail("Device identity or bridge settings changed. Read the device identity again.", 409);
+    if (request.operation === "remove") {
+      if (!ID.test(request.peerId || "") || typeof request.restoreEnabled !== "boolean" || (request.projectId !== null && !PROJECT_ID.test(request.projectId || ""))) throw fail("Invalid pairing rollback");
+      if (!current.config.peers.some(peer => peer.id === request.peerId)) throw fail("Pairing grant no longer exists", 409);
+      const peers = current.config.peers.filter(peer => peer.id !== request.peerId);
+      if (request.projectId && peers.some(peer => peer.projectIds.includes(request.projectId))) throw fail("The project is now used by another paired device", 409);
+      return configure({ enabled: request.restoreEnabled, peers, projects: current.config.projects.filter(project => project.id !== request.projectId) });
+    }
+    if (request.operation !== "add" || !object(request.peer) || !object(request.project)) throw fail("Invalid pairing grant");
+    if (current.config.peers.some(peer => peer.id === request.peer.id)) throw fail("This device is already paired. Edit its existing access settings.", 409);
+    if (!current.config.enabled && current.config.peers.some(peer => peer.enabled)) throw fail("Enable or revoke existing device grants before pairing another device", 409);
+    const existing = current.config.projects.find(project => project.id === request.project.id);
+    if (existing && existing.root !== request.project.root) throw fail("Project ID already refers to another folder", 409);
+    // Pairing adds exactly one named project and never changes other device grants.
+    if (request.peer.host !== "" || request.peer.enabled !== true || JSON.stringify(request.peer.projectIds) !== JSON.stringify([request.project.id])) throw fail("Invalid incoming pairing scope");
+    return configure({ enabled: true, peers: [...current.config.peers, request.peer], projects: existing ? current.config.projects : [...current.config.projects, request.project] });
+  };
+  const performConnection = async (request) => {
+    if (closing) throw fail("Device bridge is shutting down", 503);
+    if (!exactKeys(request, ["host", "identityId", "label", "localLabel", "project", "capabilities", "expiresAt"]) || !HOST.test(request.host || "") || !ID.test(request.identityId || "") || !object(request.project)) throw fail("Choose a trusted device and an explicit project");
+    if (pairing) throw fail("Device pairing is already running", 409);
+    pairing = true;
+    let original;
+    let localSaved;
+    let remote;
+    let remoteSaved;
+    let incoming;
+    let remoteAttempted = false;
+    let next;
+    try {
+      original = structuredClone(initialize().config);
+      if (!original.enabled && original.peers.some(peer => peer.enabled)) throw fail("Enable or revoke existing device grants before pairing another device", 409);
+      remote = await peerIdentity(request.host);
+      if (remote.identity.id !== request.identityId) throw fail("The device identity changed. Read its identity again.", 409);
+      if (original.peers.some(peer => peer.id === remote.identity.id)) throw fail("This device is already paired. Edit its existing access settings.", 409);
+      const outgoing = { ...remote.identity, label: request.label, host: request.host, port: 5190, enabled: true, expiresAt: request.expiresAt, projectIds: [], capabilities: [] };
+      next = validateConfig({ ...original, enabled: true, peers: [...original.peers, outgoing] }, initialize().identity.id);
+      if (!PROJECT_ID.test(request.project.id || "") || typeof request.project.root !== "string" || !path.isAbsolute(request.project.root) || !Array.isArray(request.capabilities) || !request.capabilities.length || request.capabilities.some(capability => !BRIDGE_CAPABILITIES.includes(capability)) || new Set(request.capabilities).size !== request.capabilities.length) throw fail("Choose an absolute project folder and its permissions");
+      if (typeof request.localLabel !== "string" || !request.localLabel.trim() || request.localLabel.length > 80 || /[\x00-\x1f\x7f]/.test(request.localLabel)) throw fail("Give this device a valid name");
+      incoming = { ...initialize().identity, label: request.localLabel.trim(), host: "", port: 5190, enabled: true, expiresAt: request.expiresAt, projectIds: [request.project.id], capabilities: request.capabilities };
+      remoteAttempted = true;
+      remoteSaved = await agentRequest(request.host, "/bridge/pair-grant", { operation: "add", expectedIdentityId: remote.identity.id, expectedConfigHash: configHash(remote.config), peer: incoming, project: request.project });
+      if (configHash(initialize().config) !== configHash(original)) throw fail("Local bridge settings changed during pairing", 409);
+      localSaved = await configure(next);
+      const connection = await dispatch({ peerId: remote.identity.id, action: "bridge.describe", args: {} });
+      return { state: await state(), connection };
+    } catch (error) {
+      let rollbackFailed = false;
+      // A dropped SSH response may follow a successful remote write. Recover its
+      // exact new grant before rollback; never mistake an existing grant for ours.
+      if (remoteAttempted && !remoteSaved && !remote.config.peers.some(peer => peer.id === incoming.id)) {
+        try {
+          const recovered = await agentRequest(request.host, "/bridge/state");
+          const added = recovered.config.peers.find(peer => peer.id === incoming.id);
+          if (added) {
+            const project = recovered.config.projects.find(project => project.id === request.project.id);
+            const expected = { ...remote.config, enabled: true, peers: [...remote.config.peers, incoming], projects: remote.config.projects.some(project => project.id === request.project.id) ? remote.config.projects : [...remote.config.projects, project] };
+            if (!project || configHash(expected) !== configHash(recovered.config)) throw fail("Remote settings changed");
+            remoteSaved = recovered;
+          }
+        } catch { rollbackFailed = true; }
+      }
+      if (!localSaved && next && configHash(initialize().config) === configHash(next)) localSaved = { config: next };
+      if (localSaved) {
+        try {
+          if (configHash(initialize().config) !== configHash(localSaved.config)) throw fail("Local settings changed");
+          await configure(original);
+        } catch { rollbackFailed = true; }
+      }
+      if (remoteSaved) {
+        try { await agentRequest(request.host, "/bridge/pair-grant", { operation: "remove", expectedIdentityId: remote.identity.id, expectedConfigHash: configHash(remoteSaved.config), peerId: initialize().identity.id, projectId: remote.config.projects.some(project => project.id === request.project.id) ? null : request.project.id, restoreEnabled: remote.config.enabled }); }
+        catch { rollbackFailed = true; }
+      }
+      if (rollbackFailed) throw fail("Pairing could not be verified and its grant could not be fully removed. Revoke this device in bridge settings on both devices before retrying.", 502);
+      throw error;
+    } finally { pairing = false; }
+  };
+  const connect = (request) => {
+    if (!exactKeys(request, ["operationId", "host", "identityId", "label", "localLabel", "project", "capabilities", "expiresAt"]) || typeof request.operationId !== "string" || !CONNECTION_ID.test(request.operationId)) throw fail("Choose a unique pairing operation ID");
+    const { operationId, ...input } = structuredClone(request);
+    const fingerprint = crypto.createHash("sha256").update(canonicalEnvelope(input, { byteLimit: 16_384 })).digest("hex");
+    pruneConnections();
+    const existing = connections.get(operationId);
+    if (existing) {
+      if (existing.fingerprint !== fingerprint) throw fail("Pairing operation ID already belongs to a different request", 409);
+      return structuredClone(existing.operation);
+    }
+    if (closing) throw fail("Device bridge is shutting down", 503);
+    if (connectionWork || pairing) throw fail("Device pairing is already running. Check its operation status before starting another.", 409);
+    // Never evict a recoverable result to make room, or replay an accepted request
+    // when its HTTP response is lost. Terminal results remain available for an hour.
+    if (connections.size >= CONNECTION_LIMIT) throw fail("Pairing operation history is full; try again after older results expire", 429);
+    const operation = { id: operationId, status: "pending", createdAt: now(), updatedAt: now() };
+    connections.set(operationId, { fingerprint, operation });
+    connectionWork = Promise.resolve().then(() => performConnection(input)).then(
+      result => { Object.assign(operation, { status: "completed", result, updatedAt: now() }); },
+      error => { Object.assign(operation, { status: "failed", error: error.status ? error.message : "Device pairing failed", updatedAt: now() }); },
+    ).finally(() => { connectionWork = undefined; });
+    return structuredClone(operation);
+  };
+  const connectionStatus = (request) => {
+    if (!exactKeys(request, ["operationId"]) || typeof request.operationId !== "string" || !CONNECTION_ID.test(request.operationId)) throw fail("Choose a valid pairing operation ID");
+    pruneConnections();
+    const found = connections.get(request.operationId);
+    if (!found) throw fail("Pairing operation not found or no longer retained. Check both devices' settings before starting another pairing.", 404);
+    return structuredClone(found.operation);
+  };
   return { state, configure, receive, receiveSigned, dispatch,
-    peerIdentity: async (host) => {
-      if (!HOST.test(host || "")) throw fail("Choose a valid trusted SSH device");
-      const remote = await agentRequest(host, "/bridge/state");
-      const parsed = parsePublicIdentity(remote?.identity?.publicKey);
-      if (parsed.id !== remote.identity.id || parsed.id === initialize().identity.id) throw fail("The device returned an invalid or local identity");
-      return { identity: { id: parsed.id, publicKey: parsed.publicKey } };
+    peerIdentity: async (host) => ({ identity: (await peerIdentity(host)).identity }),
+    pairGrant, connect, connectionStatus,
+    configureChecked: (request) => {
+      if (!exactKeys(request, ["config", "expectedConfigHash"]) || request.expectedConfigHash !== configHash(initialize().config)) throw fail("Bridge settings changed. Read their current state before saving.", 409);
+      return configure(request.config);
+    },
+    revoke: (request) => {
+      if (!exactKeys(request, ["peerId", "expectedConfigHash"]) || !ID.test(request.peerId || "")) throw fail("Choose the exact paired device to revoke");
+      const config = initialize().config;
+      if (request.expectedConfigHash !== configHash(config)) throw fail("Bridge settings changed. Read their current state before revoking.", 409);
+      if (!config.peers.some(peer => peer.id === request.peerId)) throw fail("Paired device not found", 404);
+      return configure({ ...config, peers: config.peers.filter(peer => peer.id !== request.peerId) });
     },
     audit: () => ({ audit: structuredClone(initialize().audit) }),
     jobs: async () => { initialize(); return { jobs: await executor.listJobs() }; },
@@ -374,7 +509,11 @@ export function createBridge({ stateDir, executor: suppliedExecutor, transport =
       if (closePromise) return closePromise;
       closing = true;
       clearTimeout(expiryTimer);
-      closePromise = !initialized ? Promise.resolve() : executor.close ? executor.close() : Promise.all(initialized.config.peers.map((peer) => executor.revokePeer(peer.id)));
+      closePromise = (async () => {
+        await connectionWork;
+        clearTimeout(expiryTimer);
+        if (initialized) await (executor.close ? executor.close() : Promise.all(initialized.config.peers.map((peer) => executor.revokePeer(peer.id))));
+      })();
       return closePromise;
     },
   };
@@ -416,8 +555,15 @@ export function createBridgeRouter(bridge, json) {
       else if (url.pathname === "/bridge/jobs" && req.method === "GET") json(res, 200, await bridge.jobs());
       else if (req.method === "POST") {
         const body = await readBridgeBody(req);
-        if (url.pathname === "/bridge/config") json(res, 200, await bridge.configure(body));
+        if (url.pathname === "/bridge/configure") json(res, 200, await bridge.configureChecked(body));
+        else if (url.pathname === "/bridge/revoke") json(res, 200, await bridge.revoke(body));
         else if (url.pathname === "/bridge/peer-identity" && exactKeys(body, ["host"])) json(res, 200, await bridge.peerIdentity(body.host));
+        else if (url.pathname === "/bridge/pair-grant") json(res, 200, await bridge.pairGrant(body));
+        else if (url.pathname === "/bridge/connect") {
+          const operation = bridge.connect(body);
+          json(res, operation.status === "pending" ? 202 : 200, operation);
+        }
+        else if (url.pathname === "/bridge/connect-status") json(res, 200, bridge.connectionStatus(body));
         else if (url.pathname === "/bridge/dispatch") json(res, 200, await bridge.dispatch(body));
         else if (url.pathname === "/bridge/approve" && exactKeys(body, ["jobId", "approved"])) json(res, 200, await bridge.approve(body.jobId, body.approved));
         else if (url.pathname === "/bridge/cancel" && exactKeys(body, ["jobId"])) json(res, 200, await bridge.cancel(body.jobId));

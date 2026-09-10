@@ -11,9 +11,10 @@
 import http from "node:http";
 import { watchDesktopLifetime } from "./lib/agent-lifecycle.js";
 import { quickChatRouter } from "./lib/quick-chat.js";
+import { createDeviceSession } from "./lib/session-create.js";
 
 import { DEVBOX, IS_CLIENT, MCP_PATH, PORT, STATE_DIR } from "./lib/config.js";
-import { SSH_TOKEN, sh, shOn, shQuote } from "./lib/shell.js";
+import { SSH_TOKEN, shOn, shQuote } from "./lib/shell.js";
 import { tmuxCommand } from "./lib/tmux-client.js";
 import {
   AGENT_ID,
@@ -28,7 +29,7 @@ import {
 import { listPorts, listPortDetails } from "./lib/ports.js";
 import { listSessions, listWindows, scanSessions, sessionActivity, terminateSession, duplicateSession } from "./lib/tmux.js";
 import { forwardStatus, setForwardEnabled, startForwardLoop } from "./lib/forward.js";
-import { accountEnvArg, listAccounts } from "./lib/accounts.js";
+import { listAccounts } from "./lib/accounts.js";
 import { USAGE_FRESH_MS, collectUsage } from "./lib/usage.js";
 import { createRemoteUsage } from "./lib/device-agent.js";
 import { createMcpRepair } from "./lib/mcp-repair.js";
@@ -184,19 +185,10 @@ const server = http.createServer(async (req, res) => {
   }
   if (url.pathname === "/create" && req.method === "POST") {
     const body = await readBody(req);
-    const name = typeof body?.name === "string" ? body.name.trim() : "";
-    if (!name || /[\x00-\x1f\x7f]/.test(name)) return json(res, 400, { error: "A valid session name is required" });
-    const cwd = body.cwd ? ` -c ${shQuote(body.cwd)}` : "";
-    const env = accountEnvArg(body.account);
-    try {
-      await new Promise((resolve, reject) => {
-        sh(`${tmuxCommand()} new-session -d -s ${shQuote(name)}${cwd}${env}`, (error) => error ? reject(error) : resolve());
-      });
-      return json(res, 200, { ok: true });
-    } catch {
-      return json(res, 503, { error: "Could not create the session on this device" });
-    }
+    try { return json(res, 200, await createDeviceSession(body)); }
+    catch (error) { return json(res, error.status ?? 503, { error: error.message }); }
   }
+
   // Project sync: git repos under the projects root, across every device.
   if (url.pathname === "/projects/scan" && req.method === "POST") {
     const body = await readBody(req);
