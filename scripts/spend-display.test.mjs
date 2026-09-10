@@ -6,7 +6,10 @@ import { renderToStaticMarkup } from "react-dom/server";
 
 const output = await build({
   entryPoints: [new URL("../src/panels/UsageSpend.tsx", import.meta.url).pathname],
-  bundle: true, platform: "node", format: "esm", write: false,
+  bundle: true, platform: "node", format: "esm", mainFields: ["module", "main"], write: false,
+  plugins: [{ name: "shared-react-runtime", setup(builder) {
+    builder.onResolve({ filter: /^react(?:\/.*)?$/ }, args => ({ path: import.meta.resolve(args.path), external: true }));
+  } }],
 });
 const { UsageSpend } = await import(`data:text/javascript;base64,${Buffer.from(output.outputFiles[0].text).toString("base64")}`);
 const complete = (cost, tokens) => ({ cost, pricedCost: cost, tokens, unpricedTokens: 0, unpricedModels: [] });
@@ -22,6 +25,8 @@ const render = (today, yesterday = today, window = today) => renderToStaticMarku
 test("renders API-equivalent estimates and tokens without implying billed subscription spend", () => {
   const html = render(complete(222.769916, 154378410), complete(1102.314810, 864548365));
   assert.match(html, /API estimate \(short context\), not billed spend/);
+  assert.match(html, /<p class="usage-estimate-note" role="note">/);
+  assert.match(html, /class="lucide lucide-info"[^>]*aria-hidden="true"/);
   assert.match(html, /Long-context and service-tier adjustments are not included/);
   assert.match(html, /\$223<\/b> · 154.4M tokens/);
   assert.match(html, /\$1.1K<\/b> · 864.5M tokens/);

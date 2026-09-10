@@ -296,7 +296,19 @@ test('usage bars reflect measured tokens and expose honest daily estimates', opt
   await page.getByRole('table').waitFor();
   assert.equal(await page.getByRole('cell', { name: 'Unavailable', exact: true }).count(), 1);
   assert.equal(await page.getByRole('cell', { name: '$0.25+ (partial)', exact: true }).count(), 1);
+  const note = page.getByRole('note');
+  assert.equal(await note.textContent(), 'API estimate (short context), not billed spend.');
+  const typography = await note.evaluate(element => ({ size: getComputedStyle(element).fontSize, color: getComputedStyle(element).color, iconColor: getComputedStyle(element.querySelector('svg')).color, surrounding: getComputedStyle(document.querySelector('.usage-daily-details')).fontSize, row: getComputedStyle(document.querySelector('.usage-detail-row')).fontSize }));
+  assert.equal(typography.size, '11px');
+  assert.equal(typography.size, typography.surrounding);
+  assert.ok(parseFloat(typography.size) < parseFloat(typography.row));
+  assert.equal(typography.color, typography.iconColor);
   await evidence(page, 'usage-daily-breakdown');
+  await evidence(page, 'usage-info-dark');
+  await page.evaluate(() => { window.ui.useStore.getState().setTheme('light'); window.ui.useStore.getState().setSemiTransparent(true); window.ui.useStore.getState().setTransparencyOptions({ textVisibility: 75 }); });
+  await page.waitForFunction(() => document.documentElement.dataset.appearance === 'light' && document.documentElement.dataset.textVisibility === 'on');
+  assert.equal(await note.evaluate(element => getComputedStyle(element).color), await page.locator('.usage-daily-details').evaluate(element => getComputedStyle(element).color));
+  await evidence(page, 'usage-info-light');
 });
 
 test('creation forms keep consistent widths and reachable actions on short narrow viewports', options, async t => {
