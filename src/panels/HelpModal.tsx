@@ -40,7 +40,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { Modal } from "../ui/Modal";
-import { altBadge, ctrlBadge, IS_MAC } from "../shortcuts";
+import { altBadge, ctrlBadge, IS_MAC, NEW_SESSION_SHORTCUT, NEW_WORKSPACE_SHORTCUT } from "../shortcuts";
 
 const CMD = IS_MAC ? "⌘" : "Ctrl";
 
@@ -760,6 +760,8 @@ export function HelpContent({ section, request }: { section: HelpSection; reques
               <H>Shortcuts</H>
               <table className="doc-keys">
                 <tbody>
+                  <tr><td><Kbd>{NEW_SESSION_SHORTCUT.label}</Kbd></td><td>New session</td></tr>
+                  <tr><td><Kbd>{NEW_WORKSPACE_SHORTCUT.label}</Kbd></td><td>New workspace</td></tr>
                   <tr>
                     <td>
                       <Kbd>{altBadge(0)}</Kbd>

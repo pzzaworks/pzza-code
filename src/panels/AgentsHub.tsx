@@ -1,3 +1,4 @@
+import { registerAppControlHandler, registerAppControlState } from "../appControlRuntime";
 import { AsyncButton } from "../ui/AsyncButton";
 import { useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import { Bot, BookOpen, FileText, Layers, Play, Plus, RefreshCw, Save, Search, ArrowLeft, ChevronRight, X } from "lucide-react";
@@ -135,6 +136,32 @@ function AgentsHubLibrary({ active, section: tab, onSectionChange, onOpenSession
   };
   const list = state ? (tab === "documents" ? state.documents : tab === "skills" ? state.skills : state.profiles).filter(item => item.name.toLowerCase().includes(query.toLowerCase())) : [];
   const catalog = [...SKILL_CATALOG].sort((a, b) => (b.stars ?? -1) - (a.stars ?? -1)).filter(item => `${item.name} ${item.description}`.toLowerCase().includes(query.toLowerCase()));
+  const viewRef = useRef({ active, tab, state, busy, query, selected, rendered, limit });
+  viewRef.current = { active, tab, state, busy, query, selected, rendered, limit };
+  useEffect(() => {
+    const snapshot = () => {
+      const current = viewRef.current;
+      return { available: current.active, page: current.tab, query: current.query, selectedId: current.selected, preview: current.rendered, limit: current.limit };
+    };
+    const cleanups = [registerAppControlState("agentsHubView", snapshot), registerAppControlHandler("get_agents_hub_view", snapshot),
+      registerAppControlHandler("set_agents_hub_view", args => {
+        const current = viewRef.current;
+        if (!current.active || !current.state) throw new Error("Open and load an Agents Hub library page first.");
+        if (current.busy) throw new Error("Wait for the current library operation.");
+        const collection = current.tab === "documents" ? current.state.documents : current.tab === "skills" ? current.state.skills : current.tab === "profiles" ? current.state.profiles : [];
+        if (args.selectedId && !collection.some(item => item.id === args.selectedId)) throw new Error("Choose an item from the current library page.");
+        const selectedId = args.selectedId as string | undefined ?? current.selected;
+        if (args.preview !== undefined && (!selectedId || (current.tab !== "documents" && current.tab !== "skills"))) throw new Error("Select a document or skill before changing preview mode.");
+        if (args.limit !== undefined && current.tab !== "discover" && current.tab !== "deployments") throw new Error("This library page displays all search results without pagination.");
+        if (args.query !== undefined && current.tab === "deployments") throw new Error("Deployment history does not support search. Open a library or discovery page to search.");
+        if (typeof args.query === "string") { setQuery(args.query); setLimit(12); }
+        if (typeof args.selectedId === "string") { setSelected(args.selectedId); setRendered(false); }
+        if (typeof args.preview === "boolean") setRendered(args.preview);
+        if (typeof args.limit === "number") setLimit(args.limit);
+        return { configured: true };
+      })];
+    return () => cleanups.forEach(cleanup => cleanup());
+  }, []);
   const itemDetail = (id: string) => {
     const document = state?.documents.find(item => item.id === id);
     if (tab === "documents" && document) return state?.frameworks.find(item => item.id === document.framework)?.label ?? document.framework;

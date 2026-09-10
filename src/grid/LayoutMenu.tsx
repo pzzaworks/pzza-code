@@ -3,6 +3,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import { Columns2, Columns3, Columns4, LayoutGrid } from "lucide-react";
 import { useStore } from "../state/store";
 import { useExclusiveMenu } from "../ui/menuBus";
+import { registerAppControlMenu } from "../appControlRuntime";
 import { ALL_WORKSPACE_ID } from "../workspaces";
 
 const OPTIONS = [
@@ -19,6 +20,7 @@ export function LayoutMenu() {
   const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
   const workspaces = useStore((s) => s.workspaces);
   const [open, setOpen] = useState(false);
+  useEffect(() => registerAppControlMenu("layout", setOpen), []);
 
   const columns = workspaceColumns[activeWorkspaceId] ?? defaultColumns;
   const wsName =

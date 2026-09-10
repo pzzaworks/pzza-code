@@ -14,7 +14,7 @@ export function registerContextMenu(element: Element, actions: () => ContextActi
   return () => { providers.delete(element); };
 }
 
-export async function clipboardPaste(target: HTMLElement): Promise<void> {
+export async function readClipboardData(): Promise<DataTransfer> {
   const data = new DataTransfer();
   if (navigator.clipboard?.read) {
     const items = await navigator.clipboard.read();
@@ -25,6 +25,11 @@ export async function clipboardPaste(target: HTMLElement): Promise<void> {
     }
   } else if (navigator.clipboard?.readText) data.setData("text/plain", await navigator.clipboard.readText());
   else throw new Error("Clipboard access is unavailable. Use the keyboard paste shortcut.");
+  return data;
+}
+
+export async function clipboardPaste(target: HTMLElement): Promise<void> {
+  const data = await readClipboardData();
   if (!target.isConnected) throw new Error("The paste target is no longer open.");
   target.focus({ preventScroll: true });
   target.dispatchEvent(new ClipboardEvent("paste", { clipboardData: data, bubbles: true, cancelable: true }));

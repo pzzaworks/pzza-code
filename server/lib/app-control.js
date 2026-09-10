@@ -1,26 +1,13 @@
 import { randomUUID } from "node:crypto";
 
-const layouts = new Set(["full", "side-by-side", "stacked"]);
-const actions = new Set(["get_state", "open_session", "focus_tile", "open_editor", "close_editor", "set_layout", "set_columns"]);
+import { validateAppCommand } from "./app-control-schema.js";
+
 const fail = (message, status = 400) => Object.assign(new Error(message), { status });
 const identifier = (value) => typeof value === "string" && /^[\w.-]{1,128}$/.test(value);
 
 export function validateCommand(action, args) {
-  if (!actions.has(action) || !args || typeof args !== "object" || Array.isArray(args)) throw fail("Invalid app command");
-  const fields = {
-    get_state: [], focus_tile: ["tileId"], open_editor: ["tileId", "path", "root", "layout"], close_editor: ["tileId"],
-    set_layout: ["tileId", "layout"], set_columns: ["columns"], open_session: ["session", "cwd"],
-  }[action];
-  if (Object.keys(args).some((key) => !fields.includes(key))) throw fail("Unknown command argument");
-  if (action === "open_session" && (typeof args.session !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(args.session) || typeof args.cwd !== "string" || !args.cwd.startsWith("/") || args.cwd.length > 4096 || /[\x00-\x1f\x7f]/.test(args.cwd))) throw fail("Invalid local session or directory");
-  if (fields.includes("tileId") && (typeof args.tileId !== "string" || !args.tileId.trim() || args.tileId.length > 512 || /[\x00-\x1f\x7f]/.test(args.tileId))) throw fail("Invalid tile ID");
-  if (args.layout !== undefined && !layouts.has(args.layout)) throw fail("Invalid layout");
-  if (action === "set_layout" && !layouts.has(args.layout)) throw fail("Invalid panel layout");
-  if (action === "set_columns" && (!Number.isInteger(args.columns) || args.columns < 1 || args.columns > 8)) throw fail("Columns must be between 1 and 8");
-  for (const key of ["path", "root"]) {
-    if (args[key] !== undefined && (typeof args[key] !== "string" || !args[key] || args[key].length > 4096 || /[\x00-\x1f]/.test(args[key]))) throw fail(`Invalid ${key}`);
-  }
-  return { ...args };
+  try { return validateAppCommand(action, args); }
+  catch (error) { throw fail(error.message); }
 }
 
 export function createAppControl({ pollMs = 15000, commandMs = 20000, staleMs = 45000 } = {}) {

@@ -267,3 +267,238 @@ test("an unchanged expired grant cannot block revoking another peer or disabling
   await assert.rejects(f.right.configure({ ...f.rightConfig, enabled: false, peers: [{ ...f.rightConfig.peers[0], expiresAt: null }] }), /expire within/);
   assert.equal((await f.right.state()).config.enabled, false);
 });
+
+async function setupConnection(t, options = {}) {
+  const directory = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'pzza-bridge-connect-')));
+  const right = createBridge({ stateDir: path.join(directory, 'right'), executor: executor() });
+  let remoteFailures = false;
+  const calls = [];
+  const left = createBridge({ stateDir: path.join(directory, 'left'), executor: executor(), now: options.now,
+    agentRequest: async (host, endpoint, body) => {
+      assert.equal(host, 'trusted-device');
+      calls.push({ endpoint, body });
+      if (endpoint === '/bridge/state') return right.state();
+      assert.equal(endpoint, '/bridge/pair-grant');
+      if (remoteFailures && body.operation === 'remove') throw new Error('Disconnected');
+      const result = await right.pairGrant(body);
+      if (options.dropGrantResponse && body.operation === 'add') throw Object.assign(new Error('Connection dropped after saving'), { status: 502 });
+      return result;
+    },
+    transport: async (_, request) => {
+      await options.beforeVerify?.();
+      if (options.failVerification) { remoteFailures = options.failRollback; throw Object.assign(new Error('Verification failed'), { status: 502 }); }
+      return right.receiveSigned(request);
+    },
+  });
+  t.after(async () => { await left.close(); await right.close(); await fs.rm(directory, { recursive: true, force: true }); });
+  const request = { host: 'trusted-device', identityId: (await right.state()).identity.id, label: 'Development device', localLabel: 'Laptop', project: { id: 'project', root: directory }, capabilities: ['files.read', 'terminal.read'], expiresAt: Date.now() + 3600000 };
+  return { left, right, request, directory, calls };
+}
+
+async function connectionOutcome(bridge, operationId) {
+  for (let attempt = 0; attempt < 1000; attempt++) {
+    const operation = bridge.connectionStatus({ operationId });
+    if (operation.status !== 'pending') return operation;
+    await new Promise(resolve => setImmediate(resolve));
+  }
+  assert.fail('Pairing did not settle');
+}
+async function completeConnection(bridge, request) {
+  const operation = bridge.connect({ ...request, operationId: crypto.randomUUID() });
+  const outcome = await connectionOutcome(bridge, operation.id);
+  if (outcome.status === 'failed') throw new Error(outcome.error);
+  return outcome.result;
+}
+
+test('trusted setup configures both identities, verifies signed access and grants only the selected remote project', async t => {
+  const f = await setupConnection(t);
+  const result = await completeConnection(f.left, f.request);
+  assert.deepEqual(result.connection.projects, [{ id: 'project', name: path.basename(f.directory) }]);
+  assert.deepEqual(result.connection.capabilities, ['files.read', 'terminal.read']);
+  assert.deepEqual(result.state.config.peers[0].capabilities, []);
+  assert.deepEqual(result.state.config.projects, []);
+  assert.equal((await f.right.state()).config.peers[0].host, '');
+  await assert.rejects(completeConnection(f.left, f.request), /already paired/);
+  await assert.rejects(f.left.dispatch({ peerId: f.request.identityId, action: 'files.write', args: { projectId: 'project' } }), /not allowed/);
+  await assert.rejects(f.left.dispatch({ peerId: f.request.identityId, action: 'files.read', args: { projectId: 'other' } }), /not allowed/);
+});
+
+test('pairing rolls back both grants when signed verification fails', async t => {
+  const f = await setupConnection(t, { failVerification: true });
+  await assert.rejects(completeConnection(f.left, f.request), /Verification failed/);
+  assert.deepEqual((await f.left.state()).config, { enabled: false, projects: [], peers: [] });
+  assert.deepEqual((await f.right.state()).config, { enabled: false, projects: [], peers: [] });
+});
+
+test('pairing explicitly reports a destination rollback failure', async t => {
+  const f = await setupConnection(t, { failVerification: true, failRollback: true });
+  await assert.rejects(completeConnection(f.left, f.request), /could not be fully removed/);
+  assert.deepEqual((await f.left.state()).config.peers, []);
+  assert.equal((await f.right.state()).config.peers.length, 1);
+});
+
+test('pairing rejects changed identities, unsafe project roots and stale config without grants', async t => {
+  const f = await setupConnection(t);
+  await assert.rejects(completeConnection(f.left, { ...f.request, identityId: 'f'.repeat(64) }), /identity changed/);
+  await assert.rejects(completeConnection(f.left, { ...f.request, project: { id: 'project', root: '/' } }), /project directory/);
+  await assert.rejects(f.right.pairGrant({ operation: 'add', expectedIdentityId: f.request.identityId, expectedConfigHash: '0'.repeat(64), peer: {}, project: f.request.project }), /settings changed/);
+  assert.deepEqual((await f.left.state()).config.peers, []);
+  assert.deepEqual((await f.right.state()).config.peers, []);
+});
+
+test('pairing never reactivates previously disabled global access or replaces an existing project scope', async t => {
+  const f = await setupConnection(t);
+  const other = crypto.generateKeyPairSync('ed25519').publicKey.export({ format: 'der', type: 'spki' });
+  const peer = { id: crypto.createHash('sha256').update(other).digest('hex'), publicKey: other.toString('base64'), label: 'Other', host: '', port: 5190, enabled: true, expiresAt: f.request.expiresAt, projectIds: [], capabilities: [] };
+  await f.right.configure({ enabled: false, peers: [peer], projects: [] });
+  await assert.rejects(completeConnection(f.left, f.request), /Enable or revoke existing/);
+  await f.right.configure({ enabled: true, peers: [peer], projects: [{ id: 'project', root: path.dirname(f.directory) }] });
+  await assert.rejects(completeConnection(f.left, f.request), /another folder/);
+  assert.equal((await f.right.state()).config.peers.length, 1);
+});
+
+
+test('pairing removes the exact remote grant when its successful response is lost', async t => {
+  const f = await setupConnection(t, { dropGrantResponse: true });
+  await assert.rejects(completeConnection(f.left, f.request), /Connection dropped after saving/);
+  assert.deepEqual((await f.left.state()).config, { enabled: false, projects: [], peers: [] });
+  assert.deepEqual((await f.right.state()).config, { enabled: false, projects: [], peers: [] });
+});
+
+test('pairing start and status stay bounded while verification exceeds the HTTP timeout', async t => {
+  const gate = Promise.withResolvers();
+  const verifying = Promise.withResolvers();
+  t.after(() => gate.resolve());
+  let clock = Date.now();
+  const f = await setupConnection(t, { now: () => clock, beforeVerify: () => { verifying.resolve(); return gate.promise; } });
+  const operationId = crypto.randomUUID();
+  const request = new PassThrough();
+  request.method = 'POST';
+  request.headers = { 'content-type': 'application/json' };
+  let response;
+  const router = createBridgeRouter(f.left, (_res, status, value) => { response = { status, value }; });
+  const handled = router(request, {}, new URL('http://localhost/bridge/connect'));
+  request.end(JSON.stringify({ ...f.request, operationId }));
+  await handled;
+  assert.equal(response.status, 202);
+  assert.equal(response.value.status, 'pending');
+  await verifying.promise;
+  clock += 16_000;
+  assert.equal(f.left.connectionStatus({ operationId }).status, 'pending');
+  const calls = f.calls.length;
+  for (let check = 0; check < 10; check++) assert.equal(f.left.connectionStatus({ operationId }).status, 'pending');
+  assert.equal(f.calls.length, calls, 'status must not re-run remote work');
+  gate.resolve();
+  const completed = await connectionOutcome(f.left, operationId);
+  assert.equal(completed.status, 'completed');
+  assert.deepEqual(completed.result.connection.capabilities, f.request.capabilities);
+  assert.deepEqual(completed.result.connection.projects.map(project => project.id), [f.request.project.id]);
+  assert.equal(completed.result.connection.expiresAt, f.request.expiresAt);
+  assert.equal(f.calls.filter(call => call.body?.operation === 'add').length, 1);
+});
+
+test('duplicate pairing IDs recover a lost start response without repeating grants or changing scope', async t => {
+  const gate = Promise.withResolvers();
+  const verifying = Promise.withResolvers();
+  t.after(() => gate.resolve());
+  const f = await setupConnection(t, { beforeVerify: () => { verifying.resolve(); return gate.promise; } });
+  const input = { ...f.request, operationId: crypto.randomUUID() };
+  f.left.connect(input); // Discard the initiating response, as a disconnected client would.
+  await verifying.promise;
+  assert.equal(f.left.connectionStatus({ operationId: input.operationId }).status, 'pending');
+  assert.equal(f.left.connect(input).status, 'pending');
+  for (const change of [{ identityId: 'f'.repeat(64) }, { project: { ...input.project, id: 'other' } }, { capabilities: ['files.write'] }, { expiresAt: input.expiresAt + 1 }]) {
+    assert.throws(() => f.left.connect({ ...input, ...change }), /different request/);
+  }
+  assert.throws(() => f.left.connect({ ...input, operationId: crypto.randomUUID() }), /already running/);
+  gate.resolve();
+  const completed = await connectionOutcome(f.left, input.operationId);
+  assert.deepEqual(f.left.connect(input), completed);
+  completed.result.connection.capabilities.push('files.write');
+  assert.deepEqual(f.left.connectionStatus({ operationId: input.operationId }).result.connection.capabilities, f.request.capabilities);
+  assert.equal(f.calls.filter(call => call.body?.operation === 'add').length, 1);
+});
+
+test('tracked failures settle only after rollback and preserve incomplete rollback warnings', async t => {
+  for (const failRollback of [false, true]) {
+    const f = await setupConnection(t, { failVerification: true, failRollback });
+    const input = { ...f.request, operationId: crypto.randomUUID() };
+    assert.equal(f.left.connect(input).status, 'pending');
+    const failed = await connectionOutcome(f.left, input.operationId);
+    assert.equal(failed.status, 'failed');
+    assert.match(failed.error, failRollback ? /could not be fully removed/ : /Verification failed/);
+    assert.deepEqual((await f.left.state()).config.peers, []);
+    assert.equal((await f.right.state()).config.peers.length, failRollback ? 1 : 0);
+    const callCount = f.calls.length;
+    assert.deepEqual(f.left.connect(input), failed);
+    assert.equal(f.calls.length, callCount);
+  }
+});
+
+test('pairing history is bounded, retains pending operations and never evicts recent results', async t => {
+  let clock = Date.now();
+  const f = await setupConnection(t, { now: () => clock });
+  const ids = [];
+  for (let index = 0; index < 32; index++) {
+    const operationId = crypto.randomUUID();
+    ids.push(operationId);
+    f.left.connect({ ...f.request, identityId: 'f'.repeat(64), operationId });
+    assert.equal((await connectionOutcome(f.left, operationId)).status, 'failed');
+  }
+  assert.throws(() => f.left.connect({ ...f.request, operationId: crypto.randomUUID() }), error => error.status === 429);
+  assert.equal(f.left.connectionStatus({ operationId: ids[0] }).status, 'failed');
+  clock += 3600_001;
+  assert.throws(() => f.left.connectionStatus({ operationId: ids[0] }), error => error.status === 404);
+  assert.throws(() => f.left.connectionStatus({ operationId: 'invalid' }), error => error.status === 400);
+  assert.throws(() => f.left.connectionStatus({ operationId: ids[1], capabilities: ['files.write'] }), error => error.status === 400);
+  const operation = f.left.connect({ ...f.request, identityId: 'f'.repeat(64), operationId: crypto.randomUUID() });
+  assert.equal((await connectionOutcome(f.left, operation.id)).status, 'failed');
+});
+
+test('pairing start and status are never exposed through the signed peer receiver', async t => {
+  const f = await pair(t);
+  const router = createBridgeRouter(f.right, () => assert.fail('Admin endpoint bypassed authentication'));
+  for (const endpoint of ['connect', 'connect-status']) {
+    assert.equal(await router({ method: 'POST' }, {}, new URL(`http://localhost/bridge/${endpoint}`), true), false);
+    await assert.rejects(f.right.receive(f.sign({ action: `bridge.${endpoint}`, args: { operationId: crypto.randomUUID() } })), /not allowed/);
+  }
+});
+
+test('checked administrative configuration and revocation reject stale updates and signed-peer elevation', async t => {
+  const f = await pair(t);
+  const initial = await f.right.state();
+  await assert.rejects(f.right.receive(f.sign({ action: 'bridge.configure', args: { enabled: true } })), /not allowed/);
+  await f.right.configureChecked({ config: { ...initial.config, enabled: false }, expectedConfigHash: initial.configHash });
+  assert.throws(() => f.right.revoke({ peerId: f.leftIdentity.id, expectedConfigHash: initial.configHash }), /settings changed/);
+  const current = await f.right.state();
+  await f.right.revoke({ peerId: f.leftIdentity.id, expectedConfigHash: current.configHash });
+  assert.equal((await f.right.state()).config.peers.length, 0);
+});
+
+test('settings routes cannot restore revoked access from stale or unchecked drafts', async t => {
+  const f = await pair(t);
+  const initial = await f.right.state();
+  const call = async (endpoint, body) => {
+    let response;
+    const router = createBridgeRouter(f.right, (_res, status, value) => { response = { status, value }; });
+    const request = new PassThrough();
+    request.method = 'POST';
+    request.headers = { 'content-type': 'application/json' };
+    const pending = router(request, {}, new URL(`http://localhost/bridge/${endpoint}`));
+    request.end(JSON.stringify(body));
+    assert.equal(await pending, true);
+    return response;
+  };
+  await f.right.revoke({ peerId: f.leftIdentity.id, expectedConfigHash: initial.configHash });
+  const stale = await call('configure', { config: initial.config, expectedConfigHash: initial.configHash });
+  assert.equal(stale.status, 409);
+  assert.match(stale.value.error, /settings changed/);
+  assert.equal((await call('config', initial.config)).status, 404);
+  assert.equal((await call('configure', { config: initial.config })).status, 409);
+  const current = await f.right.state();
+  assert.equal(current.config.peers.length, 0);
+  const saved = await call('configure', { config: { ...current.config, enabled: false }, expectedConfigHash: current.configHash });
+  assert.equal(saved.status, 200);
+  assert.equal(saved.value.config.enabled, false);
+  assert.equal(saved.value.config.peers.length, 0);
+});

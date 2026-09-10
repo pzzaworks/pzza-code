@@ -15,9 +15,9 @@ const RDP_USER = "pzzacode";
 function savedServer() {
   try { return localStorage.getItem(SERVER_KEY) ?? ""; } catch { return ""; }
 }
-const useRdpConnection = create<{ serverId: string; busy: boolean }>(() => ({ serverId: savedServer(), busy: false }));
+export const useRdpConnection = create<{ serverId: string; busy: boolean }>(() => ({ serverId: savedServer(), busy: false }));
 
-async function openSaved(): Promise<boolean> {
+export async function openSaved(): Promise<boolean> {
   if (useRdpConnection.getState().busy) return false;
   const { devices, deviceRdp, setDeviceRdp } = useStore.getState();
   const server = devices.find(device => device.id === useRdpConnection.getState().serverId);
@@ -41,6 +41,19 @@ async function openSaved(): Promise<boolean> {
     notify({ category: "app", title: "Could not open remote desktop", body: `Check the server in Settings → Connections → Remote desktop and its SSH connection. ${String(error)}` });
     return false;
   } finally { useRdpConnection.setState({ busy: false }); }
+}
+
+export function configureRemoteDesktop(serverId: string, user?: string): void {
+  const { devices, deviceRdp, setDeviceRdp } = useStore.getState();
+  const server = devices.find(device => device.id === serverId && device.id !== THIS_MAC.id);
+  if (!server) throw new Error("Choose a configured remote device.");
+  if (user !== undefined) {
+    if (!/^[A-Za-z_][A-Za-z0-9_-]{0,63}$/.test(user)) throw new Error("Choose a valid remote desktop account.");
+    const current = deviceRdp[serverId];
+    setDeviceRdp(serverId, { ...current, user, keychainService: current?.keychainService ?? `pzzacode-rdp-${serverId}` });
+  }
+  localStorage.setItem(SERVER_KEY, serverId);
+  useRdpConnection.setState({ serverId });
 }
 
 export function useRemoteDesktop() {
@@ -67,8 +80,7 @@ export function RdpMenu({ close }: { close: () => void }) {
   }, [remote, keychainService, busy]);
 
   const pickServer = (id: string) => {
-    useRdpConnection.setState({ serverId: id });
-    try { localStorage.setItem(SERVER_KEY, id); } catch { /* Keep this connection for the current app session. */ }
+    configureRemoteDesktop(id);
   };
   return <div className="settings-page remote-settings">
     <section className="settings-section" aria-label="Saved connection">

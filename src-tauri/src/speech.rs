@@ -857,59 +857,88 @@ mod native {
         }
 
         #[test]
-        #[ignore = "Requires the installed speech model and a 16 kHz float PCM speech fixture"]
+        #[ignore = "Requires the installed speech model, float PCM audio and its original transcript"]
         fn real_model_streams_words_before_stop_and_recovers_after_cancel() {
             whisper_rs::install_logging_hooks();
             let model = std::env::var_os("PZZA_DICTATION_TEST_MODEL").expect("Set PZZA_DICTATION_TEST_MODEL");
             let fixture = std::env::var_os("PZZA_DICTATION_TEST_AUDIO").expect("Set PZZA_DICTATION_TEST_AUDIO");
-            let expected = std::env::var("PZZA_DICTATION_TEST_EXPECTED").unwrap_or_else(|_|
-                "Please write this sentence into the terminal as I speak. Then keep listening until I press the stop button.".into());
-            let bytes = std::fs::read(fixture).unwrap();
+            let expected = std::env::var("PZZA_DICTATION_TEST_EXPECTED")
+                .expect("Set PZZA_DICTATION_TEST_EXPECTED to the original, unmodified transcript");
+            assert!(!expected.trim().is_empty(), "The reference transcript must not be empty");
+            let rate = std::env::var("PZZA_DICTATION_TEST_RATE").unwrap_or_else(|_| "16000".into())
+                .parse::<u32>().expect("The fixture sample rate must be an integer");
+            assert!((1..=192_000).contains(&rate), "Unsupported fixture sample rate");
+            let bytes = std::fs::read(&fixture).unwrap();
+            assert!(!bytes.is_empty() && bytes.len() % 4 == 0, "Expected complete float32 PCM samples");
             let samples: Vec<f32> = bytes.chunks_exact(4)
                 .map(|sample| f32::from_le_bytes(sample.try_into().unwrap())).collect();
+            assert!(samples.iter().all(|sample| sample.is_finite()), "PCM samples must be finite");
+            let preparing = Instant::now();
             let mut engine = Engine::load(Path::new(&model)).unwrap();
+            let preparation_seconds = preparing.elapsed().as_secs_f64();
             let capture = capture();
+            *capture.rate.lock().unwrap() = rate;
             let language = "auto";
             let mut window = TranscriptWindow::default();
             let mut committed = String::new();
             let mut offset = 0;
             let mut live_updates = 0;
+            let mut events = Vec::new();
+            let quarter_second = (rate as usize / 4).max(1);
             let realtime = std::env::var_os("PZZA_DICTATION_TEST_REALTIME").is_some();
             let started = Instant::now();
             while offset < samples.len() {
                 // In live capture, audio also arrives while inference is running.
                 // Exercise that cadence as well as deterministic quarter-second steps.
                 let end = if realtime {
-                    let available = (started.elapsed().as_secs_f64() * 16_000.0) as usize;
-                    if available.saturating_sub(offset) < 4_000 && available < samples.len() {
+                    let available = (started.elapsed().as_secs_f64() * rate as f64) as usize;
+                    if available.saturating_sub(offset) < quarter_second && available < samples.len() {
                         std::thread::sleep(Duration::from_millis(15));
                         continue;
                     }
                     available.min(samples.len())
-                } else { (offset + 4_000).min(samples.len()) };
+                } else { (offset + quarter_second).min(samples.len()) };
                 capture.samples.lock().unwrap().extend_from_slice(&samples[offset..end]);
                 offset = end;
                 let audio = capture.samples.lock().unwrap().clone();
-                let transcript = transcribe_samples(&mut engine, &capture, language, &mut window, &audio, 16_000, false).unwrap();
+                let transcript = transcribe_samples(&mut engine, &capture, language, &mut window, &audio, rate, false).unwrap();
                 if !transcript.committed.is_empty() && offset < samples.len() {
                     live_updates += 1;
                 }
+                let preview = format!("{} {}", committed, transcript.preview).trim().to_owned();
                 apply(&capture, &transcript, &mut committed).unwrap();
+                events.push(serde_json::json!({ "seconds": started.elapsed().as_secs_f64(),
+                    "inputSamples": offset, "finalizing": false, "committed": committed, "preview": preview }));
             }
             while !capture.samples.lock().unwrap().is_empty() {
                 let audio = capture.samples.lock().unwrap().clone();
-                let transcript = transcribe_samples(&mut engine, &capture, language, &mut window, &audio, 16_000, true).unwrap();
+                let transcript = transcribe_samples(&mut engine, &capture, language, &mut window, &audio, rate, true).unwrap();
+                assert!(transcript.consumed > 0, "Finalization must consume the remaining audio");
                 apply(&capture, &transcript, &mut committed).unwrap();
+                events.push(serde_json::json!({ "seconds": started.elapsed().as_secs_f64(),
+                    "inputSamples": offset, "finalizing": true, "committed": committed }));
+            }
+            // Preserve failed recognitions too. The oracle is always the original
+            // reference, never a transcript rewritten to fit the model's output.
+            if let Some(report) = std::env::var_os("PZZA_DICTATION_TEST_REPORT") {
+                let file = std::fs::OpenOptions::new().write(true).create_new(true).open(report).unwrap();
+                serde_json::to_writer_pretty(file, &serde_json::json!({
+                    "sampleRate": rate, "audioSamples": samples.len(), "realtime": realtime,
+                    "preparationSeconds": preparation_seconds, "elapsedSeconds": started.elapsed().as_secs_f64(),
+                    "modelBytes": std::fs::metadata(&model).unwrap().len(),
+                    "reference": expected, "transcript": committed, "liveUpdates": live_updates, "events": events,
+                })).unwrap();
             }
             assert!(live_updates >= 2, "Expected multiple terminal updates before Stop, got {live_updates}");
             let normalize = |text: &str| text.to_lowercase().chars()
                 .filter(|character| character.is_alphanumeric() || character.is_whitespace()).collect::<String>()
                 .split_whitespace().collect::<Vec<_>>().join(" ");
             assert_eq!(normalize(&committed), normalize(&expected));
+            let decoded_audio = super::super::resample(&samples, rate);
             capture.cancel.store(true, Ordering::Release);
-            engine.recognize(&samples, language, &capture, false).unwrap();
+            engine.recognize(&decoded_audio, language, &capture, false).unwrap();
             capture.cancel.store(false, Ordering::Release);
-            engine.recognize(&samples, language, &capture, false).unwrap();
+            engine.recognize(&decoded_audio, language, &capture, false).unwrap();
             assert!(engine.decoder.full_n_segments() > 0, "The next recording must remain usable after cancellation");
         }
     }
@@ -1174,19 +1203,101 @@ pub fn speech_stop(id: String, cancel: bool) -> Result<(), String> {
 
 #[cfg(any(target_os = "macos", test))]
 fn resample(samples: &[f32], rate: u32) -> Vec<f32> {
+    const TARGET_RATE: usize = 16_000;
     if rate == 0 || samples.is_empty() {
         return Vec::new();
     }
-    let length = samples.len() * 16_000 / rate as usize;
-    (0..length)
-        .map(|i| {
-            let position = i as f64 * rate as f64 / 16_000.0;
-            let left = position as usize;
-            let right = (left + 1).min(samples.len() - 1);
-            let fraction = (position - left as f64) as f32;
-            samples[left] * (1.0 - fraction) + samples[right] * fraction
+    if rate as usize == TARGET_RATE {
+        return samples.to_vec();
+    }
+    let length = (samples.len() as u128 * TARGET_RATE as u128 / rate as u128) as usize;
+    if length == 0 {
+        return Vec::new();
+    }
+
+    // A centered Blackman-windowed sinc keeps snapshot timestamps unchanged. At
+    // 44.1/48 kHz, its 7.2 kHz cutoff preserves speech through 6.4 kHz and rejects
+    // frequencies above the output Nyquist limit instead of folding them into speech.
+    let ratio = rate as f64 / TARGET_RATE as f64;
+    let cutoff = 0.45 / ratio.max(1.0);
+    let radius = (32.0 * ratio.max(1.0)).ceil().min(512.0) as usize;
+    let (mut divisor, mut remainder) = (rate as usize, TARGET_RATE);
+    while remainder != 0 {
+        (divisor, remainder) = (remainder, divisor % remainder);
+    }
+    let rational_phases = TARGET_RATE / divisor;
+    // Common capture rates use exact rational phases (160 for 44.1 kHz, one for
+    // 48 kHz). Interpolate a bounded table for unusual rates rather than allocating
+    // thousands of kernels. Trigonometry is confined to this table construction.
+    let phases = rational_phases.min(512);
+    let kernel_count = phases + usize::from(rational_phases > phases);
+    let kernels: Vec<Vec<f32>> = (0..kernel_count)
+        .map(|phase| {
+            let fraction = phase as f64 / phases as f64;
+            let weights: Vec<f64> = (0..=2 * radius)
+                .map(|tap| {
+                    let distance = tap as f64 - radius as f64 - fraction;
+                    if distance.abs() >= radius as f64 {
+                        return 0.0;
+                    }
+                    let angle = std::f64::consts::PI * distance / radius as f64;
+                    let window = 0.42 + 0.5 * angle.cos() + 0.08 * (2.0 * angle).cos();
+                    let sinc_angle = 2.0 * std::f64::consts::PI * cutoff * distance;
+                    let sinc = if sinc_angle == 0.0 {
+                        1.0
+                    } else {
+                        sinc_angle.sin() / sinc_angle
+                    };
+                    2.0 * cutoff * sinc * window
+                })
+                .collect();
+            let sum: f64 = weights.iter().sum();
+            weights
+                .into_iter()
+                .map(|weight| (weight / sum) as f32)
+                .collect()
         })
-        .collect()
+        .collect();
+
+    let mut output = Vec::with_capacity(length);
+    let (mut center, mut fraction) = (0usize, 0usize);
+    for _ in 0..length {
+        let table_position = fraction * phases;
+        let phase = table_position / TARGET_RATE;
+        let blend = (table_position % TARGET_RATE) as f32 / TARGET_RATE as f32;
+        let convolve = |kernel: &[f32]| {
+            if center >= radius && center + radius < samples.len() {
+                samples[center - radius..=center + radius]
+                    .iter()
+                    .zip(kernel)
+                    .map(|(sample, weight)| sample * weight)
+                    .sum::<f32>()
+            } else {
+                // Extend endpoints to preserve DC even for very short snapshots.
+                // Only the last filter radius can change when a snapshot grows.
+                kernel
+                    .iter()
+                    .enumerate()
+                    .map(|(tap, weight)| {
+                        let source = (center + tap).saturating_sub(radius).min(samples.len() - 1);
+                        samples[source] * weight
+                    })
+                    .sum::<f32>()
+            }
+        };
+        let value = convolve(&kernels[phase]);
+        output.push(if blend == 0.0 {
+            value
+        } else {
+            value + (convolve(&kernels[phase + 1]) - value) * blend
+        });
+        // Integer source positions avoid cumulative phase drift across long takes
+        // and keep every existing interior sample identical on the next snapshot.
+        fraction += rate as usize;
+        center += fraction / TARGET_RATE;
+        fraction %= TARGET_RATE;
+    }
+    output
 }
 
 #[cfg(any(target_os = "macos", test))]
@@ -1203,14 +1314,180 @@ fn has_speech(audio: &[f32]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn tone(rate: u32, frequency: f64, phase: f64, length: usize) -> Vec<f32> {
+        (0..length)
+            .map(|i| {
+                (0.5 * (std::f64::consts::TAU * frequency * i as f64 / rate as f64 + phase).sin())
+                    as f32
+            })
+            .collect()
+    }
+
+    fn rms(samples: &[f32]) -> f64 {
+        (samples
+            .iter()
+            .map(|sample| (*sample as f64).powi(2))
+            .sum::<f64>()
+            / samples.len() as f64)
+            .sqrt()
+    }
+
     #[test]
     fn resampling_preserves_duration_and_amplitude() {
-        let converted = resample(&vec![0.25; 48_000], 48_000);
-        assert_eq!(converted.len(), 16_000);
-        assert!(converted
-            .iter()
-            .all(|value| (*value - 0.25).abs() < 0.00001));
+        for (rate, input_length, expected_length) in [
+            (8_000, 1, 2),
+            (8_000, 2_003, 4_006),
+            (44_100, 3, 1),
+            (44_100, 44_199, 16_035),
+            (48_000, 3, 1),
+            (48_000, 48_002, 16_000),
+            (48_001, 48_001, 16_000),
+            (96_000, 96_000, 16_000),
+            (192_000, 192_000, 16_000),
+        ] {
+            let converted = resample(&vec![0.25; input_length], rate);
+            assert_eq!(converted.len(), expected_length, "duration at {rate} Hz");
+            assert!(
+                converted
+                    .iter()
+                    .all(|value| (*value - 0.25).abs() < 0.000001),
+                "DC at {rate} Hz"
+            );
+        }
+    }
+
+    #[test]
+    fn resampling_handles_empty_zero_rate_and_sub_sample_inputs() {
+        assert!(resample(&[], 0).is_empty());
         assert!(resample(&[], 48_000).is_empty());
+        assert!(resample(&[0.25; 3], 0).is_empty());
+        assert!(resample(&[0.25; 2], 48_000).is_empty());
+    }
+
+    #[test]
+    fn resampling_at_target_rate_is_bit_exact() {
+        let samples = [
+            0.0,
+            -0.0,
+            0.125,
+            -1.0,
+            f32::MIN_POSITIVE,
+            f32::INFINITY,
+            f32::NAN,
+        ];
+        let converted = resample(&samples, 16_000);
+        assert_eq!(
+            converted
+                .iter()
+                .map(|sample| sample.to_bits())
+                .collect::<Vec<_>>(),
+            samples
+                .iter()
+                .map(|sample| sample.to_bits())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn resampling_rejects_above_nyquist_tones() {
+        // Exclude the finite snapshot edges, where endpoint extension is not periodic.
+        // The old 48 kHz decimator aliases these tones at essentially full amplitude.
+        for rate in [44_100, 48_000] {
+            let mut worst_db = f64::NEG_INFINITY;
+            for frequency in (8_000..rate / 2).step_by(100) {
+                let frequency = frequency as f64;
+                let input = tone(rate, frequency, 0.37, rate as usize / 4);
+                let converted = resample(&input, rate);
+                let gain_db = 20.0
+                    * (rms(&converted[64..converted.len() - 64]) / (0.5 / 2.0f64.sqrt())).log10();
+                worst_db = worst_db.max(gain_db);
+                assert!(
+                    gain_db < -65.0,
+                    "{rate} Hz input, {frequency} Hz tone: {gain_db:.2} dB"
+                );
+            }
+            eprintln!("resample {rate} Hz: worst tested stopband gain {worst_db:.2} dB");
+        }
+    }
+
+    #[test]
+    fn resampling_preserves_speech_passband() {
+        for rate in [44_100, 48_000] {
+            for frequency in [100.0, 1_000.0, 3_000.0, 6_000.0, 6_400.0] {
+                let input = tone(rate, frequency, 0.37, rate as usize / 4);
+                let converted = resample(&input, rate);
+                let reference = tone(16_000, frequency, 0.37, converted.len());
+                let interior = 64..converted.len() - 64;
+                let gain_db =
+                    20.0 * (rms(&converted[interior.clone()]) / rms(&reference[interior])).log10();
+                assert!(
+                    gain_db.abs() < 0.01,
+                    "{rate} Hz input, {frequency} Hz tone: {gain_db:.5} dB"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn resampling_preserves_absolute_phase_without_filter_delay() {
+        // 44.1 kHz exercises all 160 exact phases; 48,001 Hz exercises bounded-table
+        // interpolation. Compare against output timestamps, not a shifted best fit.
+        for (rate, frequency) in [
+            (44_100, 6_100.0),
+            (48_000, 6_100.0),
+            (48_001, 6_100.0),
+            (8_000, 1_200.0),
+        ] {
+            let input = tone(rate, frequency, 0.71, rate as usize);
+            let converted = resample(&input, rate);
+            let reference = tone(16_000, frequency, 0.71, converted.len());
+            let max_error = converted[64..converted.len() - 64]
+                .iter()
+                .zip(&reference[64..reference.len() - 64])
+                .map(|(actual, expected)| (actual - expected).abs())
+                .fold(0.0f32, f32::max);
+            assert!(max_error < 0.0001, "phase error at {rate} Hz: {max_error}");
+        }
+    }
+
+    #[test]
+    fn growing_snapshots_keep_the_existing_interior_bit_exact() {
+        for rate in [44_100, 48_000, 48_001] {
+            let input = tone(rate, 2_317.0, 0.71, rate as usize);
+            let prefix = resample(&input[..rate as usize / 3 + 17], rate);
+            let complete = resample(&input, rate);
+            // The support is 32 output samples per side, rounded up in input units.
+            let stable_length = prefix.len() - 34;
+            assert_eq!(
+                prefix[..stable_length],
+                complete[..stable_length],
+                "snapshot interior at {rate} Hz"
+            );
+            assert_ne!(
+                prefix[stable_length..],
+                complete[stable_length..prefix.len()],
+                "fixture must exercise the growing right edge"
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "Optimized conversion timing; no model required"]
+    fn resampling_conversion_timing() {
+        for rate in [44_100, 48_000] {
+            for seconds in [8, 30] {
+                let input = tone(rate, 1_317.0, 0.37, rate as usize * seconds);
+                let iterations = 5;
+                let started = std::time::Instant::now();
+                for _ in 0..iterations {
+                    let output = resample(std::hint::black_box(&input), rate);
+                    assert_eq!(output.len(), seconds * 16_000);
+                    std::hint::black_box(output);
+                }
+                let mean_ms = started.elapsed().as_secs_f64() * 1_000.0 / iterations as f64;
+                eprintln!("resample {rate} Hz, {seconds}s snapshot: {mean_ms:.2} ms/call over {iterations} conversions");
+            }
+        }
     }
     #[test]
     fn silence_and_clicks_do_not_trigger_recognition() {

@@ -348,7 +348,10 @@ export function runGitProtection(payload) {
   if (typeof host !== "string" || (host && !SSH_TOKEN.test(host))) return Promise.reject(new Error("Invalid device host"));
   const source = `const worker = ${gitProtectionWorker.toString()}; let input = ''; process.stdin.on('data', chunk => { input += chunk; if (input.length > 1024 * 1024) process.exit(1); }); process.stdin.on('end', () => worker(JSON.parse(input)).then(result => process.stdout.write(JSON.stringify(result))).catch(error => { process.stdout.write(JSON.stringify({ approved: false, error: error.message })); process.exitCode = 1; }));`;
   const command = host ? "ssh" : process.execPath;
-  const args = host ? ["-T", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", "-o", "ConnectTimeout=5", "-o", "ForwardAgent=no", "-o", "PermitLocalCommand=no", "--", host, `node -e ${shQuote(source)}`] : ["-e", source];
+  // Noninteractive SSH may omit managed, Homebrew and NVM runtimes from PATH.
+  // Match device-agent discovery without executing shell startup files.
+  const remoteCommand = `if command -v node >/dev/null 2>&1; then exec node -e ${shQuote(source)}; fi; for runtime in "$HOME/.local/bin/node" /opt/homebrew/bin/node /usr/local/bin/node /usr/bin/node "$HOME"/.nvm/versions/node/*/bin/node; do if test -x "$runtime"; then exec "$runtime" -e ${shQuote(source)}; fi; done; exit 127`;
+  const args = host ? ["-T", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", "-o", "ConnectTimeout=5", "-o", "ForwardAgent=no", "-o", "PermitLocalCommand=no", "--", host, remoteCommand] : ["-e", source];
   return new Promise((resolve, reject) => {
     const child = execFile(command, args, { timeout: 55000, maxBuffer: 1024 * 1024 }, (error, stdout) => {
       try { resolve(JSON.parse(stdout)); } catch { reject(new Error(error ? "Git protection could not reach or verify this device" : "Invalid Git protection response")); }

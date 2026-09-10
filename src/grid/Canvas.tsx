@@ -1,7 +1,7 @@
 import { LiveSessionIcon } from "../ui/LiveSessionIcon";
 import { useDelayedLoading } from "../ui/useDelayedLoading";
 import { DeviceIcon } from "../ui/DeviceIcon";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState, type HTMLAttributes, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { motion } from "framer-motion";
 import {
@@ -15,13 +15,13 @@ import {
   Loader2,
   Maximize2,
   Minimize2,
-  Minus,
+  Mic,
   Plus,
   Rows2,
   Square,
   StretchHorizontal,
-  TerminalSquare,
   X,
+  type LucideIcon,
 } from "lucide-react";
 import { useStore } from "../state/store";
 import { deviceNameFor } from "../devices";
@@ -29,10 +29,12 @@ import { Modal } from "../ui/Modal";
 import { Terminal } from "../terminal/Terminal";
 import { TileCodePanel } from "./TileCodePanel";
 import { duplicateSession, fetchSessionPath, killSession } from "../serverApi";
-import { confirmEditorDiscard } from "../editorChanges";
+import { registerAppControlHandler, registerAppControlState } from "../appControlRuntime";
+import { confirmEditorDiscard, hasUnsavedEditors } from "../editorChanges";
 import { attachCommand, sessionConnection } from "../connection";
 import {
   sessionDisplayName,
+  sessionIcon,
   shortPath,
   SESSION_DND,
   SESSION_TILE_DND,
@@ -42,6 +44,46 @@ import { ALL_WORKSPACE_ID, DEFAULT_WORKSPACE_ID, wsKeyOf } from "../workspaces";
 import { ctrlBadge, digitFromCode } from "../shortcuts";
 import { useDictation } from "../state/dictation";
 import { DictationButton } from "../ui/Dictation";
+import { useExclusiveMenu } from "../ui/menuBus";
+
+const HEADER_ACTIONS = [
+  { id: "layout", Icon: LayoutGrid },
+  { id: "mic", Icon: Mic },
+  { id: "focus", Icon: Focus },
+  { id: "code", Icon: FileCode },
+  { id: "move", Icon: FolderInput },
+  { id: "duplicate", Icon: Copy },
+  { id: "fullscreen", Icon: Maximize2 },
+  { id: "hide", Icon: EyeOff },
+  { id: "close", Icon: X },
+] as const satisfies ReadonlyArray<{ id: string; Icon: LucideIcon }>;
+type HeaderAction = typeof HEADER_ACTIONS[number]["id"];
+const PreviewSessionIcon = sessionIcon();
+
+function SessionHeader({ status, icon, title, shortcut, device, path, actions, ...events }: Omit<HTMLAttributes<HTMLDivElement>, "title"> & {
+  status: TileStatus;
+  icon: ReactNode;
+  title: ReactNode;
+  shortcut?: number;
+  device: ReactNode;
+  path?: ReactNode;
+  actions?: Record<HeaderAction, ReactNode>;
+}) {
+  return <div className="tile-head" {...events}>
+    <span className={`stat stat-${status}`} title={status} />
+    <span className="tile-icon">{icon}</span>
+    {title}
+    {shortcut ? <kbd className="kbd tile-kbd" title="Activate">{ctrlBadge(shortcut)}</kbd> : null}
+    <span className="tile-device" title="Running on">{device}</span>
+    {path}
+    <div className="tile-head-spacer" />
+    <div className="tile-actions">
+      {HEADER_ACTIONS.map(({ id, Icon }) => <Fragment key={id}>
+        {actions ? actions[id] : <span className={`tile-btn ${id === "close" ? "tile-btn-danger" : ""}`}><Icon size={id === "close" ? 14 : 13} /></span>}
+      </Fragment>)}
+    </div>
+  </div>;
+}
 
 // Uniform N-column grid, filtered to the active workspace. One tile can be
 // maximized (animated). Tiles reorder by dragging their header onto another
@@ -98,6 +140,15 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
   // "Move to workspace" popup, opened from a tile's toolbar button.
   const assignSession = useStore((s) => s.assignSession);
   const [moveFor, setMoveFor] = useState<{ id: string; x: number; y: number } | null>(null);
+  const closeTileMenus = useCallback(() => { setLayoutFor(null); setMoveFor(null); }, []);
+  const tileMenuOpen = layoutFor !== null || moveFor !== null;
+  useExclusiveMenu("tile-menu", tileMenuOpen, closeTileMenus);
+  useEffect(() => {
+    if (!tileMenuOpen) return;
+    const onKey = (event: KeyboardEvent) => { if (event.key === "Escape") closeTileMenus(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [tileMenuOpen, closeTileMenus]);
 
   const [statuses, setStatuses] = useState<Record<string, TileStatus>>({});
   const setStatus = useCallback(
@@ -214,7 +265,7 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
   const effFull = fullInActiveWs ? fullId : null;
 
   const duplicate = async (source: (typeof tiles)[number]) => {
-    if (duplicationPending.current) return;
+    if (duplicationPending.current) throw new Error("A session duplication is already running.");
     duplicationPending.current = true;
     setDuplicating(source.id);
     setDuplicateError(null);
@@ -228,13 +279,62 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
       store.assignSession(id, store.workspaces.some((entry) => entry.id === workspace) ? workspace : DEFAULT_WORKSPACE_ID);
       store.renameTile(id, label);
       store.openSession(copy.name, copy.cwd, host);
+      return id;
     } catch (error) {
       setDuplicateError(error instanceof Error ? error.message : "Could not duplicate the session");
+      throw error;
     } finally {
       duplicationPending.current = false;
       setDuplicating(null);
     }
   };
+
+  const canvasControl = useRef({ fullId, focusId, duplicate });
+  canvasControl.current = { fullId, focusId, duplicate };
+  useEffect(() => {
+    const requireTile = (id: unknown) => {
+      const state = useStore.getState();
+      const target = state.tiles.find(item => item.id === id);
+      if (!target) throw new Error("The requested session tile is not open.");
+      return target;
+    };
+    const reveal = (id: unknown) => {
+      const target = requireTile(id);
+      const state = useStore.getState();
+      state.setWorkspace(state.sessionWs[wsKeyOf(target)] ?? DEFAULT_WORKSPACE_ID);
+      state.unhideTile(target.id); state.setActive(target.id);
+      return target;
+    };
+    const cleanups = [
+      registerAppControlState("canvas", () => ({ fullTileId: canvasControl.current.fullId, focusTileId: canvasControl.current.focusId, duplicating: duplicationPending.current })),
+      registerAppControlHandler("set_focus_mode", args => {
+        const target = args.enabled ? reveal(args.tileId) : requireTile(args.tileId);
+        if (args.enabled || canvasControl.current.focusId === target.id) setFocusId(args.enabled ? target.id : null);
+        return { tileId: target.id, enabled: args.enabled };
+      }),
+      registerAppControlHandler("set_fullscreen", args => {
+        const target = args.enabled ? reveal(args.tileId) : requireTile(args.tileId);
+        if (args.enabled || canvasControl.current.fullId === target.id) setFullId(args.enabled ? target.id : null);
+        return { tileId: target.id, enabled: args.enabled };
+      }),
+      registerAppControlHandler("duplicate_tile", async args => ({ tileId: await canvasControl.current.duplicate(requireTile(args.tileId)) })),
+      registerAppControlHandler("terminate_tile", async args => {
+        const current = requireTile(args.tileId);
+        const state = useStore.getState();
+        const affected = state.tiles.filter(item => (item.host ?? state.connection.host ?? "") === (current.host ?? state.connection.host ?? "") &&
+          (item.session ?? item.name) === (current.session ?? current.name) && (current.window === undefined || item.window === current.window));
+        if (hasUnsavedEditors(affected.map(item => item.id))) throw new Error("Save or explicitly discard affected editor buffers before terminating this session.");
+        await killSession(current.session ?? current.name, current.window, sessionConnection(current.host, state.connection).host ?? "");
+        for (const item of affected) {
+          if (canvasControl.current.fullId === item.id) setFullId(null);
+          if (canvasControl.current.focusId === item.id) setFocusId(null);
+          useStore.getState().closeTile(item.id);
+        }
+        return { terminated: affected.map(item => item.id) };
+      }),
+    ];
+    return () => cleanups.forEach(cleanup => cleanup());
+  }, []);
 
   const tile = (t: (typeof tiles)[number]) => {
     const base = t.session ?? t.name;
@@ -328,8 +428,7 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
           setOverId(null);
         }}
       >
-        <div
-          className="tile-head"
+        <SessionHeader
           draggable={!effFull && !isRenaming}
           onDragStart={(e) => {
             setDragId(t.id);
@@ -349,12 +448,9 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
             setDragId(null);
             setOverId(null);
           }}
-        >
-          <span className={`stat stat-${status}`} title={status} />
-          <span className="tile-icon">
-            <LiveSessionIcon session={base} window={t.window} host={t.host} />
-          </span>
-          {isRenaming ? (
+          status={status}
+          icon={<LiveSessionIcon session={base} window={t.window} host={t.host} />}
+          title={isRenaming ? (
             <input
               className="tile-title-input"
               autoFocus
@@ -389,24 +485,14 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
               {displayName}
             </span>
           )}
-          {shortcutIdx >= 0 && shortcutIdx < 9 ? (
-            <kbd className="kbd tile-kbd" title="Activate">
-              {ctrlBadge(shortcutIdx + 1)}
-            </kbd>
-          ) : null}
-          <span className="tile-device" title="Running on">
-            <DeviceIcon host={t.host} size={11} />{tileDevice(t.host)}
-          </span>
-          {path ? (
-            <span className="tile-path" title={rs?.path}>
-              {path}
-            </span>
-          ) : null}
-          <div className="tile-head-spacer" />
-          <div className="tile-actions">
-            <button
+          shortcut={shortcutIdx >= 0 && shortcutIdx < 9 ? shortcutIdx + 1 : undefined}
+          device={<><DeviceIcon host={t.host} size={11} />{tileDevice(t.host)}</>}
+          path={path ? <span className="tile-path" title={rs?.path}>{path}</span> : null}
+          actions={{
+            layout: (<button
               className="tile-btn"
               title="Tile layout"
+              aria-label="Tile layout"
               onMouseDown={(e) => e.stopPropagation()}
               onClick={(e) => {
                 e.stopPropagation();
@@ -417,11 +503,12 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
               }}
             >
               <LayoutGrid size={13} />
-            </button>
-            <DictationButton tileId={t.id} activate={() => setActive(t.id)} />
-            <button
+            </button>),
+            mic: (<DictationButton tileId={t.id} activate={() => setActive(t.id)} />),
+            focus: (<button
               className={`tile-btn ${isFocus ? "tile-btn-on" : ""}`}
               title={isFocus ? "Unfocus" : "Focus (dim others)"}
+              aria-label={isFocus ? "Unfocus" : "Focus (dim others)"}
               onMouseDown={(e) => e.stopPropagation()}
               onClick={(e) => {
                 e.stopPropagation();
@@ -430,10 +517,11 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
               }}
             >
               <Focus size={13} />
-            </button>
-            <button
+            </button>),
+            code: (<button
               className={`tile-btn ${codeOpen ? "tile-btn-on" : ""}`}
               title={codeOpen ? "Back to terminal" : "Code editor"}
+              aria-label={codeOpen ? "Back to terminal" : "Code editor"}
               onMouseDown={(e) => e.stopPropagation()}
               onClick={(e) => {
                 e.stopPropagation();
@@ -449,10 +537,11 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
               }}
             >
               <FileCode size={13} />
-            </button>
-            <button
+            </button>),
+            move: (<button
               className="tile-btn"
               title="Move to workspace"
+              aria-label="Move to workspace"
               onMouseDown={(e) => e.stopPropagation()}
               onClick={(e) => {
                 e.stopPropagation();
@@ -461,21 +550,22 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
               }}
             >
               <FolderInput size={13} />
-            </button>
-            <button
+            </button>),
+            duplicate: (<button
               className="tile-btn"
               title="Duplicate session"
               aria-label="Duplicate session"
               disabled={duplicating !== null}
               aria-busy={duplicating === t.id}
               onMouseDown={(event) => event.stopPropagation()}
-              onClick={(event) => { event.stopPropagation(); void duplicate(t); }}
+              onClick={(event) => { event.stopPropagation(); void duplicate(t).catch(() => {}); }}
             >
               {showDuplicateSpinner && duplicating === t.id ? <Loader2 size={13} className="async-spinner" /> : <Copy size={13} />}
-            </button>
-            <button
+            </button>),
+            fullscreen: (<button
               className="tile-btn"
               title={isFull ? "Restore" : "Maximize"}
+              aria-label={isFull ? "Restore" : "Maximize"}
               onMouseDown={(e) => e.stopPropagation()}
               onClick={(e) => {
                 e.stopPropagation();
@@ -484,10 +574,11 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
               }}
             >
               {isFull ? <Minimize2 size={13} /> : <Maximize2 size={13} />}
-            </button>
-            <button
+            </button>),
+            hide: (<button
               className="tile-btn"
               title="Hide (keeps running)"
+              aria-label="Hide (keeps running)"
               onMouseDown={(e) => e.stopPropagation()}
               onClick={(e) => {
                 e.stopPropagation();
@@ -497,10 +588,11 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
               }}
             >
               <EyeOff size={13} />
-            </button>
-            <button
+            </button>),
+            close: (<button
               className="tile-btn tile-btn-danger"
               title="Close"
+              aria-label="Close"
               onMouseDown={(e) => e.stopPropagation()}
               onClick={(e) => {
                 e.stopPropagation();
@@ -509,9 +601,9 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
               }}
             >
               <X size={14} />
-            </button>
-          </div>
-        </div>
+            </button>),
+          }}
+        />
         {borderBg ? <div className="tile-color-border" aria-hidden="true" style={{ background: borderBg }} /> : null}
         <div className={`tile-body ${codeOpen ? `tile-body-code-${tileCode[t.id]?.layout ?? "full"}` : ""}`}>
           <Terminal
@@ -573,15 +665,15 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
       </div>
       {noneVisible ? (
         <div className="grid-empty grid-empty-overlay">
-          <section className="empty-session-window" aria-label="Empty workspace">
-            <div className="empty-session-chrome" aria-hidden="true">
-              <TerminalSquare size={14} />
-              <span>Session</span>
-              <div className="tile-head-spacer" />
-              <Minus size={12} />
-              <Square size={10} />
-              <X size={12} />
-            </div>
+          <section className="tile empty-session-window" aria-label="Empty workspace session preview">
+            <SessionHeader
+              aria-hidden="true"
+              status="idle"
+              icon={<PreviewSessionIcon size={14} />}
+              title={<span className="tile-title">Session</span>}
+              shortcut={1}
+              device={<><DeviceIcon size={11} />{tileDevice(undefined)}</>}
+            />
             <div className="empty-session-body">
               <div className="empty-session-prompt" aria-hidden="true"><span>›</span><span className="empty-session-cursor" /></div>
               <p>Start a session in this workspace.</p>

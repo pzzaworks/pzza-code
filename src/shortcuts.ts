@@ -8,6 +8,14 @@ export const IS_MAC =
 // Short labels shown on the buttons.
 export const ALT_LABEL = IS_MAC ? "⌥" : "Alt";
 export const CTRL_LABEL = IS_MAC ? "⌃" : "Ctrl";
+export const NEW_SESSION_SHORTCUT = { label: IS_MAC ? "⌘N" : "Ctrl N", keys: IS_MAC ? "Meta+N" : "Control+N" };
+export const NEW_WORKSPACE_SHORTCUT = { label: IS_MAC ? "⇧⌘N" : "Ctrl Shift N", keys: IS_MAC ? "Meta+Shift+N" : "Control+Shift+N" };
+
+export function newItemShortcut(event: KeyboardEvent): "session" | "workspace" | null {
+  const modifier = IS_MAC ? event.metaKey && !event.ctrlKey : event.ctrlKey && !event.metaKey;
+  if (!modifier || event.altKey || event.code !== "KeyN" || event.isComposing) return null;
+  return event.shiftKey ? "workspace" : "session";
+}
 
 // Pretty badge text for a given number, e.g. "⌥1" on macOS or "Alt 1" elsewhere.
 export const altBadge = (n: number) => (IS_MAC ? `${ALT_LABEL}${n}` : `${ALT_LABEL} ${n}`);

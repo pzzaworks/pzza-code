@@ -1,14 +1,13 @@
-import { notify } from "../state/notifications";
 import { LiveSessionIcon } from "../ui/LiveSessionIcon";
 import { DeviceIcon } from "../ui/DeviceIcon";
 import { useEffect, useState } from "react";
 import { ChevronRight, CornerDownLeft, SquareTerminal } from "lucide-react";
 import { useStore } from "../state/store";
-import { deviceHost } from "../devices";
 import { tileTitle, sessionDisplayName } from "../sessionMeta";
 import { Select } from "../ui/Select";
 import { HAS_TAURI } from "../tauriEnv";
-import { fetchAccounts, createSession, type Account } from "../serverApi";
+import { createSessionInApp, useSessionCreation } from "../sessionActions";
+import { fetchAccounts, type Account } from "../serverApi";
 
 const DEVICE_KEY = "pzza.session.device";
 
@@ -18,15 +17,14 @@ export function SessionMenu({ close }: { close: () => void }) {
   const allWindows = useStore((s) => s.allWindows);
   const tiles = useStore((s) => s.tiles);
   const tileTitles = useStore((s) => s.tileTitles);
-  const openSession = useStore((s) => s.openSession);
   const openWindow = useStore((s) => s.openWindow);
-  const loadSessions = useStore((s) => s.loadSessions);
   const workspaces = useStore((s) => s.workspaces);
   const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
-  const setWorkspace = useStore((s) => s.setWorkspace);
   const devices = useStore((s) => s.devices);
 
   const [name, setName] = useState("");
+  const creating = useSessionCreation(state => state.operation?.status === "running");
+  const [creationError, setCreationError] = useState<string | null>(null);
   const [wsId, setWsId] = useState(activeWorkspaceId);
   const [deviceId, setDeviceId] = useState(() => {
     try {
@@ -82,33 +80,13 @@ export function SessionMenu({ close }: { close: () => void }) {
   const available = allWindows.filter((w) => !isWindowOpen(w));
 
   const createNew = async () => {
-    const trimmed = name.trim();
-    if (!trimmed) return;
-    if (wsId !== activeWorkspaceId) setWorkspace(wsId);
-    // Open on the selected device: no host for this Mac, the ssh host otherwise.
-    const device = devices.find((d) => d.id === deviceId);
-    const host = device ? deviceHost(device) || undefined : undefined;
-    // Bind the chosen account by creating the tmux session with its env up
-    // front, then attach to it (the lazy attach reuses the existing session).
-    // Account binding runs through the local agent, so it only applies locally.
-    const acc = accounts.find((a) => a.dir === accDir);
-    if (acc && !host) {
-      try {
-        await createSession(trimmed, undefined, { provider: acc.provider, dir: acc.dir });
-      } catch {
-        /* fall back to a plain session */
-      }
-    }
-    openSession(trimmed, undefined, host);
-    notify({ category: "app", event: "session-opened", title: "Session window opened", body: `${trimmed} on ${device?.name ?? "this device"}.`, target: { tileId: host ? `${host}::${trimmed}` : trimmed } });
-    // Give tmux a beat to create the session, then re-scan so the new session's
-    // current path lands in allSessions (drives the tile header and code editor).
-    setTimeout(() => {
-      loadSessions().catch(() => {});
-    }, 500);
-    setName("");
-    setAccDir("");
-    close();
+    if (!name.trim() || creating) return;
+    setCreationError(null);
+    const account = accounts.find(item => item.dir === accDir);
+    try {
+      await createSessionInApp({ name, deviceId, workspaceId: wsId, account: account ? { provider: account.provider, dir: account.dir } : undefined });
+      setName(""); setAccDir(""); close();
+    } catch (error) { setCreationError(error instanceof Error ? error.message : "Could not create the session."); }
   };
 
   return (
@@ -164,14 +142,15 @@ export function SessionMenu({ close }: { close: () => void }) {
           placeholder="Name a new session…"
           value={name}
           onChange={(e) => setName(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && createNew()}
+          onKeyDown={(e) => { if (e.key === "Enter") void createNew(); }}
         />
-        <button className="btn btn-accent btn-sm" onClick={createNew} disabled={!name.trim()}>
-          Create
+        <button className="btn btn-accent btn-sm" onClick={() => void createNew()} disabled={!name.trim() || creating}>
+          {creating ? "Creating…" : "Create"}
           <CornerDownLeft size={13} strokeWidth={2.2} />
         </button>
       </div>
 
+      {creationError ? <p className="set-note" role="alert">{creationError}</p> : null}
       {available.length > 0 ? (
         <>
           <div className="ns-divider">

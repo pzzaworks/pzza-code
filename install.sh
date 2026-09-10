@@ -75,7 +75,24 @@ install_deps "$SCRIPT_DIR/mcp" "mcp"
 
 # --- state directory ---------------------------------------------------------
 step "Preparing state directory"
-mkdir -p "$STATE_DIR/backups"
+node - "$STATE_DIR" <<'PZZA_PRIVATE_STATE'
+const fs = require("node:fs");
+const path = require("node:path");
+function prepare(directory) {
+  try { fs.mkdirSync(directory, { recursive: true, mode: 0o700 }); }
+  catch (error) { if (error.code !== "EEXIST") throw error; }
+  const before = fs.lstatSync(directory);
+  if (!before.isDirectory() || before.isSymbolicLink() || (process.getuid && before.uid !== process.getuid())) throw new Error("App state must be a directory owned by this user, without symlinks");
+  const fd = fs.openSync(directory, fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW);
+  try {
+    const opened = fs.fstatSync(fd);
+    if (opened.dev !== before.dev || opened.ino !== before.ino) throw new Error("App state directory changed during setup");
+    fs.fchmodSync(fd, 0o700);
+  } finally { fs.closeSync(fd); }
+}
+prepare(process.argv[2]);
+prepare(path.join(process.argv[2], "backups"));
+PZZA_PRIVATE_STATE
 ok "$STATE_DIR"
 
 # --- tmux config (idempotent) ------------------------------------------------

@@ -132,7 +132,8 @@
 .settings-hub-content .pj-card { border: 0; border-bottom: 1px solid var(--border); border-radius: 0; background: transparent; }
 .settings-hub-content .pj-card-head { padding: 12px 0; }
 .settings-hub-content .pj-lines { padding: 0 0 12px; }
-.settings-hub-content .pj-list { gap: 0; }
+.settings-hub-content .pj-list { gap: 0; max-height: none; overflow: visible; padding: 0; }
+.settings-hub-content .pj-folder-content { margin: 0; padding: 0; border: 0; gap: 0; }
 .settings-hub-content .pj-note { margin-top: 16px; }
 .settings-hub-content .settings-field .input { width: 100%; }
 .settings-hub-content .mcp-settings > .settings-section { margin-top: 18px; padding-top: 18px; border-top: 1px solid var(--border); }

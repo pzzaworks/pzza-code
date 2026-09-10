@@ -15,10 +15,12 @@ import { createOutputScheduler } from "./outputScheduler";
 import { HAS_TAURI } from "../tauriEnv";
 import { uploadPasteImage } from "../serverApi";
 import { sessionDisplayName, type TileStatus } from "../sessionMeta";
-import { registerContextMenu, clipboardPaste } from "../ui/ContextMenu";
-import { registerDictationTarget } from "../state/dictation";
+import { registerContextMenu, clipboardPaste, readClipboardData } from "../ui/ContextMenu";
+import { registerDictationTarget, useDictation } from "../state/dictation";
+import { createDictationComposition } from "./dictationComposition";
 import { notify } from "../state/notifications";
 import { createTerminalSignals } from "./notificationSignals";
+import { createTerminalAppController, registerTerminalAppControl, validateTerminalPaste } from "../appControlTerminal";
 
 // Copy text to the OS clipboard. navigator.clipboard only exists in a secure
 // context (https or localhost), so on a client that opened the app over plain
@@ -82,6 +84,7 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
   const safeFitRef = useRef<(() => void) | null>(null);
   const flushOutputRef = useRef<(() => void) | null>(null);
   const activeRef = useRef(active);
+  const compositionRef = useRef<ReturnType<typeof createDictationComposition> | null>(null);
   const themeId = useStore((s) => s.themeId);
   const semiTransparent = useStore((s) => s.semiTransparent);
   const surfaceOpacity = useStore((s) => s.transparencyOptions.surfaceOpacity);
@@ -214,6 +217,26 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
       term.unicode.activeVersion = "11";
 
       term.open(container);
+      const composition = createDictationComposition(term);
+      compositionRef.current = composition;
+      const cancelDictationInput = () => {
+        composition.clear();
+        if (useDictation.getState().recording?.tileId === tileId) void useDictation.getState().cancel();
+      };
+      const manualKey = term.onKey(cancelDictationInput);
+      container.addEventListener("beforeinput", cancelDictationInput, true);
+      container.addEventListener("compositionstart", cancelDictationInput, true);
+      const focusMoved = (event: FocusEvent) => {
+        if (container.contains(event.target as Node)) { composition.suspend(false); return; }
+        composition.suspend(true);
+        const recording = useDictation.getState().recording;
+        if (document.hasFocus() && recording?.tileId === tileId && recording.phase !== "loading") cancelDictationInput();
+      };
+      const windowBlur = () => composition.suspend(true);
+      const windowFocus = () => composition.suspend(!activeRef.current);
+      document.addEventListener("focusin", focusMoved);
+      window.addEventListener("blur", windowBlur);
+      window.addEventListener("focus", windowFocus);
       term.element?.style.setProperty("--pzza-cell-background-opacity", String(
         useStore.getState().semiTransparent ? useStore.getState().transparencyOptions.surfaceOpacity / 100 : 1,
       ));
@@ -300,6 +323,7 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
       let disposed = false;
       let tauriId: number | null = null;
       let ws: WsPtyHandle | null = null;
+      let lastWrite = Promise.resolve();
       let previewDispose: (() => void) | null = null;
       let gotData = false;
       // Current tiles attach to persistent tmux sessions rather than owning their commands.
@@ -393,7 +417,6 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
             if (disposed) return killPty(id);
             if (exited) return;
             tauriId = id;
-            let lastWrite = Promise.resolve();
             term.onData((d) => {
               if (exited || disposed) return;
               lastWrite = writePty(id, d);
@@ -403,13 +426,15 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
             });
             unregisterDictation = registerDictationTarget(tileId, {
               focus: () => { if (!disposed && tauriId !== null) term.focus(); },
+              preview: text => { composition.suspend(!activeRef.current || !document.hasFocus()); composition.preview(text); },
+              clearPreview: composition.clear,
               insert: async (text) => {
                 if (disposed || tauriId === null) return false;
                 const previousWrite = lastWrite;
+                composition.beginConfirmedWrite();
                 term.paste(text);
                 if (lastWrite === previousWrite) return false;
                 await lastWrite;
-                term.focus();
                 return true;
               },
             });
@@ -442,55 +467,88 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
           win,
           host,
         );
-        term.onData((d) => ws?.write(d));
+        term.onData((d) => {
+          lastWrite = ws?.write(d) ? Promise.resolve() : Promise.reject(new Error("Terminal connection closed while sending input."));
+          void lastWrite.catch(() => { if (!disposed) reportError("Terminal connection closed while sending input."); });
+        });
         term.onResize(({ cols, rows }) => ws?.resize(cols, rows));
       }
 
       const pasteController = new AbortController();
       let pasteQueue = Promise.resolve();
+      const connected = () => !disposed && !exited && (HAS_TAURI ? tauriId !== null : !!ws?.ready());
+      const insert = async (text: string, guarded: boolean) => {
+        if (!connected()) throw new Error("Terminal is not connected yet. Retry after it connects.");
+        if (guarded) validateTerminalPaste(text, term.modes.bracketedPasteMode);
+        if (!text) return;
+        cancelDictationInput();
+        const previous = lastWrite;
+        term.paste(text);
+        if (lastWrite === previous) throw new Error("The terminal did not accept the pasted text.");
+        await lastWrite;
+      };
+      const performPaste = async (clipboard: DataTransfer, guarded: boolean) => {
+        const images = Array.from(clipboard.items).filter(item => item.type.startsWith("image/")).map(item => item.getAsFile()).filter((file): file is File => file !== null);
+        const text = clipboard.getData("text");
+        if (guarded && images.length > 4) throw new Error("Paste at most four images at once.");
+        if (!images.length) { await insert(text, guarded); return; }
+        for (const image of images) {
+          if (!connected()) throw new Error("Terminal disconnected before the image was pasted.");
+          if (image.size > 20 * 1024 * 1024) throw new Error("Images must be 20 MB or smaller.");
+          const target = HAS_TAURI ? host ?? "" : host;
+          const imagePath = await uploadPasteImage(image, target, pasteController.signal);
+          if (!imagePath.startsWith("/") || imagePath.length > 4096 || /[\x00-\x1f\x7f]/.test(imagePath)) throw new Error("The device returned an invalid image path.");
+          // Paths are quoted and use the same bracketed-paste handling as text.
+          await insert("'" + imagePath.replace(/'/g, "'\\''") + "' ", guarded);
+        }
+      };
+      const enqueuePaste = (work: () => Promise<void>) => {
+        const task = pasteQueue.then(work);
+        pasteQueue = task.catch(() => {});
+        return task;
+      };
       const onPaste = (event: ClipboardEvent) => {
         const clipboard = event.clipboardData;
-        if (!clipboard) return;
-        const images = Array.from(clipboard.items)
-          .filter((item) => item.type.startsWith("image/"))
-          .map((item) => item.getAsFile())
-          .filter((file): file is File => file !== null);
-        const text = clipboard.getData("text");
-        if (!images.length && !text) return;
-        event.preventDefault();
-        event.stopPropagation();
-        // Keep consecutive image/text pastes ordered while an upload is pending.
-        pasteQueue = pasteQueue.then(async () => {
-          if (disposed) return;
-          try {
-            if (HAS_TAURI && tauriId === null) throw new Error("Terminal is not connected yet. Paste again once it connects.");
-            if (!images.length) { term.paste(text); return; }
-            for (let index = 0; index < images.length; index++) {
-              const image = images[index];
-              if (disposed) return;
-              if (image.size > 20 * 1024 * 1024) throw new Error("Images must be 20 MB or smaller.");
-              const target = HAS_TAURI ? host ?? "" : host;
-              const imagePath = await uploadPasteImage(image, target, pasteController.signal);
-              if (disposed) return;
-              if (!imagePath.startsWith("/") || imagePath.length > 4096 || /[\x00-\x1f\x7f]/.test(imagePath)) {
-                throw new Error("The device returned an invalid image path.");
-              }
-              if (HAS_TAURI && tauriId === null) throw new Error("Terminal is not connected yet. Paste the image again once it connects.");
-              // Quote paths containing spaces/apostrophes and preserve bracketed paste.
-              const quoted = "'" + imagePath.replace(/'/g, "'\\''") + "' ";
-              term.paste(quoted);
-            }
-          } catch (error) {
-            if (!disposed) reportError(error instanceof Error ? error.message : "Image paste failed.");
-          }
-        });
+        if (!clipboard || (!clipboard.items.length && !clipboard.getData("text"))) return;
+        event.preventDefault(); event.stopPropagation();
+        cancelDictationInput();
+        void enqueuePaste(() => performPaste(clipboard, false)).catch((error: unknown) => { if (!disposed) reportError(error instanceof Error ? error.message : "Paste failed."); });
       };
       container.addEventListener("paste", onPaste, true);
 
+      const unregisterControl = registerTerminalAppControl(tileId, createTerminalAppController({
+        state: () => ({ connected: connected(), cols: term.cols, rows: term.rows, bufferLines: term.buffer.active.length, viewportY: term.buffer.active.viewportY, hasSelection: term.hasSelection(), bracketedPasteMode: term.modes.bracketedPasteMode }),
+        lines: async () => {
+          output.flush();
+          await new Promise<void>(resolve => term.write("", resolve));
+          const lines: string[] = [];
+          for (let row = 0; row < term.buffer.active.length; row++) {
+            const line = term.buffer.active.getLine(row);
+            if (!line) continue;
+            const text = line.translateToString(true);
+            if (line.isWrapped && lines.length) lines[lines.length - 1] += text;
+            else lines.push(text);
+          }
+          return lines;
+        },
+        selection: () => term.getSelection(),
+        paste: text => enqueuePaste(() => insert(text, true)),
+        pasteClipboard: async () => { const data = await readClipboardData(); await enqueuePaste(() => performPaste(data, true)); },
+        sendControl: value => enqueuePaste(async () => {
+          if (!connected()) throw new Error("The terminal is disconnected.");
+          cancelDictationInput();
+          if (HAS_TAURI && tauriId !== null) await writePty(tauriId, value);
+          else if (!ws?.write(value)) throw new Error("Terminal input could not be sent.");
+        }),
+        copy: async () => { if (!await copyToClipboard(term.getSelection())) throw new Error("Select terminal text and allow clipboard access before copying."); },
+        selectAll: () => term.selectAll(), clearSelection: () => term.clearSelection(), clear: () => term.clear(),
+        scroll: (target, lines) => { if (target === "top") term.scrollToTop(); else if (target === "bottom") term.scrollToBottom(); else term.scrollLines(lines); },
+      }));
+
       // Focus the terminal on click so a following Cmd/Ctrl+V lands here even when
       // the tile was already active (the active effect only refocuses on change).
-      const onMouseDown = () => term.focus();
-      container.addEventListener("mousedown", onMouseDown);
+      const onMouseDown = () => { cancelDictationInput(); term.focus(); };
+      container.addEventListener("mousedown", onMouseDown, true);
 
       // Only scroll the terminal you actually clicked into. When the tile is not
       // active, swallow the wheel before xterm sees it (capture phase) but don't
@@ -504,7 +562,16 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
       resizeObserver.observe(container);
 
       return () => {
+        unregisterControl();
         unregisterDictation?.();
+        manualKey.dispose();
+        container.removeEventListener("beforeinput", cancelDictationInput, true);
+        container.removeEventListener("compositionstart", cancelDictationInput, true);
+        document.removeEventListener("focusin", focusMoved);
+        window.removeEventListener("blur", windowBlur);
+        window.removeEventListener("focus", windowFocus);
+        composition.dispose();
+        compositionRef.current = null;
         container.removeEventListener("paste", onPaste, true);
         container.removeEventListener("copy", onCopy, true);
         container.removeEventListener("mousedown", selectDown, true);
@@ -512,7 +579,7 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
         selectionListener.dispose();
         disposeMouseSelection();
         unregisterMenu();
-        container.removeEventListener("mousedown", onMouseDown);
+        container.removeEventListener("mousedown", onMouseDown, true);
         container.removeEventListener("wheel", onWheel, { capture: true });
         disposed = true;
         notificationSignals.dispose();
@@ -562,6 +629,9 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
       // Catch up on any output batched while this tile was in the background.
       flushOutputRef.current?.();
       termRef.current?.focus();
+    } else {
+      compositionRef.current?.clear();
+      if (useDictation.getState().recording?.tileId === tileId) void useDictation.getState().cancel();
     }
   }, [active]);
 
