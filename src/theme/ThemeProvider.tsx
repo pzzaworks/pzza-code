@@ -3,7 +3,7 @@ import { useStore } from "../state/store";
 import { HAS_TAURI } from "../tauriEnv";
 import { setNativeTransparency } from "../nativeAppearance";
 import { themeById } from "./themes";
-import { chromeToCssVars, deriveChrome } from "./types";
+import { chromeToCssVars, deriveChrome, textVisibilityVars } from "./types";
 
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
   const themeId = useStore((s) => s.themeId);
@@ -43,7 +43,8 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
     const theme = themeById(themeId);
     const root = document.documentElement;
     const chrome = deriveChrome(theme.terminal, theme.appearance);
-    const vars = chromeToCssVars(chrome);
+    const visibility = transparent ? options.textVisibility : 0;
+    const vars = { ...chromeToCssVars(chrome), ...textVisibilityVars(chrome, theme.appearance, visibility) };
     root.style.setProperty("--opaque-bg", chrome.bg);
     root.style.setProperty("--opaque-surface", chrome.surface);
     root.style.setProperty("--opaque-surface-alt", chrome.surfaceAlt);
@@ -59,6 +60,7 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
     root.style.colorScheme = theme.appearance;
     root.dataset.appearance = theme.appearance;
     root.dataset.transparency = transparent ? "on" : "off";
+    root.dataset.textVisibility = visibility > 0 ? "on" : "off";
     root.dataset.native = String(HAS_TAURI);
   }, [themeId, transparent, options]);
 

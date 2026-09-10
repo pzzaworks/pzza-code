@@ -57,6 +57,20 @@ test("local attach routes every command through the managed socket with literal 
   }
 });
 
+test("managed chat attachment verifies identity and only attaches to the existing session id", () => {
+  for (const host of [null, "remote"]) {
+    const command = attachCommand({ host }, "pzza-quick-chat", undefined, undefined, { agent: "codex", identity: "$12:100:200" });
+    const shell = command.args.at(-1);
+    assert.doesNotMatch(shell, /new-session| -A |kill-session/);
+    assert.match(shell, /PZZA_QUICK_CHAT_AGENT/);
+    assert.match(shell, /session_created/);
+    assert.match(shell, /exec .* -u attach -t/);
+    assert.match(shell, /\$12/);
+  }
+  assert.throws(() => attachCommand({ host: null }, "other-session", undefined, undefined, { agent: "codex", identity: "$1:1:1" }));
+  assert.throws(() => attachCommand({ host: null }, "pzza-quick-chat", undefined, undefined, { agent: "codex", identity: "$(touch bad)" }));
+});
+
 test("local attachment rejects an empty or relative managed socket before invoking tmux", async () => {
   const command = attachCommand({ host: null }, "session");
   for (const socket of ["", "relative"]) {

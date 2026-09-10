@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { DEFAULT_SYNC_OPTIONS, type ProjectSync, type SyncOptions } from "../serverApi";
+import { DEFAULT_SYNC_OPTIONS, type EnvSyncResult, type ProjectSync, type ProjectSyncResult, type SyncOptions } from "../serverApi";
 import { deviceExclusions, projectSettings } from "../projectSettings";
 
 function stored(key: string): unknown {
@@ -29,18 +29,28 @@ export function summarizeProjectSync(result: ProjectSync) {
       else counts[item.status]++;
     }
   }
-  const needsAttention = counts.errors > 0 || counts.dirty > 0 || counts.stashed > 0;
+  // A verified stash or recovery ref means Sync preserved the work and finished
+  // safely. Only disabled preservation, failures, or cancelled enabled work are
+  // actionable. The row detail contains the exact Git restore command.
+  const needsAttention = Boolean(result.cancelled) || counts.errors > 0 || counts.dirty > 0;
   const details = [
     counts.updated && `${counts.updated} updated or cloned`, counts.current && `${counts.current} already current`,
     counts.skipped && `${counts.skipped} skipped`, counts.dirty && `${counts.dirty} left dirty and unsynced`,
-    counts.stashed && `${counts.stashed} with local changes preserved in a stash`, counts.errors && `${counts.errors} errors`,
+    counts.stashed && `${counts.stashed} local changes preserved`, counts.errors && `${counts.errors} errors`,
   ].filter(Boolean).join(", ");
   return {
     complete: !result.cancelled && counts.errors === 0 && counts.dirty === 0,
     needsAttention,
     title: result.cancelled ? "Sync cancelled" : needsAttention ? "Sync needs attention" : "Sync completed",
-    body: `${result.cancelled ? "Remaining work was cancelled. " : ""}${details || "No repositories changed"}.${needsAttention ? " Open Sync to review." : ""}`,
+    body: `${result.cancelled ? "Remaining enabled work was cancelled. " : ""}${details || "No repositories changed"}.${needsAttention ? " Open Sync to review." : ""}`,
   };
+}
+
+// The repository list owns filtering. Keep its per-device outcome rule here so
+// summary notifications and the Attention filter cannot disagree about dirty
+// work deliberately left in place when stash preservation is disabled.
+export function hasUnresolvedProjectSync(result: ProjectSyncResult | undefined, envs: EnvSyncResult[]): boolean {
+  return result?.status === "failed" || result?.status === "dirty" || envs.some((item) => item.status === "failed");
 }
 
 interface ProjectOperations {

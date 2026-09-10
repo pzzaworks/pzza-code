@@ -114,7 +114,7 @@ export function TileCodePanel({ tileId }: { tileId: string }) {
   }, []);
   const navigate = async (action: () => void) => { if (await requestDiscard()) action(); };
   useEffect(() => registerEditorDiscard(tileId, requestDiscard), [tileId, requestDiscard]);
-  useEffect(() => registerEditorFile(tileId, () => ({ host, path: snapshot.current.path, saving: snapshot.current.saving, dirty: snapshot.current.dirty })), [tileId, host]);
+  useEffect(() => registerEditorFile(tileId, () => ({ host, path: snapshot.current.path, saving: snapshot.current.saving, dirty: snapshot.current.dirty, revision: revision.current.value })), [tileId, host]);
   useEffect(() => () => { discardResolve.current?.(false); }, []);
   useEffect(() => {
     const protect = (event: BeforeUnloadEvent) => {

@@ -90,12 +90,14 @@ export function SessionMenu({ close }: { close: () => void }) {
   };
 
   return (
-    <div className="menu-body">
+    <div className="menu-body new-session-form">
       <div className="ns-row">
         <span className="ns-row-label">Device</span>
         <div className="ns-row-control">
           <Select
             value={deviceId}
+            disabled={creating}
+            ariaLabel="Session device"
             onChange={pickDevice}
             options={devices.map((d) => ({ value: d.id, label: d.name, sub: d.host, icon: <DeviceIcon device={d} /> }))}
           />
@@ -107,6 +109,8 @@ export function SessionMenu({ close }: { close: () => void }) {
           <div className="ns-row-control">
             <Select
               value={wsId}
+              disabled={creating}
+              ariaLabel="Session workspace"
               onChange={setWsId}
               options={workspaces.map((w) => ({ value: w.id, label: w.name }))}
             />
@@ -120,6 +124,8 @@ export function SessionMenu({ close }: { close: () => void }) {
           <div className="ns-row-control">
             <Select
               value={accDir}
+              disabled={creating}
+              ariaLabel="Session account"
               onChange={setAccDir}
               options={[
                 { value: "", label: "Default account" },
@@ -138,6 +144,8 @@ export function SessionMenu({ close }: { close: () => void }) {
         <SquareTerminal size={16} className="muted-icon" />
         <input
           className="ns-input"
+          disabled={creating}
+          aria-label="New session name"
           autoFocus
           placeholder="Name a new session…"
           value={name}

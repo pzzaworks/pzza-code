@@ -2,7 +2,7 @@ import { registerAppControlHandler, registerAppControlState } from "../appContro
 import { AsyncButton } from "../ui/AsyncButton";
 import { notify } from "../state/notifications";
 import { Modal } from "../ui/Modal";
-import { DEFAULT_PROJECT_ROOT, bindProjectOperations, summarizeProjectSync, updateProjectSyncPreferences, useProjectSyncPreferences } from "../state/projectSync";
+import { DEFAULT_PROJECT_ROOT, bindProjectOperations, hasUnresolvedProjectSync, summarizeProjectSync, updateProjectSyncPreferences, useProjectSyncPreferences } from "../state/projectSync";
 import { hasUnsavedEditors } from "../editorChanges";
 import { DeviceIcon } from "../ui/DeviceIcon";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
@@ -46,8 +46,9 @@ function ScanProgress({ progress }: { progress: ProjectScanProgress | null }) {
 // on ANY device; inside it one line per device: what is checked out, how far
 // from origin, what is uncommitted, and whether the .env files match across
 // devices. "Sync all" clones what is missing, stashes local edits, updates
-// every repo to origin's default branch and copies the newest env files around;
-// the outcome lands back on the same lines.
+// every repo to remote development when it exists, otherwise remote main, and
+// copies the newest env files around. Preserved work remains recoverable from
+// the detailed Sync outcome on the same lines.
 
 
 function Switch({ on, onToggle, title, small }: { on: boolean; onToggle: () => void; title: string; small?: boolean }) {
@@ -221,11 +222,13 @@ function buildRows(scan: ProjectScan, options: SyncOptions, excludedDevices: str
       return { name, state, hashes };
     });
 
-    const missingSomewhere = okDevices.some((d) => !byDevice.has(d.id));
-    const offDefault = present.some((r) => defaultBranch && r.branch && r.branch !== defaultBranch);
-    const dirty = present.some((r) => r.modified > 0); // Untracked files are protected by the same stash policy.
-    const behind = present.some((r) => (r.behind ?? 0) > 0);
-    const envDrift = envs.some((e) => e.state === "differs" || e.state === "partial");
+    // Disabled devices are visible for context, but their state cannot make an
+    // enabled Sync operation actionable. Modified, behind, missing, and env-drift
+    // states are handled by the default preservation-first policy rather than
+    // shown as errors before Sync has had a chance to resolve them.
+    const activeDeviceIds = new Set(okDevices.filter((device) => !excludedDevices.includes(device.id)).map((device) => device.id));
+    const activeDuplicates = [...duplicates.keys()].some((id) => activeDeviceIds.has(id));
+    const enabled = options.repos[projectId]?.enabled !== false;
     rows.push({
       projectId,
       rel,
@@ -237,7 +240,7 @@ function buildRows(scan: ProjectScan, options: SyncOptions, excludedDevices: str
       canClone,
       cloneBlocks: new Map(),
       envs,
-      attention: duplicates.size > 0 || missingSomewhere || offDefault || dirty || behind || envDrift,
+      attention: enabled && activeDuplicates,
     });
   }
   for (const device of okDevices) {
@@ -398,7 +401,7 @@ function DeviceLine({
       <>
         <span
           className={`pj-branch ${detached ? "pj-dim" : off ? "pj-warn" : "pj-acc"}`}
-          title={detached ? "detached HEAD" : off ? `not on default branch (${defaultBranch})` : "on default branch"}
+          title={detached ? "detached HEAD" : off ? `not on selected baseline (${defaultBranch})` : "on selected baseline"}
         >
           {detached ? "detached" : (repo.branch ?? "?")}
         </span>
@@ -448,8 +451,8 @@ function RowDetails({ row, devices }: { row: Row; devices: ProjectDeviceRef[] })
         </span>
       </div>
       <div className="pj-detail-line">
-        <span className="pj-k">default</span>
-        <span className="pj-v">{row.defaultBranch ?? "unknown until first sync (origin/HEAD not set)"}</span>
+        <span className="pj-k">baseline</span>
+        <span className="pj-v">{row.defaultBranch ?? "neither remote development nor main is known; Sync will report this repository"}</span>
       </div>
       {devices.map((d) => {
         const r = row.byDevice.get(d.id);
@@ -702,12 +705,13 @@ export function ProjectsMenu({ active = true, page = "repositories", syncRequest
     sync?.devices.find((d) => d.id === deviceId)?.results.find((r) => r.projectId === projectId);
   const envsFor = (deviceId: string, projectId: string) =>
     sync?.devices.find((d) => d.id === deviceId)?.envs.filter((e) => e.projectId === projectId) ?? [];
-  // After a sync, anything that failed on any device needs attention too.
-  const failedRow = (r: Row) =>
-    refs.some(
-      (d) => resultFor(d.id, r.projectId)?.status === "failed" || envsFor(d.id, r.projectId).some((e) => e.status === "failed"),
+  // A failed transfer and a dirty repo deliberately left in place are both
+  // unresolved enabled work. Preserved stashes and recovery refs are successes.
+  const unresolvedRow = (r: Row) =>
+    opts.repos[r.projectId]?.enabled !== false && syncRefs.some(
+      (d) => hasUnresolvedProjectSync(resultFor(d.id, r.projectId), envsFor(d.id, r.projectId)),
     );
-  const needsAttention = (r: Row) => r.attention || failedRow(r);
+  const needsAttention = (r: Row) => r.attention || unresolvedRow(r);
   const shown = filter === "attention" ? rows.filter(needsAttention) : rows;
   const tree = projectTree(shown);
   const attention = rows.filter(needsAttention).length;
@@ -865,10 +869,9 @@ export function ProjectsMenu({ active = true, page = "repositories", syncRequest
         )}
       </div>
       <p className="set-note pj-note">
-        What a sync does is up to the settings: clone missing repos, stash local edits (git stash apply brings them
-        back), switch to the default branch and integrate upstream commits, then copy the newest env files around. Diverged
-        branches are merged while preserving local commits; conflicting merges are aborted. Every project
-        can opt out on its card.
+        Sync clones missing repos onto remote development when available, otherwise remote main. It first preserves local
+        edits in a durable stash and unmerged local commits in recovery refs, then aligns a clean checkout to that baseline
+        without creating a merge commit. Each project, device, and behavior can opt out safely in its settings.
       </p>
       </div>
       <div hidden={page !== "preferences"}>
@@ -893,10 +896,10 @@ export function ProjectsMenu({ active = true, page = "repositories", syncRequest
             </label>
             <label className="settings-row">
               <span className="settings-row-copy">
-                Switch to the default branch
-                <small>Off: upstream commits are integrated into the current branch</small>
+                Align to the selected remote baseline
+                <small>Uses development when it exists, otherwise main. Off leaves this checkout untouched.</small>
               </span>
-              <Switch on={opts.switchToDefault} onToggle={() => patchOpts({ switchToDefault: !opts.switchToDefault })} title="Switch to default branch" />
+              <Switch on={opts.switchToDefault} onToggle={() => patchOpts({ switchToDefault: !opts.switchToDefault })} title="Align to the selected remote baseline" />
             </label>
             <label className="settings-row">
               <span className="settings-row-copy">
@@ -945,8 +948,8 @@ export function ProjectsMenu({ active = true, page = "repositories", syncRequest
         {error ? <p className="set-note" role="alert">{error}</p> : null}
         <p className="set-note">
           This updates Git working files{opts.cloneMissing ? ", clones missing projects" : ""}
-          {opts.switchToDefault ? ", switches to the default branch" : ""}
-          {opts.stashDirty ? ", and stashes tracked and untracked local changes" : "; dirty projects are skipped"}.
+          {opts.switchToDefault ? ", and aligns clean checkouts to remote development or main" : ", but leaves existing checkouts untouched"}
+          {opts.stashDirty ? ". Tracked and untracked local changes are preserved before alignment." : ". Dirty projects are left alone."}
           {opts.syncEnvs ? " Replaced environment files are backed up privately in the destination repository’s Git directory." : " Environment file copying is disabled."}
         </p>
         <div className="modal-actions">

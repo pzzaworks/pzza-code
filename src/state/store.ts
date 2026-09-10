@@ -44,9 +44,9 @@ const TILETITLES_KEY = "pzza.tileTitles";
 const TILECODE_KEY = "pzza.tileCode";
 const TRANSPARENCY_KEY = "pzza.semiTransparent";
 const TRANSPARENCY_OPTIONS_KEY = "pzza.transparencyOptions";
-export interface TransparencyOptions { opacity: number; blur: number; saturation: number; surfaceOpacity: number; desktopBlur: boolean; desktopBlurRadius: number }
+export interface TransparencyOptions { opacity: number; blur: number; saturation: number; surfaceOpacity: number; textVisibility: number; desktopBlur: boolean; desktopBlurRadius: number }
 export const DEFAULT_TRANSPARENCY_OPTIONS: Readonly<TransparencyOptions> = {
-  opacity: 55, surfaceOpacity: 50, blur: 20, saturation: 116, desktopBlur: true, desktopBlurRadius: 20,
+  opacity: 55, surfaceOpacity: 50, textVisibility: 0, blur: 20, saturation: 116, desktopBlur: true, desktopBlurRadius: 20,
 };
 function transparencyOptions(value: Partial<TransparencyOptions>): TransparencyOptions {
   const defaults = DEFAULT_TRANSPARENCY_OPTIONS;
@@ -54,7 +54,7 @@ function transparencyOptions(value: Partial<TransparencyOptions>): TransparencyO
     typeof value === "number" && Number.isFinite(value) ? Math.min(max, Math.max(min, value)) : fallback;
   return { opacity: bound(value?.opacity, defaults.opacity, 5, 95), blur: bound(value?.blur, defaults.blur, 0, 40), saturation: bound(value?.saturation, defaults.saturation, 50, 180),
     surfaceOpacity: bound(value?.surfaceOpacity, defaults.surfaceOpacity, 5, 100), desktopBlur: typeof value?.desktopBlur === "boolean" ? value.desktopBlur : defaults.desktopBlur,
-    desktopBlurRadius: Math.round(bound(value?.desktopBlurRadius, defaults.desktopBlurRadius, 0, 64)) };
+    desktopBlurRadius: Math.round(bound(value?.desktopBlurRadius, defaults.desktopBlurRadius, 0, 64)), textVisibility: Math.round(bound(value?.textVisibility, defaults.textVisibility, 0, 100)) };
 }
 const THEME_KEY = "pzza.theme";
 const FONT_KEY = "pzza.fontSize";

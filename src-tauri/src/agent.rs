@@ -252,6 +252,9 @@ fn spawn_agent_process(
         // instance id it echoes from /health so the webview can verify it.
         .env("PZZA_AGENT_TOKEN", token)
         .env("PZZA_AGENT_ID", instance)
+        .env("PZZA_BRIDGE_CONSENT_KEY", crate::bridge_consent::proof_key().ok_or_else(|| {
+            std::io::Error::other("Native consent randomness unavailable")
+        })?)
         // Empty server host = source role: tmux/ports are local to this machine.
         .env("PZZA_SERVER_HOST", "")
         // Keep the write end in Child. Process exit closes it even when Rust

@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -8,18 +9,18 @@ import { createBridgeExecutor, BRIDGE_CAPABILITIES } from "../lib/bridge-executo
 
 async function fixture(t, options = {}) {
   const dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "pzza-bridge-executor-")));
-  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  t.after(async () => { await executor.close(); await fs.rm(dir, { recursive: true, force: true }); });
   const root = path.join(dir, "project");
   await fs.mkdir(root);
   const calls = [];
   const children = [];
   const executor = createBridgeExecutor({ stateDir: path.join(dir, "state"), platform: "darwin",
     resolveTool: async (name) => `/tools/${name}`,
-    run: async (command, args) => { calls.push({ command, args }); return { stdout: "" }; },
+    run: async (command, args) => { calls.push({ command, args }); return { stdout: command === "/usr/bin/plutil" ? "com.example.fixture" : "" }; },
     startProcess: (command, args, opts) => { calls.push({ command, args, opts }); const child = new EventEmitter(); children.push(child); return child; },
     ...options });
-  const context = { peerId: "peer-one", projectRoots: { project: root }, capabilities: BRIDGE_CAPABILITIES };
-  const invoke = (action, args = {}, grant = context) => executor.execute(action, { projectId: "project", ...args }, grant);
+  const context = { peerId: "peer-one", projectRoots: { project: root }, capabilities: BRIDGE_CAPABILITIES, resources: { simulatorIds: ["12345678-1234-1234-1234-123456789abc", "22345678-1234-1234-1234-123456789abc"], bundleIds: ["com.example.fixture"], browserOrigins: [] } };
+  const invoke = (action, args = {}, grant = context) => executor.execute(action, { projectId: "project", requestId: randomUUID(), ...args }, grant);
   return { dir, root, executor, calls, children, context, invoke };
 }
 
@@ -111,6 +112,7 @@ test("build artifacts can be installed only by their owner inside the completed 
   const build = await invoke("ios.build", { project: "App.xcodeproj", scheme: "App" });
   const artifact = "Build/Products/Debug-iphonesimulator/App.app";
   await fs.mkdir(path.join(build.outputDirectory, artifact), { recursive: true });
+  await fs.writeFile(path.join(build.outputDirectory, artifact, "Info.plist"), "fixture metadata");
   children[0].emit("close", 0);
   // Drain the asynchronous filesystem artifact discovery, without touching a real tool.
   for (let tries = 0; tries < 20; tries++) {
@@ -203,9 +205,9 @@ test("retention removes only validated private build directories and rejects per
   const executor = createBridgeExecutor({ stateDir, platform: "darwin", startProcess: () => new EventEmitter() });
   assert.equal((await executor.getJob(jobs[1].id)).outputDirectory, undefined);
   assert.equal((await executor.getJob(jobs[2].id)).outputDirectory, undefined);
-  const grant = { peerId: "peer", projectRoots: { project: root }, capabilities: BRIDGE_CAPABILITIES };
+  const grant = { peerId: "peer", projectRoots: { project: root }, capabilities: BRIDGE_CAPABILITIES, resources: { simulatorIds: ["1", "2", "3"].map(prefix => `${prefix}2345678-1234-1234-1234-123456789abc`), bundleIds: [], browserOrigins: [] } };
   for (const prefix of ["1", "2", "3"]) await executor.execute("simulator.boot", {
-    projectId: "project", simulatorId: `${prefix}2345678-1234-1234-1234-123456789abc`,
+    requestId: randomUUID(), projectId: "project", simulatorId: `${prefix}2345678-1234-1234-1234-123456789abc`,
   }, grant);
   await assert.rejects(fs.stat(build), { code: "ENOENT" });
   assert.equal(await fs.readFile(path.join(root, "keep"), "utf8"), "keep");
