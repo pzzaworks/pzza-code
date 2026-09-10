@@ -3055,6 +3055,17 @@ button {
   flex-direction: column;
   gap: 5px;
 }
+.usage-estimate-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 5px;
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1.5;
+}
+.usage-estimate-note > svg { flex-shrink: 0; margin-top: 2px; }
 .usage-detail-row {
   display: flex;
   align-items: center;
