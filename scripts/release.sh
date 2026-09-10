@@ -40,12 +40,12 @@ export PATH="$HOME/.rustup/toolchains/stable-aarch64-apple-darwin/bin:$PATH"
 # and opens a Finder window to arrange icons - so a build never pops the DMG open.
 export CI=true
 
-echo "==> Building $TAG (universal)"
-npm run tauri build -- --target universal-apple-darwin --bundles app,dmg
+echo "==> Building $TAG (Apple Silicon)"
+npm run tauri build -- --target aarch64-apple-darwin --bundles app,dmg
 
-BUNDLE="src-tauri/target/universal-apple-darwin/release/bundle"
+BUNDLE="src-tauri/target/aarch64-apple-darwin/release/bundle"
 APP="$BUNDLE/macos/PzzaCode.app"
-DMG="$BUNDLE/dmg/PzzaCode_${VERSION}_universal.dmg"
+DMG="$BUNDLE/dmg/PzzaCode_${VERSION}_aarch64.dmg"
 TARGZ="$BUNDLE/macos/PzzaCode.app.tar.gz"
 SIG="$TARGZ.sig"
 for f in "$APP" "$DMG" "$TARGZ" "$SIG"; do [ -e "$f" ] || { echo "missing artifact: $f"; exit 1; }; done
@@ -77,7 +77,7 @@ print(json.dumps({
   "version": v,
   "notes": notes,
   "pub_date": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-  "platforms": {"darwin-universal": entry, "darwin-aarch64": entry, "darwin-x86_64": entry},
+  "platforms": {"darwin-aarch64": entry},
 }, indent=2, ensure_ascii=True))
 PY
 python3 -c 'import json;json.load(open("/tmp/latest.json"))' || { echo "latest.json is not valid JSON"; exit 1; }
