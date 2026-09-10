@@ -12,7 +12,10 @@ const BASE = process.env.PZZA_SERVER_URL || "http://127.0.0.1:5190";
 function responseError(status, body) {
   try {
     const value = JSON.parse(body);
-    if (typeof value?.error === "string") return new Error(`Agent request failed (${status}): ${value.error.slice(0, 4096)}`);
+    if (typeof value?.error === "string") return Object.assign(new Error(`Agent request failed (${status}): ${value.error.slice(0, 4096)}`), {
+      status, code: typeof value.code === "string" && /^[A-Z_]{1,80}$/.test(value.code) ? value.code : "AGENT_REQUEST_FAILED",
+      ...(typeof value.requestId === "string" && /^[a-f0-9-]{36}$/.test(value.requestId) ? { requestId: value.requestId } : {}),
+    });
   } catch { /* Non-JSON responses use the status-only error. */ }
   return new Error(`Agent request failed (${status})`);
 }

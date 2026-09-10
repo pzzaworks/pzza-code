@@ -83,3 +83,10 @@
 .agents-hub-content .ah-remove-target:hover:not(:disabled) { background: var(--surface-alt); color: var(--text); }
 .agents-hub-content .ah-remove-target:focus-visible { outline: 2px solid var(--muted); outline-offset: 2px; }
 .agents-hub-content .ah-remove-target:disabled { opacity: .45; cursor: default; }
+.agents-hub-content .ah-catalog-actions { display: grid; justify-items: end; gap: 7px; }
+.agents-hub-content .ah-imported { display: inline-flex; gap: 4px; align-items: center; color: var(--muted); font-size: 10px; }
+.agents-hub-content .ah-assets { display: grid; gap: 10px; min-width: 0; padding-top: 12px; border-top: 1px solid var(--border); }
+.agents-hub-content .ah-assets h4 { margin: 0; font-size: 12px; }
+.agents-hub-content .ah-assets small { overflow-wrap: anywhere; color: var(--muted); }
+.agents-hub-content .ah-assets pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 320px; overflow: auto; padding: 12px; background: var(--surface-alt); border-radius: 6px; font: 11px/1.65 ui-monospace, monospace; }
+.agents-hub-content .ah-assets .cselect { min-width: 0; width: 100%; }

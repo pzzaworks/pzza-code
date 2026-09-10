@@ -32,7 +32,9 @@ import { UsageMenu } from "./panels/UsageMenu";
 import { HAS_TAURI } from "./tauriEnv";
 import { startUpdateChecks } from "./state/updates";
 import { Modal } from "./ui/Modal";
-import { confirmEditorDiscard, hasUnsavedEditors } from "./editorChanges";
+import { ConfirmationHost } from "./ui/ConfirmDialog";
+import { confirmUnsavedWork, hasUnsavedWork, protectUnsavedUnload } from "./state/unsavedWork";
+import { installTerminalDrops } from "./terminal/fileDrop";
 import { registerAppControlHandler, registerAppControlState } from "./appControlRuntime";
 import { useAppControl } from "./appControl";
 import { initializeDictation } from "./state/dictation";
@@ -41,6 +43,11 @@ import { announceMenu } from "./ui/menuBus";
 
 export default function App() {
   useEffect(() => startUpdateChecks(), []);
+  useEffect(() => installTerminalDrops(), []);
+  useEffect(() => {
+    window.addEventListener("beforeunload", protectUnsavedUnload);
+    return () => window.removeEventListener("beforeunload", protectUnsavedUnload);
+  }, []);
   useAppControl();
   useBridgeNotifications();
   const unreadNotifications = useNotifications(state => state.items.filter(item => !item.read).length);
@@ -173,12 +180,12 @@ export default function App() {
       if (disposed) return;
       const appWindow = getCurrentWindow();
       const stop = await appWindow.onCloseRequested(async (event) => {
-        if (!hasUnsavedEditors() && !confirming) return;
+        if (!hasUnsavedWork() && !confirming) { window.dispatchEvent(new Event("pzza:quick-chat-cancel")); return; }
         event.preventDefault();
         if (confirming || disposed) return;
         confirming = true;
         try {
-          if (await confirmEditorDiscard() && !disposed) await appWindow.destroy();
+          if (await confirmUnsavedWork() && !disposed) { window.dispatchEvent(new Event("pzza:quick-chat-cancel")); await appWindow.destroy(); }
         } catch (error) {
           reportError(error);
         } finally {
@@ -242,11 +249,12 @@ export default function App() {
 
   return (
     <ThemeProvider>
+      <ConfirmationHost />
       <ContextMenu />
       <Modal open={menuError !== null} onClose={() => setMenuError(null)} title="Application menu" size="sm">
         <p role="alert">{menuError}</p>
       </Modal>
-      <Modal open={sessionDialogOpen} onClose={() => setSessionDialogOpen(false)} title="New session" size="sm">
+      <Modal open={sessionDialogOpen} onClose={() => setSessionDialogOpen(false)} title="New session" size="md" className="creation-dialog">
         <SessionMenu close={() => setSessionDialogOpen(false)} />
       </Modal>
       <Tooltip />
@@ -316,7 +324,7 @@ export default function App() {
                   {unreadNotifications ? <span className="notification-badge" aria-label={`${unreadNotifications} unread notifications`} /> : null}
                 </div>
                 <IconButton icon={SettingsIcon} title="Settings" onClick={() => openSettings("general")} />
-                <Dropdown icon={Plus} title="New session" controlId="new_session" label="New session" width={340} shortcut={NEW_SESSION_SHORTCUT}>
+                <Dropdown icon={Plus} title="New session" controlId="new_session" label="New session" width={420} panelClassName="creation-panel" shortcut={NEW_SESSION_SHORTCUT}>
                   {(close) => <SessionMenu close={close} />}
                 </Dropdown>
               </div>

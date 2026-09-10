@@ -81,6 +81,7 @@ export function attachCommand(
   session: string,
   cwd?: string,
   window?: number,
+  managedChat?: { agent: "claude" | "codex"; identity: string },
 ): SpawnCmd {
   const tmux = conn.host ? "tmux" : '"$@"';
   // A server started without a locale (e.g. by an older build) keeps spawning
@@ -88,7 +89,16 @@ export function attachCommand(
   // LANG once so every new window/pane gets one.
   const heal = `${tmux} show-environment -g LANG >/dev/null 2>&1 || ${tmux} set-environment -g LANG "\${LANG:-en_US.UTF-8}" 2>/dev/null; `;
   let remote: string;
-  if (window !== undefined) {
+  if (managedChat) {
+    if (session !== "pzza-quick-chat" || window !== undefined ||
+        !/^\$[0-9]+:[0-9]+:[0-9]+$/.test(managedChat.identity) ||
+        (managedChat.agent !== "claude" && managedChat.agent !== "codex")) throw new Error("Invalid Quick Chat attachment.");
+    const target = shQuote("=pzza-quick-chat");
+    remote = `${tmux} has-session -t ${target} 2>/dev/null || exit 45; ` +
+      `[ "$(${tmux} show-environment -t ${target} PZZA_QUICK_CHAT_AGENT 2>/dev/null)" = ${shQuote(`PZZA_QUICK_CHAT_AGENT=${managedChat.agent}`)} ] || exit 44; ` +
+      `[ "$(${tmux} display-message -p -t '=pzza-quick-chat:' '#{session_id}:#{session_created}:#{pid}' 2>/dev/null)" = ${shQuote(managedChat.identity)} ] || exit 45; ` +
+      `exec ${tmux} -u attach -t ${shQuote(managedChat.identity.split(":")[0])}`;
+  } else if (window !== undefined) {
     // View a specific window through a grouped session (independent view,
     // auto-destroyed on detach).
     const view = `pzza-v-${Date.now().toString(36)}`;
@@ -102,7 +112,8 @@ export function attachCommand(
     remote = `${heal}exec ${tmux} -u new-session -A -s ${shQuote(session)}${cwd ? ` -c ${shQuote(cwd)}` : ""}`;
   }
   if (conn.host) {
-    return { cmd: "ssh", args: ["-tt", ...SSH_MUX, conn.host, `sh -lc ${shQuote(remote)}`] };
+    const verificationOptions = managedChat ? ["-o", "BatchMode=yes", "-o", "ConnectTimeout=8", "-o", "StrictHostKeyChecking=yes", "-o", "ForwardAgent=no"] : [];
+    return { cmd: "ssh", args: ["-tt", ...SSH_MUX, ...verificationOptions, conn.host, `sh -lc ${shQuote(remote)}`] };
   }
   const local = 'set -- tmux; if [ "${PZZA_TMUX_SOCKET+x}" = x ]; then ' +
     'case "$PZZA_TMUX_SOCKET" in /*) ;; *) exit 1 ;; esac; ' +

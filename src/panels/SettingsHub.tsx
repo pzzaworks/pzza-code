@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ComponentType } from "react";
+import { useModalFocus } from "../ui/Modal";
 import { registerAppControlHandler, registerAppControlState } from "../appControlRuntime";
 import { createPortal } from "react-dom";
 import { Bot, Info, ChevronDown, Bell, Blocks, CircleQuestionMark, FolderSync, HardDrive, Settings, X } from "lucide-react";
@@ -91,39 +92,18 @@ export function SettingsHub({ open, section, onSectionChange, onOpen, onClose, s
   useEffect(() => {
     dialog.current?.querySelector(".settings-hub-content")?.scrollTo({ top: 0 });
   }, [section, generalSection, notificationPage, agentsSection, helpSection, connectionTab, syncPage]);
-  const closeRef = useRef(onClose);
-  closeRef.current = onClose;
+  useModalFocus(open, dialog, onClose);
   useEffect(() => {
     if (open && section === "agents-hub") setAgentsVisited(true);
     if ((open && section === "sync") || syncRequest > 0) setSyncVisited(true);
     if (open && section === "mcp") setMcpVisited(true);
     if (open && section === "ports") setPortsVisited(true);
   }, [open, section, syncRequest]);
-  useEffect(() => {
-    if (!open) return;
-    const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    dialog.current?.querySelector<HTMLElement>("[aria-current='page']")?.focus();
-    const onKey = (event: KeyboardEvent) => {
-      if (document.querySelector(".modal-backdrop:not(.settings-hub-backdrop)")) return;
-      // Portal selectors handle their own Escape and keyboard navigation.
-      if (event.target instanceof Element && event.target.closest(".pzza-portal") !== dialog.current?.parentElement) return;
-      if (event.key === "Escape") { event.preventDefault(); closeRef.current(); }
-      if (event.key !== "Tab") return;
-      const focusable = [...(dialog.current?.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), a[href], [tabindex="0"]') ?? [])]
-        .filter((element) => element.getClientRects().length > 0);
-      const first = focusable[0];
-      const last = focusable[focusable.length - 1];
-      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
-      if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => { window.removeEventListener("keydown", onKey); previous?.focus(); };
-  }, [open]);
 
   if (!open && !syncVisited && !mcpVisited && !portsVisited && !agentsVisited && syncRequest === 0) return null;
   return createPortal(
     <div className="modal-backdrop pzza-portal settings-hub-backdrop" hidden={!open} onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
-      <div className="modal settings-hub" role="dialog" aria-modal="true" aria-labelledby="settings-hub-title" ref={dialog}>
+      <div className="modal settings-hub" role="dialog" aria-modal="true" aria-labelledby="settings-hub-title" ref={dialog} tabIndex={-1}>
         <div className="modal-head">
           <span className="modal-title" id="settings-hub-title"><Settings size={16} /> Settings</span>
           <button type="button" className="dismiss-btn" aria-label="Close Settings" onClick={onClose}><X size={16} /></button>
@@ -168,11 +148,11 @@ export function SettingsHub({ open, section, onSectionChange, onOpen, onClose, s
 
 function SettingsSubnav<T extends string>({ label, items, value, onChange }: {
   label: string;
-  items: readonly { id: T; label: string }[];
+  items: readonly { id: T; label: string; icon?: ComponentType<{ size?: number | string; className?: string }> }[];
   value: T;
   onChange: (value: T) => void;
 }) {
   return <div className="settings-nav-children" role="group" aria-label={label}>
-    {items.map(item => <button type="button" key={item.id} aria-current={value === item.id ? "page" : undefined} className={`settings-hub-sublink ${value === item.id ? "active" : ""}`} onClick={() => onChange(item.id)}>{item.label}</button>)}
+    {items.map(({ id, label: itemLabel, icon: Icon }) => <button type="button" key={id} aria-current={value === id ? "page" : undefined} className={`settings-hub-sublink ${value === id ? "active" : ""}`} onClick={() => onChange(id)}>{Icon ? <Icon size={14} /> : null}<span>{itemLabel}</span></button>)}
   </div>;
 }

@@ -2,7 +2,8 @@ import { useIntegrationHealth } from "../state/integrationHealth";
 import { useStore } from "../state/store";
 import { deviceHost } from "../devices";
 import { AsyncButton } from "../ui/AsyncButton";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { confirmAction } from "../ui/ConfirmDialog";
 import { Check, Copy, Download, RefreshCw } from "lucide-react";
 import { useMcpSettings } from "../state/mcpSettings";
 
@@ -16,27 +17,35 @@ export function McpMenu() {
   const checkAll = useIntegrationHealth(state => state.checkAll);
   const checking = useIntegrationHealth(state => state.batch?.status === "running");
   const { config: cfg, notes: note, busy, agentHost, mcpPath, error: configError, select, load, install, copy } = useMcpSettings();
-  const [enabled, setEnabled] = useState(() => {
-    try {
-      return localStorage.getItem(ENABLED_KEY) !== "0";
-    } catch {
-      return true;
-    }
-  });
+  const readEnabled = () => { try { return localStorage.getItem(ENABLED_KEY) === "1"; } catch { return false; } };
+  const [enabled, setEnabled] = useState(readEnabled);
+  const [consentPending, setConsentPending] = useState(false);
+  const [consentError, setConsentError] = useState("");
+  const consenting = useRef(false);
+  useEffect(() => {
+    const refresh = () => setEnabled(readEnabled());
+    window.addEventListener("storage", refresh);
+    window.addEventListener("pzza:mcp-enabled-changed", refresh);
+    return () => { window.removeEventListener("storage", refresh); window.removeEventListener("pzza:mcp-enabled-changed", refresh); };
+  }, []);
   useEffect(() => {
     const timer = setTimeout(() => { void load().catch(() => {}); }, 200);
     return () => clearTimeout(timer);
   }, [agentHost, mcpPath, load]);
 
-  const toggle = () => {
-    const next = !enabled;
-    setEnabled(next);
+  const toggle = async () => {
+    if (consenting.current) return;
+    const next = !readEnabled();
+    consenting.current = true;
+    setConsentPending(true);
+    setConsentError("");
     try {
+      if (!await confirmAction({ title: next ? "Allow app window control?" : "Disable app window control?", message: next ? "Connected tools can read and control terminals, edit files, change settings and manage sessions in this app window. Only enable this for integrations you trust. Consequential actions still require local confirmation." : "Stop accepting app window commands? Existing terminal sessions and separate file/device tools keep running.", confirmLabel: next ? "Allow window control" : "Disable window control", danger: !next })) return;
       localStorage.setItem(ENABLED_KEY, next ? "1" : "0");
-    } catch {
-      /* ignore */
-    }
-    window.dispatchEvent(new CustomEvent("pzza:mcp-enabled-changed", { detail: { enabled: next } }));
+      setEnabled(next);
+      window.dispatchEvent(new CustomEvent("pzza:mcp-enabled-changed", { detail: { enabled: next } }));
+    } catch { setConsentError("Could not save app window control preferences. Access was not changed."); }
+    finally { consenting.current = false; setConsentPending(false); }
   };
 
   const frameworks = cfg ? Object.entries(cfg.frameworks) : [];
@@ -51,7 +60,8 @@ export function McpMenu() {
         </div>
         <button
           className={`switch ${enabled ? "switch-on" : ""}`}
-          onClick={toggle}
+          onClick={() => void toggle()}
+          disabled={consentPending}
           role="switch"
           aria-label="Allow app window control"
           aria-checked={enabled}
@@ -60,6 +70,7 @@ export function McpMenu() {
         </button>
       </div>
 
+      {consentError ? <p className="set-note" role="alert">{consentError}</p> : null}
       <p className="set-note">Session, file and device tools remain available when window control is off.</p>
       <section className="settings-section" aria-label="Connection">
       <div className="settings-form">

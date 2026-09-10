@@ -5,10 +5,11 @@ import { isDictationLanguage } from "./dictationLanguages";
 import { useNotifications, NOTIFICATION_EVENTS, type NotificationCategory, type NotificationEvent } from "./state/notifications";
 import { requestDesktopAlerts } from "./desktopNotifications";
 import { openNotice } from "./panels/Notifications";
+import { confirmAction, type ConfirmationOptions } from "./ui/ConfirmDialog";
+import { hasUnsavedWork } from "./state/unsavedWork";
 import { useStore } from "./state/store";
 import { createSessionInApp, useSessionCreation, type SessionCreationInput } from "./sessionActions";
 import { HAS_TAURI } from "./tauriEnv";
-import { hasUnsavedEditors } from "./editorChanges";
 import { relaunchApp } from "./updater";
 import { DEFAULT_WORKSPACE_ID } from "./workspaces";
 
@@ -27,6 +28,35 @@ function notificationState() {
 function requireDictation() {
   if (!DICTATION_SUPPORTED) throw new Error("Voice input requires the macOS desktop app.");
   return useDictation.getState();
+}
+
+// The transport calls this before the synchronous command reducer. These
+// actions must not bypass the same local decisions required by the visible UI.
+export async function confirmAppControlAction(action: string, args: Readonly<Record<string, unknown>>): Promise<boolean> {
+  const state = useStore.getState();
+  let options: ConfirmationOptions | undefined;
+  if (action === "delete_workspace") {
+    const workspace = state.workspaces.find(item => item.id === args.workspaceId);
+    if (workspace) options = { title: "Delete workspace?", message: `Delete ${workspace.name}? Its sessions will move to Main and keep running.`, confirmLabel: "Delete workspace", danger: true };
+  } else if (action === "remove_device") {
+    const device = state.devices.find(item => item.id === args.deviceId);
+    if (device) options = { title: "Remove device?", message: `Remove ${device.name} from this app? The remote machine and its sessions are not deleted.`, confirmLabel: "Remove device", danger: true };
+  } else if (action === "terminate_tile") {
+    const tile = state.tiles.find(item => item.id === args.tileId);
+    if (tile) options = { title: "Terminate session?", message: `Stop ${state.tileTitles[tile.id] ?? tile.name} and remove its affected tiles? Running processes will be terminated.`, confirmLabel: "Terminate", danger: true };
+  } else if (action === "editor_delete_file") {
+    options = { title: "Delete file or folder?", message: `Permanently delete ${String(args.path)}? A folder and everything inside it will be removed. This cannot be undone.`, confirmLabel: "Delete", danger: true };
+  } else if (action === "editor_discard") {
+    options = { title: "Discard editor changes?", message: "Reload this editor from disk and discard the requested unsaved buffer revision? This cannot be undone.", confirmLabel: "Discard changes", danger: true };
+  } else if (action === "close_app" || action === "relaunch_app") {
+    if (hasUnsavedWork()) throw new Error("Save or explicitly discard all editor and settings drafts before closing or restarting the app.");
+    options = { title: action === "close_app" ? "Close the app?" : "Restart the app?", message: "This closes the current app window. Your terminal sessions continue running.", confirmLabel: action === "close_app" ? "Close app" : "Restart app" };
+  } else if (action === "clear_notifications" && useNotifications.getState().items.length) {
+    options = { title: "Clear notification history?", message: "Permanently remove all notification history on this device? This cannot be undone.", confirmLabel: "Clear history", danger: true };
+  } else if (action === "configure_appearance" && args.osc52Clipboard === true && !state.osc52Clipboard) {
+    options = { title: "Allow terminal clipboard writes?", message: "Programs running in your terminals will be able to replace your clipboard using OSC 52. Enable this only for programs you trust.", confirmLabel: "Allow clipboard writes" };
+  }
+  return !options || await confirmAction(options);
 }
 
 export function initCoreAppControlHandlers(): () => void {
@@ -64,14 +94,17 @@ export function initCoreAppControlHandlers(): () => void {
     },
     close_app: () => {
       if (!HAS_TAURI) throw new Error("Closing the app requires the desktop app.");
-      if (hasUnsavedEditors()) throw new Error("Save or explicitly discard all editor buffers before closing the app.");
-      afterAppControlReport(async () => { if (!hasUnsavedEditors()) await (await nativeWindow()).close(); });
+      if (hasUnsavedWork()) throw new Error("Save or explicitly discard all editor and settings drafts before closing the app.");
+      afterAppControlReport(async () => {
+        const window = await nativeWindow();
+        if (!hasUnsavedWork()) { globalThis.window.dispatchEvent(new Event("pzza:quick-chat-cancel")); await window.close(); }
+      });
       return { accepted: true, closing: true };
     },
     relaunch_app: () => {
       if (!HAS_TAURI) throw new Error("Relaunch requires the desktop app.");
-      if (hasUnsavedEditors()) throw new Error("Save or explicitly discard all editor buffers before relaunching the app.");
-      afterAppControlReport(async () => { if (!hasUnsavedEditors()) await relaunchApp(); });
+      if (hasUnsavedWork()) throw new Error("Save or explicitly discard all editor and settings drafts before relaunching the app.");
+      afterAppControlReport(async () => { if (!hasUnsavedWork()) { window.dispatchEvent(new Event("pzza:quick-chat-cancel")); await relaunchApp(); } });
       return { accepted: true, relaunching: true };
     },
     open_menu: args => { setAppControlMenu(args.menu as string, args.open as boolean); return { menu: args.menu, open: args.open }; },

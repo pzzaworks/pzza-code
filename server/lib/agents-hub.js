@@ -4,7 +4,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { execFile } from "node:child_process";
 import { AGENTS_HUB_TARGET } from "./agents-hub-target.js";
-import { inspectSkillSource } from "./skill-import.js";
+import { inspectSkillSource, skillSourceIdentity } from "./skill-import.js";
 import { tmuxArgs } from "./tmux-client.js";
 import { deviceEnv } from "./shell.js";
 
@@ -27,6 +27,14 @@ const object = (value) => value !== null && typeof value === "object" && !Array.
 const keys = (value, allowed) => object(value) && Object.keys(value).every((key) => allowed.includes(key));
 const hash = (bytes) => crypto.createHash("sha256").update(bytes).digest("hex");
 const quote = (text) => `'${text.replace(/'/g, `'\\''`)}'`;
+async function boundedMap(items, read, concurrency = 4) {
+  const results = new Array(items.length);
+  let cursor = 0;
+  await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, async () => {
+    for (;;) { const index = cursor++; if (index >= items.length) return; results[index] = await read(items[index]); }
+  }));
+  return results;
+}
 const string = (value, label, max, empty = false) => {
   if (typeof value !== "string" || (!empty && !value.trim()) || Buffer.byteLength(value) > max || value.includes("\0")) throw fail(`Invalid ${label}`);
   return value;
@@ -59,13 +67,14 @@ export function validateHubLibrary(value) {
     return { id: identifier(item.id), name: name(item.name), framework: framework(item.framework), content: string(item.content, "instruction content", 1024 * 1024, true) };
   });
   const skills = value.skills.map((item) => {
-    if (!keys(item, ["id", "name", "content", "sourceUrl", "license", "commit", "files"])) throw fail("Invalid skill");
+    if (!keys(item, ["id", "name", "content", "sourceUrl", "subpath", "license", "commit", "files"])) throw fail("Invalid skill");
     const skill = { id: identifier(item.id), name: name(item.name), content: string(item.content, "SKILL.md content", 1024 * 1024, true) };
     if (item.sourceUrl !== undefined) {
       const url = new URL(string(item.sourceUrl, "skill source URL", 2048));
       if (url.protocol !== "https:" || url.username || url.password) throw fail("Skill sources must be HTTPS URLs without credentials");
       skill.sourceUrl = url.href;
     }
+    if (item.subpath !== undefined) Object.assign(skill, skillSourceIdentity(item.sourceUrl, item.subpath));
     if (item.license !== undefined) skill.license = string(item.license, "license declaration", 240, true);
     if (item.commit !== undefined) { if (!/^[a-f0-9]{40}$/.test(item.commit)) throw fail("Invalid source commit"); skill.commit = item.commit; }
     if (item.files !== undefined) {
@@ -87,6 +96,8 @@ export function validateHubLibrary(value) {
     }
     return skill;
   });
+  const sources = skills.filter(skill => skill.subpath !== undefined).map(skill => JSON.stringify([skill.sourceUrl, skill.subpath]));
+  if (new Set(sources).size !== sources.length) throw fail("This source folder is already imported. Update its existing skill instead", 409);
   const profiles = value.profiles.map((item) => {
     if (!keys(item, ["id", "name", "framework", "systemPrompt", "instructionIds", "skillIds"])) throw fail("Invalid agent profile");
     const chosen = framework(item.framework);
@@ -152,6 +163,7 @@ export function runHubTarget(host, payload, { env = process.env } = {}) {
 
 export function createAgentsHub({ stateDir, target = runHubTarget, inspectSkill = inspectSkillSource, now = Date.now } = {}) {
   let stored;
+  let importing = 0;
   const previews = new Map();
   const globalPreviews = new Map();
   const file = path.join(stateDir, "agents-hub.json");
@@ -222,14 +234,70 @@ export function createAgentsHub({ stateDir, target = runHubTarget, inspectSkill 
     return { revision: load().revision, item: structuredClone(input.kind === "skill" ? assetMetadata(found) : found) };
   };
   const update = (input) => {
-    if (!keys(input, ["revision", "kind", "item"]) || !object(input.item) || input.revision !== load().revision) throw fail("Agent library changed or update is invalid", 409);
-    const collection = collectionFor(input.kind);
+    if (!keys(input, ["revision", "kind", "item", "detachReferences", "changes"])) throw fail("Invalid library update");
     const current = load();
-    const found = current[collection].find((entry) => entry.id === input.item.id);
-    const replacement = { ...found, ...input.item };
-    const { deployments, ...library } = current;
-    save({ ...library, [collection]: found ? current[collection].map((entry) => entry.id === found.id ? replacement : entry) : [...current[collection], replacement] });
+    if (!Number.isSafeInteger(input.revision) || input.revision !== current.revision) throw fail("Agent library changed. Your draft is retained; review the latest library before saving", 409);
+    if (input.changes !== undefined && (input.kind !== undefined || input.item !== undefined || input.detachReferences !== undefined)) throw fail("Choose a single update or an atomic change set");
+    const changes = input.changes ?? [{ op: "update", kind: input.kind, item: input.item, ...(input.detachReferences === undefined ? {} : { detachReferences: input.detachReferences }) }];
+    if (!Array.isArray(changes) || !changes.length || changes.length > 300) throw fail("Choose between 1 and 300 library changes");
+    const { deployments, ...original } = current;
+    const library = { ...original, documents: [...current.documents], skills: [...current.skills], profiles: [...current.profiles] };
+    const touched = new Set();
+    for (const change of changes) {
+      if (!keys(change, ["op", "kind", "item", "id", "detachReferences"]) || !["update", "remove"].includes(change.op) || (change.detachReferences !== undefined && typeof change.detachReferences !== "boolean")) throw fail("Invalid library change");
+      const collection = collectionFor(change.kind);
+      if (change.op === "update" ? !object(change.item) || change.id !== undefined : change.item !== undefined) throw fail("Invalid library change item");
+      const id = identifier(change.op === "update" ? change.item.id : change.id);
+      const key = `${change.kind}:${id}`;
+      if (touched.has(key)) throw fail("Each library item may change only once per save");
+      touched.add(key);
+      const found = library[collection].find(entry => entry.id === id);
+      if (change.op === "remove") {
+        if (!found) throw fail("Library item not found", 404);
+        library[collection] = library[collection].filter(entry => entry.id !== id);
+      } else {
+        const replacement = { ...found, ...change.item };
+        library[collection] = found ? library[collection].map(entry => entry.id === id ? replacement : entry) : [...library[collection], replacement];
+      }
+    }
+    // Resolve relationships after all edits, then validate once and commit once. No partial saves.
+    for (const change of changes) {
+      if (change.kind === "profile") continue;
+      const id = change.op === "remove" ? change.id : change.item.id;
+      const reference = change.kind === "document" ? "instructionIds" : "skillIds";
+      const document = library.documents.find(entry => entry.id === id);
+      library.profiles = library.profiles.map(profile => {
+        if (!Array.isArray(profile[reference]) || !profile[reference].includes(id) || (change.op !== "remove" && (change.kind !== "document" || profile.framework === document?.framework))) return profile;
+        if (!change.detachReferences) throw fail("This change removes profile attachments. Review its impact and confirm detaching references", 409);
+        return { ...profile, [reference]: profile[reference].filter(value => value !== id) };
+      });
+    }
+    const validated = validateHubLibrary(library);
+    persist({ ...validated, revision: current.revision + 1, deployments });
     return summary();
+  };
+  const remove = (input) => {
+    if (!keys(input, ["revision", "kind", "id", "detachReferences"])) throw fail("Invalid library removal");
+    return update({ revision: input.revision, changes: [{ op: "remove", kind: input.kind, id: input.id, ...(input.detachReferences === undefined ? {} : { detachReferences: input.detachReferences }) }] });
+  };
+  const asset = (input) => {
+    if (!keys(input, ["id", "path", "revision", "offset", "length"]) || input.revision !== load().revision) throw fail("Library changed. Reload the skill before reviewing assets", 409);
+    const offset = input.offset ?? 0, length = input.length ?? 16384;
+    if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(length) || length < 4 || length > 65536) throw fail("Choose an asset page of at most 64 KiB");
+    const found = load().skills.find(entry => entry.id === identifier(input.id));
+    const file = found?.files?.find(entry => entry.path === input.path);
+    if (!file) throw fail("Skill asset not found", 404);
+    const bytes = Buffer.from(file.contentBase64, "base64");
+    if (offset > bytes.length) throw fail("Asset offset exceeds its size");
+    const end = Math.min(offset + length, bytes.length);
+    const sample = bytes.subarray(offset, end);
+    let content = null;
+    try {
+      // A streamed decoder tolerates a UTF-8 code point split at the page boundary.
+      content = sample.includes(0) ? null : new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(sample, { stream: end < bytes.length });
+    } catch { /* Binary assets remain metadata-only, never rendered as active content. */ }
+    const nextOffset = content === null ? end : offset + Buffer.byteLength(content);
+    return { revision: load().revision, id: found.id, path: file.path, bytes: bytes.length, executable: file.executable === true, sha256: hash(bytes), encoding: content === null ? "binary" : "utf8", content, offset, nextOffset, hasMore: nextOffset < bytes.length };
   };
   const globalLocation = value => {
     if (!keys(value, ["host", "path", "sha256"]) || typeof value.host !== "string" || (value.host && !HOST.test(value.host)) || !Object.hasOwn(GLOBAL_FILES, value.path)) throw fail("Choose an allowed global instruction file and device");
@@ -248,13 +316,13 @@ export function createAgentsHub({ stateDir, target = runHubTarget, inspectSkill 
       seen.add(device.host);
       return device;
     });
-    return { devices: await Promise.all(devices.map(async device => {
+    return { devices: await boundedMap(devices, async device => {
       try {
         const result = await target(device.host, { operation: "global-discover" });
         if (!result.ok) throw fail(result.error, result.status || 409);
         return { ...device, files: result.files.map(({ mode, ...file }) => file), ...(result.error ? { error: result.error } : {}) };
       } catch (error) { return { ...device, files: [], error: error.status ? error.message : "Could not read this device's global instructions" }; }
-    })) };
+    }) };
   };
   const globalPreview = async input => {
     if (!keys(input, ["source", "targets"]) || !Array.isArray(input.targets) || !input.targets.length || input.targets.length > 20) throw fail("Choose a source and up to 20 destinations");
@@ -272,12 +340,12 @@ export function createAgentsHub({ stateDir, target = runHubTarget, inspectSkill 
     const observed = await globalRead(sourceLocation);
     if (observed.content === null || observed.sha256 !== input.source.sha256) throw fail("Source changed; refresh and choose it again", 409);
     const source = { ...sourceLocation, framework: GLOBAL_FILES[sourceLocation.path], content: observed.content, modifiedAt: observed.modifiedAt, sha256: observed.sha256 };
-    const targets = await Promise.all(locations.map(async location => {
+    const targets = await boundedMap(locations, async location => {
       try {
         const snapshot = await globalRead(location);
         return { ...location, previousContent: snapshot.content, baselineSha256: snapshot.sha256, baselineMode: snapshot.mode, status: snapshot.sha256 === source.sha256 ? "unchanged" : "ready" };
       } catch (error) { return { ...location, previousContent: null, baselineSha256: null, baselineMode: null, status: "failed", error: error.status ? error.message : "Destination could not be read safely" }; }
-    }));
+    });
     for (const [id, plan] of globalPreviews) if (plan.expiresAt <= now() && !plan.pending) globalPreviews.delete(id);
     if (globalPreviews.size >= 16) {
       const removable = [...globalPreviews].find(([, plan]) => !plan.pending);
@@ -376,14 +444,33 @@ export function createAgentsHub({ stateDir, target = runHubTarget, inspectSkill 
     persist({ ...latest, deployments: latest.deployments.map((item) => item.id === deployment.id ? deployment : item) });
     return structuredClone(deployment);
   };
-  const importSkill = async (input) => {
-    if (!keys(input, ["revision", "sourceUrl", "subpath", "ref"]) || input.revision !== load().revision) throw fail("Agent library changed. Reload before importing", 409);
-    const imported = await inspectSkill({ sourceUrl: input.sourceUrl, subpath: input.subpath, ...(input.ref ? { ref: input.ref } : {}) });
-    if (load().revision !== input.revision) throw fail("Agent library changed during import. Retry from the new revision", 409);
+  const importSkill = async (input, { signal } = {}) => {
+    if (!keys(input, ["revision", "sourceUrl", "subpath", "ref", "updateId"]) || input.revision !== load().revision) throw fail("Agent library changed. Reload before importing", 409);
+    const source = skillSourceIdentity(input.sourceUrl, input.subpath);
+    const matches = skill => skill.sourceUrl === source.sourceUrl && skill.subpath === source.subpath;
+    const existing = load().skills.find(matches);
+    if (input.updateId !== undefined && (!existing || existing.id !== identifier(input.updateId))) throw fail("Select the existing skill from this exact source folder to update", 409);
+    if (existing && input.updateId === undefined) return { ...summary(), imported: { id: existing.id, status: "existing" } };
+    signal?.throwIfAborted();
+    if (importing >= 4) throw fail("Four imports are already running. Wait for one to finish before retrying", 429);
+    let imported;
+    importing++;
+    try { imported = await inspectSkill({ ...source, ...(input.ref ? { ref: input.ref } : {}) }, { signal }); }
+    finally { importing--; }
+    signal?.throwIfAborted();
+    if (load().revision !== input.revision) {
+      const duplicate = load().skills.find(matches);
+      if (!input.updateId && duplicate) return { ...summary(), imported: { id: duplicate.id, status: "existing" } };
+      throw fail("Agent library changed during import. Retry from the new revision", 409);
+    }
     const { deployments, ...library } = load();
-    return save({ ...library, skills: [...library.skills, { id: crypto.randomUUID(), ...imported }] });
+    const replacement = { ...imported, ...source, id: existing?.id ?? crypto.randomUUID(), ...(existing ? { name: existing.name } : {}) };
+    const skills = existing ? library.skills.map(skill => skill.id === existing.id ? replacement : skill) : [...library.skills, replacement];
+    const validated = validateHubLibrary({ ...library, skills });
+    persist({ ...validated, revision: library.revision + 1, deployments });
+    return { ...summary(), imported: { id: replacement.id, status: existing ? "updated" : "imported" } };
   };
-  return { state, summary, item, update, save, preview, apply, importSkill, globalDiscover, globalPreview, globalSync };
+  return { state, summary, item, asset, update, remove, save, preview, apply, importSkill, globalDiscover, globalPreview, globalSync };
 }
 
 async function body(req) {
@@ -407,16 +494,25 @@ export function createAgentsHubRouter(hub, respond) {
         const input = await body(req);
         if (url.pathname === "/agents-hub/item") respond(res, 200, hub.item(input));
         else if (url.pathname === "/agents-hub/update") respond(res, 200, hub.update(input));
+        else if (url.pathname === "/agents-hub/remove") respond(res, 200, hub.remove(input));
+        else if (url.pathname === "/agents-hub/asset") respond(res, 200, hub.asset(input));
         else if (url.pathname === "/agents-hub/save") respond(res, 200, hub.save(input));
         else if (url.pathname === "/agents-hub/global-discover") respond(res, 200, await hub.globalDiscover(input));
         else if (url.pathname === "/agents-hub/global-preview") respond(res, 200, await hub.globalPreview(input));
         else if (url.pathname === "/agents-hub/global-sync") respond(res, 200, await hub.globalSync(input));
         else if (url.pathname === "/agents-hub/preview") respond(res, 200, await hub.preview(input));
-        else if (url.pathname === "/agents-hub/import-skill") respond(res, 200, await hub.importSkill(input));
+        else if (url.pathname === "/agents-hub/import-skill") {
+          const controller = new AbortController();
+          const cancel = () => { if (!res.writableEnded) controller.abort(); };
+          res.on("close", cancel);
+          if (res.destroyed) controller.abort();
+          try { respond(res, 200, await hub.importSkill(input, { signal: controller.signal })); }
+          finally { res.removeListener("close", cancel); }
+        }
         else if (["/agents-hub/sync", "/agents-hub/deploy"].includes(url.pathname) && keys(input, ["previewId"]) && typeof input.previewId === "string") respond(res, 200, await hub.apply(input.previewId, url.pathname.endsWith("/sync") ? "sync" : "deploy"));
         else throw fail("Unknown agent library endpoint", 404);
       } else throw fail("Unknown agent library endpoint", 404);
-    } catch (error) { respond(res, error.status || 500, { error: error.status ? error.message : "Agent library operation failed" }); }
+    } catch (error) { respond(res, error.status || 500, { error: error.status ? error.message : "Agent library operation failed", ...(error.status && error.code ? { code: error.code } : {}) }); }
     return true;
   };
 }

@@ -2,8 +2,9 @@
 // projects root (the same $HOME-relative folder on every device, e.g.
 // ~/Projects). Sync takes the union of every device's repos: a repo missing on
 // a device is cloned there from the origin URL seen elsewhere; a repo that is
-// present switches to origin's default branch and merges upstream changes. Modified
-// tracked and untracked files are stashed first and retained for recovery. Afterwards every .env / .env.* file is copied from
+// present aligns to remote development when available, otherwise remote main. Modified
+// tracked and untracked files are stashed first and retained for recovery, while
+// unmerged local commits are retained in durable backup refs. Afterwards every .env / .env.* file is copied from
 // the device holding the newest copy to every device where it is missing or
 // differs, so secrets follow the project without ever passing through git.
 //
@@ -311,7 +312,9 @@ function scanScript(rootE) {
     `pz_scan() { d=$1; pz_linked_worktree "$d" && return; ` +
     `rel="\${d#"$root"/}"; ` +
     `origin=$(git -C "$d" remote get-url origin 2>/dev/null || echo -); ` +
-    `def=$(git -C "$d" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null); def="\${def#origin/}"; [ -n "$def" ] || def=-; ` +
+    // The selected baseline is policy, never origin/HEAD or the current checkout.
+    // A stale remote-tracking ref is refreshed by Sync before it changes anything.
+    `def=-; if git -C "$d" show-ref --verify --quiet refs/remotes/origin/development; then def=development; elif git -C "$d" show-ref --verify --quiet refs/remotes/origin/main; then def=main; fi; ` +
     // One status walk supplies branch, tracking counts, stash and file counts.
     // Optional index locking stays off so scans do not contend with editors.
     `read -r br mod unt ahead behind stash <<PZZA_STATUS\n` +
@@ -338,57 +341,66 @@ function scanScript(rootE) {
 // updated, stashed, current, dirty, skipped, failed. The work is two shell functions
 // defined once per script so each repo is a one-line call.
 const SYNC_FUNCS =
-  `pz_r() { printf 'PZZA_R\\t%s\\t%s\\t%s\\n' "$1" "$2" "$3"; }; ` +
-  `pz_tail() { printf '%s' "$1" | grep -v '^hint:' | tail -n 3 | tr '\\n' ' '; }; ` +
-  `pz_clone() { if pz_linked_worktree "$2"; then pz_r "$2" skipped "linked worktree; left alone"; return; fi; if mkdir -p "$(dirname "$2")" && out=$(git clone --quiet "$1" "$2" 2>&1); then pz_r "$2" cloned ""; else pz_r "$2" failed "$(pz_tail "$out")"; fi; }; ` +
-  // pz_update REL STASH SWITCH: STASH=1 stashes tracked and untracked files (else a
-  // dirty tree is reported and left alone); SWITCH=1 moves to origin's default
-  // branch (else the current branch receives upstream changes in place).
-  `pz_update() { d=$1; do_stash=$2; do_switch=$3; expected=$4; ` +
+  `pz_r() { printf 'PZZA_R\t%s\t%s\t%s\n' "$1" "$2" "$3"; }; ` +
+  `pz_tail() { printf '%s' "$1" | grep -v '^hint:' | tail -n 3 | tr '\n' ' '; }; ` +
+  // The selected baseline is deterministic. It deliberately ignores origin/HEAD
+  // because hosting defaults and an individual checkout's branch are unrelated
+  // to the shared Sync policy.
+  `pz_pick_remote() { pz_dir=$1; pz_remote_output=$(git -C "$pz_dir" ls-remote --quiet --heads origin refs/heads/development refs/heads/main 2>&1) || { pz_remote_error="$pz_remote_output"; return 2; }; pz_development=$(printf '%s\n' "$pz_remote_output" | awk '$2 == "refs/heads/development" { print $1; exit }'); pz_main=$(printf '%s\n' "$pz_remote_output" | awk '$2 == "refs/heads/main" { print $1; exit }'); if [ -n "$pz_development" ]; then pz_baseline=development; pz_remote_head=$pz_development; return 0; fi; if [ -n "$pz_main" ]; then pz_baseline=main; pz_remote_head=$pz_main; return 0; fi; return 1; }; ` +
+  `pz_pick_tracking() { pz_dir=$1; if git -C "$pz_dir" show-ref --verify --quiet refs/remotes/origin/development; then pz_baseline=development; elif git -C "$pz_dir" show-ref --verify --quiet refs/remotes/origin/main; then pz_baseline=main; else return 1; fi; pz_remote_head=$(git -C "$pz_dir" rev-parse --verify --quiet "refs/remotes/origin/$pz_baseline") || return 1; return 0; }; ` +
+  // Backup refs are SHA-addressed, so running Sync again cannot make an older
+  // preservation point unreachable. Each update is verified before checkout.
+  `pz_keep_ref() { d=$1; sha=$2; role=$3; ref="refs/pzza-sync/backups/$sha"; git -C "$d" cat-file -e "$sha^{commit}" 2>/dev/null || return 1; existing=$(git -C "$d" rev-parse --verify --quiet "$ref" 2>/dev/null); if [ -n "$existing" ] && [ "$existing" != "$sha" ]; then return 1; fi; if [ -z "$existing" ]; then git -C "$d" update-ref "$ref" "$sha" || return 1; fi; verified=$(git -C "$d" rev-parse --verify --quiet "$ref" 2>/dev/null) || return 1; [ "$verified" = "$sha" ] || return 1; pz_recoveries="$pz_recoveries\${pz_recoveries:+, }$role $ref (git branch recover-$role-$sha $ref)"; }; ` +
+  `pz_clone() { origin=$1; d=$2; if pz_linked_worktree "$d"; then pz_r "$d" skipped "linked worktree; left alone"; return; fi; [ ! -e "$d" ] || { pz_r "$d" failed "clone destination changed since scan; left alone"; return; }; parent=$(dirname "$d"); mkdir -p "$parent" || { pz_r "$d" failed "could not create clone parent"; return; }; tmp=$(mktemp -d "$parent/.pzza-sync-clone.XXXXXX") || { pz_r "$d" failed "could not reserve clone destination"; return; }; repo="$tmp/repo"; if ! out=$(git clone --quiet --no-checkout "$origin" "$repo" 2>&1); then rm -rf "$tmp"; pz_r "$d" failed "$(pz_tail "$out")"; return; fi; if ! pz_pick_tracking "$repo"; then rm -rf "$tmp"; pz_r "$d" failed "origin has neither development nor main branch"; return; fi; if ! out=$(git -C "$repo" checkout --no-overwrite-ignore --quiet -B "$pz_baseline" "origin/$pz_baseline" 2>&1); then rm -rf "$tmp"; pz_r "$d" failed "$(pz_tail "$out")"; return; fi; if [ -e "$d" ]; then rm -rf "$tmp"; pz_r "$d" failed "clone destination changed during sync; left alone"; return; fi; if mv "$repo" "$d"; then rmdir "$tmp" 2>/dev/null || true; pz_r "$d" cloned "$pz_baseline"; else rm -rf "$tmp"; pz_r "$d" failed "could not finalize clone"; fi; }; ` +
+  // pz_update REL STASH ALIGN EXPECTED. ALIGN=1 makes the checkout exactly
+  // match remote development when present, otherwise remote main. ALIGN=0 is an
+  // explicit opt-out that leaves the checkout and its working files untouched.
+  `pz_update_inner() { d=$1; do_stash=$2; do_align=$3; expected=$4; pz_recoveries=; stash_id=; stash_ref=; stash_note=; ` +
   `if pz_linked_worktree "$d"; then pz_r "$d" skipped "linked worktree; left alone"; return; fi; ` +
-  `actual=$(git -C "$d" remote get-url origin 2>/dev/null); ` +
-  `[ "$actual" = "$expected" ] || { pz_r "$d" failed "origin changed since scan; left alone"; return; }; ` +
+  `actual=$(git -C "$d" remote get-url origin 2>/dev/null); [ "$actual" = "$expected" ] || { pz_r "$d" failed "origin changed since scan; left alone"; return; }; ` +
   `gitdir=$(git -C "$d" rev-parse --absolute-git-dir) || { pz_r "$d" failed "repository no longer exists"; return; }; ` +
   `if [ -n "$(git -C "$d" ls-files --unmerged)" ] || [ -f "$gitdir/MERGE_HEAD" ] || [ -d "$gitdir/rebase-merge" ] || [ -d "$gitdir/rebase-apply" ]; then pz_r "$d" failed "unfinished merge or rebase; left alone"; return; fi; ` +
-  `was=$(git -C "$d" rev-parse --abbrev-ref HEAD 2>/dev/null); before=$(git -C "$d" rev-parse HEAD 2>/dev/null); stashed=; ` +
-  `if [ "$do_switch" != 1 ] && [ "$was" = HEAD ]; then pz_r "$d" skipped "detached HEAD"; return; fi; ` +
-  // The advertised commit proves whether a transfer is necessary. Cached
-  // tracking refs alone cannot tell us whether another device just pushed.
-  `if ! remote=$(git -C "$d" ls-remote --quiet --symref origin HEAD "refs/heads/$was" 2>&1); then pz_r "$d" failed "check origin: $(pz_tail "$remote")"; return; fi; ` +
-  `if [ "$do_switch" = 1 ]; then def=$(printf '%s\\n' "$remote" | awk '$1 == "ref:" && $3 == "HEAD" { sub(/^refs\\/heads\\//,"",$2); print $2; exit }'); ` +
-  `if [ -z "$def" ]; then pz_r "$d" skipped "no default branch on origin"; return; fi; ` +
-  `remote_head=$(printf '%s\\n' "$remote" | awk '$2 == "HEAD" && $1 != "ref:" { print $1; exit }'); ` +
-  `else def=$was; remote_head=$(printf '%s\\n' "$remote" | awk -v ref="refs/heads/$def" '$2 == ref { print $1; exit }'); fi; ` +
-  `if [ -z "$remote_head" ]; then pz_r "$d" skipped "$def has no origin branch"; return; fi; ` +
-  `tracking=$(git -C "$d" rev-parse --verify --quiet "refs/remotes/origin/$def"); ` +
-  `if [ "$was" = "$def" ] && [ "$tracking" = "$remote_head" ] && git -C "$d" merge-base --is-ancestor "$remote_head" "$before" 2>/dev/null; then pz_r "$d" current "$def; origin already integrated, working files left alone"; return; fi; ` +
-  `if ! out=$(git -C "$d" fetch --quiet --prune origin 2>&1); then pz_r "$d" failed "fetch: $(pz_tail "$out")"; return; fi; ` +
-  `git -C "$d" rev-parse --verify --quiet "refs/remotes/origin/$def" >/dev/null || { pz_r "$d" skipped "$def disappeared from origin"; return; }; ` +
-  `if [ "$do_switch" = 1 ]; then git -C "$d" symbolic-ref refs/remotes/origin/HEAD "refs/remotes/origin/$def"; fi; ` +
-  `if [ "$was" != "$(git -C "$d" rev-parse --abbrev-ref HEAD)" ] || [ "$before" != "$(git -C "$d" rev-parse HEAD)" ]; then pz_r "$d" failed "checkout changed during sync; left alone"; return; fi; ` +
-  `if [ "$was" = "$def" ] && git -C "$d" merge-base --is-ancestor "refs/remotes/origin/$def" "$before" 2>/dev/null; then pz_r "$d" current "$def; origin already integrated, working files left alone"; return; fi; ` +
-  // Tracked and untracked files: park them in a durable stash so the checkout can proceed,
-  // or report the tree as dirty and leave it alone when stashing is off.
-  // A dedicated ref keeps each snapshot reachable after stash reflog expiry.
-  `tracked=$(git -C "$d" status --porcelain --untracked-files=all 2>/dev/null); if [ -n "$tracked" ]; then ` +
-  `n=$(printf '%s\\n' "$tracked" | wc -l | tr -d ' '); ` +
-  `if [ "$do_stash" != 1 ]; then pz_r "$d" dirty "$n uncommitted change(s) on $was, left alone (stash is off)"; return; fi; ` +
-  `if out=$(git -C "$d" stash push --include-untracked --quiet -m "pzza-sync $was $(date +%Y-%m-%d_%H:%M)" 2>&1); then stash_id=$(git -C "$d" rev-parse refs/stash) || { pz_r "$d" failed "stash could not be verified; left alone"; return; }; git -C "$d" update-ref "refs/pzza-sync/stashes/$stash_id" "$stash_id" || { pz_r "$d" failed "could not retain durable stash reference; left alone"; return; }; stashed="stashed $n change(s) from $was [$stash_id]"; ` +
-  `else pz_r "$d" failed "stash: $(pz_tail "$out")"; return; fi; fi; ` +
-  `if [ -n "$(git -C "$d" status --porcelain --untracked-files=all)" ]; then pz_r "$d" failed "working files changed during stash; left alone; $stashed"; return; fi; ` +
-  `if ! out=$(git -C "$d" checkout --no-overwrite-ignore --quiet "$def" 2>&1); then pz_r "$d" failed "$(pz_tail "$out")"; return; fi; ` +
-  // A merge preserves local commit IDs. Abort conflicts so sync never leaves
-  // an unresolved index behind; any parked edits remain recoverable in stash.
-  `if ! out=$(git -C "$d" merge --no-overwrite-ignore --ff --no-edit --quiet "origin/$def" 2>&1); then out=$(pz_tail "$out"); ` +
-  `if git -C "$d" rev-parse --verify --quiet MERGE_HEAD >/dev/null; then ` +
-  `if git -C "$d" merge --abort >/dev/null 2>&1; then out="merge conflict; merge aborted and local commits preserved. $out"; else out="merge abort failed; resolve the merge manually. $out"; fi; fi; ` +
-  `pz_r "$d" failed "$(pz_tail "$out")\${stashed:+; $stashed (git stash apply $stash_id to restore)}"; return; fi; ` +
-  `after=$(git -C "$d" rev-parse HEAD 2>/dev/null); pulled=; ` +
-  `if [ "$before" != "$after" ]; then pulled="+$(git -C "$d" rev-list --count "$before..$after" 2>/dev/null) commits"; fi; ` +
-  `if [ -n "$stashed" ]; then pz_r "$d" stashed "$stashed, now on $def\${pulled:+ $pulled} (git stash apply $stash_id to restore)"; ` +
-  `elif [ "$was" != "$def" ]; then pz_r "$d" updated "switched $was -> $def\${pulled:+, $pulled}"; ` +
-  `elif [ -n "$pulled" ]; then pz_r "$d" updated "$def $pulled"; ` +
-  `else pz_r "$d" current "$def"; fi; }; `;
+  `was=$(git -C "$d" rev-parse --abbrev-ref HEAD 2>/dev/null); before=$(git -C "$d" rev-parse HEAD 2>/dev/null); [ -n "$was" ] && [ -n "$before" ] || { pz_r "$d" failed "could not read current checkout"; return; }; ` +
+  `if [ "$do_align" != 1 ]; then pz_r "$d" skipped "baseline alignment is off; $was left alone"; return; fi; ` +
+  `if [ "$was" = HEAD ]; then pz_r "$d" skipped "detached HEAD; selected baseline left alone"; return; fi; ` +
+  // Park tracked and untracked work before checking whether the baseline is
+  // current. A disabled stash is the caller's explicit decision to leave work
+  // unresolved, never a reason to overwrite it.
+  `tracked=$(git -C "$d" status --porcelain --untracked-files=all 2>/dev/null); if [ -n "$tracked" ]; then n=$(printf '%s\n' "$tracked" | wc -l | tr -d ' '); if [ "$do_stash" != 1 ]; then pz_r "$d" dirty "$n uncommitted change(s) on $was, left alone (stash is off)"; return; fi; if ! out=$(git -C "$d" stash push --include-untracked --quiet -m "pzza-sync $was $(date +%Y-%m-%d_%H:%M)" 2>&1); then pz_r "$d" failed "stash: $(pz_tail "$out")"; return; fi; stash_id=$(git -C "$d" rev-parse --verify --quiet refs/stash) || { pz_r "$d" failed "stash could not be verified; left alone"; return; }; stash_ref="refs/pzza-sync/stashes/$stash_id"; if ! git -C "$d" update-ref "$stash_ref" "$stash_id" || [ "$(git -C "$d" rev-parse --verify --quiet "$stash_ref" 2>/dev/null)" != "$stash_id" ]; then pz_r "$d" failed "could not retain durable stash reference; git stash apply $stash_id to restore"; return; fi; stash_note="; stashed $n change(s) in $stash_ref (git stash apply $stash_id to restore)"; fi; ` +
+  `if [ -n "$(git -C "$d" status --porcelain --untracked-files=all)" ]; then pz_r "$d" failed "working files changed during stash; left alone$stash_note"; return; fi; ` +
+  `pz_pick_remote "$d"; picked=$?; if [ "$picked" != 0 ]; then if [ "$picked" = 1 ]; then pz_r "$d" failed "origin has neither development nor main branch$stash_note"; else pz_r "$d" failed "check origin: $(pz_tail "$pz_remote_error")$stash_note"; fi; return; fi; ` +
+  // A clean checkout known to equal the advertised selected branch is a real
+  // no-op. Dirty work has already been preserved above, so it is reported as a
+  // successful informational stash instead.
+  `tracking=$(git -C "$d" rev-parse --verify --quiet "refs/remotes/origin/$pz_baseline" 2>/dev/null); if [ "$was" = "$pz_baseline" ] && [ "$before" = "$pz_remote_head" ] && [ "$tracking" = "$pz_remote_head" ]; then if [ -n "$stash_id" ]; then pz_r "$d" stashed "selected baseline $pz_baseline is current$stash_note"; else pz_r "$d" current "$pz_baseline"; fi; return; fi; ` +
+  `if ! out=$(git -C "$d" fetch --quiet --prune origin 2>&1); then pz_r "$d" failed "fetch: $(pz_tail "$out")$stash_note"; return; fi; ` +
+  `actual=$(git -C "$d" remote get-url origin 2>/dev/null); [ "$actual" = "$expected" ] || { pz_r "$d" failed "origin changed during sync; left alone$stash_note"; return; }; ` +
+  `pz_pick_tracking "$d" || { pz_r "$d" failed "origin has neither development nor main branch after fetch$stash_note"; return; }; ` +
+  `now_branch=$(git -C "$d" rev-parse --abbrev-ref HEAD 2>/dev/null); now_head=$(git -C "$d" rev-parse HEAD 2>/dev/null); if [ "$now_branch" != "$was" ] || [ "$now_head" != "$before" ]; then pz_r "$d" failed "checkout changed during sync; left alone$stash_note"; return; fi; ` +
+  `if [ -n "$(git -C "$d" status --porcelain --untracked-files=all)" ]; then pz_r "$d" failed "working files changed during sync; left alone$stash_note"; return; fi; ` +
+  // A checkout may be ahead or diverged both on the currently checked-out
+  // source branch and on the selected target branch. Keep both tips reachable
+  // before moving the clean baseline, without manufacturing a merge commit.
+  `if ! git -C "$d" merge-base --is-ancestor "$before" "refs/remotes/origin/$pz_baseline" 2>/dev/null; then pz_keep_ref "$d" "$before" source || { pz_r "$d" failed "could not verify recovery ref for current $was tip$stash_note"; return; }; fi; ` +
+  `target_tip=$(git -C "$d" rev-parse --verify --quiet "refs/heads/$pz_baseline" 2>/dev/null); if [ -n "$target_tip" ] && ! git -C "$d" merge-base --is-ancestor "$target_tip" "refs/remotes/origin/$pz_baseline" 2>/dev/null; then pz_keep_ref "$d" "$target_tip" target || { pz_r "$d" failed "could not verify recovery ref for selected $pz_baseline tip$stash_note"; return; }; fi; ` +
+  `if [ -n "$(git -C "$d" status --porcelain --untracked-files=all)" ]; then pz_r "$d" failed "working files changed before baseline alignment; left alone$stash_note"; return; fi; ` +
+  `if ! out=$(git -C "$d" checkout --no-overwrite-ignore --quiet -B "$pz_baseline" "origin/$pz_baseline" 2>&1); then pz_r "$d" failed "$(pz_tail "$out")$stash_note"; return; fi; ` +
+  `after=$(git -C "$d" rev-parse HEAD 2>/dev/null); [ "$after" = "$pz_remote_head" ] || { pz_r "$d" failed "selected baseline changed during checkout$stash_note"; return; }; ` +
+  `recovery_note="\${pz_recoveries:+; recovery refs: $pz_recoveries}"; if [ -n "$stash_id" ]; then pz_r "$d" stashed "selected baseline $pz_baseline aligned$recovery_note$stash_note"; elif [ "$was" != "$pz_baseline" ] || [ "$before" != "$after" ]; then pz_r "$d" updated "selected baseline $pz_baseline aligned to origin$recovery_note"; else pz_r "$d" current "$pz_baseline"; fi; }; ` +
+  // `mkdir` is atomic, making independently requested Sync runs serialize per
+  // repository without blocking unrelated checkouts. The owner PID plus traps
+  // keep cancellation from wedging later Sync calls, while stale ownership is
+  // reclaimed only after its process is proven gone under a separate guard.
+  `pz_lock_release() { if [ "$pz_reclaim_guard_owned" = 1 ]; then rmdir "$pz_reclaim_guard" 2>/dev/null || true; pz_reclaim_guard_owned=; fi; if [ "$pz_lock_created" = 1 ] && [ -d "$pz_lock" ]; then pz_lock_recorded=$(cat "$pz_lock/owner" 2>/dev/null); if [ "$pz_lock_recorded" = "$pz_lock_owner" ]; then rm -f "$pz_lock/owner"; rmdir "$pz_lock" 2>/dev/null || true; elif [ -z "$pz_lock_recorded" ]; then rmdir "$pz_lock" 2>/dev/null || true; fi; fi; pz_lock_created=; pz_lock=; pz_lock_owner=; }; ` +
+  `pz_lock_traps() { trap 'pz_lock_release' 0; trap 'pz_lock_release; exit 129' 1; trap 'pz_lock_release; exit 130' 2; trap 'pz_lock_release; exit 143' 15; }; ` +
+  `pz_lock_owner_from_handoff() { pz_handoff_file=$1; pz_handoff_attempt=0; while [ "$pz_handoff_attempt" -lt 100 ]; do pz_handoff_owner=$(cat "$pz_handoff_file" 2>/dev/null); case "$pz_handoff_owner" in ''|0|*[!0-9]*) ;; *) pz_lock_owner=$pz_handoff_owner; rm -f "$pz_handoff_file"; return 0;; esac; pz_handoff_attempt=$((pz_handoff_attempt + 1)); sleep 0.05; done; rm -f "$pz_handoff_file"; return 1; }; ` +
+  `pz_lock_owner_alive() { case "$1" in ''|0|*[!0-9]*) return 1;; esac; kill -0 "$1" 2>/dev/null; }; ` +
+  `pz_reclaim_stale_lock() { pz_reclaim_lock=$1; pz_reclaim_owner=$2; pz_reclaim_guard="$pz_reclaim_lock.reclaim"; if ! mkdir "$pz_reclaim_guard" 2>/dev/null; then return 2; fi; pz_reclaim_guard_owned=1; pz_reclaim_current=$(cat "$pz_reclaim_lock/owner" 2>/dev/null); if [ "$pz_reclaim_current" = "$pz_reclaim_owner" ] && ! pz_lock_owner_alive "$pz_reclaim_current"; then rm -f "$pz_reclaim_lock/owner"; if rmdir "$pz_reclaim_lock" 2>/dev/null; then rmdir "$pz_reclaim_guard" 2>/dev/null || true; pz_reclaim_guard_owned=; return 0; fi; fi; rmdir "$pz_reclaim_guard" 2>/dev/null || true; pz_reclaim_guard_owned=; return 1; }; ` +
+  `pz_update() { d=$1; pz_handoff_file=$5; pz_lock_owner=; pz_lock_owner_from_handoff "$pz_handoff_file" || { pz_r "$d" failed "could not identify the Sync worker; left alone"; return; }; if pz_linked_worktree "$d"; then pz_update_inner "$@"; return; fi; gitdir=$(git -C "$d" rev-parse --absolute-git-dir 2>/dev/null) || { pz_r "$d" failed "repository no longer exists"; return; }; pz_lock="$gitdir/pzza-sync.lock"; pz_lock_created=; pz_reclaim_guard_owned=; pz_lock_traps; while :; do if mkdir "$pz_lock" 2>/dev/null; then pz_lock_created=1; if printf '%s\n' "$pz_lock_owner" > "$pz_lock/owner"; then break; fi; pz_lock_release; pz_r "$d" failed "could not record Sync lock ownership; left alone"; return; fi; pz_lock_recorded=$(cat "$pz_lock/owner" 2>/dev/null); if pz_lock_owner_alive "$pz_lock_recorded"; then pz_r "$d" failed "another Sync is updating this repository (process $pz_lock_recorded); left alone"; return; fi; case "$pz_lock_recorded" in ''|*[!0-9]*) pz_r "$d" failed "Sync lock has no verifiable owner; left alone"; return;; esac; pz_reclaim_stale_lock "$pz_lock" "$pz_lock_recorded"; pz_reclaim_status=$?; if [ "$pz_reclaim_status" = 0 ]; then continue; fi; if [ "$pz_reclaim_status" = 2 ]; then pz_r "$d" failed "a Sync lock recovery is already in progress; left alone"; else pz_r "$d" failed "stale Sync lock for exited process $pz_lock_recorded could not be cleared; inspect $pz_lock"; fi; return; done; pz_update_inner "$@"; code=$?; pz_lock_release; return "$code"; }; ` +
+  // The parent shell learns the actual background child PID from `$!`; hand it
+  // to that child through a private temporary file so ownership remains valid
+  // even where POSIX `sh` keeps `$$` unchanged inside background subshells.
+  `pz_start_update() { pz_start_rel=$1; shift; pz_start_owner=$(mktemp "\${TMPDIR:-/tmp}/pzza-sync-owner.XXXXXX") || { pz_r "$pz_start_rel" failed "could not prepare Sync ownership handoff"; return; }; (pz_update "$pz_start_rel" "$@" "$pz_start_owner") & pz_start_pid=$!; if ! printf '%s\n' "$pz_start_pid" > "$pz_start_owner"; then kill "$pz_start_pid" 2>/dev/null || true; rm -f "$pz_start_owner"; pz_r "$pz_start_rel" failed "could not record Sync worker ownership"; return; fi; wait "$pz_start_pid"; }; `;
 
 // Repositories with overlapping paths must finish before either starts another
 // batch: a parent checkout can otherwise race a nested repository's worktree.
@@ -411,7 +423,7 @@ export function syncScript(rootE, plan, opts) {
   const flags = `${opts.stashDirty ? 1 : 0} ${opts.switchToDefault ? 1 : 0}`;
   const batches = syncBatches(plan);
   const steps = batches.map((items) => items.map(({ rel, action, origin }) => {
-    const call = action === "clone" ? `pz_clone ${shQuote(origin)} ${shQuote(rel)}` : `pz_update ${shQuote(rel)} ${flags} ${shQuote(origin)}`;
+    const call = action === "clone" ? `pz_clone ${shQuote(origin)} ${shQuote(rel)}` : `pz_start_update ${shQuote(rel)} ${flags} ${shQuote(origin)}`;
     return `(${call}) &`;
   }).join(" ") + " wait");
   return prelude(rootE) + `cd "$root"; ` + SYNC_FUNCS + steps.join("; ");

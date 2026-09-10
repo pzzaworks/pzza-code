@@ -167,7 +167,11 @@ export function sessionActivity(host) {
       try {
         const rows = JSON.parse(stdout);
         if (!Array.isArray(rows)) return resolve([]);
-        return resolve(detectSessionActivity(rows.map((row) => ({ ...row, paneActive: true })), []));
+        // Reclassify remote rows before returning them. The activity detector
+        // validates and retains only normalized effective-model metadata.
+        const panes = rows.filter((row) => row && typeof row === "object" && !Array.isArray(row))
+          .map((row) => ({ ...row, paneActive: true }));
+        return resolve(detectSessionActivity(panes, []));
       } catch {
         const panes = String(stdout).split("\n").filter(Boolean).map((line) => {
           const [session, window, active, command] = line.split("\t");

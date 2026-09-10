@@ -24,7 +24,7 @@ test("paired bridge MCP uses scoped dispatch and cannot administer receiving gra
       const call = calls.at(-1);
       assert.ok(call.url.endsWith("/bridge/dispatch"));
       const request = JSON.parse(call.options.body);
-      assert.ok(Object.hasOwn(BRIDGE_ACTION_CAPABILITIES, request.action) || ["bridge.describe", "jobs.list", "jobs.get", "jobs.cancel"].includes(request.action));
+      assert.ok(Object.hasOwn(BRIDGE_ACTION_CAPABILITIES, request.action) || ["bridge.describe", "jobs.list", "jobs.get", "jobs.cancel", "approvals.list"].includes(request.action));
       assert.ok(!/approve|config/.test(request.action));
       assert.equal(request.peerId, "paired-device");
     }

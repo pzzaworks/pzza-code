@@ -142,6 +142,26 @@ export function deriveChrome(t: TerminalPalette, appearance: Theme["appearance"]
   };
 }
 
+// Keep text opaque and preserve role hierarchy until the deliberate maximum.
+// Surfaces and inverse-control colors are handled separately from body text.
+export function textVisibilityVars(c: ChromePalette, appearance: Theme["appearance"], value: number): Record<string, string> {
+  const amount = Number.isFinite(value) ? Math.max(0, Math.min(100, value)) / 100 : 0;
+  const target = appearance === "dark" ? "#ffffff" : "#000000";
+  const body = amount ** 1.2;
+  const secondary = amount ** 1.5;
+  return {
+    "--text": amount ? mix(c.text, target, body) : c.text,
+    "--muted": amount ? mix(c.muted, target, secondary) : c.muted,
+    "--heading-text": amount ? mix(c.text, target, amount) : c.text,
+    "--visibility-settings-muted": mix(appearance === "light" ? c.muted : mix(c.surface, c.text, 0.68), target, secondary),
+    "--accent-foreground": amount ? mix(c.accent, target, body) : c.accent,
+    "--selected-text": amount ? mix(c.selectedText, target, body) : c.selectedText,
+    "--success-foreground": amount ? mix(c.success, target, body) : c.success,
+    "--warning-foreground": amount ? mix(c.warning, target, body) : c.warning,
+    "--danger-foreground": amount ? mix(c.danger, target, body) : c.danger,
+  };
+}
+
 export function chromeToCssVars(c: ChromePalette): Record<string, string> {
   return {
     "--bg": c.bg,

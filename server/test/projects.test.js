@@ -38,6 +38,24 @@ async function fixture(t, count) {
 
 const results = (stdout) => stdout.trim().split("\n").map((line) => line.split("\t")).filter(([marker]) => marker === "PZZA_R");
 
+async function waitForFile(file) {
+  for (let attempt = 0; attempt < 100; attempt++) {
+    try { return await readFile(file, "utf8"); }
+    catch { await new Promise(resolve => setTimeout(resolve, 20)); }
+  }
+  throw new Error(`Timed out waiting for ${file}`);
+}
+
+function waitForExit(child) {
+  if (child.exitCode !== null || child.signalCode !== null) {
+    return Promise.resolve({ code: child.exitCode, signal: child.signalCode });
+  }
+  return new Promise((resolve, reject) => {
+    child.once("error", reject);
+    child.once("exit", (code, signal) => resolve({ code, signal }));
+  });
+}
+
 test("parallel scans preserve every repository and dirty/untracked counts", async (t) => {
   const { projects, plan } = await fixture(t, 6);
   await writeFile(path.join(projects, plan[0].rel, "tracked.txt"), "edited\n");
@@ -96,7 +114,7 @@ test("parallel sync updates all repos, leaves dirty changes alone, and reports f
   await git(origin, "commit", "-am", "Update fixture");
   await writeFile(path.join(projects, plan[0].rel, "tracked.txt"), "local edit\n");
   await git(path.join(projects, plan[1].rel), "remote", "set-url", "origin", path.join(projects, "missing"));
-  const opts = normalizeOptions({ stashDirty: false, switchToDefault: false });
+  const opts = normalizeOptions({ stashDirty: false });
   const { stdout } = await run("sh", ["-c", syncScript(rootExpr(projects), plan, opts)]);
   const rows = results(stdout);
   assert.equal(rows.length, 6);
@@ -128,6 +146,24 @@ test("parallel sync retains stash, branch switching, clone and current behavior"
   assert.equal((await git(first, "show", "stash@{0}^3:untracked.txt")).stdout, "keep\n");
 });
 
+test("clone and scan select development instead of origin HEAD", async (t) => {
+  const { origin, projects } = await fixture(t, 0);
+  await git(origin, "checkout", "-b", "development");
+  await writeFile(path.join(origin, "development.txt"), "development checkout\n");
+  await git(origin, "add", ".");
+  await git(origin, "commit", "-m", "Development clone fixture");
+  await git(origin, "checkout", "main");
+
+  const plan = [{ rel: "development clone", action: "clone", origin }];
+  const { stdout } = await run("sh", ["-c", syncScript(rootExpr(projects), plan, normalizeOptions())]);
+  assert.deepEqual(results(stdout), [["PZZA_R", "development clone", "cloned", "development"]]);
+  const clone = path.join(projects, "development clone");
+  assert.equal((await git(clone, "branch", "--show-current")).stdout.trim(), "development");
+  assert.equal(await readFile(path.join(clone, "development.txt"), "utf8"), "development checkout\n");
+  const scan = await scanProjects({ root: projects, devices: [{ id: "local", host: "" }] });
+  assert.equal(scan.devices[0].repos[0].defaultBranch, "development");
+});
+
 test("sync runs at most four remote checks together and separates nested repositories", async (t) => {
   const { root, origin, projects, plan } = await fixture(t, 6);
   const nested = `${plan[0].rel}/child`;
@@ -148,7 +184,7 @@ if [ "$3" = ls-remote ]; then
 fi
 exec "$PZZA_TEST_GIT" "$@"
 `, { mode: 0o700 });
-  await run("sh", ["-c", syncScript(rootExpr(projects), plan, normalizeOptions({ stashDirty: false, switchToDefault: false }))], {
+  await run("sh", ["-c", syncScript(rootExpr(projects), plan, normalizeOptions({ stashDirty: false }))], {
     env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, PZZA_TEST_GIT: realGit, PZZA_TEST_LOG: log },
   });
   const active = new Set();
@@ -447,6 +483,96 @@ test("sync refuses an origin changed after planning without touching the worktre
   assert.equal((await git(repo, "stash", "list")).stdout, "");
 });
 
+test("sync stops before alignment when another edit arrives during fetch", async (t) => {
+  const { root, origin, projects, plan } = await fixture(t, 1);
+  const repo = path.join(projects, plan[0].rel);
+  const before = (await git(repo, "rev-parse", "HEAD")).stdout.trim();
+  await writeFile(path.join(origin, "remote.txt"), "remote update\n");
+  await git(origin, "add", ".");
+  await git(origin, "commit", "-m", "Concurrent edit fixture");
+  const bin = path.join(root, "bin");
+  const edited = path.join(repo, "arrived-during-sync.txt");
+  const realGit = (await run("sh", ["-c", "command -v git"])).stdout.trim();
+  await mkdir(bin);
+  await writeFile(path.join(bin, "git"), `#!/bin/sh
+if [ "$3" = fetch ]; then printf 'concurrent edit\\n' > "$PZZA_EDIT_PATH"; fi
+exec "$PZZA_TEST_GIT" "$@"
+`, { mode: 0o700 });
+
+  const { stdout } = await run("sh", ["-c", syncScript(rootExpr(projects), plan, normalizeOptions())], {
+    env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, PZZA_EDIT_PATH: edited, PZZA_TEST_GIT: realGit },
+  });
+  assert.equal(results(stdout)[0][2], "failed");
+  assert.match(results(stdout)[0][3], /working files changed during sync/);
+  assert.equal((await git(repo, "rev-parse", "HEAD")).stdout.trim(), before);
+  assert.equal(await readFile(edited, "utf8"), "concurrent edit\n");
+});
+
+test("per-repository Sync lock leaves a live owner checkout alone", async (t) => {
+  const { projects, plan } = await fixture(t, 1);
+  const repo = path.join(projects, plan[0].rel);
+  const before = (await git(repo, "rev-parse", "HEAD")).stdout.trim();
+  const lock = path.join(repo, ".git", "pzza-sync.lock");
+  await mkdir(lock);
+  await writeFile(path.join(lock, "owner"), `${process.pid}\n`);
+  const { stdout } = await run("sh", ["-c", syncScript(rootExpr(projects), plan, normalizeOptions())]);
+  assert.equal(results(stdout)[0][2], "failed");
+  assert.match(results(stdout)[0][3], new RegExp(`another Sync is updating this repository \\(process ${process.pid}\\)`));
+  assert.equal((await git(repo, "rev-parse", "HEAD")).stdout.trim(), before);
+});
+
+test("sync safely reclaims a lock whose recorded owner exited", async (t) => {
+  const { projects, plan } = await fixture(t, 1);
+  const repo = path.join(projects, plan[0].rel);
+  const lock = path.join(repo, ".git", "pzza-sync.lock");
+  const owner = path.join(lock, "owner");
+  await mkdir(lock);
+  await writeFile(owner, "99999999\n");
+  const { stdout } = await run("sh", ["-c", syncScript(rootExpr(projects), plan, normalizeOptions())]);
+  assert.equal(results(stdout)[0][2], "current");
+  await assert.rejects(readFile(owner, "utf8"));
+});
+
+test("cancelled Sync releases its owned repository lock", async (t) => {
+  const { root, origin, projects, plan } = await fixture(t, 1);
+  const repo = path.join(projects, plan[0].rel);
+  const before = (await git(repo, "rev-parse", "HEAD")).stdout.trim();
+  await writeFile(path.join(origin, "remote.txt"), "remote update\n");
+  await git(origin, "add", ".");
+  await git(origin, "commit", "-m", "Cancellation lock fixture");
+  const bin = path.join(root, "bin");
+  const started = path.join(root, "fetch-started");
+  const realGit = (await run("sh", ["-c", "command -v git"])).stdout.trim();
+  await mkdir(bin);
+  await writeFile(path.join(bin, "git"), `#!/bin/sh
+if [ "$3" = fetch ]; then : > "$PZZA_FETCH_STARTED"; sleep 2; fi
+exec "$PZZA_TEST_GIT" "$@"
+`, { mode: 0o700 });
+  const child = childProcess.spawn("sh", ["-c", syncScript(rootExpr(projects), plan, normalizeOptions())], {
+    env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, PZZA_FETCH_STARTED: started, PZZA_TEST_GIT: realGit },
+    stdio: "ignore",
+  });
+  const owner = path.join(repo, ".git", "pzza-sync.lock", "owner");
+  let ownerPid = 0;
+  t.after(() => {
+    if (ownerPid > 0) {
+      try { process.kill(ownerPid, "SIGKILL"); } catch { /* The worker already exited. */ }
+    }
+    if (child.exitCode === null) child.kill("SIGKILL");
+  });
+  await waitForFile(started);
+  ownerPid = Number((await readFile(owner, "utf8")).trim());
+  assert.notEqual(ownerPid, process.pid);
+  process.kill(ownerPid, "SIGTERM");
+  await waitForExit(child);
+
+  await assert.rejects(readFile(owner, "utf8"));
+  assert.equal((await git(repo, "rev-parse", "HEAD")).stdout.trim(), before);
+  await assert.rejects(readFile(path.join(repo, "remote.txt"), "utf8"));
+  const resumed = await run("sh", ["-c", syncScript(rootExpr(projects), plan, normalizeOptions())]);
+  assert.equal(results(resumed.stdout)[0][2], "updated");
+});
+
 test("scan progress counts failed devices and does not fabricate repositories", async (t) => {
   const { root } = await fixture(t, 0);
   const updates = [];
@@ -461,35 +587,67 @@ test("scan progress counts failed devices and does not fabricate repositories", 
 });
 
 
-test("sync merges divergence preserving both histories and aborts conflicting merges", async (t) => {
-  for (const conflict of [false, true]) {
-    const { projects, origin, plan } = await fixture(t, 1);
-    const repo = path.join(projects, plan[0].rel);
-    await git(repo, "config", "user.name", "Sync Test");
-    await git(repo, "config", "user.email", "sync-test@example.invalid");
-    await writeFile(path.join(repo, conflict ? "tracked.txt" : "local.txt"), "local change\n");
-    await git(repo, "add", ".");
-    await git(repo, "commit", "-m", "Local change");
-    const local = (await git(repo, "rev-parse", "HEAD")).stdout.trim();
-    await writeFile(path.join(origin, "tracked.txt"), "remote change\n");
-    await git(origin, "add", ".");
-    await git(origin, "commit", "-m", "Remote change");
-    const remote = (await git(origin, "rev-parse", "HEAD")).stdout.trim();
-    await writeFile(path.join(repo, "untracked.txt"), "keep\n");
-    if (conflict) await writeFile(path.join(repo, "tracked.txt"), "uncommitted edit\n");
-    const { stdout } = await run("sh", ["-c", syncScript(rootExpr(projects), plan, normalizeOptions())]);
-    const row = results(stdout)[0];
-    assert.equal(row[2], conflict ? "failed" : "stashed");
-    await git(repo, "merge-base", "--is-ancestor", local, "HEAD");
-    if (conflict) {
-      assert.match(row[3], /merge aborted and local commits preserved/);
-      assert.match(row[3], /git stash apply [a-f0-9]+ to restore/);
-      assert.match((await git(repo, "stash", "show", "-p")).stdout, /uncommitted edit/);
-      assert.equal((await git(repo, "rev-parse", "HEAD")).stdout.trim(), local);
-      assert.equal((await git(repo, "ls-files", "--unmerged")).stdout, "");
-    } else await git(repo, "merge-base", "--is-ancestor", remote, "HEAD");
-    assert.equal((await git(repo, "show", "stash@{0}^3:untracked.txt")).stdout, "keep\n");
-  }
+test("sync parks divergent source and baseline tips before aligning the selected baseline", async (t) => {
+  const { projects, origin, plan } = await fixture(t, 1);
+  const repo = path.join(projects, plan[0].rel);
+  await git(repo, "config", "user.name", "Sync Test");
+  await git(repo, "config", "user.email", "sync-test@example.invalid");
+
+  await git(origin, "checkout", "-b", "development");
+  await writeFile(path.join(origin, "remote-development.txt"), "remote development\n");
+  await git(origin, "add", ".");
+  await git(origin, "commit", "-m", "Remote development");
+  const remoteTip = (await git(origin, "rev-parse", "HEAD")).stdout.trim();
+
+  await git(repo, "checkout", "-b", "development");
+  await writeFile(path.join(repo, "local-development.txt"), "local target\n");
+  await git(repo, "add", ".");
+  await git(repo, "commit", "-m", "Local development");
+  const targetTip = (await git(repo, "rev-parse", "HEAD")).stdout.trim();
+
+  await git(repo, "checkout", "-b", "feature", "main");
+  await writeFile(path.join(repo, "feature.txt"), "local source\n");
+  await git(repo, "add", ".");
+  await git(repo, "commit", "-m", "Local feature");
+  const sourceTip = (await git(repo, "rev-parse", "HEAD")).stdout.trim();
+  await writeFile(path.join(repo, "tracked.txt"), "unfinished tracked edit\n");
+  await writeFile(path.join(repo, "untracked.txt"), "unfinished untracked edit\n");
+
+  const first = await run("sh", ["-c", syncScript(rootExpr(projects), plan, normalizeOptions())]);
+  const row = results(first.stdout)[0];
+  assert.equal(row[2], "stashed");
+  assert.match(row[3], /recovery refs: source .*target /);
+  assert.match(row[3], new RegExp(`git branch recover-source-${sourceTip} refs/pzza-sync/backups/${sourceTip}`));
+  assert.match(row[3], new RegExp(`git branch recover-target-${targetTip} refs/pzza-sync/backups/${targetTip}`));
+  assert.match(row[3], /git stash apply [a-f0-9]+ to restore/);
+  assert.equal((await git(repo, "branch", "--show-current")).stdout.trim(), "development");
+  assert.equal((await git(repo, "rev-parse", "HEAD")).stdout.trim(), remoteTip);
+  assert.equal((await git(repo, "rev-parse", `refs/pzza-sync/backups/${sourceTip}`)).stdout.trim(), sourceTip);
+  assert.equal((await git(repo, "rev-parse", `refs/pzza-sync/backups/${targetTip}`)).stdout.trim(), targetTip);
+  await assert.rejects(git(repo, "merge-base", "--is-ancestor", sourceTip, "HEAD"));
+  await assert.rejects(git(repo, "merge-base", "--is-ancestor", targetTip, "HEAD"));
+  assert.match((await git(repo, "stash", "show", "-p")).stdout, /unfinished tracked edit/);
+  assert.equal((await git(repo, "show", "stash@{0}^3:untracked.txt")).stdout, "unfinished untracked edit\n");
+
+  const beforeRepeat = (await git(repo, "for-each-ref", "--format=%(refname):%(objectname)", "refs/pzza-sync")).stdout;
+  const second = await run("sh", ["-c", syncScript(rootExpr(projects), plan, normalizeOptions())]);
+  assert.equal(results(second.stdout)[0][2], "current");
+  assert.equal((await git(repo, "for-each-ref", "--format=%(refname):%(objectname)", "refs/pzza-sync")).stdout, beforeRepeat);
+});
+
+test("behind-only selected baselines fast-forward without a recovery ref", async (t) => {
+  const { projects, origin, plan } = await fixture(t, 1);
+  const repo = path.join(projects, plan[0].rel);
+  const before = (await git(repo, "rev-parse", "HEAD")).stdout.trim();
+  await writeFile(path.join(origin, "remote.txt"), "fast forward\n");
+  await git(origin, "add", ".");
+  await git(origin, "commit", "-m", "Fast forward");
+  const remote = (await git(origin, "rev-parse", "HEAD")).stdout.trim();
+  const result = await run("sh", ["-c", syncScript(rootExpr(projects), plan, normalizeOptions())]);
+  assert.equal(results(result.stdout)[0][2], "updated");
+  assert.equal((await git(repo, "rev-parse", "HEAD")).stdout.trim(), remote);
+  await git(repo, "merge-base", "--is-ancestor", before, "HEAD");
+  assert.equal((await git(repo, "for-each-ref", "refs/pzza-sync/backups")).stdout, "");
 });
 
 test("transferred GitHub origins reconcile only with immutable identity proof and retain exclusions", async () => {
@@ -518,12 +676,28 @@ test("transferred GitHub origins reconcile only with immutable identity proof an
 });
 
 
-test("sync leaves current repositories and untracked-only changes alone with stashing disabled", async t => {
+test("baseline-alignment opt-out leaves an existing checkout untouched", async t => {
+  const { projects, origin, plan } = await fixture(t, 1);
+  const repo = path.join(projects, plan[0].rel);
+  await git(repo, "checkout", "-b", "feature");
+  await writeFile(path.join(repo, "tracked.txt"), "feature edit\n");
+  await writeFile(path.join(origin, "remote.txt"), "remote update\n");
+  await git(origin, "add", ".");
+  await git(origin, "commit", "-m", "Remote opt-out fixture");
+  const { stdout } = await run("sh", ["-c", syncScript(rootExpr(projects), plan, normalizeOptions({ switchToDefault: false }))]);
+  assert.equal(results(stdout)[0][2], "skipped");
+  assert.match(results(stdout)[0][3], /baseline alignment is off/);
+  assert.equal((await git(repo, "branch", "--show-current")).stdout.trim(), "feature");
+  assert.equal(await readFile(path.join(repo, "tracked.txt"), "utf8"), "feature edit\n");
+  assert.equal((await git(repo, "stash", "list")).stdout, "");
+});
+
+test("sync reports untracked work as unresolved when stashing is disabled", async t => {
   const { projects, plan } = await fixture(t, 1);
   const repo = path.join(projects, plan[0].rel);
   await writeFile(path.join(repo, "draft.txt"), "recoverable draft\n");
   const { stdout } = await run("sh", ["-c", syncScript(rootExpr(projects), plan, normalizeOptions({ stashDirty: false }))]);
-  assert.equal(results(stdout)[0][2], "current");
+  assert.equal(results(stdout)[0][2], "dirty");
   assert.equal(await readFile(path.join(repo, "draft.txt"), "utf8"), "recoverable draft\n");
   assert.equal((await git(repo, "stash", "list")).stdout, "");
 });
@@ -585,7 +759,7 @@ test("cancellation arriving before sync request prevents every write", async () 
   assert.equal(result.devices[0].results[0].status, "skipped");
 });
 
-test("current repositories skip fetch, stash, checkout and merge while newly pushed commits still arrive", async t => {
+test("dirty current repositories preserve work before no-op checks and clean ones avoid transfers", async t => {
   const { root, projects, origin, plan } = await fixture(t, 1);
   const repo = path.join(projects, plan[0].rel);
   const bin = path.join(root, "bin");
@@ -600,39 +774,58 @@ exec "$PZZA_TEST_GIT" "$@"
   await writeFile(path.join(repo, "tracked.txt"), "unfinished work\n");
   await writeFile(path.join(repo, "draft.txt"), "unfinished draft\n");
   const first = await run("sh", ["-c", syncScript(rootExpr(projects), plan, normalizeOptions())], { env: environment });
-  assert.equal(results(first.stdout)[0][2], "current");
+  assert.equal(results(first.stdout)[0][2], "stashed");
   const commands = (await readFile(log, "utf8")).trim().split("\n");
   assert.equal(commands.filter(command => command === "ls-remote").length, 1);
-  for (const command of ["fetch", "stash", "checkout", "merge", "status"]) assert.ok(!commands.includes(command), `${command} must not run for an unchanged upstream`);
-  assert.equal(await readFile(path.join(repo, "tracked.txt"), "utf8"), "unfinished work\n");
-  assert.equal((await git(repo, "stash", "list")).stdout, "");
+  assert.ok(commands.includes("status"), "dirty work must be checked before the no-op decision");
+  assert.ok(commands.includes("stash"), "dirty work must be preserved before the no-op decision");
+  for (const command of ["fetch", "checkout", "merge", "push"]) assert.ok(!commands.includes(command), `${command} must not run for an unchanged selected baseline`);
+  assert.equal(await readFile(path.join(repo, "tracked.txt"), "utf8"), "initial\n");
+  assert.match((await git(repo, "stash", "show", "-p")).stdout, /unfinished work/);
 
   await writeFile(path.join(origin, "new.txt"), "new upstream file\n");
   await git(origin, "add", "new.txt");
   await git(origin, "commit", "-m", "New upstream fixture");
   const second = await run("sh", ["-c", syncScript(rootExpr(projects), plan, normalizeOptions())], { env: environment });
-  assert.equal(results(second.stdout)[0][2], "stashed");
+  assert.equal(results(second.stdout)[0][2], "updated");
   assert.equal(await readFile(path.join(repo, "new.txt"), "utf8"), "new upstream file\n");
   assert.match((await git(repo, "stash", "show", "-p")).stdout, /unfinished work/);
   assert.equal((await git(repo, "show", "stash@{0}^3:draft.txt")).stdout, "unfinished draft\n");
+
+  await writeFile(log, "");
+  const third = await run("sh", ["-c", syncScript(rootExpr(projects), plan, normalizeOptions())], { env: environment });
+  assert.equal(results(third.stdout)[0][2], "current");
+  const cleanCommands = (await readFile(log, "utf8")).trim().split("\n");
+  assert.ok(cleanCommands.includes("status"));
+  for (const command of ["fetch", "stash", "checkout", "merge"]) assert.ok(!cleanCommands.includes(command), `${command} must not run for a clean current baseline`);
 });
 
-test("live checks handle default-branch changes and deleted branches without integrating stale refs", async t => {
+test("live checks handle selected development/main branches without origin HEAD", async t => {
   const { projects, origin, plan } = await fixture(t, 1);
   const repo = path.join(projects, plan[0].rel);
+  await git(origin, "checkout", "-b", "development");
+  await writeFile(path.join(origin, "development.txt"), "development baseline\n");
+  await git(origin, "add", "development.txt");
+  await git(origin, "commit", "-m", "Development baseline fixture");
+
+  const development = await run("sh", ["-c", syncScript(rootExpr(projects), plan, normalizeOptions())]);
+  assert.equal(results(development.stdout)[0][2], "updated");
+  assert.equal((await git(repo, "branch", "--show-current")).stdout.trim(), "development");
+  assert.equal(await readFile(path.join(repo, "development.txt"), "utf8"), "development baseline\n");
+
+  await git(origin, "checkout", "main");
+  await git(origin, "branch", "-D", "development");
+  const developmentTip = (await git(repo, "rev-parse", "HEAD")).stdout.trim();
+  const main = await run("sh", ["-c", syncScript(rootExpr(projects), plan, normalizeOptions())]);
+  assert.equal(results(main.stdout)[0][2], "updated");
+  assert.equal((await git(repo, "branch", "--show-current")).stdout.trim(), "main");
+  assert.equal((await git(repo, "rev-parse", `refs/pzza-sync/backups/${developmentTip}`)).stdout.trim(), developmentTip);
+
   await git(origin, "checkout", "-b", "next");
-  await writeFile(path.join(origin, "next.txt"), "next branch\n");
-  await git(origin, "add", "next.txt");
-  await git(origin, "commit", "-m", "Next branch fixture");
-  const changed = await run("sh", ["-c", syncScript(rootExpr(projects), plan, normalizeOptions())]);
-  assert.equal(results(changed.stdout)[0][2], "updated");
-  assert.equal((await git(repo, "branch", "--show-current")).stdout.trim(), "next");
-  assert.equal(await readFile(path.join(repo, "next.txt"), "utf8"), "next branch\n");
-  await git(repo, "checkout", "main");
   await git(origin, "branch", "-D", "main");
-  const deleted = await run("sh", ["-c", syncScript(rootExpr(projects), plan, normalizeOptions({ switchToDefault: false }))]);
-  assert.equal(results(deleted.stdout)[0][2], "skipped");
-  assert.match(results(deleted.stdout)[0][3], /main has no origin branch/);
+  const neither = await run("sh", ["-c", syncScript(rootExpr(projects), plan, normalizeOptions())]);
+  assert.equal(results(neither.stdout)[0][2], "failed");
+  assert.match(results(neither.stdout)[0][3], /neither development nor main/);
   assert.equal((await git(repo, "branch", "--show-current")).stdout.trim(), "main");
 });
 
@@ -646,7 +839,7 @@ test("sync batches independent repositories in the actual service and stops retr
   const result = await syncProjects({ root: "~/Projects" }, {
     scan,
     run: async (_host, script, timeout) => {
-      const names = [...script.matchAll(/\(pz_update '([^']+)'/g)].map(match => match[1]);
+      const names = [...script.matchAll(/\(pz_start_update '([^']+)'/g)].map(match => match[1]);
       batches.push(names);
       assert.equal(timeout, 15 * 60_000, "background transfers must retain time for larger repositories");
       return { ok: true, stdout: names.map(rel => `PZZA_R\t${rel}\tcurrent\t\n`).join(""), stderr: "" };
@@ -758,7 +951,7 @@ test("env transfer refuses a source edited after its content was scanned", async
       { id: "source", name: "Source", host: "", repos: [repoMetadata(plan[0].rel, "https://example.invalid/app.git", [envMetadata(hash(oldSource), 20)])] },
       { id: "destination", name: "Destination", host: "", repos: [repoMetadata(plan[1].rel, "https://example.invalid/app.git", [envMetadata(hash(destination), 10)])] },
     ] }),
-    run: async (_host, script) => ({ ok: true, stderr: "", stdout: `PZZA_R\t${script.match(/\(pz_update '([^']+)'/)[1]}\tcurrent\t\n` }),
+    run: async (_host, script) => ({ ok: true, stderr: "", stdout: `PZZA_R\t${script.match(/\(pz_start_update '([^']+)'/)[1]}\tcurrent\t\n` }),
   });
   const transfer = result.devices.find(device => device.id === "destination").envs[0];
   assert.equal(transfer.status, "failed");

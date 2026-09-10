@@ -114,11 +114,17 @@ export function wsUrl(): string {
   return q ? `${SERVER_WS}?${q}` : SERVER_WS;
 }
 
+export type EffectiveModelProvider = "claude" | "codex";
+export type EffectiveModelEvidence = "reported" | "configured";
+
 export interface SessionActivity {
   session: string;
   window: number;
   active: boolean;
   command: string;
+  effectiveModel: string | null;
+  effectiveProvider: EffectiveModelProvider | null;
+  effectiveModelEvidence: EffectiveModelEvidence | null;
 }
 export async function fetchSessionActivity(host?: string, signal?: AbortSignal): Promise<SessionActivity[]> {
   const response = await agentFetch(`${SERVER_HTTP}/sessions/activity${host !== undefined ? `?host=${encodeURIComponent(host)}` : ""}`, { signal });
@@ -239,6 +245,44 @@ export async function uploadPasteImage(blob: Blob, host?: string, signal?: Abort
   return data.path;
 }
 
+async function withRequestDeadline<T>(timeout: number, signal: AbortSignal | undefined, run: (boundedSignal: AbortSignal) => Promise<T>): Promise<T> {
+  const controller = new AbortController();
+  const abort = () => controller.abort(signal?.reason);
+  if (signal?.aborted) abort();
+  else signal?.addEventListener("abort", abort, { once: true });
+  const timer = setTimeout(() => controller.abort(new DOMException("Device request timed out", "TimeoutError")), timeout);
+  try { return await run(controller.signal); }
+  finally { clearTimeout(timer); signal?.removeEventListener("abort", abort); }
+}
+
+export async function uploadTerminalDrop(files: File[], host: string | undefined, signal: AbortSignal): Promise<{ id: string; paths: string[] }> {
+  if (!files.length || files.length > 8 || files.some(file => file.size > 16 * 1024 * 1024) || files.reduce((total, file) => total + file.size, 0) > 32 * 1024 * 1024) {
+    throw new Error("Drop at most eight files, up to 16 MB each and 32 MB total.");
+  }
+  const query = new URLSearchParams({ files: JSON.stringify(files.map(file => ({ name: file.name, size: file.size }))) });
+  if (host !== undefined) query.set("host", host);
+  return withRequestDeadline(35000, signal, async boundedSignal => {
+    const response = await agentFetch(`${SERVER_HTTP}/terminal-drop?${query}`, {
+      method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: new Blob(files), signal: boundedSignal,
+    });
+    const value: unknown = await response.json();
+    if (!response.ok) throw new Error(value && typeof value === "object" && "error" in value && typeof value.error === "string" ? value.error : `File upload failed (${response.status})`);
+    if (!value || typeof value !== "object" || !("id" in value) || typeof value.id !== "string" || !/^[a-f0-9]{32}$/.test(value.id)) throw new Error("The device returned an invalid upload receipt.");
+    if (!("paths" in value) || !Array.isArray(value.paths) || value.paths.length !== files.length ||
+        !value.paths.every((path: unknown): path is string => typeof path === "string" && path.startsWith("/") && path.length <= 4096 && !/[\x00-\x1f\x7f]/.test(path))) {
+      await discardTerminalDrop(value.id);
+      throw new Error("The device returned invalid uploaded file paths.");
+    }
+    return { id: value.id, paths: value.paths };
+  });
+}
+
+export async function discardTerminalDrop(id: string): Promise<void> {
+  if (!/^[a-f0-9]{32}$/.test(id)) throw new Error("Invalid upload receipt.");
+  const response = await agentFetch(`${SERVER_HTTP}/terminal-drop?id=${encodeURIComponent(id)}`, { method: "DELETE", signal: AbortSignal.timeout(5000) });
+  if (!response.ok) throw new Error("Could not clean up the uploaded files.");
+}
+
 // Kill a tmux session (or a single window). Pass host to kill on another device.
 export async function killSession(name: string, window?: number, host?: string): Promise<void> {
   const targetHost = HAS_TAURI ? host ?? "" : host;
@@ -299,7 +343,9 @@ export async function createSession(
   }
 }
 
-export async function openQuickChat(host: string, agent: "claude" | "codex"): Promise<{ session: string; host: string; agent: "claude" | "codex" }> {
+export interface QuickChatSession { session: string; host: string; agent: "claude" | "codex"; identity: string }
+
+export async function openQuickChat(host: string, agent: "claude" | "codex"): Promise<QuickChatSession> {
   const response = await agentFetch(`${SERVER_HTTP}/quick-chat/open`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -309,10 +355,26 @@ export async function openQuickChat(host: string, agent: "claude" | "codex"): Pr
   const value: unknown = await response.json();
   if (!response.ok) throw new Error(value && typeof value === "object" && "error" in value && typeof value.error === "string" ? value.error : "Could not open Quick Chat.");
   if (!value || typeof value !== "object" || !("session" in value) || value.session !== "pzza-quick-chat" ||
-      !("host" in value) || value.host !== host || !("agent" in value) || (value.agent !== "claude" && value.agent !== "codex")) {
+      !("host" in value) || value.host !== host || !("agent" in value) || value.agent !== agent ||
+      !("identity" in value) || typeof value.identity !== "string" || !/^\$[0-9]+:[0-9]+:[0-9]+$/.test(value.identity)) {
     throw new Error("Invalid Quick Chat response.");
   }
-  return { session: value.session, host, agent: value.agent };
+  return { session: value.session, host, agent, identity: value.identity };
+}
+
+export async function verifyQuickChat(host: string, agent: "claude" | "codex", identity: string, signal?: AbortSignal): Promise<void> {
+  if (!/^\$[0-9]+:[0-9]+:[0-9]+$/.test(identity)) throw new Error("Quick Chat session identity is unavailable.");
+  await withRequestDeadline(15000, signal, async boundedSignal => {
+    const response = await agentFetch(`${SERVER_HTTP}/quick-chat/verify`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ host, agent, identity }), signal: boundedSignal,
+    });
+    const value: unknown = await response.json();
+    if (!response.ok) {
+      const message = value && typeof value === "object" && "error" in value && typeof value.error === "string" ? value.error : "Quick Chat connection is unavailable.";
+      throw Object.assign(new Error(message), { status: response.status });
+    }
+    if (!value || typeof value !== "object" || !("verified" in value) || value.verified !== true) throw new Error("Could not verify the existing Quick Chat session.");
+  });
 }
 
 export async function closeQuickChat(host: string): Promise<void> {
@@ -435,13 +497,18 @@ export async function deleteFile(root: string, path: string, host?: string): Pro
 export async function listDir(
   path?: string,
   host?: string,
+  signal?: AbortSignal,
 ): Promise<{ path: string; parent: string; entries: DirEntry[] }> {
   const params = new URLSearchParams();
   if (path) params.set("path", path);
-  if (host) params.set("host", host);
+  if (host !== undefined) params.set("host", host);
   const q = params.toString();
-  const res = await agentFetch(`${SERVER_HTTP}/fs/list${q ? `?${q}` : ""}`);
-  if (!res.ok) throw new Error(`list ${res.status}`);
+  const res = await agentFetch(`${SERVER_HTTP}/fs/list${q ? `?${q}` : ""}`, { signal });
+  if (!res.ok) {
+    const value: unknown = await res.json().catch(() => null);
+    const message = value && typeof value === "object" && "error" in value && typeof value.error === "string" ? value.error : `Folder listing failed (${res.status})`;
+    throw Object.assign(new Error(message), { status: res.status });
+  }
   return res.json();
 }
 
@@ -579,7 +646,7 @@ export interface ProjectRepo {
   canonicalOrigin?: string;
   rel: string; // path below the root, e.g. "Personal/pzza-code"
   origin: string | null;
-  defaultBranch: string | null; // origin's HEAD when the clone knows it
+  defaultBranch: string | null; // remote development when present, otherwise remote main
   branch: string | null; // checked-out branch (or "HEAD" when detached)
   head: string | null; // short sha
   modified: number; // staged + unstaged changes
@@ -611,7 +678,7 @@ export interface RepoSyncOptions {
 }
 export interface SyncOptions {
   cloneMissing: boolean;
-  switchToDefault: boolean; // false = integrate upstream into the current branch
+  switchToDefault: boolean; // false = leave this checkout untouched
   stashDirty: boolean; // false = dirty repos are reported and skipped
   syncEnvs: boolean;
   envExclude: string[]; // env file name patterns, * wildcard
@@ -788,18 +855,22 @@ export async function bridgeRequest<T>(path: string, body?: unknown): Promise<T>
   return response.json();
 }
 
-export async function agentsHubRequest<T>(path: string, body?: unknown): Promise<T> {
-  const response = await agentFetch(`${SERVER_HTTP}/agents-hub/${path}`, {
-    method: body === undefined ? "GET" : "POST",
-    headers: body === undefined ? undefined : { "Content-Type": "application/json" },
-    body: body === undefined ? undefined : JSON.stringify(body),
-    signal: AbortSignal.timeout(60000),
+export async function agentsHubRequest<T>(path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
+  return withRequestDeadline(60000, signal, async boundedSignal => {
+    const response = await agentFetch(`${SERVER_HTTP}/agents-hub/${path}`, {
+      method: body === undefined ? "GET" : "POST",
+      headers: body === undefined ? undefined : { "Content-Type": "application/json" },
+      body: body === undefined ? undefined : JSON.stringify(body),
+      signal: boundedSignal,
+    });
+    if (!response.ok) {
+      const value: unknown = await response.json().catch(() => null);
+      const message = value && typeof value === "object" && "error" in value && typeof value.error === "string" ? value.error : `Agents Hub request failed (${response.status})`;
+      const code = value && typeof value === "object" && "code" in value && typeof value.code === "string" ? value.code : undefined;
+      throw Object.assign(new Error(message), { status: response.status, code });
+    }
+    return response.json();
   });
-  if (!response.ok) {
-    const value: unknown = await response.json().catch(() => null);
-    throw new Error(value && typeof value === "object" && "error" in value && typeof value.error === "string" ? value.error : `Agents Hub request failed (${response.status})`);
-  }
-  return response.json();
 }
 
 export interface McpRepairResult {
