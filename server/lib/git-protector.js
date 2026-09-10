@@ -31,8 +31,10 @@ export async function gitProtectionWorker(input) {
   for (const key of Object.keys(env)) if (key.startsWith("GIT_") && key !== "GIT_TERMINAL_PROMPT") delete env[key];
   for (const key of Object.keys(env)) if (key.startsWith("GITLEAKS_")) delete env[key];
   delete env.GH_REPO;
+  env.GIT_NO_REPLACE_OBJECTS = "1";
+  env.GIT_NO_LAZY_FETCH = "1";
   const run = (command, args, options = {}) => new Promise((resolve, reject) => {
-    const child = execFile(command, args, { cwd: options.cwd || input.path, env: options.env || env, timeout: 30000, maxBuffer: options.maxBuffer || 16 * 1024 * 1024, encoding: options.encoding || "utf8" }, (error, stdout) => {
+    const child = execFile(command, args, { cwd: options.cwd || input.path, env: options.env || env, timeout: options.timeout || 30000, maxBuffer: options.maxBuffer || 16 * 1024 * 1024, encoding: options.encoding || "utf8" }, (error, stdout) => {
       if (error && !options.allowFailure) return reject(new Error(`${path.basename(command)} could not complete the protection check`));
       resolve({ code: error ? (typeof error.code === "number" ? error.code : -1) : 0, output: stdout });
     });
@@ -126,14 +128,14 @@ export async function gitProtectionWorker(input) {
     await fs.writeFile(ignored, "", { mode: 0o600 });
     const scannerArgs = ["--config", configuration, "--gitleaks-ignore-path", ignored, "--ignore-gitleaks-allow", "--redact=100", "--no-banner", "--no-color", "--log-level", "error", "--report-format", "json", "--report-path", "-", "--timeout", "25"];
     const blobPaths = new Map();
-    const scan = async (args, stdin) => {
+    const scan = async (args, stdin, source = "operation text") => {
       const result = await run(binary, [...args, ...scannerArgs], { allowFailure: true, stdin, cwd: temporary });
       if (![0, 1].includes(result.code)) fail("Secret scanning did not finish. The Git operation is blocked");
       let records;
       try { records = JSON.parse(result.output || "[]"); } catch { fail("Secret scanner returned an invalid report"); }
       if (!Array.isArray(records) || (result.code === 1 && records.length === 0)) fail("Secret scanning could not verify this operation");
       for (const record of records) {
-        const sources = blobPaths.get(path.basename(record.File || "")) || ["operation text"];
+        const sources = blobPaths.get(path.basename(record.File || "")) || [source];
         for (const source of sources) findings.push({ path: source, line: record.StartLine || 1, rule: record.RuleID || "detected-secret" });
       }
     };
@@ -230,16 +232,73 @@ export async function gitProtectionWorker(input) {
       inspectPaths((await run("git", ["diff", "--cached", "--raw", "--abbrev=64", "-z", "--no-renames", "--diff-filter=ACMT"])).output);
     } else if (input.operation === "hook_push") {
       if (typeof input.updates !== "string" || input.updates.length > 1024 * 1024 || !text(input.remote, 256) || input.remote.startsWith("-")) fail("Invalid push references");
-      const ranges = [];
+      const oid = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/;
+      const zero = (value) => /^0+$/.test(value);
+      const updates = [];
+      const refs = new Set();
       for (const line of input.updates.trim().split("\n").filter(Boolean)) {
         const fields = line.split(/\s+/);
-        if (fields.length !== 4 || !fields.slice(1).filter((_, i) => i !== 1).every((oid) => /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(oid))) fail("Invalid push reference update");
-        const [, local, , remote] = fields;
-        if (/^0+$/.test(local)) continue;
-        if (!/^0+$/.test(remote)) ranges.push(`${remote}..${local}`);
-        // Tracking refs may belong to a different fetch/push URL. A new
-        // destination branch must pass protection for its full reachable history.
-        else ranges.push(local);
+        if (fields.length !== 4 || !oid.test(fields[1]) || !oid.test(fields[3])) fail("Invalid push reference update");
+        const [, local, ref, remote] = fields;
+        if (refs.has(ref) || refs.size >= 128 || ref.length > 1024 || !ref.startsWith("refs/")
+          || (await run("git", ["check-ref-format", ref], { allowFailure: true })).code !== 0) fail("Invalid push destination reference");
+        refs.add(ref);
+        updates.push({ local, ref, remote });
+      }
+      const destinationHead = async () => {
+        if (!text(input.remoteUrl) || !input.remoteUrl || input.remoteUrl.startsWith("-")) return null;
+        // Git may rewrite URLs again on a read. A different lookup destination
+        // cannot establish what the original push destination already contains.
+        const resolved = await run("git", ["ls-remote", "--get-url", "--", input.remoteUrl], { allowFailure: true, timeout: 2000, maxBuffer: 8192 });
+        if (resolved.code !== 0 || resolved.output !== `${input.remoteUrl}\n`) return null;
+        const advert = await run("git", ["ls-remote", "--", input.remoteUrl, "HEAD", ...refs], { allowFailure: true, timeout: 10000, maxBuffer: 64 * 1024 });
+        if (advert.code !== 0 || !advert.output.endsWith("\n")) return null;
+        const advertised = new Map();
+        for (const line of advert.output.slice(0, -1).split("\n")) {
+          const fields = line.split("\t");
+          if (fields.length !== 2 || !oid.test(fields[0]) || zero(fields[0]) || advertised.has(fields[1])
+            || (fields[1] !== "HEAD" && !refs.has(fields[1]))) return null;
+          advertised.set(fields[1], fields[0]);
+        }
+        for (const update of updates) {
+          if (zero(update.remote) ? advertised.has(update.ref) : advertised.get(update.ref) !== update.remote) return null;
+        }
+        const candidate = advertised.get("HEAD");
+        if (!candidate) return null;
+        const object = await run("git", ["cat-file", "-t", candidate], { allowFailure: true, timeout: 2000, maxBuffer: 1024 });
+        return object.code === 0 && object.output === "commit\n" ? candidate : null;
+      };
+      // Only default-head ancestry observed at this exact destination is an
+      // optional exclusion. Unknown destinations retain full-history scanning.
+      const published = updates.some(({ local, remote }) => !zero(local) && zero(remote)) ? await destinationHead() : null;
+      const tags = new Set();
+      let tagBytes = 0;
+      const inspectTags = async (tip) => {
+        let current = tip;
+        for (let depth = 0; depth <= 32; depth++) {
+          const type = await git("cat-file", "-t", current);
+          if (type === "commit") return;
+          if (type !== "tag" || depth === 32) fail("Push targets must resolve to a commit within the protected tag depth");
+          const content = (await run("git", ["cat-file", "tag", current], { encoding: "buffer", maxBuffer: 256 * 1024 })).output;
+          const headerEnd = content.indexOf("\n\n");
+          const target = /^object ([a-f0-9]{40}|[a-f0-9]{64})\ntype (commit|tag)\n/.exec(content.subarray(0, headerEnd).toString("utf8"));
+          if (headerEnd < 0 || !target) fail("Cannot verify this annotated tag target");
+          if (!tags.has(current)) {
+            tags.add(current);
+            tagBytes += content.length;
+            if (tags.size > 128 || tagBytes > 1024 * 1024) fail("Annotated tags exceed the protected scan limit");
+            // A tag's own content is newly published even when its commit is old.
+            await scan(["stdin"], content, "tag annotation");
+          }
+          current = target[1];
+        }
+      };
+      const ranges = [];
+      for (const { local, remote } of updates) {
+        if (zero(local)) continue;
+        await inspectTags(local);
+        if (!zero(remote)) ranges.push(`${remote}..${local}`);
+        else ranges.push(published ? `${published}..${local}` : local);
       }
       for (const selected of ranges) {
         const args = ["-m", "--full-history", ...selected.split(" ")];
@@ -308,7 +367,7 @@ function prior() {
 }
 ${protectedHook ? `const worker = require(${JSON.stringify(workerPath)});
 async function protect() {
-  const result = await worker({ path: process.cwd(), operation: ${JSON.stringify(hook === "pre-push" ? "hook_push" : hook === "commit-msg" ? "hook_message" : "hook_commit")}, updates, remote: process.argv[2] || ''${hook === "commit-msg" ? ', message: fs.readFileSync(process.argv[2], "utf8")' : ""} });
+  const result = await worker({ path: process.cwd(), operation: ${JSON.stringify(hook === "pre-push" ? "hook_push" : hook === "commit-msg" ? "hook_message" : "hook_commit")}, updates, remote: process.argv[2] || '', remoteUrl: process.argv[3] || ''${hook === "commit-msg" ? ', message: fs.readFileSync(process.argv[2], "utf8")' : ""} });
   if (!result.approved) {
     process.stderr.write('Git protection blocked sensitive content:\\n' + result.findings.map(item => JSON.stringify(item.path) + ':' + item.line + ' (' + item.rule + ')').join('\\n') + '\\n');
     process.exit(1);
