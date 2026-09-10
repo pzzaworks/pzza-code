@@ -441,6 +441,8 @@ mod native {
         preview: String,
         committed: String,
         consumed: usize,
+        #[cfg(test)]
+        raw_words: String,
     }
 
     #[derive(Clone, Debug)]
@@ -461,7 +463,9 @@ mod native {
         english_since: Option<usize>,
         multilingual: bool,
         language_changed: bool,
+        language_transition: bool,
         missing_prefix: bool,
+        boundary_suffix: Vec<Word>,
     }
 
     impl TranscriptWindow {
@@ -471,24 +475,33 @@ mod native {
                     .take_while(|(word, old)| same_word(&word.text, &old.text)).count();
                 self.previous[..count].to_vec()
             } else { words };
-            let omitted_prefix = self.language_changed && !self.confirmed.is_empty()
+            let language_changed = mem::take(&mut self.language_changed);
+            let language_transition = mem::take(&mut self.language_transition);
+            let omitted_prefix = language_changed && !self.confirmed.is_empty()
                 && !words.is_empty() && aligned_prefix(&words, &self.confirmed) == 0;
             self.missing_prefix |= omitted_prefix;
-            self.language_changed = false;
             // Recovery belongs to the boundary's old hypotheses. On subsequent
             // passes those hypotheses already describe the new language and
             // must go through normal word confirmation instead.
-            let carried = if omitted_prefix {
+            let carried = if omitted_prefix && self.boundary_suffix.is_empty() {
                 self.finish_missing_prefix(&words, duration)
             } else { String::new() };
+            // Enter agreed recovery first so only the still-uncertain remainder
+            // can hold later words at this boundary.
+            if language_transition && !complete {
+                self.remember_boundary_suffix(&words, duration);
+            }
             if self.missing_prefix && aligned_prefix(&words, &self.confirmed) > 0 {
                 self.missing_prefix = false;
             }
             let entered = self.entered(&words);
             let pending = &words[entered..];
+            if self.boundary_suffix_is_restored(pending) {
+                self.boundary_suffix.clear();
+            }
             let previous = &self.previous[self.entered(&self.previous)..];
             let earlier = &self.earlier[self.entered(&self.earlier)..];
-            let count = if complete { pending.len() } else {
+            let count = if complete { pending.len() } else if !self.boundary_suffix.is_empty() { 0 } else {
                 pending.iter().enumerate().take_while(|(index, word)| {
                     // Keep the newest half-second and incomplete last word open.
                     word.end.saturating_add(8_000) <= duration
@@ -502,6 +515,8 @@ mod native {
                 committed: [carried, word_text(&pending[..count])].into_iter()
                     .filter(|text| !text.is_empty()).collect::<Vec<_>>().join(" "),
                 consumed: 0,
+                #[cfg(test)]
+                raw_words: String::new(),
             };
             // Rebase already entered audio onto this hypothesis. A correction to
             // an old word must not prevent unrelated later words from being typed.
@@ -535,6 +550,31 @@ mod native {
                 .take_while(|word| word.end <= last.end).count()).unwrap_or(0)
         }
 
+        fn remember_boundary_suffix(&mut self, words: &[Word], duration: usize) {
+            if !self.boundary_suffix.is_empty() { return; }
+            let previous = &self.previous[self.entered(&self.previous)..];
+            let current = &words[self.entered(words)..];
+            let Some(anchor) = current.first() else { return; };
+            let position = previous.iter().position(|word| same_timed_word(word, anchor)).or_else(|| {
+                if self.missing_prefix {
+                    previous.iter().position(|word| same_word(&word.text, &anchor.text))
+                } else { None }
+            });
+            let Some(position) = position else { return; };
+            if position == 0 || previous[position - 1].end.saturating_add(8_000) > duration { return; }
+            // A detector transition deleted one or more settled, still-unentered
+            // words immediately before an acoustic anchor. Later output cannot
+            // insert them ahead of newly typed words, so wait for recovery.
+            self.boundary_suffix = previous[..position].to_vec();
+        }
+
+        fn boundary_suffix_is_restored(&self, pending: &[Word]) -> bool {
+            !self.boundary_suffix.is_empty()
+                && pending.len() >= self.boundary_suffix.len()
+                && self.boundary_suffix.iter().zip(pending)
+                    .all(|(expected, word)| same_word(&expected.text, &word.text))
+        }
+
         fn finish_missing_prefix(&mut self, words: &[Word], duration: usize) -> String {
             if !self.missing_prefix || words.is_empty() || self.confirmed.is_empty() || aligned_prefix(words, &self.confirmed) > 0 {
                 return String::new();
@@ -563,7 +603,7 @@ mod native {
                 self.detected_language = None;
                 self.multilingual = false;
             }
-            for words in [&mut self.earlier, &mut self.previous, &mut self.confirmed] {
+            for words in [&mut self.earlier, &mut self.previous, &mut self.confirmed, &mut self.boundary_suffix] {
                 words.retain(|word| word.end > samples);
                 for word in words {
                     word.start = word.start.saturating_sub(samples);
@@ -585,7 +625,9 @@ mod native {
             // brief English interjections still transcribe under that hint. Switch
             // back when English persists, rather than pinning a foreign language.
             if language != "en" || sustained_english || self.detected_language.as_deref().is_none_or(|current| current == "en") {
+                let transition = self.detected_language.as_ref().is_some_and(|current| current != &language);
                 self.language_changed |= self.detected_language.as_ref() != Some(&language);
+                self.language_transition |= transition;
                 self.detected_language = Some(language);
                 self.language_hint_until = duration;
             }
@@ -696,6 +738,8 @@ mod native {
                 committed: String::new(),
                 // Keep a little preroll so a word beginning at this boundary is not lost.
                 consumed: if finalizing { samples.len() } else { samples.len().saturating_sub(rate as usize / 5) },
+                #[cfg(test)]
+                raw_words: String::new(),
             });
         }
         let duration = audio.len();
@@ -715,7 +759,11 @@ mod native {
         }
         engine.recognize(&audio, window.detected_language.as_deref().unwrap_or(language), capture, window.multilingual)?;
         if capture.cancel.load(Ordering::Acquire) {
-            return Ok(Transcript { preview: String::new(), committed: String::new(), consumed: samples.len() });
+            return Ok(Transcript {
+                preview: String::new(), consumed: samples.len(), committed: String::new(),
+                #[cfg(test)]
+                raw_words: String::new(),
+            });
         }
         let mut words: Vec<Word> = Vec::new();
         for segment in engine.decoder.as_iter() {
@@ -734,6 +782,11 @@ mod native {
                 words.push(Word { text: part.into(), start, end });
             }
         }
+        #[cfg(test)]
+        let raw_words = word_text(&words);
+        #[cfg(test)]
+        let mut transcript = Transcript { raw_words, ..window.update(words, duration, commit_all) };
+        #[cfg(not(test))]
         let mut transcript = window.update(words, duration, commit_all);
         if commit_all {
             transcript.consumed = utterance_samples;
@@ -755,6 +808,12 @@ mod native {
     fn same_word(left: &str, right: &str) -> bool {
         let normalize = |word: &str| word.trim_matches(['.', ',', '!', '?', ';', ':']).to_lowercase();
         normalize(left) == normalize(right)
+    }
+
+    fn same_timed_word(left: &Word, right: &Word) -> bool {
+        same_word(&left.text, &right.text)
+            && left.start < right.end.saturating_add(1_600)
+            && left.end.saturating_add(1_600) > right.start
     }
 
     #[cfg(test)]
@@ -802,6 +861,138 @@ mod native {
             text.split_whitespace().enumerate().map(|(index, text)| Word {
                 text: text.into(), start: index * 8_000, end: (index + 1) * 8_000,
             }).collect()
+        }
+
+        fn timed_words(words: &[(&str, usize, usize)]) -> Vec<Word> {
+            words.iter().map(|(text, start, end)| Word {
+                text: (*text).into(), start: *start, end: *end,
+            }).collect()
+        }
+
+        fn record_committed(committed: &mut Vec<String>, transcript: Transcript) {
+            if !transcript.committed.is_empty() { committed.push(transcript.committed); }
+        }
+
+        fn assert_agreed_boundary_suffix_survives_finalization(restore: bool) {
+            let base = timed_words(&[
+                ("alpha", 0, 4_000), ("beta", 4_000, 8_000),
+                ("gamma", 8_000, 12_000), ("delta", 12_000, 16_000),
+            ]);
+            let mut earlier = base.clone();
+            earlier.extend(timed_words(&[("connector", 16_000, 20_000)]));
+            let mut previous = earlier.clone();
+            previous.extend(timed_words(&[("payload", 20_000, 28_000)]));
+            let revised = timed_words(&[
+                ("payload", 20_000, 28_000), ("tail", 28_000, 36_000),
+            ]);
+            let final_words = if restore {
+                let mut restored = previous.clone();
+                restored.extend(timed_words(&[("tail", 28_000, 36_000)]));
+                restored
+            } else { revised.clone() };
+            let mut window = TranscriptWindow::default();
+            let mut committed = Vec::new();
+
+            window.observe_language("en".into(), 24_000);
+            record_committed(&mut committed, window.update(base, 24_000, false));
+            record_committed(&mut committed, window.update(earlier, 32_000, false));
+            record_committed(&mut committed, window.update(previous, 40_000, false));
+            // The connector agrees across two passes but was the older pass's
+            // last word, so ordinary streaming has not entered it yet.
+            assert_eq!(committed.join(" "), "alpha beta gamma delta");
+            window.observe_language("tr".into(), 48_000);
+            let transition = window.update(revised.clone(), 48_000, false);
+            let recovered = transition.committed.clone();
+            record_committed(&mut committed, transition);
+            record_committed(&mut committed, window.update(revised, 56_000, false));
+            record_committed(&mut committed, window.update(final_words, 64_000, true));
+            assert_eq!(committed.join(" "), "alpha beta gamma delta connector payload tail");
+            assert_eq!(recovered, "connector", "Agreed recovery belongs to the transition");
+        }
+
+        #[test]
+        fn language_boundary_keeps_agreed_suffix_when_final_decode_omits_it() {
+            assert_agreed_boundary_suffix_survives_finalization(false);
+        }
+
+        #[test]
+        fn language_boundary_restoration_does_not_repeat_recovered_suffix() {
+            assert_agreed_boundary_suffix_survives_finalization(true);
+        }
+
+        #[test]
+        fn language_boundary_holds_a_deleted_uncommitted_suffix_until_it_recovers() {
+            let base = timed_words(&[
+                ("alpha", 0, 4_000), ("beta", 4_000, 8_000),
+                ("gamma", 8_000, 12_000), ("delta", 12_000, 16_000),
+            ]);
+            let previous = timed_words(&[
+                ("alpha", 0, 4_000), ("beta", 4_000, 8_000),
+                ("gamma", 8_000, 12_000), ("delta", 12_000, 16_000),
+                ("connector", 16_000, 20_000), ("payload", 20_000, 28_000),
+                ("tail", 28_000, 36_000),
+            ]);
+            let retained_prefix = timed_words(&[
+                ("alpha", 0, 4_000), ("beta", 4_000, 8_000),
+                ("gamma", 8_000, 12_000), ("delta", 12_000, 16_000),
+                ("payload", 20_000, 28_000), ("tail", 28_000, 36_000),
+                ("followup", 36_000, 44_000),
+            ]);
+            let omitted_prefix = timed_words(&[
+                ("payload", 20_000, 28_000), ("tail", 28_000, 36_000),
+                ("followup", 36_000, 44_000),
+            ]);
+            let restored = timed_words(&[
+                ("alpha", 0, 4_000), ("beta", 4_000, 8_000),
+                ("gamma", 8_000, 12_000), ("delta", 12_000, 16_000),
+                ("connector", 16_000, 20_000), ("payload", 20_000, 28_000),
+                ("tail", 28_000, 36_000), ("followup", 36_000, 44_000),
+            ]);
+
+            for revised in [retained_prefix, omitted_prefix] {
+                let mut window = TranscriptWindow::default();
+                let mut committed = Vec::new();
+                window.observe_language("old".into(), 24_000);
+                record_committed(&mut committed, window.update(base.clone(), 24_000, true));
+                record_committed(&mut committed, window.update(previous.clone(), 32_000, false));
+                window.observe_language("new".into(), 32_000);
+                record_committed(&mut committed, window.update(revised.clone(), 40_000, false));
+                record_committed(&mut committed, window.update(revised.clone(), 52_000, false));
+                record_committed(&mut committed, window.update(revised, 60_000, false));
+                assert_eq!(committed.join(" "), "alpha beta gamma delta");
+                record_committed(&mut committed, window.update(restored.clone(), 64_000, true));
+                assert_eq!(committed.join(" "), "alpha beta gamma delta connector payload tail followup");
+            }
+        }
+
+        #[test]
+        fn boundary_transition_keeps_stable_suffixes_streaming() {
+            let base = timed_words(&[
+                ("alpha", 0, 4_000), ("beta", 4_000, 8_000),
+                ("gamma", 8_000, 12_000), ("delta", 12_000, 16_000),
+            ]);
+            let stable = timed_words(&[
+                ("alpha", 0, 4_000), ("beta", 4_000, 8_000),
+                ("gamma", 8_000, 12_000), ("delta", 12_000, 16_000),
+                ("payload", 20_000, 28_000), ("tail", 28_000, 36_000),
+            ]);
+            let extended = timed_words(&[
+                ("alpha", 0, 4_000), ("beta", 4_000, 8_000),
+                ("gamma", 8_000, 12_000), ("delta", 12_000, 16_000),
+                ("payload", 20_000, 28_000), ("tail", 28_000, 36_000),
+                ("followup", 36_000, 44_000),
+            ]);
+            let mut window = TranscriptWindow::default();
+            let mut committed = Vec::new();
+
+            window.observe_language("old".into(), 24_000);
+            record_committed(&mut committed, window.update(base, 24_000, true));
+            record_committed(&mut committed, window.update(stable, 32_000, false));
+            window.observe_language("new".into(), 32_000);
+            record_committed(&mut committed, window.update(extended.clone(), 40_000, false));
+            assert!(window.boundary_suffix.is_empty());
+            record_committed(&mut committed, window.update(extended, 52_000, false));
+            assert_eq!(committed.join(" "), "alpha beta gamma delta payload tail");
         }
 
         #[test]
@@ -985,7 +1176,8 @@ mod native {
                 let preview = format!("{} {}", committed, transcript.preview).trim().to_owned();
                 apply(&capture, &transcript, &mut committed).unwrap();
                 events.push(serde_json::json!({ "seconds": started.elapsed().as_secs_f64(),
-                    "inputSamples": offset, "finalizing": false, "committed": committed, "preview": preview }));
+                    "inputSamples": offset, "finalizing": false, "committed": committed, "preview": preview,
+                    "rawWords": transcript.raw_words }));
             }
             while !capture.samples.lock().unwrap().is_empty() {
                 let audio = capture.samples.lock().unwrap().clone();
@@ -993,7 +1185,8 @@ mod native {
                 assert!(transcript.consumed > 0, "Finalization must consume the remaining audio");
                 apply(&capture, &transcript, &mut committed).unwrap();
                 events.push(serde_json::json!({ "seconds": started.elapsed().as_secs_f64(),
-                    "inputSamples": offset, "finalizing": true, "committed": committed }));
+                    "inputSamples": offset, "finalizing": true, "committed": committed,
+                    "rawWords": transcript.raw_words }));
             }
             // Preserve failed recognitions too. The oracle is always the original
             // reference, never a transcript rewritten to fit the model's output.
