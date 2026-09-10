@@ -37,7 +37,19 @@ pub fn run() {
         .manage(shutdown::ShutdownState::default())
         .setup(|app| {
             #[cfg(target_os = "macos")]
-            menu::install(app.handle())?;
+            {
+                menu::install(app.handle())?;
+                let handle = app.handle().clone();
+                shutdown::install_native_quit(move || {
+                    if let Some(window) = handle.get_webview_window("main") {
+                        if let Err(error) = window.close() {
+                            eprintln!("PzzaCode could not request window close: {error}");
+                        }
+                    } else {
+                        handle.exit(0);
+                    }
+                })?;
+            }
             #[cfg(target_os = "macos")]
             if let Err(error) = local_tmux::start() {
                 eprintln!("PzzaCode local terminals: {error}");
@@ -74,25 +86,5 @@ pub fn run() {
         ])
         .build(tauri::generate_context!())
         .expect("error while building pzza console")
-        .run(|app, event| {
-            // Closing the last window uses the same managed exit as Quit.
-            if let tauri::RunEvent::WindowEvent { event: tauri::WindowEvent::Destroyed, .. } = &event {
-                if app.webview_windows().is_empty() {
-                    app.exit(0);
-                }
-            }
-            if let tauri::RunEvent::ExitRequested { api, code, .. } = event {
-                let shutdown = app.state::<shutdown::ShutdownState>();
-                if shutdown.complete() {
-                    return;
-                }
-                api.prevent_exit();
-                let cleanup_app = app.clone();
-                let exit_app = app.clone();
-                shutdown.start(move || {
-                    agent::stop(&cleanup_app);
-                    cleanup_app.state::<PtyState>().shutdown();
-                }, move || exit_app.exit(code.unwrap_or(0)));
-            }
-        });
+        .run(shutdown::handle_event);
 }

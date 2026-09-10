@@ -1,7 +1,10 @@
 export interface ChatSession {
   session: string;
   host: string;
+  // The saved profile owns a managed session, while launcher says what was
+  // actually invoked to start it.
   agent: "claude" | "codex";
+  launcher: "claude" | "codex" | "pz";
   identity: string;
 }
 
