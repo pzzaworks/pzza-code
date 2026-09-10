@@ -1,4 +1,6 @@
 mod agent;
+mod bridge_consent;
+mod terminal_drop;
 mod shutdown;
 mod menu;
 mod appearance;
@@ -26,6 +28,7 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_notification::init())
+        .plugin(terminal_drop::init())
         .manage(speech::SpeechState::default())
         .manage(speech_model::SpeechModelState::default())
         .manage(PtyState::default())
@@ -63,6 +66,9 @@ pub fn run() {
             rdp::rdp_is_open,
             agent::agent_token,
             agent::agent_instance,
+            bridge_consent::bridge_local_decide,
+            terminal_drop::read_dropped_file,
+            terminal_drop::release_drop,
             sys::open_url,
             appearance::set_desktop_blur,
         ])

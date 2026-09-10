@@ -5,7 +5,7 @@ import ts from 'typescript';
 
 const moduleUrl = source => 'data:text/javascript;base64,' + Buffer.from(ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 } }).outputText).toString('base64');
 const typesUrl = moduleUrl(readFileSync(new URL('../src/theme/types.ts', import.meta.url), 'utf8'));
-const { deriveChrome, contrastRatio } = await import(typesUrl);
+const { deriveChrome, contrastRatio, textVisibilityVars, luminance } = await import(typesUrl);
 const themesSource = readFileSync(new URL('../src/theme/themes.ts', import.meta.url), 'utf8').replaceAll('"./types"', JSON.stringify(typesUrl));
 const { BUILTIN_THEMES, terminalPalette } = await import(moduleUrl(themesSource));
 const light = BUILTIN_THEMES.find(theme => theme.appearance === 'light');
@@ -31,6 +31,25 @@ test('all light terminal text colors meet normal-text contrast', () => {
   for (const [role, color] of Object.entries(light.terminal)) {
     if (['background', 'cursorAccent', 'selectionBackground'].includes(role)) continue;
     assert.ok(contrastRatio(color, light.terminal.background) >= 4.5, role);
+  }
+});
+
+test('visibility defaults preserve text colors and the bounded boost retains text hierarchy', () => {
+  for (const theme of BUILTIN_THEMES) {
+    const palette = deriveChrome(theme.terminal, theme.appearance);
+    const baseline = textVisibilityVars(palette, theme.appearance, 0);
+    assert.equal(baseline['--text'], palette.text);
+    assert.equal(baseline['--muted'], palette.muted);
+    assert.deepEqual(textVisibilityVars(palette, theme.appearance, NaN), baseline);
+    assert.deepEqual(textVisibilityVars(palette, theme.appearance, -50), baseline);
+    const extreme = theme.appearance === 'dark' ? '#ffffff' : '#000000';
+    const boosted = textVisibilityVars(palette, theme.appearance, 75);
+    for (const fill of ['--success', '--warning', '--danger', '--accent', '--selected', '--surface']) assert.equal(Object.hasOwn(boosted, fill), false, `Visibility must not change ${fill}`);
+    const heading = luminance(boosted['--heading-text']);
+    const body = luminance(boosted['--text']);
+    const secondary = luminance(boosted['--muted']);
+    assert.ok(theme.appearance === 'dark' ? heading > body && body > secondary : heading < body && body < secondary);
+    for (const key of ['--heading-text', '--text', '--muted', '--selected-text', '--accent-foreground']) assert.equal(textVisibilityVars(palette, theme.appearance, 120)[key], extreme);
   }
 });
 

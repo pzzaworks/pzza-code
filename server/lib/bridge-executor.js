@@ -6,8 +6,16 @@ import { spawn, execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { tmuxArgs } from "./tmux-client.js";
 import { deviceEnv } from "./shell.js";
+import { bridgeError, assertBridgePath, privateBridgePath, BRIDGE_UUID, browserOrigin } from "./bridge-safety.js";
+import { redactTerminalOutput } from "./terminal-redaction.js";
+import { consentDigest } from "./bridge-consent.js";
+import { createBrowserConnector } from "./bridge-browser.js";
 
 export const BRIDGE_ACTION_CAPABILITIES = Object.freeze({
+  "project.preflight": "files.read",
+  "browser.status": "browser.read", "browser.tabs": "browser.read", "browser.snapshot": "browser.read", "browser.screenshot": "browser.read",
+  "browser.request_attach": "browser.read", "browser.detach": "browser.read",
+  "browser.navigate": "browser.interact", "browser.click": "browser.interact", "browser.type": "browser.interact", "browser.keys": "browser.interact",
   "terminal.list": "terminal.read", "terminal.read": "terminal.read",
   "terminal.write": "terminal.write", "terminal.create": "terminal.write", "terminal.terminate": "terminal.write",
   "files.list": "files.read", "files.read": "files.read", "files.write": "files.write",
@@ -22,19 +30,22 @@ const LIMIT = 1024 * 1024;
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const hash = (data) => createHash("sha256").update(data).digest("hex");
 const inside = (root, target) => target === root || target.startsWith(root + path.sep);
-const fail = (message, status = 400) => Object.assign(new Error(message), { status });
+const fail = bridgeError;
+export const BRIDGE_MUTATIONS = new Set(["files.write", "terminal.create", "terminal.write", "terminal.terminate", "app.open_editor", "app.open_session", "ios.build", "ios.submit", "simulator.boot", "simulator.install", "simulator.launch", "maestro.run", "browser.request_attach", "browser.detach", "browser.navigate", "browser.click", "browser.type", "browser.keys"]);
 function text(value, name, max = 4096) {
   if (typeof value !== "string" || !value || value.length > max || /[\x00-\x1f\x7f]/.test(value)) throw fail(`Invalid ${name}`);
   return value;
 }
 function keys(args, allowed) {
-  if (!args || typeof args !== "object" || Array.isArray(args) || Object.keys(args).some((key) => !["projectId", ...allowed].includes(key))) throw fail("Unexpected action arguments");
+  if (!args || typeof args !== "object" || Array.isArray(args) || Object.keys(args).some((key) => !["projectId", "requestId", ...allowed].includes(key))) throw fail("Unexpected action arguments");
 }
-async function scoped(root, relative = ".", missing = false) {
+async function scoped(root, relative = ".", missing = false, ownedArtifact = false) {
   text(relative, "path");
   if (path.isAbsolute(relative)) throw fail("Paths must be relative to the granted project");
   const candidate = path.resolve(root, relative);
   if (!inside(root, candidate)) throw fail("Path is outside the granted project", 403);
+  const checkedPath = target => ownedArtifact ? path.join(path.sep, "project", path.relative(root, target)) : target;
+  assertBridgePath(checkedPath(candidate));
   let resolved;
   try { resolved = await fs.realpath(candidate); }
   catch (error) {
@@ -42,13 +53,14 @@ async function scoped(root, relative = ".", missing = false) {
     resolved = path.join(await fs.realpath(path.dirname(candidate)), path.basename(candidate));
   }
   if (!inside(root, resolved)) throw fail("Symlink leaves the granted project", 403);
+  assertBridgePath(checkedPath(resolved));
   return resolved;
 }
 async function readBounded(file, limit = LIMIT) {
   const handle = await fs.open(file, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
     const stat = await handle.stat();
-    if (!stat.isFile() || stat.size > limit) throw fail("File exceeds the allowed size or is not a regular file");
+    if (!stat.isFile() || stat.nlink !== 1 || stat.size > limit) throw fail("File exceeds the allowed size or is not a regular file");
     const data = await handle.readFile();
     if (data.length > limit) throw fail("File exceeds the allowed size");
     return data;
@@ -65,7 +77,7 @@ async function digestFile(file) {
   } finally { await handle.close(); }
 }
 
-export function createBridgeExecutor({ stateDir, appControl, authorize = () => {}, platform = process.platform,
+export function createBridgeExecutor({ stateDir, appControl, browser: suppliedBrowser, authorize = () => {}, platform = process.platform,
   run = (command, args, options = {}) => runFile(command, args, { timeout: 15_000, maxBuffer: LIMIT, ...options }),
   startProcess = spawn, killProcess = (pid, signal) => process.kill(pid, signal),
   resolveTool = async (name, root) => {
@@ -82,7 +94,10 @@ export function createBridgeExecutor({ stateDir, appControl, authorize = () => {
   const directory = path.resolve(stateDir, "bridge-jobs");
   const isBuildDirectory = (target) => typeof target === "string" && path.dirname(target) === directory &&
     path.basename(target).startsWith("build-") && uuid.test(path.basename(target).slice(6));
+  const browser = suppliedBrowser || createBrowserConnector({ stateDir: directory });
   const jobs = new Map();
+  const requests = new Map();
+  const requestWork = new Map();
   const active = new Map();
   const leases = new Map();
   const writes = new Map();
@@ -92,6 +107,11 @@ export function createBridgeExecutor({ stateDir, appControl, authorize = () => {
   let closed = false;
   const ready = (async () => {
     await fs.mkdir(directory, { recursive: true, mode: 0o700 });
+    try {
+      const storedRequests = JSON.parse(await fs.readFile(path.join(directory, "requests.json"), "utf8"));
+      if (!Array.isArray(storedRequests) || storedRequests.length > 2000) throw fail("Invalid mutation history", 503);
+      for (const item of storedRequests) requests.set(item.key, item);
+    } catch (error) { if (error.code !== "ENOENT") throw fail("Cannot load mutation recovery history", 503); }
     try {
       const stored = JSON.parse(await fs.readFile(path.join(directory, "jobs.json"), "utf8"));
       if (Array.isArray(stored)) for (const job of stored.slice(-100)) {
@@ -107,16 +127,20 @@ export function createBridgeExecutor({ stateDir, appControl, authorize = () => {
       const temporary = path.join(directory, "jobs.json.tmp");
       await fs.writeFile(temporary, JSON.stringify([...jobs.values()]), { mode: 0o600 });
       await fs.rename(temporary, path.join(directory, "jobs.json"));
+      const requestTemporary = path.join(directory, "requests.json.tmp");
+      await fs.writeFile(requestTemporary, JSON.stringify([...requests.values()]), { mode: 0o600 });
+      await fs.rename(requestTemporary, path.join(directory, "requests.json"));
     });
     return persistTail;
   };
   const view = (job, cursor = 0) => {
     if (!Number.isInteger(cursor) || cursor < 0) throw fail("Invalid log cursor");
     const publicJob = { ...job };
+    if (job.approval) publicJob.approvalDigest = consentDigest({ id: job.id, peerId: job.peerId, projectId: job.projectId, action: job.action, approval: job.approval });
     return { ...publicJob, jobId: job.id, logs: job.logs.filter((entry) => entry.cursor > cursor), nextCursor: job.logs.at(-1)?.cursor || 0 };
   };
   const log = (job, message) => {
-    job.logs.push({ cursor: (job.logs.at(-1)?.cursor || 0) + 1, at: Date.now(), message });
+    job.logs.push({ cursor: (job.logs.at(-1)?.cursor || 0) + 1, at: Date.now(), message: redactTerminalOutput(String(message)).text.slice(0, 4096) });
     if (job.logs.length > 100) job.logs.shift();
   };
   const checked = async (context, action, projectId) => {
@@ -128,6 +152,7 @@ export function createBridgeExecutor({ stateDir, appControl, authorize = () => {
     const configured = grant.projectRoots?.[text(projectId, "projectId", 160)];
     if (typeof configured !== "string") throw fail("Project is not granted", 403);
     const root = await fs.realpath(configured);
+    assertBridgePath(root);
     if (context.generation !== (generations.get(context.peerId) || 0)) throw fail("Peer grant was revoked", 403);
     return root;
   };
@@ -165,6 +190,7 @@ export function createBridgeExecutor({ stateDir, appControl, authorize = () => {
     if (job.status !== "queued") throw fail("Job cannot start", 409);
     const runtime = active.get(job.id);
     if (!runtime) throw fail("Job is no longer active", 409);
+    if (specification.resource) await checkedResource(context, job.action, job.projectId, specification.resource);
     if (specification.lease) {
       if (leases.has(specification.lease)) throw fail("Simulator is busy with another job", 409);
       leases.set(specification.lease, job.id);
@@ -227,6 +253,13 @@ export function createBridgeExecutor({ stateDir, appControl, authorize = () => {
     }
     return view(job);
   }
+  async function checkedResource(context, action, projectId, resources) {
+    await checked(context, action, projectId);
+    const grant = await authorize(context.peerId, action, projectId) || context;
+    for (const [key, value] of Object.entries(resources)) {
+      if (!grant.resources?.[key]?.includes(value)) throw fail("Selected browser origin, simulator or app bundle is not granted", 403, "RESOURCE_DENIED");
+    }
+  }
   async function panes(root) {
     let output;
     try { output = (await runTmux(["list-panes", "-a", "-F", "#{session_name}\t#{window_index}\t#{pane_id}\t#{pane_current_path}"])).stdout; }
@@ -263,20 +296,28 @@ export function createBridgeExecutor({ stateDir, appControl, authorize = () => {
     context = { ...context, generation: generations.get(context.peerId) || 0 };
     const root = await checked(context, action, args?.projectId);
     if (action === "files.list") {
-      keys(args, ["path"]);
+      keys(args, ["path", "cursor", "limit"]);
+      const offset = args.cursor ?? 0; const limit = args.limit ?? 100;
+      if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isInteger(limit) || limit < 1 || limit > 500) throw fail("Invalid directory pagination");
       const target = await scoped(root, args.path || ".");
-      const entries = await fs.readdir(target, { withFileTypes: true });
-      return { entries: entries.slice(0, 1000).map((entry) => ({ name: entry.name, type: entry.isSymbolicLink() ? "symlink" : entry.isDirectory() ? "directory" : "file" })), truncated: entries.length > 1000 };
+      const entries = (await fs.readdir(target, { withFileTypes: true })).filter(entry => !privateBridgePath(path.join(target, entry.name))).sort((a, b) => a.name.localeCompare(b.name));
+      return { entries: entries.slice(offset, offset + limit).map((entry) => ({ name: entry.name, type: entry.isSymbolicLink() ? "symlink" : entry.isDirectory() ? "directory" : "file" })), nextCursor: offset + limit < entries.length ? offset + limit : null, total: entries.length };
     }
     if (action === "files.read") {
       keys(args, ["path"]);
       const data = await readBounded(await scoped(root, args.path));
+      // Refuse potentially sensitive text, rather than returning a redacted file that
+      // a caller could mistakenly write back over the original bytes.
+      const decoded = data.toString("utf8");
+      if (!Buffer.from(decoded).equals(data) || data.includes(0)) throw fail("Only UTF-8 text files are available through file reads", 400, "UNSUPPORTED_FILE");
+      if (redactTerminalOutput(decoded).redacted) throw fail("File contains potentially sensitive values and cannot be returned or edited through the bridge", 403, "SENSITIVE_CONTENT");
       return { content: data.toString("base64"), encoding: "base64", sha256: hash(data), bytes: data.length };
     }
     if (action === "files.write") {
       keys(args, ["path", "content", "expectedSha256"]);
       if (typeof args.content !== "string" || Buffer.byteLength(args.content) > LIMIT) throw fail("Content must be UTF-8 text of at most 1 MiB");
       if (args.expectedSha256 !== null && !/^[a-f0-9]{64}$/.test(args.expectedSha256 || "")) throw fail("expectedSha256 is required; use null only to create a new file");
+      if (redactTerminalOutput(args.content).redacted || args.content.includes("[REDACTED]")) throw fail("Sensitive or redacted file contents cannot be written", 403, "SENSITIVE_CONTENT");
       const target = await scoped(root, args.path, true);
       if (target === root) throw fail("Cannot replace project root");
       const previous = writes.get(target) || Promise.resolve();
@@ -284,6 +325,7 @@ export function createBridgeExecutor({ stateDir, appControl, authorize = () => {
         await checked(context, action, args.projectId);
         let existing = null;
         try { existing = await readBounded(target); } catch (error) { if (error.code !== "ENOENT") throw error; }
+        if (existing && redactTerminalOutput(existing.toString("utf8")).redacted) throw fail("Original file contains sensitive values and cannot be replaced", 403, "SENSITIVE_CONTENT");
         if ((existing === null ? null : hash(existing)) !== args.expectedSha256) throw fail("File changed; read it again before writing", 409);
         const temporary = path.join(path.dirname(target), `.bridge-${randomUUID()}`);
         try {
@@ -321,7 +363,9 @@ export function createBridgeExecutor({ stateDir, appControl, authorize = () => {
       if (action === "terminal.read") {
         const lines = args.lines ?? 200;
         if (!Number.isInteger(lines) || lines < 1 || lines > 2000) throw fail("lines must be between 1 and 2000");
-        return { text: (await runTmux(["capture-pane", "-p", "-t", pane.paneId, "-S", `-${lines}`])).stdout };
+        const output = (await runTmux(["capture-pane", "-p", "-t", pane.paneId, "-S", `-${lines}`])).stdout;
+        const safe = redactTerminalOutput(output);
+        return { ...safe, text: safe.text.slice(0, 65536), truncated: safe.text.length > 65536 };
       }
       if (action === "terminal.write") {
         if (typeof args.text !== "string" || Buffer.byteLength(args.text) > 64 * 1024 || /\0/.test(args.text) || (args.enter !== undefined && typeof args.enter !== "boolean")) throw fail("Invalid terminal input");
@@ -369,15 +413,49 @@ export function createBridgeExecutor({ stateDir, appControl, authorize = () => {
       await appControl.command(args.clientId, "open_editor", { tileId: args.tileId, path: file, root, layout: "side-by-side" });
       return { ok: true };
     }
+    if (action === "project.preflight") {
+      keys(args, []);
+      const tools = {};
+      for (const name of ["tmux", "maestro", "eas"]) {
+        try { await resolveTool(name, root); tools[name] = "installed"; } catch { tools[name] = "missing"; }
+      }
+      return { platform, projectId: args.projectId, tools, browser: await browser.preflight(root), simulator: platform === "darwin" ? "run_simulator_list_to_verify_xcode" : "requires_macos", execution: "Explicit terminal, build and test grants execute as the receiving OS user, not in an OS sandbox." };
+    }
+    if (action.startsWith("browser.")) {
+      const allowed = { "browser.status": ["sessionId"], "browser.request_attach": ["origin"], "browser.tabs": ["sessionId"], "browser.detach": ["sessionId"], "browser.snapshot": ["sessionId", "tabId"], "browser.screenshot": ["sessionId", "tabId"], "browser.navigate": ["sessionId", "tabId", "url"], "browser.click": ["sessionId", "tabId", "target"], "browser.type": ["sessionId", "tabId", "target", "text"], "browser.keys": ["sessionId", "tabId", "key"] };
+      keys(args, allowed[action]);
+      if (action !== "browser.request_attach" && !(action === "browser.status" && args.sessionId === undefined) && !BRIDGE_UUID.test(args.sessionId || "")) throw fail("An explicit browser session UUID is required");
+      if (["browser.snapshot", "browser.screenshot", "browser.navigate", "browser.click", "browser.type", "browser.keys"].includes(action) && !BRIDGE_UUID.test(args.tabId || "")) throw fail("An explicit approved tab UUID is required");
+      if (["browser.click", "browser.type"].includes(action) && !/^e\d{1,8}$/.test(args.target || "")) throw fail("Use an exact snapshot element reference, not a selector or script");
+      if (action === "browser.type" && (typeof args.text !== "string" || args.text.length > 8192 || /[\x00-\x08\x0b-\x1f\x7f]/.test(args.text))) throw fail("Invalid browser input");
+      if (action === "browser.keys" && !["Enter", "Tab", "Escape", "Backspace", "Delete", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home", "End", "PageUp", "PageDown"].includes(args.key)) throw fail("Browser key is not allowlisted");
+      if (action === "browser.status") return { ...browser.status(context, args), prerequisite: await browser.preflight(root) };
+      if (action === "browser.detach") return browser.detach(context, args);
+      if (action === "browser.request_attach") {
+        const origin = browserOrigin(args.origin);
+        if (args.origin !== origin) throw fail("Attachment requires an origin without a path");
+        await checkedResource(context, action, args.projectId, { browserOrigins: origin });
+        const prerequisite = await browser.preflight(root);
+        if (prerequisite.status !== "ready") throw fail(prerequisite.message, 503, prerequisite.code);
+      }
+      if (["browser.request_attach", "browser.navigate", "browser.click", "browser.type", "browser.keys"].includes(action)) {
+        const binding = action === "browser.request_attach" ? undefined : browser.binding(context, args);
+        const summary = { kind: "browser", inputDigest: consentDigest({ args, binding }), ...(binding ? { snapshotId: binding.snapshotId } : {}), action, ...(args.sessionId ? { sessionId: args.sessionId, tabId: args.tabId } : {}), ...(args.origin ? { origin: args.origin } : {}), ...(args.url ? { url: text(args.url, "url") } : {}), ...(args.target ? { target: args.target } : {}), ...(args.key ? { key: args.key } : {}), ...(args.text !== undefined ? { text: redactTerminalOutput(args.text).text } : {}) };
+        if (args.url) browserOrigin(args.url);
+        return createJob(action, args, context, null, { summary, browserArgs: { ...args, ...(binding ? { binding } : {}) }, root });
+      }
+      return browser.perform(action, context, args, () => checked(context, action, args.projectId));
+    }
     if (platform !== "darwin") throw fail("This action requires macOS", 400);
     const simulatorId = () => {
       if (!uuid.test(args.simulatorId || "")) throw fail("An explicit simulator UUID is required");
+      if (!context.resources?.simulatorIds?.includes(args.simulatorId.toLowerCase())) throw fail("Simulator UUID is not granted", 403, "SIMULATOR_DENIED");
       return args.simulatorId;
     };
     if (action === "simulator.list") {
       keys(args, []);
       const result = JSON.parse((await run("/usr/bin/xcrun", ["simctl", "list", "devices", "available", "--json"])).stdout);
-      return { devices: Object.entries(result.devices || {}).flatMap(([runtime, devices]) => devices.map((device) => ({ runtime, id: device.udid, name: device.name, state: device.state, available: device.isAvailable }))) };
+      return { devices: Object.entries(result.devices || {}).flatMap(([runtime, devices]) => devices.filter(device => context.resources?.simulatorIds?.includes(device.udid.toLowerCase())).map((device) => ({ runtime, id: device.udid, name: device.name, state: device.state, available: device.isAvailable }))) };
     }
     if (action === "ios.build") {
       keys(args, ["project", "scheme", "configuration", "simulatorId"]);
@@ -416,12 +494,16 @@ export function createBridgeExecutor({ stateDir, appControl, authorize = () => {
           artifactRoot = await fs.realpath(build.outputDirectory);
           if (!inside(await fs.realpath(directory), artifactRoot)) throw fail("Build output is outside private job storage", 403);
         }
-        const app = await scoped(artifactRoot, args.path);
+        const app = await scoped(artifactRoot, args.path, false, args.buildJobId !== undefined);
         if (!app.endsWith(".app")) throw fail("path must be an app bundle");
+        const plist = await scoped(artifactRoot, path.join(args.path, "Info.plist"), false, args.buildJobId !== undefined);
+        const bundleId = (await run("/usr/bin/plutil", ["-extract", "CFBundleIdentifier", "raw", "-o", "-", plist])).stdout.trim();
+        await checkedResource(context, action, args.projectId, { simulatorIds: id.toLowerCase(), bundleIds: bundleId });
         commandArgs = ["simctl", "install", id, app];
       }
       if (action === "simulator.launch") {
         if (!/^[a-zA-Z0-9][a-zA-Z0-9.-]{1,200}$/.test(args.bundleId || "")) throw fail("Invalid bundleId");
+        await checkedResource(context, action, args.projectId, { simulatorIds: id.toLowerCase(), bundleIds: args.bundleId });
         commandArgs = ["simctl", "launch", id, args.bundleId];
       }
       if (action === "simulator.screenshot") {
@@ -459,11 +541,43 @@ export function createBridgeExecutor({ stateDir, appControl, authorize = () => {
   }
   return {
     async execute(action, args, context) {
-      try { return await executeAction(action, args, context); }
+      try {
+        if (!BRIDGE_MUTATIONS.has(action)) return await executeAction(action, args, context);
+        if (!BRIDGE_UUID.test(args?.requestId || "")) throw fail("A client-generated requestId UUID is required; retain it before sending and reuse only for the identical request", 400, "REQUEST_ID_REQUIRED");
+        await ready;
+        const key = `${context.peerId}:${args.requestId}`;
+        const fingerprint = consentDigest({ action, args });
+        const existing = requests.get(key);
+        if (existing) {
+          if (existing.fingerprint !== fingerprint) throw fail("requestId belongs to a different mutation", 409, "REQUEST_ID_CONFLICT");
+          await checked({ ...context, generation: generations.get(context.peerId) || 0 }, action, args.projectId);
+          if (requestWork.has(key)) return await requestWork.get(key);
+          if (existing.error) throw fail(existing.error.message, existing.error.status, existing.error.code);
+          if (existing.status !== "completed") throw fail("The earlier mutation may have run before interruption. Inspect jobs/files/terminal before another request; it will not be replayed.", 409, "MUTATION_OUTCOME_UNKNOWN");
+          return existing.result;
+        }
+        if (requests.size >= 2000) throw fail("Mutation recovery history is full; no request was executed", 429);
+        const record = { key, fingerprint, status: "pending", createdAt: Date.now() };
+        requests.set(key, record);
+        const work = (async () => {
+          await persist();
+          try { record.result = await executeAction(action, args, context); record.status = "completed"; await persist(); return record.result; }
+          catch (error) { record.error = { message: error.status ? error.message : "Local action failed", status: error.status || 500, code: error.code || "ACTION_FAILED" }; record.status = "failed"; await persist(); throw error; }
+        })();
+        requestWork.set(key, work);
+        try { return await work; } finally { requestWork.delete(key); }
+      }
       catch (error) {
         if (Number.isInteger(error.status)) throw error;
         throw fail("Local action failed. Check the selected path and installed tools on this device.", 500);
       }
+    },
+    async discoverResources() {
+      if (platform !== "darwin") return { platform, simulators: [], status: "requires_macos" };
+      try {
+        const result = JSON.parse((await run("/usr/bin/xcrun", ["simctl", "list", "devices", "available", "--json"])).stdout);
+        return { platform, status: "ready", simulators: Object.entries(result.devices || {}).flatMap(([runtime, devices]) => devices.slice(0, 100).map(device => ({ runtime, id: device.udid, name: device.name, state: device.state }))).slice(0, 500) };
+      } catch { return { platform, status: "unavailable", code: "XCODE_SIMULATORS_UNAVAILABLE", message: "Install Xcode command line tools and a simulator runtime on the receiving Mac" }; }
     },
     async listJobs(peerId) { await ready; return [...jobs.values()].filter((job) => peerId === undefined || job.peerId === peerId).map((job) => view(job)); },
     async getJob(id, peerId, cursor = 0) { await ready; return view(owned(id, peerId), cursor); },
@@ -480,6 +594,23 @@ export function createBridgeExecutor({ stateDir, appControl, authorize = () => {
       try {
         const root = await checked(runtime.context, job.action, job.projectId);
         const approval = runtime.approval;
+        if (job.action.startsWith("browser.")) {
+          job.status = "running";
+          const recheck = async () => {
+            if (job.status !== "running" || active.get(job.id) !== runtime) throw fail("Browser job was cancelled", 409, "CANCELLED");
+            await checked(runtime.context, job.action, job.projectId);
+          };
+          if (job.action === "browser.request_attach") {
+            await checkedResource(runtime.context, job.action, job.projectId, { browserOrigins: approval.browserArgs.origin });
+            job.result = await browser.attach(runtime.context, approval.browserArgs, root, async () => {
+              if (["cancelled", "failed"].includes(job.status)) throw fail("Browser attachment was cancelled", 409, "CANCELLED");
+              await checkedResource(runtime.context, job.action, job.projectId, { browserOrigins: approval.browserArgs.origin });
+            });
+          } else job.result = await browser.perform(job.action, runtime.context, approval.browserArgs, recheck);
+          await recheck();
+          await finish(job, "completed", "Locally approved browser action completed. Read browser status for pending extension selection.");
+          return view(job);
+        }
         if (root !== approval.root || await scoped(root, approval.summary.artifact) !== approval.artifact || await digestFile(approval.artifact) !== approval.summary.sha256) throw fail("Approved artifact changed", 409);
         const jobDir = path.join(directory, id);
         await fs.mkdir(jobDir, { mode: 0o700 });
@@ -507,6 +638,10 @@ export function createBridgeExecutor({ stateDir, appControl, authorize = () => {
       const runtime = active.get(id);
       if (!runtime) return view(job);
       job.status = "cancelled";
+      if (job.action.startsWith("browser.")) {
+        const sessionId = runtime.approval?.browserArgs?.sessionId || job.result?.sessionId;
+        if (sessionId) await browser.detach(runtime.context, { projectId: job.projectId, sessionId }).catch(() => {});
+      }
       if (runtime.child?.pid) {
         const child = runtime.child;
         await new Promise((resolve) => {
@@ -528,11 +663,13 @@ export function createBridgeExecutor({ stateDir, appControl, authorize = () => {
       for (const peerId of new Set([...active.values()].map((runtime) => runtime.context.peerId))) generations.set(peerId, (generations.get(peerId) || 0) + 1);
       await ready;
       await Promise.all([...active.keys()].map((id) => this.cancel(id)));
+      await browser.close();
       await persistTail;
     },
     async revokePeer(peerId) {
       generations.set(peerId, (generations.get(peerId) || 0) + 1);
       await ready;
+      await browser.revokePeer(peerId);
       await Promise.all([...jobs.values()].filter((job) => job.peerId === peerId && active.has(job.id)).map((job) => this.cancel(job.id, peerId)));
     },
   };

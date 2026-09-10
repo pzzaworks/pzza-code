@@ -20,6 +20,7 @@ export function openWsPty(
   onClose?: () => void,
   window?: number,
   host?: string,
+  managedChat?: { agent: "claude" | "codex"; identity: string },
 ): WsPtyHandle {
   const ws = new WebSocket(wsUrl());
   ws.binaryType = "arraybuffer";
@@ -57,7 +58,7 @@ export function openWsPty(
   ws.onopen = () => {
     if (closed) { ws.close(); return; }
     open = true;
-    send({ type: "attach", name, cols, rows, cwd, window, host });
+    send({ type: "attach", name, cols, rows, cwd, window, host, managedChat });
     for (const q of queue) {
       if (closed) break;
       try { ws.send(q); } catch { fail("Terminal connection closed while sending input."); }
@@ -85,7 +86,8 @@ export function openWsPty(
   };
 
   return {
-    write: (data) => send({ type: "input", data }),
+    // Input belongs to this live attachment, never a future socket.
+    write: (data) => !closed && open && ws.readyState === WebSocket.OPEN && send({ type: "input", data }),
     ready: () => !closed && open && ws.readyState === WebSocket.OPEN,
     resize: (cols2, rows2) => send({ type: "resize", cols: cols2, rows: rows2 }),
     close: () => {

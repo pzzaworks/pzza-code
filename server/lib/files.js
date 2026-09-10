@@ -13,6 +13,7 @@ import { cors, json, readBody } from "./http.js";
 import { denied, mimeType, remoteGuard, remotePath, safePath } from "./paths.js";
 
 import { FILE_MUTATION_SCRIPT } from "./file-mutations.js";
+import { terminalDropRouter } from "./terminal-drop.js";
 
 const FS_ROUTES = new Set(["/fs/move", "/fs/delete", "/fs/list", "/file/read", "/file/raw", "/file/write", "/paste-image"]);
 
@@ -57,6 +58,7 @@ function imageExtension(bytes) {
 
 // Route the file endpoints. Returns true if it owned (and answered) the request.
 export async function filesRouter(req, res, url) {
+  if (url.pathname === "/terminal-drop") return terminalDropRouter(req, res, url, json);
   if (!FS_ROUTES.has(url.pathname)) return false;
 
   if (url.pathname === "/fs/move" || url.pathname === "/fs/delete") {

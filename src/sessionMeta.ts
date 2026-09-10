@@ -1,5 +1,6 @@
 import type { ComponentType, CSSProperties } from "react";
 import { Activity, Container, FolderOpen, SquareTerminal } from "lucide-react";
+import type { EffectiveModelEvidence, EffectiveModelProvider } from "./serverApi";
 import { ClaudeIcon, CodexIcon } from "./icons/BrandIcons";
 
 export type IconType = ComponentType<{
@@ -53,9 +54,11 @@ export function shortPath(p?: string): string {
 // failed: the pty exited (red)
 export type TileStatus = "idle" | "active" | "failed";
 
-// Icons reflect the live foreground command, never a manually assigned title.
-export function sessionIcon(command?: string): IconType {
-  const value = (command || "").toLowerCase().split("/").pop() || "";
+// Model attribution is allowed to override the launcher only when the
+// foreground probe supplied a normalized provider. Otherwise the CLI remains
+// the source of truth for terminal branding.
+export function sessionIcon(command?: string, effectiveProvider?: EffectiveModelProvider | null): IconType {
+  const value = effectiveProvider || (command || "").toLowerCase().split("/").pop() || "";
   if (value === "claude") return ClaudeIcon;
   if (value === "codex") return CodexIcon;
   if (["btop", "htop", "top"].includes(value)) return Activity;
@@ -64,14 +67,36 @@ export function sessionIcon(command?: string): IconType {
   return SquareTerminal;
 }
 
-export function iconColor(command?: string): string | undefined {
-  const Icon = sessionIcon(command);
+export function iconColor(command?: string, effectiveProvider?: EffectiveModelProvider | null): string | undefined {
+  const Icon = sessionIcon(command, effectiveProvider);
   if (Icon === ClaudeIcon) return "#D97757";
   if (Icon === CodexIcon) return "#10A37F";
   if (Icon === Activity) return "#f9c74f";
   if (Icon === FolderOpen) return "#7aa2f7";
   if (Icon === Container) return "#2496ED";
   return undefined;
+}
+
+function launcherLabel(command?: string): string {
+  const value = (command || "").toLowerCase().split("/").pop() || "";
+  if (value === "claude") return "Claude CLI";
+  if (value === "codex") return "Codex CLI";
+  return command || "process";
+}
+
+export function sessionIconTooltip(
+  command?: string,
+  effectiveModel?: string | null,
+  effectiveProvider?: EffectiveModelProvider | null,
+  effectiveModelEvidence?: EffectiveModelEvidence | null,
+): string {
+  if (!command) return "Running process unavailable";
+  if (!effectiveModel || !effectiveProvider || !effectiveModelEvidence) return `Launcher: ${launcherLabel(command)}. Effective model unavailable.`;
+  const provider = effectiveProvider === "codex" ? "Codex / OpenAI" : "Claude";
+  const evidence = effectiveModelEvidence === "reported"
+    ? "reported by the foreground process"
+    : "configured by the foreground process or selected account";
+  return `Effective model: ${effectiveModel} (${provider}, ${evidence}). Launcher: ${launcherLabel(command)}.`;
 }
 
 export function sessionAge(createdAt: number | null | undefined, now: number): string {

@@ -32,8 +32,18 @@ test("unpriced totals remain unavailable in labels and trend tooltips, never zer
   const html = render({ cost: null, pricedCost: 0, tokens: 154378410, unpricedTokens: 154378410, unpricedModels: ["unlisted-model"] });
   assert.match(html, /Unavailable<\/b> · 154.4M tokens/);
   assert.match(html, /154.4M tokens have no verified rate \(unlisted-model\)/);
-  assert.match(html, /border:1px dashed/);
-  assert.doesNotMatch(html, /\$0|NaN|height:2%/);
+  assert.match(html, /Daily token usage/);
+  assert.match(html, /height:100%;background:#10A37F/);
+  assert.doesNotMatch(html, /dashed|\$0|NaN|height:2%/);
+});
+
+test("trend heights use one consistent token scale regardless of price coverage", () => {
+  const unpriced = { cost: null, pricedCost: 0, tokens: 250, unpricedTokens: 250, unpricedModels: ["unlisted-model"] };
+  const html = render(unpriced, complete(1, 1000));
+  assert.match(html, /height:100%;background:#10A37F/);
+  assert.match(html, /height:25%;background:#10A37F/);
+  assert.match(html, /2026-09-10 · 250 tokens · Unavailable/);
+  assert.doesNotMatch(html, /dashed|border:/);
 });
 
 test("a known subtotal is visibly partial while true empty usage stays zero", () => {
@@ -41,7 +51,8 @@ test("a known subtotal is visibly partial while true empty usage stays zero", ()
   assert.match(html, /\$8.25\+ \(partial\)<\/b> · 2.2M tokens/);
   assert.match(html, /1.1M tokens have no verified rate \(unlisted-model\)/);
   assert.match(html, /\$0.00<\/b> · 0 tokens/);
-  assert.match(html, /2026-09-09 · \$0.00/);
-  assert.match(html, /2026-09-10 · \$8.25\+ \(partial\)/);
-  assert.doesNotMatch(html, /NaN/);
+  assert.match(html, /2026-09-09 · 0 tokens · \$0.00/);
+  assert.match(html, /2026-09-10 · 2.2M tokens · \$8.25\+ \(partial\)/);
+  assert.match(html, /height:0%;background:#10A37F/);
+  assert.doesNotMatch(html, /dashed|NaN/);
 });

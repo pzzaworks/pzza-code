@@ -2,7 +2,7 @@ import { useCallback, useSyncExternalStore } from "react";
 import { fetchSessionActivity, type SessionActivity } from "../serverApi";
 import { HAS_TAURI } from "../tauriEnv";
 import { useStore } from "../state/store";
-import { sessionIcon, iconColor } from "../sessionMeta";
+import { sessionIcon, iconColor, sessionIconTooltip } from "../sessionMeta";
 
 interface DeviceActivity {
   rows: SessionActivity[] | null;
@@ -56,9 +56,11 @@ export function LiveSessionIcon({ session, window: windowIndex, host, size = 14 
   );
   const current = rows?.find((row) => row.session === session && (windowIndex === undefined ? row.active : row.window === windowIndex));
   const command = current?.command;
-  const Icon = sessionIcon(command);
-  const color = iconColor(command);
-  return <span title={command ? `Running: ${command}` : "Running process unavailable"} style={{ display: "inline-flex", color }}><Icon size={size} /></span>;
+  const effectiveProvider = current?.effectiveProvider;
+  const Icon = sessionIcon(command, effectiveProvider);
+  const color = iconColor(command, effectiveProvider);
+  const tooltip = sessionIconTooltip(command, current?.effectiveModel, effectiveProvider, current?.effectiveModelEvidence);
+  return <span title={tooltip} style={{ display: "inline-flex", color }}><Icon size={size} /></span>;
 }
 
 function useSubscribe(host: string | undefined) {

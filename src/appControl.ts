@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { initTerminalAppControlHandlers } from "./appControlTerminal";
 import { initIntegrationAppControlHandlers } from "./appControlIntegrations";
-import { initCoreAppControlHandlers } from "./appControlCore";
+import { confirmAppControlAction, initCoreAppControlHandlers } from "./appControlCore";
 import { initDeviceAppControlHandlers } from "./appControlDevice";
 import { initEditorAppControlHandlers } from "./appControlEditor";
 import { useStore } from "./state/store";
@@ -14,7 +14,7 @@ import { executeAppControl, type AppControlContext } from "./appControlCommands"
 import { pollAppControl, registerAppControl, reportAppControl, unregisterAppControl, type AppControlOutcome } from "./serverApi";
 
 function storedEnabled(): boolean {
-  try { return localStorage.getItem("pzza.mcp.enabled") !== "0"; } catch { return false; }
+  try { return localStorage.getItem("pzza.mcp.enabled") === "1"; } catch { return false; }
 }
 const context: AppControlContext = {
   getState: useStore.getState,
@@ -92,7 +92,12 @@ export function useAppControl(): void {
           if (!outcome) {
             try {
               if (Date.now() >= command.expiresAt) throw new Error("App control command expired before execution.");
-              outcome = { result: await runAppControlExecution(command.id, () => executeAppControl(command.action, command.args, context)) };
+              outcome = { result: await runAppControlExecution(command.id, async () => {
+                if (!await confirmAppControlAction(command.action, command.args)) throw new Error("The action was cancelled in the app.");
+                if (signal.aborted || !enabledRef.current) throw new Error("App control was disabled before execution.");
+                if (Date.now() >= command.expiresAt) throw new Error("App control command expired while awaiting confirmation. Request it again.");
+                return executeAppControl(command.action, command.args, context);
+              }) };
             }
             catch (error) { outcome = { error: error instanceof Error ? error.message : "App control command failed." }; }
             const bytes = JSON.stringify(outcome).length * 2;

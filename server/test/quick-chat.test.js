@@ -5,7 +5,7 @@ import { promisify } from "node:util";
 import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { closeQuickChat, openQuickChat } from "../lib/quick-chat.js";
+import { closeQuickChat, openQuickChat, verifyQuickChat } from "../lib/quick-chat.js";
 
 test("rejects invalid agents and SSH targets before executing anything", async () => {
   for (const body of [null, {}, { agent: "claude" }, { host: "-oProxyCommand=bad", agent: "claude" },
@@ -23,9 +23,9 @@ test("explicit local routing and strict remote SSH options", async () => {
         for (const flag of ["StrictHostKeyChecking=yes", "ForwardAgent=no", "ClearAllForwardings=yes", "ControlPath=none"]) assert.ok(args.includes(flag));
         assert.equal(args.at(-2), host);
       }
-      callback(null, "codex");
+      callback(null, "codex\n$1:100:200");
     });
-    assert.deepEqual(result, { session: "pzza-quick-chat", host, agent: "codex" });
+    assert.deepEqual(result, { session: "pzza-quick-chat", host, agent: "codex", identity: "$1:100:200" });
   }
 });
 
@@ -51,7 +51,10 @@ test("real isolated tmux: concurrent opens reuse one process, preserve agent, an
     await tmux("-f", "/dev/null", "new-session", "-d", "-s", "test-anchor", "exec sleep 60");
     await tmux("set-option", "-g", "default-shell", "/bin/sh");
     const results = await Promise.all(Array.from({ length: 6 }, () => openQuickChat({ host: "", agent: "claude" }, run)));
-    assert.ok(results.every(result => result.agent === "claude"));
+    assert.ok(results.every(result => result.agent === "claude" && result.identity === results[0].identity));
+    const existing = { host: "", agent: "claude", identity: results[0].identity };
+    assert.deepEqual(await verifyQuickChat(existing, run), { verified: true });
+    await assert.rejects(verifyQuickChat({ ...existing, agent: "codex" }, run), /not the expected managed/);
     const before = (await tmux("display-message", "-p", "-t", "=pzza-quick-chat:", "#{pane_pid}")).stdout;
     assert.equal((await openQuickChat({ host: "", agent: "codex" }, run)).agent, "claude");
     assert.equal((await tmux("display-message", "-p", "-t", "=pzza-quick-chat:", "#{pane_pid}")).stdout, before);
@@ -59,12 +62,17 @@ test("real isolated tmux: concurrent opens reuse one process, preserve agent, an
     assert.equal(sessions.filter(name => name === "pzza-quick-chat").length, 1);
     await closeQuickChat({ host: "" }, run);
     await assert.rejects(tmux("has-session", "-t", "=pzza-quick-chat"));
+    await assert.rejects(verifyQuickChat(existing, run), /ended or was replaced/);
+    await assert.rejects(tmux("has-session", "-t", "=pzza-quick-chat"), "verification must not create a shell");
     await closeQuickChat({ host: "" }, run);
-    assert.equal((await openQuickChat({ host: "", agent: "codex" }, run)).agent, "codex");
+    const replacement = await openQuickChat({ host: "", agent: "codex" }, run);
+    assert.equal(replacement.agent, "codex");
+    assert.notEqual(replacement.identity, existing.identity);
+    await assert.rejects(verifyQuickChat({ ...existing, agent: "codex" }, run), /ended or was replaced/);
     await closeQuickChat({ host: "" }, run);
     await tmux("new-session", "-d", "-s", "pzza-quick-chat", "exec sleep 60");
-    await assert.rejects(openQuickChat({ host: "", agent: "claude" }, run), /not a managed/);
-    await assert.rejects(closeQuickChat({ host: "" }, run), /not a managed/);
+    await assert.rejects(openQuickChat({ host: "", agent: "claude" }, run), /not the expected managed/);
+    await assert.rejects(closeQuickChat({ host: "" }, run), /not the expected managed/);
     await tmux("has-session", "-t", "=pzza-quick-chat");
   } finally {
     await tmux("kill-server").catch(() => {});

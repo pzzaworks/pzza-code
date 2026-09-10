@@ -92,6 +92,7 @@ export const APP_COMMANDS = {
     blur: {"type":"integer","minimum":0,"maximum":40},
     saturation: {"type":"integer","minimum":50,"maximum":180},
     surfaceOpacity: {"type":"integer","minimum":5,"maximum":100},
+    textVisibility: {"type":"integer","minimum":0,"maximum":100},
     desktopBlur: {"type":"boolean"},
     desktopBlurRadius: {"type":"integer","minimum":0,"maximum":64},
   }, []),
