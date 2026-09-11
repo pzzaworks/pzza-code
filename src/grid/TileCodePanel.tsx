@@ -2,7 +2,9 @@ import { AsyncButton } from "../ui/AsyncButton";
 import { themeById } from "../theme/themes";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import CodeMirror from "@uiw/react-codemirror";
-import type { EditorView } from "@codemirror/view";
+import { Decoration, EditorView, keymap, type DecorationSet } from "@codemirror/view";
+import { StateEffect, StateField } from "@codemirror/state";
+import { highlightSelectionMatches, searchKeymap } from "@codemirror/search";
 import { githubDark, githubLight } from "@uiw/codemirror-theme-github";
 import { loadLanguage } from "@uiw/codemirror-extensions-langs";
 import { Eye, FolderOpen, FolderTree as FolderTreeIcon, Loader2, PanelLeft, Save, X } from "lucide-react";
@@ -59,11 +61,15 @@ function extOf(p: string): string {
 
 // Exported for unit tests.
 export function wordAtLine(text: string, offset: number): string | null {
+  return wordRangeAt(text, offset)?.word ?? null;
+}
+
+function wordRangeAt(text: string, offset: number): { word: string; from: number; to: number } | null {
   let start = offset;
   let end = offset;
   while (start > 0 && /[\w$]/.test(text[start - 1] ?? "")) start--;
   while (end < text.length && /[\w$]/.test(text[end] ?? "")) end++;
-  return end > start ? text.slice(start, end) : null;
+  return end > start ? { word: text.slice(start, end), from: start, to: end } : null;
 }
 
 // Module specifier quoted on an import/export line, with the quoted range so a
@@ -203,6 +209,25 @@ export function probeCandidates(base: string): string[] {
   for (const index of PROBE_INDEX) out.push(base + index);
   return [...new Set(out)];
 }
+
+// Underline affordance for modifier+click go-to-definition, Zed-style. A
+// single shared field: each editor view carries its own hover range.
+const setGotoHover = StateEffect.define<{ from: number; to: number } | null>();
+const gotoHoverField = StateField.define<DecorationSet>({
+  create: () => Decoration.none,
+  update: (value, tr) => {
+    let next = value.map(tr.changes);
+    for (const effect of tr.effects) {
+      if (effect.is(setGotoHover)) {
+        next = effect.value
+          ? Decoration.set([Decoration.mark({ class: "cm-goto-link" }).range(effect.value.from, effect.value.to)])
+          : Decoration.none;
+      }
+    }
+    return next;
+  },
+  provide: (field) => EditorView.decorations.from(field),
+});
 
 // The inline code editor for a single terminal window: its own folder root, its
 // own file tree, and the file open in it. Layout changes resize the mounted
@@ -352,7 +377,10 @@ export function TileCodePanel({ tileId }: { tileId: string }) {
     // remap the handful of aliases that differ.
     const key = ext ? EXT_LANG[ext] ?? ext : "";
     const lang = key ? loadLanguage(key as Parameters<typeof loadLanguage>[0]) : null;
-    return lang ? [lang] : [];
+    // Cmd/Ctrl+F find panel plus selection-match highlights, alongside the
+    // go-to-definition hover field.
+    const base = [gotoHoverField, keymap.of(searchKeymap), highlightSelectionMatches()];
+    return lang ? [...base, lang] : base;
   }, [path]);
 
   const html = useMemo(
@@ -521,14 +549,86 @@ export function TileCodePanel({ tileId }: { tileId: string }) {
     if (!event.metaKey && !event.ctrlKey && !event.altKey) return;
     void goRef.current(event.clientX, event.clientY);
   }, []);
+  const hoverRef = useRef<{ key: string; range: { from: number; to: number } | null }>({ key: "", range: null });
+  const applyHover = useCallback((view: EditorView, range: { from: number; to: number } | null) => {
+    const previous = hoverRef.current.range;
+    if ((previous === null) === (range === null) && (!previous || !range || (previous.from === range.from && previous.to === range.to))) return;
+    hoverRef.current.range = range;
+    view.dispatch({ effects: setGotoHover.of(range) });
+  }, []);
+  const onEditorMouseLeave = useCallback(() => {
+    const view = viewRef.current;
+    hoverRef.current.key = "";
+    if (view) applyHover(view, null);
+  }, [applyHover]);
+  const onEditorMouseMove = useCallback((event: MouseEvent) => {
+    const view = viewRef.current;
+    if (!view) return;
+    if (!event.metaKey && !event.ctrlKey && !event.altKey) {
+      hoverRef.current.key = "";
+      applyHover(view, null);
+      return;
+    }
+    let pos: number | null = null;
+    try {
+      pos = view.posAtCoords({ x: event.clientX, y: event.clientY });
+    } catch {
+      pos = null;
+    }
+    if (pos === null || pos === undefined) {
+      applyHover(view, null);
+      return;
+    }
+    const line = view.state.doc.lineAt(pos);
+    const offset = pos - line.from;
+    const module = lineModuleSpec(line.text);
+    const inSpec = module !== null && offset >= module.from && offset <= module.to;
+    const found = wordRangeAt(line.text, offset);
+    const key = `${line.number}:${found?.word ?? ""}:${inSpec}`;
+    if (key === hoverRef.current.key) return;
+    hoverRef.current.key = key;
+    if (module && inSpec) {
+      applyHover(view, { from: line.from + module.from, to: line.from + module.to });
+      return;
+    }
+    if (!found) {
+      applyHover(view, null);
+      return;
+    }
+    const content = snapshot.current.content;
+    const jumpable = (module && importClauseNames(line.text).includes(found.word)) ||
+      findDefinitionLine(content.split("\n"), found.word, line.number) !== null;
+    applyHover(view, jumpable ? { from: line.from + found.from, to: line.from + found.to } : null);
+  }, [applyHover]);
   const handleCreateEditor = useCallback((view: EditorView) => {
-    if (viewRef.current && viewRef.current !== view) viewRef.current.dom.removeEventListener("click", onEditorClick);
+    if (viewRef.current && viewRef.current !== view) {
+      viewRef.current.dom.removeEventListener("click", onEditorClick);
+      viewRef.current.dom.removeEventListener("mousemove", onEditorMouseMove);
+      viewRef.current.dom.removeEventListener("mouseleave", onEditorMouseLeave);
+    }
     viewRef.current = view;
     view.dom.addEventListener("click", onEditorClick);
-  }, [onEditorClick]);
+    view.dom.addEventListener("mousemove", onEditorMouseMove);
+    view.dom.addEventListener("mouseleave", onEditorMouseLeave);
+  }, [onEditorClick, onEditorMouseMove]);
   useEffect(() => () => {
     viewRef.current?.dom.removeEventListener("click", onEditorClick);
-  }, [onEditorClick]);
+    viewRef.current?.dom.removeEventListener("mousemove", onEditorMouseMove);
+    viewRef.current?.dom.removeEventListener("mouseleave", onEditorMouseLeave);
+  }, [onEditorClick, onEditorMouseMove, onEditorMouseLeave]);
+  useEffect(() => {
+    const clear = () => {
+      const view = viewRef.current;
+      hoverRef.current.key = "";
+      if (view) applyHover(view, null);
+    };
+    window.addEventListener("keyup", clear);
+    window.addEventListener("blur", clear);
+    return () => {
+      window.removeEventListener("keyup", clear);
+      window.removeEventListener("blur", clear);
+    };
+  }, [applyHover]);
 
   useEffect(() => {
     if (!jump || !loaded || jump.path !== path) return;

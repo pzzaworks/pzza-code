@@ -623,3 +623,31 @@ export const useStore = create<ConsoleState>((set, get) => ({
       return { tileCode };
     }),
 }));
+
+// One-time migration: "full" used to be the default editor layout, so existing
+// stored entries carry it without the user ever choosing it. Move those to the
+// new side-by-side default once; explicit choices made afterwards are kept.
+(function migrateTileCodeLayout() {
+  const FLAG = "pzza.tileCodeLayoutMigrated";
+  try {
+    if (localStorage.getItem(FLAG)) return;
+    const state = useStore.getState();
+    let changed = false;
+    const tileCode: Record<string, TileCode> = {};
+    for (const [id, entry] of Object.entries(state.tileCode)) {
+      if (entry && entry.layout === "full") {
+        tileCode[id] = { ...entry, layout: "side-by-side" };
+        changed = true;
+      } else if (entry) {
+        tileCode[id] = entry;
+      }
+    }
+    if (changed) {
+      persist(TILECODE_KEY, tileCode);
+      useStore.setState({ tileCode });
+    }
+    localStorage.setItem(FLAG, "1");
+  } catch {
+    /* preview / private mode - defaults apply */
+  }
+})();
