@@ -58,7 +58,7 @@ export function appControlSnapshot(context: AppControlContext) {
         workspaceId: workspaceFor(state, tile, context.defaultWorkspaceId),
         hidden: state.hiddenTiles.includes(tile.id),
         span: state.tileSpan?.[tile.id] ?? { c: 1, r: 1 },
-        editor: { open: editor?.open ?? false, layout: editor?.layout ?? "full", path: editor?.path, root: editor?.root, unsaved: context.hasUnsavedEditor(tile.id), loadState: "not_reported" },
+        editor: { open: editor?.open ?? false, layout: editor?.layout ?? "side-by-side", path: editor?.path, root: editor?.root, unsaved: context.hasUnsavedEditor(tile.id), loadState: "not_reported" },
       };
     }),
   };

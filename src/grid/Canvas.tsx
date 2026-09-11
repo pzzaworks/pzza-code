@@ -612,7 +612,7 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
           }}
         />
         {borderBg ? <div className="tile-color-border" aria-hidden="true" style={{ background: borderBg }} /> : null}
-        <div className={`tile-body ${codeOpen ? `tile-body-code-${tileCode[t.id]?.layout ?? "full"}` : ""}`}>
+        <div className={`tile-body ${codeOpen ? `tile-body-code-${tileCode[t.id]?.layout ?? "side-by-side"}` : ""}`}>
           <Terminal
             tileId={t.id}
             name={base}
