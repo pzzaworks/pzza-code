@@ -1,6 +1,7 @@
 // Agent usage (Claude / Codex accounts on this device). Reads the same OAuth
 // usage the official apps show, from locally-stored creds, and caches it so the
 // panel is instant and the provider endpoints are not polled too hard.
+import { execFile } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
@@ -146,27 +147,47 @@ async function claudeAccountUsage(acc, fresh) {
   }
 }
 
-// OpenCode Zen credit usage from the credits API, using the key the TUI
-// stores when Zen is connected. Quota-less or unsupported account types
-// answer 200 with a non-JSON body - those stay hidden instead of erroring.
+// OpenCode Zen usage. Two endpoints cover the two account kinds, and neither
+// is universal: the credits API answers quota accounts but returns 200 with a
+// non-JSON body otherwise, while the Zen usage API reports rolling, weekly
+// and monthly windows. Each side degrades to null on its own; only when both
+// come back empty does the account stay hidden instead of erroring.
 // Exported for unit tests.
 export async function fetchOpencodeUsage(apiKey) {
-  const res = await fetch("https://api.opencode.ai/v1/credits", {
-    headers: { Authorization: `Bearer ${apiKey}`, "User-Agent": "pzza-code/1.0" },
-    signal: AbortSignal.timeout(8000),
-  });
-  if (!res.ok) throw usageResponseError(res);
-  if (!(res.headers.get("content-type") || "").includes("json")) {
-    throw Object.assign(new Error("Zen credits are unavailable for this account."), { unsupported: true });
+  const get = async (url) => {
+    const res = await fetch(url, {
+      headers: { Authorization: `Bearer ${apiKey}`, "User-Agent": "pzza-code/1.0" },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!res.ok) throw usageResponseError(res);
+    if (!(res.headers.get("content-type") || "").includes("json")) return null;
+    return res.json();
+  };
+  const credits = await (async () => {
+    const j = await get("https://api.opencode.ai/v1/credits");
+    if (!j) return null;
+    const total = Number(j?.data?.total_credits);
+    const used = Number(j?.data?.used_credits);
+    if (!Number.isFinite(total) || !Number.isFinite(used) || total <= 0) return null;
+    return { name: "Credits", percent: Math.min(100, Math.max(0, (used / total) * 100)), resets_at: null };
+  })();
+  const windows = await (async () => {
+    const j = await get("https://opencode.ai/zen/go/v1/usage");
+    return j && typeof j === "object" && j.usage && typeof j.usage === "object" ? j.usage : null;
+  })();
+  const win = (w) => w && Number.isFinite(Number(w?.percent))
+    ? { utilization: Math.min(100, Math.max(0, Number(w.percent))), resets_at: w.resetsAt ?? null }
+    : null;
+  const weekly = windows ? win(windows.weekly) : null;
+  const scoped = [
+    ...(credits ? [credits] : []),
+    ...(windows && win(windows.rolling) ? [{ name: "Rolling", ...win(windows.rolling) }] : []),
+    ...(windows && win(windows.monthly) ? [{ name: "Monthly", ...win(windows.monthly) }] : []),
+  ];
+  if (!weekly && scoped.length === 0) {
+    throw Object.assign(new Error("Zen usage is unavailable for this account."), { unsupported: true });
   }
-  const j = await res.json();
-  const data = j?.data;
-  const total = Number(data?.total_credits);
-  const used = Number(data?.used_credits);
-  if (!data || !Number.isFinite(total) || !Number.isFinite(used) || total <= 0) {
-    throw Object.assign(new Error("Zen returned an invalid credits response."), { status: 502 });
-  }
-  return { five_hour: null, seven_day: null, scoped: [{ name: "Credits", percent: Math.min(100, Math.max(0, (used / total) * 100)), resets_at: null }] };
+  return { five_hour: null, seven_day: weekly, scoped };
 }
 
 async function opencodeAccountUsage(acc, fresh) {
@@ -228,4 +249,17 @@ export function collectUsage({ fresh = false } = {}) {
   const ttl = usageCache.failed ? USAGE_RETRY_MS : USAGE_FRESH_MS;
   if (Date.now() - usageCache.at >= ttl && !usageScan) startScan().catch(() => undefined);
   return Promise.resolve(usageCache.data);
+}
+
+// One-shot Claude token repair behind an explicit Fix action. Running the CLI
+// itself is the only safe refresh: minting tokens here would rotate the CLI's
+// credentials out from under it. A minimal non-interactive prompt keeps the
+// cost negligible, and the caller re-reads usage afterwards.
+export function fixClaudeToken({ run = execFile } = {}) {
+  return new Promise((resolve) => {
+    run("claude", ["--print", "Reply with exactly: ok"], { timeout: 90000, maxBuffer: 1024 * 1024 }, (error) => {
+      if (error) return resolve({ ok: false, error: "Claude could not refresh the token. Run claude once in a terminal." });
+      resolve({ ok: true });
+    });
+  });
 }
