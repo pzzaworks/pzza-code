@@ -28,6 +28,7 @@ import { Dropdown } from "./ui/Dropdown";
 import { IconButton } from "./ui/IconButton";
 import { Tooltip } from "./ui/Tooltip";
 import { SetupWizard } from "./panels/SetupWizard";
+import { OnboardingTour } from "./tour/OnboardingTour";
 import { UsageMenu } from "./panels/UsageMenu";
 import { HAS_TAURI } from "./tauriEnv";
 import { startUpdateChecks } from "./state/updates";
@@ -68,6 +69,27 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [helpRequest, setHelpRequest] = useState<HelpRequest | undefined>();
   const [settingsSection, setSettingsSection] = useState<SettingsSection>("general");
+  const [tourOpen, setTourOpen] = useState(false);
+  // Fresh installs get the guided tour right after the setup wizard. Existing
+  // windows never auto-start it; they replay it from Settings → Help.
+  const freshRun = useRef<boolean | null>(null);
+  if (freshRun.current === null) {
+    try {
+      freshRun.current = !localStorage.getItem("pzza.setupDone") && !localStorage.getItem("pzza.tour.seen");
+    } catch {
+      freshRun.current = false;
+    }
+  }
+  useEffect(() => {
+    const replay = () => {
+      setSettingsOpen(false);
+      setSessionDialogOpen(false);
+      setWizardOpen(false);
+      setTourOpen(true);
+    };
+    window.addEventListener("pzza:start-tour", replay);
+    return () => window.removeEventListener("pzza:start-tour", replay);
+  }, [setWizardOpen]);
   const openSettings = (section: SettingsSection) => {
     announceMenu("settings");
     setSessionDialogOpen(false);
@@ -299,7 +321,7 @@ export default function App() {
                   }} />
                   {syncing ? <span className="toolbar-sync-indicator" role="status" aria-label="Sync in progress" /> : null}
                 </div>
-                <Dropdown icon={Monitor} title="Remote desktop" controlId="remote_desktop" loading={remoteDesktop.busy} width={180} align="end" compact>
+                <Dropdown icon={Monitor} title="Remote desktop" controlId="remote_desktop" loading={remoteDesktop.busy} width={180} align="end" compact tourId="remote">
                   {(close) => <>
                     <button type="button" className="menu-item" disabled={remoteDesktop.busy} onClick={() => { close(); void remoteDesktop.openSaved(); }}>
                       <Monitor size={16} strokeWidth={1.9} />
@@ -311,20 +333,20 @@ export default function App() {
                     </button>
                   </>}
                 </Dropdown>
-                <Dropdown icon={EthernetPort} title="Port forwarding" controlId="port_forwarding" width={320} loading={portsLoading} align="end" compact>
+                <Dropdown icon={EthernetPort} title="Port forwarding" controlId="port_forwarding" width={320} loading={portsLoading} align="end" compact tourId="ports">
                   {(close, open) => <PortsMenu active={open && !settingsOpen} onLoadingChange={setPortsLoading} onOpenSettings={() => { close(); openSettings("ports"); }} />}
                 </Dropdown>
-                <Dropdown icon={Gauge} title="Agent usage" controlId="usage" width={320}>
+                <Dropdown icon={Gauge} title="Agent usage" controlId="usage" width={320} tourId="usage">
                   <UsageMenu />
                 </Dropdown>
                 <div className="notification-toolbar">
-                  <Dropdown icon={Bell} title="Notifications" controlId="notifications" width={380} panelClassName="notifications-panel">
+                  <Dropdown icon={Bell} title="Notifications" controlId="notifications" width={380} panelClassName="notifications-panel" tourId="notifications">
                     {(close) => <LatestNotifications viewAll={() => { close(); openSettings("notifications"); }} />}
                   </Dropdown>
                   {unreadNotifications ? <span className="notification-badge" aria-label={`${unreadNotifications} unread notifications`} /> : null}
                 </div>
-                <IconButton icon={SettingsIcon} title="Settings" onClick={() => openSettings("general")} />
-                <Dropdown icon={Plus} title="New session" controlId="new_session" label="New session" width={420} panelClassName="creation-panel" shortcut={NEW_SESSION_SHORTCUT}>
+                <IconButton icon={SettingsIcon} title="Settings" tourId="settings" onClick={() => openSettings("general")} />
+                <Dropdown icon={Plus} title="New session" controlId="new_session" label="New session" width={420} panelClassName="creation-panel" shortcut={NEW_SESSION_SHORTCUT} tourId="new-session">
                   {(close) => <SessionMenu close={close} />}
                 </Dropdown>
               </div>
@@ -350,8 +372,13 @@ export default function App() {
           } catch {
             /* ignore */
           }
+          if (freshRun.current) {
+            freshRun.current = false;
+            window.setTimeout(() => setTourOpen(true), 400);
+          }
         }}
       />
+      <OnboardingTour open={tourOpen} onClose={() => setTourOpen(false)} />
       <SettingsHub onOpen={openSettings} helpRequest={helpRequest} open={settingsOpen} section={settingsSection} onSectionChange={setSettingsSection} onClose={() => setSettingsOpen(false)} syncRequest={syncRequest} onSyncingChange={setSyncing} />
     </ThemeProvider>
   );

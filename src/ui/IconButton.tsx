@@ -16,6 +16,7 @@ interface Props {
   size?: number;
   spin?: boolean;
   className?: string;
+  tourId?: string;
 }
 
 // One consistent, animated icon button used everywhere. Hover/press spring
@@ -33,6 +34,7 @@ export function IconButton({
   size = 16,
   spin,
   className = "",
+  tourId,
 }: Props) {
   const showSpinner = useDelayedLoading(loading);
   const blocked = disabled || (loading && !allowWhileLoading);
@@ -45,6 +47,7 @@ export function IconButton({
       onClick={() => { if (!blocked) onClick?.(); }}
       title={title}
       aria-label={title}
+      data-tour={tourId}
       disabled={blocked}
       aria-busy={loading}
       whileTap={blocked ? undefined : { scale: 0.86 }}
