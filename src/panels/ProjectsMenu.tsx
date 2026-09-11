@@ -338,6 +338,7 @@ function DeviceLine({
   duplicates,
   canClone,
   cloneBlock,
+  onSkipClone,
 }: {
   device: ProjectDeviceRef;
   repo: ProjectRepo | undefined;
@@ -349,6 +350,7 @@ function DeviceLine({
   duplicates: ProjectRepo[] | undefined;
   canClone: boolean;
   cloneBlock: string | undefined;
+  onSkipClone?: () => void;
 }) {
   const outcome =
     result || envResults.length ? (
@@ -386,7 +388,21 @@ function DeviceLine({
       </span>
     );
   } else if (!repo && cloneBlock) {
-    body = <span className="pj-bad">{cloneBlock}</span>;
+    body = (
+      <span className="pj-bad-wrap">
+        <span className="pj-bad">{cloneBlock}</span>
+        {onSkipClone ? (
+          <button
+            type="button"
+            className="btn btn-sm"
+            title="Exclude this project from sync so the blocked clone is skipped. Re-enable it from the row switch anytime."
+            onClick={onSkipClone}
+          >
+            Exclude project
+          </button>
+        ) : null}
+      </span>
+    );
   } else if (!repo) {
     body = (
       <span className="pj-missing">
@@ -535,6 +551,7 @@ function ProjectCard({
             duplicates={row.duplicates.get(d.id)}
             canClone={row.canClone}
             cloneBlock={row.cloneBlocks.get(d.id)}
+            onSkipClone={row.cloneBlocks.get(d.id) ? () => onSetRepo({ enabled: false }) : undefined}
           />
         ))}
       </div>
