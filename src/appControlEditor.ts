@@ -32,14 +32,6 @@ export interface EditorControlAdapter {
   treeAction(path?: string, expanded?: boolean): Promise<void>;
 }
 
-function privatePath(path: string): boolean {
-  const parts = path.replaceAll("\\", "/").toLowerCase().split("/");
-  const base = parts.at(-1) ?? "";
-  return parts.some(part => [".ssh", ".gnupg", ".aws", "keychains"].includes(part)) ||
-    /^(?:\.env(?:\..*)?|\.claude.*\.json|\.credentials.*|credentials(?:\..*)?|auth\.json|agent-token|id_rsa|id_ed25519)$/.test(base) ||
-    /\.(?:pem|key|p12|pfx|keystore)$/.test(base) ||
-    (parts.some(part => /^\.(?:codex|claude|railway)/.test(part)) && /\.(?:json|toml)$/.test(base));
-}
 export function createEditorAppController(adapter: EditorControlAdapter) {
   const state = () => {
     const current = adapter.read();
@@ -51,7 +43,6 @@ export function createEditorAppController(adapter: EditorControlAdapter) {
   const textBuffer = (expectedRevision?: string) => {
     const current = adapter.read();
     if (!current.path || !current.loaded || current.binary || current.failed) throw new Error("A readable text file must finish loading first.");
-    if (privatePath(current.path)) throw new Error("Credential and environment files are unavailable through editor control.");
     if (expectedRevision !== undefined && current.revision !== expectedRevision) throw new Error("Editor revision changed. Read the current buffer before retrying.");
     return { ...current, path: current.path };
   };
