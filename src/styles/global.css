@@ -1286,16 +1286,18 @@ button {
 }
 .tile.empty-session-window {
   width: min(680px, calc(100% - 48px));
-  min-height: 0;
-  flex: 0 0 auto;
+  min-height: min(460px, calc(100% - 48px));
+  flex: 0 1 auto;
   animation: empty-session-enter 220ms ease-out both;
 }
 .empty-session-window .tile-head { cursor: default; }
 .empty-session-window .tile-title { cursor: default; }
 .empty-session-body {
   display: flex;
+  flex: 1;
   flex-direction: column;
   align-items: center;
+  justify-content: center;
   padding: 30px 20px 36px;
 }
 .empty-session-prompt { display: flex; align-items: center; gap: 9px; height: 34px; margin-bottom: 12px; color: var(--muted); font: 32px ui-monospace, monospace; opacity: .65; }
@@ -3746,10 +3748,10 @@ button {
 
 /* Creation forms share room for their fields and keep actions reachable. */
 .creation-dialog { width: 420px; max-height: min(720px, calc(100dvh - 32px)); }
-.menu-panel.creation-panel { width: 420px; max-width: calc(100vw - 16px); max-height: min(720px, calc(100dvh - 64px)); padding: 12px 14px 14px; overscroll-behavior: contain; }
+.menu-panel.creation-panel { width: 340px; max-width: calc(100vw - 16px); max-height: min(720px, calc(100dvh - 64px)); padding: 12px 14px 14px; overscroll-behavior: contain; }
 .new-session-form { gap: 2px; padding-block: 2px; }
 .new-session-form .ns-row { min-height: 32px; }
-.new-session-form .ns-row-control { max-width: 240px; min-width: 0; }
+.new-session-form .ns-row-control { max-width: 220px; min-width: 0; }
 .new-session-form .ns-input { min-width: 0; }
 .new-session-form .ns-bar { flex: 0 0 40px; }
 .new-session-form .session-picker { max-height: min(380px, 48dvh); }
