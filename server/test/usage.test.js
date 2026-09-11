@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createUsageLimiter, fetchOpencodeUsage, usageResponseError, USAGE_FRESH_MS } from "../lib/usage.js";
+import { createUsageLimiter, fetchOpencodeUsage, fixClaudeToken, usageResponseError, USAGE_FRESH_MS } from "../lib/usage.js";
 
 test("duplicate accounts and refresh requests share calls and respect freshness", async () => {
   let now = 0;
@@ -96,6 +96,9 @@ test("opencode credits map to a quota window while unsupported accounts stay hid
   const realFetch = globalThis.fetch;
   try {
     globalThis.fetch = async (url, init) => {
+      if (String(url).includes("zen/go")) {
+        return new Response(JSON.stringify({}), { headers: { "Content-Type": "application/json" } });
+      }
       assert.equal(url, "https://api.opencode.ai/v1/credits");
       assert.equal(init.headers.Authorization, "Bearer sk-test");
       return new Response(JSON.stringify({ data: { total_credits: 100, used_credits: 25, remaining_credits: 75 } }), {
@@ -112,8 +115,46 @@ test("opencode credits map to a quota window while unsupported accounts stay hid
     globalThis.fetch = async () => new Response("{}", { status: 401 });
     await assert.rejects(fetchOpencodeUsage("sk-test"), /401/);
     globalThis.fetch = async () => new Response(JSON.stringify({ data: {} }), { headers: { "Content-Type": "application/json" } });
-    await assert.rejects(fetchOpencodeUsage("sk-test"), /invalid credits/);
+    await assert.rejects(fetchOpencodeUsage("sk-test"), /unavailable for this account/);
   } finally {
     globalThis.fetch = realFetch;
   }
+});
+
+test("opencode zen windows map without a credits quota", async () => {
+  const realFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = async (url) => {
+      if (String(url).includes("/v1/credits")) return new Response("Not Found", { headers: { "Content-Type": "text/html" } });
+      return new Response(JSON.stringify({ usage: {
+        rolling: { status: "ok", percent: 12, resetsAt: "2026-09-11T10:00:00Z" },
+        weekly: { status: "ok", percent: 34, resetsAt: "2026-09-16T10:00:00Z" },
+        monthly: { status: "ok", percent: 56, resetsAt: "2026-10-01T10:00:00Z" },
+      } }), { headers: { "Content-Type": "application/json" } });
+    };
+    assert.deepEqual(await fetchOpencodeUsage("sk-test"), {
+      five_hour: null,
+      seven_day: { utilization: 34, resets_at: "2026-09-16T10:00:00Z" },
+      scoped: [
+        { name: "Rolling", utilization: 12, resets_at: "2026-09-11T10:00:00Z" },
+        { name: "Monthly", utilization: 56, resets_at: "2026-10-01T10:00:00Z" },
+      ],
+    });
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("claude token repair runs the CLI once and reports the outcome", async () => {
+  const calls = [];
+  const run = (cmd, args, options, callback) => {
+    calls.push([cmd, args, options.timeout]);
+    queueMicrotask(() => callback(null, "ok\n"));
+  };
+  assert.deepEqual(await fixClaudeToken({ run }), { ok: true });
+  assert.deepEqual(calls, [["claude", ["--print", "Reply with exactly: ok"], 90000]]);
+  const failing = (_cmd, _args, _options, callback) => queueMicrotask(() => callback(new Error("no auth")));
+  const result = await fixClaudeToken({ run: failing });
+  assert.equal(result.ok, false);
+  assert.match(result.error, /Run claude once in a terminal/);
 });

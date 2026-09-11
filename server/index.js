@@ -30,7 +30,7 @@ import { listPorts, listPortDetails } from "./lib/ports.js";
 import { listSessions, listWindows, scanSessions, sessionActivity, terminateSession, duplicateSession } from "./lib/tmux.js";
 import { forwardStatus, setForwardEnabled, startForwardLoop } from "./lib/forward.js";
 import { listAccounts } from "./lib/accounts.js";
-import { USAGE_FRESH_MS, collectUsage } from "./lib/usage.js";
+import { USAGE_FRESH_MS, collectUsage, fixClaudeToken } from "./lib/usage.js";
 import { createRemoteUsage } from "./lib/device-agent.js";
 import { createMcpRepair } from "./lib/mcp-repair.js";
 import { gitProtectorRouter } from "./lib/git-protector.js";
@@ -90,6 +90,13 @@ const server = http.createServer(async (req, res) => {
     if (host && !SSH_TOKEN.test(host)) return json(res, 400, { error: "Invalid device host" });
     try { return json(res, 200, host ? await remoteUsage(host, url.searchParams.get("fresh") === "1") : await collectUsage({ fresh: url.searchParams.get("fresh") === "1" })); }
     catch { return json(res, 503, { error: "Usage is unavailable on this device" }); }
+  }
+  if (url.pathname === "/usage/fix" && req.method === "POST") {
+    const body = await readBody(req);
+    if (!body || body.provider !== "claude") return json(res, 400, { error: "Automatic fix is only available for Claude tokens." });
+    const fixed = await fixClaudeToken();
+    if (!fixed.ok) return json(res, 503, { error: fixed.error });
+    return json(res, 200, { fixed: true });
   }
   if (url.pathname === "/accounts") return json(res, 200, listAccounts());
   if (url.pathname === "/spend") return json(res, 200, await computeSpend({ fresh: url.searchParams.get("fresh") === "1" }));
