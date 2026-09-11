@@ -17,7 +17,9 @@ import {
   ExternalLink,
   Eye,
   EyeOff,
+  FileCode,
   Focus,
+  FolderInput,
   Gauge,
   HardDrive,
   Image as ImageIcon,
@@ -27,6 +29,8 @@ import {
   LayoutGrid,
   Lightbulb,
   Maximize2,
+  MessageSquare,
+  Mic,
   Monitor,
   MousePointerClick,
   Plus,
@@ -98,9 +102,12 @@ const TileHeadDemo = () => (
     <span className="tile-device">Devbox</span>
     <div className="tile-head-spacer" />
     <div className="tile-actions">
-      <TB icon={Copy} />
-      <TB icon={Focus} />
       <TB icon={LayoutGrid} />
+      <TB icon={Mic} />
+      <TB icon={Focus} />
+      <TB icon={FileCode} />
+      <TB icon={FolderInput} />
+      <TB icon={Copy} />
       <TB icon={Maximize2} />
       <TB icon={EyeOff} />
       <span className="tile-btn tile-btn-danger">
@@ -151,20 +158,13 @@ const McpDemo = () => (
         <Switch on />
       </div>
       <div className="mcp-list">
-        {[
-          { label: "Claude Code", cli: true },
-          { label: "Codex", cli: true },
-          { label: "Cursor", cli: false },
-          { label: "Zed", cli: false },
-        ].map((fw) => (
-          <div key={fw.label} className="mcp-row">
-            <span className="mcp-name">{fw.label}</span>
+        {["Claude Code", "Codex", "OpenCode", "Cursor", "Windsurf", "Zed"].map((label) => (
+          <div key={label} className="mcp-row">
+            <span className="mcp-name">{label}</span>
             <div className="mcp-actions">
-              {fw.cli ? (
-                <span className="btn btn-accent btn-sm">
-                  <Download size={13} strokeWidth={2} /> Add
-                </span>
-              ) : null}
+              <span className="btn btn-accent btn-sm">
+                <Download size={13} strokeWidth={2} /> Add
+              </span>
               <span className="btn btn-sm">
                 <Copy size={13} strokeWidth={2} />
               </span>
@@ -371,7 +371,7 @@ interface Group {
 
 export const HELP_SECTIONS = [
   { id: "getting-started", label: "Getting started", topics: ["start", "topbar", "agent-tools"] },
-  { id: "workspace", label: "Workspace", topics: ["tiles", "controls", "focus", "workspaces", "layout", "shortcuts"] },
+  { id: "workspace", label: "Workspace", topics: ["tiles", "controls", "focus", "workspaces", "layout", "code", "shortcuts"] },
   { id: "agents", label: "Agents", topics: ["usage", "multiaccount", "paste"] },
   { id: "connections", label: "Connections", topics: ["devices", "ports", "rdp", "mcp"] },
   { id: "tips", label: "Tips", topics: ["tips"] },
@@ -457,11 +457,14 @@ export function HelpContent({ section, request }: { section: HelpSection; reques
               <Hero caption="Top bar · tools (right side)">
                 <span className="doc-hero-cluster">
                   <IB icon={LayoutGrid} />
+                  <IB icon={MessageSquare} />
                   <IB icon={FolderSync} />
                   <IB icon={Monitor} />
+                  <IB icon={EthernetPort} />
                   <IB icon={Gauge} />
-                  <IB icon={SettingsIcon} />
                   <IB icon={Bell} />
+                  <IB icon={SettingsIcon} />
+                  <IB icon={Plus} />
                 </span>
               </Hero>
               <H>Left to right</H>
@@ -479,8 +482,15 @@ export function HelpContent({ section, request }: { section: HelpSection; reques
               <Row ui={<IB icon={Monitor} />} name="Remote desktop">
                 Open the device's Linux desktop over an SSH-tunneled RDP session.
               </Row>
+              <Row ui={<IB icon={MessageSquare} />} name="Quick Chat">
+                A dropdown chat with your saved agent (Claude, Codex or OpenCode) - it keeps
+                running while hidden.
+              </Row>
+              <Row ui={<IB icon={EthernetPort} />} name="Port forwarding">
+                Mirror the device's listening ports to your localhost.
+              </Row>
               <Row ui={<IB icon={Gauge} />} name="Agent usage">
-                Live Claude / Codex usage and estimated spend.
+                Live Claude / Codex / OpenCode usage and estimated spend.
               </Row>
               <Row ui={<IB icon={SettingsIcon} />} name="Settings">
                 Open the settings sidebar for preferences, devices, sync, remote desktop, connections and help.
@@ -500,7 +510,7 @@ export function HelpContent({ section, request }: { section: HelpSection; reques
           icon: Sparkles,
           body: <>
             <H>Quick Chat</H>
-            <P>Open <b>Quick Chat</b> in the top bar to chat in a dropdown. It opens your saved agent immediately. Choose the agent and device for the next app launch in <b>Settings → Quick Chat</b>.</P>
+            <P>Open <b>Quick Chat</b> in the top bar to chat in a dropdown. It opens your saved agent (Claude, Codex or OpenCode) immediately. Choose the agent and device for the next app launch in <b>Settings → Quick Chat</b>.</P>
             <P>Click outside or use <b>Hide chat</b> to dismiss the dropdown while the chat keeps running. Your chat is prepared at app startup and remains available until the app closes.</P>
           </>,
         },
@@ -540,7 +550,7 @@ export function HelpContent({ section, request }: { section: HelpSection; reques
                 }
                 name="Type icon"
               >
-                Colored by what's running - Claude, Codex, Docker, a shell, and so on.
+                Colored by what's running - Claude, Codex, OpenCode, Docker, a shell, and so on.
               </Row>
               <Row ui={<kbd className="kbd tile-kbd">{ctrlBadge(1)}</kbd>} name="Shortcut badge">
                 The key that activates this tile (see Keyboard shortcuts).
@@ -575,9 +585,12 @@ export function HelpContent({ section, request }: { section: HelpSection; reques
             <>
               <Hero caption="Tile actions · top-right of every tile">
                 <span className="tile-actions">
-                  <TB icon={Copy} />
-                  <TB icon={Focus} />
                   <TB icon={LayoutGrid} />
+                  <TB icon={Mic} />
+                  <TB icon={Focus} />
+                  <TB icon={FileCode} />
+                  <TB icon={FolderInput} />
+                  <TB icon={Copy} />
                   <TB icon={Maximize2} />
                   <TB icon={EyeOff} />
                   <span className="tile-btn tile-btn-danger">
@@ -586,6 +599,15 @@ export function HelpContent({ section, request }: { section: HelpSection; reques
                 </span>
               </Hero>
               <H>The buttons on each tile</H>
+              <Row ui={<TB icon={Mic} />} name="Dictation">
+                Dictate speech into the tile through the microphone.
+              </Row>
+              <Row ui={<TB icon={FileCode} />} name="Code editor">
+                Open the built-in editor beside the terminal (see Code editor below).
+              </Row>
+              <Row ui={<TB icon={FolderInput} />} name="Move to workspace">
+                Move the tile's session to another workspace.
+              </Row>
               <Row ui={<TB icon={Copy} />} name="Duplicate session">
                 Opens a fresh terminal in the same folder, device, and workspace. The original
                 keeps running; running programs and terminal history are not copied.
@@ -595,7 +617,8 @@ export function HelpContent({ section, request }: { section: HelpSection; reques
                 dimmed tile to exit.
               </Row>
               <Row ui={<TB icon={LayoutGrid} />} name="Tile layout">
-                Make this tile wide, tall, or big (2×2) within the grid.
+                Make this tile wide, tall, or big (2×2) within the grid - or leave it on
+                Auto to share the row evenly with the others.
               </Row>
               <Row ui={<TB icon={Maximize2} />} name="Maximize">
                 Blow the tile up to fill the canvas; the same button restores it.
@@ -736,10 +759,53 @@ export function HelpContent({ section, request }: { section: HelpSection; reques
                 terminals never re-attach or garble.
               </P>
               <Row ui={<TB icon={LayoutGrid} />} name="Per-tile size">
-                The tile-layout button makes one tile wide, tall, or big within the grid.
+                The tile-layout button makes one tile wide, tall, or big within the grid - or
+                Auto, which shares the row evenly with the others.
               </Row>
               <Row ui={<TB icon={Maximize2} />} name="Maximize">
                 Fill the whole canvas with one tile, then restore it.
+              </Row>
+              <Tip>
+                A workspace with a single tile fills the whole row on its own - no layout
+                fiddling needed.
+              </Tip>
+            </>
+          ),
+        },
+        {
+          id: "code",
+          label: "Code editor",
+          icon: FileCode,
+          body: (
+            <>
+              <H>How to</H>
+              <Steps>
+                <Step>
+                  Click a tile's <TB icon={FileCode} /> button to open its editor beside the
+                  terminal (side-by-side by default).
+                </Step>
+                <Step>
+                  Pick a folder, then a file from the tree. <Kbd>{CMD} S</Kbd> saves; unsaved
+                  changes guard closing.
+                </Step>
+                <Step>
+                  <b>Cmd / Ctrl / Alt+Click</b> a symbol to jump to its definition - across
+                  files through imports, or in the same file.
+                </Step>
+                <Step>
+                  Switch Full, Side by side or Stacked from the editor's own layout menu.
+                </Step>
+              </Steps>
+              <H>Built-in editor</H>
+              <P>
+                Every tile carries a lightweight code editor rooted at the terminal's live
+                folder, with its own file tree. It edits over the same connection as the
+                terminal, so remote files just work.
+              </P>
+              <Row ui={<TB icon={FileCode} />} name="Go to definition">
+                Hold <b>Cmd</b>, <b>Ctrl</b> or <b>Alt</b> and click a symbol: imports resolve
+                to the defining file (following export aliases), other symbols jump within
+                the file. Clicking the module path itself opens that file.
               </Row>
             </>
           ),
@@ -778,12 +844,18 @@ export function HelpContent({ section, request }: { section: HelpSection; reques
                     </td>
                     <td>Activate the Nth visible tile (and center it)</td>
                   </tr>
-                  <tr>
-                    <td>
-                      <Kbd>{CMD} V</Kbd>
-                    </td>
-                    <td>Paste an image into the focused terminal</td>
-                  </tr>
+                <tr>
+                  <td>
+                    <Kbd>{CMD} V</Kbd>
+                  </td>
+                  <td>Paste an image into the focused terminal</td>
+                </tr>
+                <tr>
+                  <td>
+                    <Kbd>{CMD} + Click</Kbd>
+                  </td>
+                  <td>Go to definition in the code editor (Ctrl or Alt works too)</td>
+                </tr>
                   <tr>
                     <td>
                       <Kbd>Esc</Kbd>
@@ -814,7 +886,8 @@ export function HelpContent({ section, request }: { section: HelpSection; reques
                   Open <IB icon={Gauge} /> <b>Agent usage</b> from the top bar.
                 </Step>
                 <Step>
-                  Read each account's <b>5-hour</b> and <b>weekly</b> bars and reset countdowns.
+                  Read each account's windows - Claude / Codex show <b>5-hour</b> and{" "}
+                  <b>weekly</b> bars, OpenCode shows rolling, weekly, monthly and credits.
                 </Step>
                 <Step>
                   Toggle <b>Left / Used</b> to switch what the bars measure.
@@ -825,10 +898,11 @@ export function HelpContent({ section, request }: { section: HelpSection; reques
               </Steps>
               <H>Live usage</H>
               <P>
-                <IB icon={Gauge} /> shows each Claude / Codex account on the device with its{" "}
-                <b>5-hour</b> and <b>weekly</b> windows, reset countdowns and plan - read live from
-                the same usage endpoints the official apps use. Accounts are discovered
-                automatically; nothing is configured by hand.
+                <IB icon={Gauge} /> shows each Claude / Codex / OpenCode account on the device
+                with its usage windows, reset countdowns and plan - read live from the same
+                usage endpoints the official apps use. Accounts are discovered automatically;
+                nothing is configured by hand. Missing providers are filled in from your other
+                connected devices when they have them.
               </P>
               <Row
                 ui={
@@ -847,6 +921,12 @@ export function HelpContent({ section, request }: { section: HelpSection; reques
                 Under each account, <b>Spend</b> estimates today's and the last 30 days' cost in
                 USD, computed locally from your Claude / Codex transcripts at published token
                 rates. It's an estimate (marked <i>est.</i>), not a bill.
+              </P>
+              <H>Token trouble?</H>
+              <P>
+                An expired Claude token shows a <b>Run Claude to refresh</b> action that runs
+                the CLI once to refresh it, then reloads usage - the same fix as doing it by
+                hand in a terminal.
               </P>
             </>
           ),
@@ -1087,6 +1167,10 @@ export function HelpContent({ section, request }: { section: HelpSection; reques
               <Tip>
                 Left a stale session running somewhere? Open <IB icon={HardDrive} /> Devices, scan
                 the device, and terminate it.
+              </Tip>
+              <Tip>
+                Expired Claude token in Agent usage? Hit <b>Run Claude to refresh</b> right on
+                the card instead of opening a terminal.
               </Tip>
               <Tip>
                 Everything you set - workspaces, layouts, names, hidden tiles - is saved on the

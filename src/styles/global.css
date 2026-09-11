@@ -1836,7 +1836,7 @@ button {
 }
 .doc-panel {
   order: 1;
-  width: 300px;
+  width: 320px;
   max-width: 100%;
   padding: 12px;
   background: color-mix(in srgb, var(--text) 5%, var(--surface));
