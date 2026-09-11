@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   Blocks,
+  Bot,
   Boxes,
   Check,
   ChevronDown,
@@ -371,11 +372,11 @@ interface Group {
 }
 
 export const HELP_SECTIONS = [
-  { id: "getting-started", label: "Getting started", topics: ["start", "topbar", "agent-tools"] },
-  { id: "workspace", label: "Workspace", topics: ["tiles", "controls", "focus", "workspaces", "layout", "code", "shortcuts"] },
-  { id: "agents", label: "Agents", topics: ["usage", "multiaccount", "paste"] },
-  { id: "connections", label: "Connections", topics: ["devices", "ports", "rdp", "mcp"] },
-  { id: "tips", label: "Tips", topics: ["tips"] },
+  { id: "getting-started", label: "Getting started", icon: Rocket, topics: ["start", "topbar", "agent-tools"] },
+  { id: "workspace", label: "Workspace", icon: LayoutGrid, topics: ["tiles", "controls", "focus", "workspaces", "layout", "code", "shortcuts"] },
+  { id: "agents", label: "Agents", icon: Bot, topics: ["usage", "multiaccount", "paste"] },
+  { id: "connections", label: "Connections", icon: Blocks, topics: ["devices", "ports", "rdp", "mcp"] },
+  { id: "tips", label: "Tips", icon: Lightbulb, topics: ["tips"] },
 ] as const;
 export interface HelpRequest { topic: string; serial: number }
 export type HelpSection = typeof HELP_SECTIONS[number]["id"];
