@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import CodeMirror from "@uiw/react-codemirror";
 import { Decoration, EditorView, keymap, type DecorationSet } from "@codemirror/view";
 import { StateEffect, StateField } from "@codemirror/state";
-import { highlightSelectionMatches, searchKeymap } from "@codemirror/search";
+import { highlightSelectionMatches, openSearchPanel, searchKeymap } from "@codemirror/search";
 import { githubDark, githubLight } from "@uiw/codemirror-theme-github";
 import { loadLanguage } from "@uiw/codemirror-extensions-langs";
 import { Eye, FolderOpen, FolderTree as FolderTreeIcon, Loader2, PanelLeft, Save, X } from "lucide-react";
@@ -750,9 +750,20 @@ export function TileCodePanel({ tileId }: { tileId: string }) {
           className="code-editor-pane"
           title="Cmd/Ctrl/Alt+Click a symbol to jump to its definition"
           onKeyDown={(e) => {
+            if (e.defaultPrevented) return;
             if ((e.metaKey || e.ctrlKey) && e.key === "s") {
               e.preventDefault();
               save();
+            } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "f") {
+              // Focus may sit in the file tree: route find to the editor so
+              // the browser's own find never steals it.
+              const view = viewRef.current;
+              if (view) {
+                e.preventDefault();
+                e.stopPropagation();
+                view.focus();
+                openSearchPanel(view);
+              }
             }
           }}
         >
