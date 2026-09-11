@@ -64,7 +64,7 @@ interface Props {
   window?: number;
   active?: boolean;
   onStatus?: (s: TileStatus) => void;
-  managedChat?: { agent: "claude" | "codex"; identity: string };
+  managedChat?: { agent: "claude" | "codex" | "opencode"; identity: string };
   onAttachment?: (status: AttachmentStatus) => void;
   retryToken?: number;
 }

@@ -36,7 +36,7 @@ test("explicit local routing and strict remote SSH options", async () => {
 });
 
 test("Quick Chat launches each CLI directly without a proxy launcher", () => {
-  for (const agent of ["claude", "codex"]) {
+  for (const agent of ["claude", "codex", "opencode"]) {
     const command = quickChatCommand(agent);
     assert.match(command, new RegExp(`PZZA_QUICK_CHAT_LAUNCHER=${agent}`));
     assert.match(command, new RegExp(`command -v ${agent}`));
@@ -47,6 +47,28 @@ test("Quick Chat launches each CLI directly without a proxy launcher", () => {
   assert.doesNotMatch(codex, /getent passwd/);
   assert.doesNotMatch(codex, /dscl \. -read/);
   assert.doesNotMatch(codex, /-lic 'pz'/);
+});
+
+test("Quick Chat falls back to well-known install locations off PATH", () => {
+  const command = quickChatCommand("opencode");
+  assert.match(command, /\.opencode\/bin/);
+  assert.match(command, /\.local\/bin/);
+  assert.match(command, /\[\s*-x\s*"\$candidate"\s*\]/);
+  assert.throws(() => quickChatCommand("sh"), /Choose a supported agent/);
+});
+
+test("opencode sessions round-trip through open and verify", async () => {
+  const opened = await openQuickChat({ host: "", agent: "opencode" }, (_command, _args, _options, callback) => {
+    callback(null, "opencode\nopencode\n$3:300:400");
+  });
+  assert.deepEqual(opened, { session: "pzza-quick-chat", host: "", agent: "opencode", launcher: "opencode", identity: "$3:300:400" });
+  assert.deepEqual(await verifyQuickChat({ host: "", agent: "opencode", identity: "$3:300:400" }, (_command, args, _options, callback) => {
+    assert.match(args.at(-1), /PZZA_QUICK_CHAT_AGENT=opencode/);
+    callback(null, "");
+  }), { verified: true });
+  await assert.rejects(verifyQuickChat({ host: "", agent: "opencode", identity: "$3:300:400" }, (_command, _args, _options, callback) => {
+    callback(Object.assign(new Error("gone"), { code: 45 }), "");
+  }), /ended or was replaced/);
 });
 
 test("connection errors are actionable and never expose subprocess output", async () => {

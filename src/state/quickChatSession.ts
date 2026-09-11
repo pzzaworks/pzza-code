@@ -3,8 +3,8 @@ export interface ChatSession {
   host: string;
   // The saved profile owns a managed session, while launcher says what was
   // actually invoked to start it (always the matching CLI).
-  agent: "claude" | "codex";
-  launcher: "claude" | "codex";
+  agent: "claude" | "codex" | "opencode";
+  launcher: "claude" | "codex" | "opencode";
   identity: string;
 }
 
