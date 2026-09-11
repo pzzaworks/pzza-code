@@ -14,13 +14,13 @@ import { IconButton } from "../ui/IconButton";
 import { Select } from "../ui/Select";
 import "./QuickChat.css";
 
-interface Defaults { deviceId: string; agent: "claude" | "codex" }
+interface Defaults { deviceId: string; agent: "claude" | "codex" | "opencode" }
 const KEY = "pzza.quickChat.defaults";
 function readDefaults(): Defaults {
   try {
     const value: unknown = JSON.parse(localStorage.getItem(KEY) ?? "null");
     if (value && typeof value === "object" && "deviceId" in value && typeof value.deviceId === "string" &&
-        "agent" in value && (value.agent === "claude" || value.agent === "codex")) {
+        "agent" in value && (value.agent === "claude" || value.agent === "codex" || value.agent === "opencode")) {
       return { deviceId: value.deviceId, agent: value.agent };
     }
   } catch { /* Storage can be unavailable in private browsing. */ }
@@ -54,13 +54,13 @@ export function QuickChatSettings() {
   return <div className="quick-chat-settings">
     <section className="settings-section">
       <div className="settings-form">
-        <label className="settings-field"><span>Profile</span><Select value={defaults.agent} options={[{ value: "claude", label: "Claude" }, { value: "codex", label: "Codex" }]}
-          onChange={value => { if (value === "claude" || value === "codex") update({ agent: value }); }} /></label>
+        <label className="settings-field"><span>Profile</span><Select value={defaults.agent} options={[{ value: "claude", label: "Claude" }, { value: "codex", label: "Codex" }, { value: "opencode", label: "OpenCode" }]}
+          onChange={value => { if (value === "claude" || value === "codex" || value === "opencode") update({ agent: value }); }} /></label>
         <label className="settings-field"><span>Device</span><Select value={defaults.deviceId} placeholder="Choose a device"
           options={devices.map(device => ({ value: device.id, label: device.name, icon: <DeviceIcon device={device} /> }))}
           onChange={deviceId => update({ deviceId })} /></label>
       </div>
-      <p className="set-note">Claude opens Claude directly. Codex opens Codex directly.</p>
+      <p className="set-note">Claude opens Claude directly. Codex opens Codex directly. OpenCode opens OpenCode directly.</p>
       {!deviceAvailable && <p className="set-note" role="status">Your saved device is unavailable. Choose another device.</p>}
       {notice && <p className="set-note" role="status">{notice}</p>}
     </section>
@@ -73,7 +73,7 @@ export function QuickChatSettings() {
 type Chat = Awaited<ReturnType<typeof openQuickChat>> & { deviceName: string };
 
 function chatSummary(chat: Chat): string {
-  return `${chat.deviceName} · ${chat.agent === "claude" ? "Claude" : "Codex"}`;
+  return `${chat.deviceName} · ${chat.agent === "claude" ? "Claude" : chat.agent === "codex" ? "Codex" : "OpenCode"}`;
 }
 
 const prepareChat = createQuickChatPreparation(openQuickChat);
