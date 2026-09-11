@@ -221,6 +221,7 @@ export interface McpInstallResult {
   output?: string;
   error?: string | null;
   manual?: boolean;
+  unchanged?: boolean;
 }
 export async function mcpInstall(framework: string): Promise<McpInstallResult> {
   const res = await agentFetch(`${SERVER_HTTP}/mcp/install`, {
@@ -436,7 +437,7 @@ export interface UsageScoped {
 export interface AccountUsage {
   sourceHost?: string;
   sourceName?: string;
-  provider: "claude" | "codex";
+  provider: "claude" | "codex" | "opencode";
   label: string;
   email?: string;
   plan?: string;

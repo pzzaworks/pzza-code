@@ -34,15 +34,15 @@ export const useMcpSettings = create<McpSettings>((set, get) => ({
   async install(framework) {
     if (get().busy) throw new Error("An integration installation is already running.");
     if (get().agentHost.trim()) throw new Error("Copy the generated configuration into the remote client settings.");
-    if (!["claude", "codex"].includes(framework)) throw new Error("This integration requires copying its generated configuration.");
     set({ busy: framework });
     try {
       const result = await mcpInstall(framework);
-      if (!result.ok) throw new Error("Integration installation failed. Check the client executable and retry.");
-      set(state => ({ notes: { ...state.notes, [framework]: "added ✓" } }));
-    } catch {
-      set(state => ({ notes: { ...state.notes, [framework]: "Installation failed. Check the client executable and retry." } }));
-      throw new Error("Integration installation failed. Check the client executable and retry.");
+      if (!result.ok) throw new Error(typeof result.error === "string" && result.error ? result.error : "Integration installation failed. Check the client executable and retry.");
+      set(state => ({ notes: { ...state.notes, [framework]: result.unchanged ? "already added ✓" : "added ✓" } }));
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : "Integration installation failed. Check the client executable and retry.";
+      set(state => ({ notes: { ...state.notes, [framework]: message } }));
+      throw cause instanceof Error ? cause : new Error(message);
     } finally { set({ busy: null }); }
   },
   async copy(framework) {

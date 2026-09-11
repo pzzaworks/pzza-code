@@ -1038,10 +1038,10 @@ export function HelpContent({ section, request }: { section: HelpSection; reques
                   Turn <b>Allow app window control</b> on if you want agents to control this window. This does not disable independent session, file or device tools.
                 </Step>
                 <Step>
-                  Use <b>Add</b> next to a supported CLI to register the server automatically.
+                  Use <b>Add</b> to register the server in the client automatically.
                 </Step>
                 <Step>
-                  For an editor, copy the configuration into its MCP settings.
+                  For a remote setup, copy the configuration into its MCP settings.
                 </Step>
               </Steps>
               <H>Device bridge</H>
