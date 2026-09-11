@@ -1,7 +1,7 @@
 import type { ComponentType, CSSProperties } from "react";
 import { Activity, Container, FolderOpen, SquareTerminal } from "lucide-react";
 import type { EffectiveModelEvidence, EffectiveModelProvider } from "./serverApi";
-import { ClaudeIcon, CodexIcon } from "./icons/BrandIcons";
+import { ClaudeIcon, CodexIcon, OpenCodeIcon } from "./icons/BrandIcons";
 
 export type IconType = ComponentType<{
   size?: number | string;
@@ -58,7 +58,11 @@ export type TileStatus = "idle" | "active" | "failed";
 // foreground probe supplied a normalized provider. Otherwise the CLI remains
 // the source of truth for terminal branding.
 export function sessionIcon(command?: string, effectiveProvider?: EffectiveModelProvider | null): IconType {
-  const value = effectiveProvider || (command || "").toLowerCase().split("/").pop() || "";
+  const launcher = (command || "").toLowerCase().split("/").pop() || "";
+  // An OpenCode terminal always shows the OpenCode brand, even when its
+  // effective model belongs to another provider.
+  if (launcher === "opencode") return OpenCodeIcon;
+  const value = effectiveProvider || launcher;
   if (value === "claude") return ClaudeIcon;
   if (value === "codex") return CodexIcon;
   if (["btop", "htop", "top"].includes(value)) return Activity;
@@ -71,6 +75,7 @@ export function iconColor(command?: string, effectiveProvider?: EffectiveModelPr
   const Icon = sessionIcon(command, effectiveProvider);
   if (Icon === ClaudeIcon) return "#D97757";
   if (Icon === CodexIcon) return "#10A37F";
+  if (Icon === OpenCodeIcon) return "#94A3B8";
   if (Icon === Activity) return "#f9c74f";
   if (Icon === FolderOpen) return "#7aa2f7";
   if (Icon === Container) return "#2496ED";
@@ -81,6 +86,7 @@ function launcherLabel(command?: string): string {
   const value = (command || "").toLowerCase().split("/").pop() || "";
   if (value === "claude") return "Claude CLI";
   if (value === "codex") return "Codex CLI";
+  if (value === "opencode") return "OpenCode";
   return command || "process";
 }
 

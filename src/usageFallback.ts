@@ -1,7 +1,7 @@
 import type { AccountUsage } from "./serverApi";
 
 export interface UsageDevice { host: string; name: string }
-const providers = ["claude", "codex"] as const;
+const providers = ["claude", "codex", "opencode"] as const;
 const usable = (account: AccountUsage) => Boolean(account.usage && !account.error && !account.usage.stale);
 
 export function mergeDeviceUsage(local: AccountUsage[], remote: AccountUsage[]): AccountUsage[] {

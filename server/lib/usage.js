@@ -4,7 +4,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
-import { discoverAccounts, readClaudeOAuth, readClaudeIdentity, readCodexCreds } from "./accounts.js";
+import { discoverAccounts, readClaudeOAuth, readClaudeIdentity, readCodexCreds, readOpencodeKey } from "./accounts.js";
 
 export const USAGE_FRESH_MS = 5 * 60 * 1000; // the endpoints 429 if polled harder
 // A failed entry (expired token, provider hiccup) is retried much sooner, so the
@@ -117,6 +117,7 @@ async function fetchCodexUsage(creds) {
 }
 
 const CLAUDE_SIGNIN_HINT = "run claude once in a terminal to refresh it";
+const OPENCODE_SIGNIN_HINT = "reconnect OpenCode Zen with /connect in opencode";
 
 // Usage for one Claude account. Claude Code refreshes the OAuth token itself
 // whenever it runs and the agent never refreshes on its behalf (a refresh
@@ -145,6 +146,44 @@ async function claudeAccountUsage(acc, fresh) {
   }
 }
 
+// OpenCode Zen credit usage from the credits API, using the key the TUI
+// stores when Zen is connected. Quota-less or unsupported account types
+// answer 200 with a non-JSON body - those stay hidden instead of erroring.
+// Exported for unit tests.
+export async function fetchOpencodeUsage(apiKey) {
+  const res = await fetch("https://api.opencode.ai/v1/credits", {
+    headers: { Authorization: `Bearer ${apiKey}`, "User-Agent": "pzza-code/1.0" },
+    signal: AbortSignal.timeout(8000),
+  });
+  if (!res.ok) throw usageResponseError(res);
+  if (!(res.headers.get("content-type") || "").includes("json")) {
+    throw Object.assign(new Error("Zen credits are unavailable for this account."), { unsupported: true });
+  }
+  const j = await res.json();
+  const data = j?.data;
+  const total = Number(data?.total_credits);
+  const used = Number(data?.used_credits);
+  if (!data || !Number.isFinite(total) || !Number.isFinite(used) || total <= 0) {
+    throw Object.assign(new Error("Zen returned an invalid credits response."), { status: 502 });
+  }
+  return { five_hour: null, seven_day: null, scoped: [{ name: "Credits", percent: Math.min(100, Math.max(0, (used / total) * 100)), resets_at: null }] };
+}
+
+async function opencodeAccountUsage(acc, fresh) {
+  const apiKey = readOpencodeKey();
+  // No usable key on this device: hide it rather than showing a row that can
+  // never load (mirrors the Claude behavior above).
+  if (!apiKey) return null;
+  const entry = { provider: "opencode", label: acc.label, plan: "Zen", usage: null, error: null };
+  try {
+    return { ...entry, usage: await limitedUsage(credentialKey("opencode", apiKey), () => fetchOpencodeUsage(apiKey), { fresh }) };
+  } catch (e) {
+    if (e?.unsupported) return null;
+    if (e?.status === 401 || e?.status === 403) return { ...entry, error: `Zen API key rejected - ${OPENCODE_SIGNIN_HINT}` };
+    throw e;
+  }
+}
+
 // Fetch every account's usage from the provider APIs (in parallel) and cache it.
 async function refreshUsage(fresh) {
   const accounts = discoverAccounts();
@@ -153,6 +192,7 @@ async function refreshUsage(fresh) {
       accounts.map(async (acc) => {
         try {
           if (acc.provider === "claude") return await claudeAccountUsage(acc, fresh);
+          if (acc.provider === "opencode") return await opencodeAccountUsage(acc, fresh);
           if (!fs.existsSync(path.join(acc.dir, "auth.json"))) return null;
           const creds = readCodexCreds(acc.dir);
           if (!creds.accessToken) return null;

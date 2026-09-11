@@ -17,7 +17,8 @@ export function jwtClaims(token) {
   }
 }
 
-// Auto-discover Claude (~/.claude*) and Codex (~/.codex*) config dirs.
+// Auto-discover Claude (~/.claude*) and Codex (~/.codex*) config dirs, plus the
+// OpenCode config dir (whose Zen key lives in the shared auth file).
 export function discoverAccounts() {
   const home = os.homedir();
   const accounts = [];
@@ -41,7 +42,57 @@ export function discoverAccounts() {
       }
     }
   }
+  const opencodeDir = opencodeConfigDir();
+  if (opencodeDir && hasOpencodeKey()) {
+    accounts.push({ provider: "opencode", dir: opencodeDir, label: "OpenCode" });
+  }
   return accounts;
+}
+
+function configHome() {
+  return process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config");
+}
+
+function dataHome() {
+  return process.env.XDG_DATA_HOME || path.join(os.homedir(), ".local", "share");
+}
+
+// The OpenCode config dir when it exists (opencode.json lives here).
+export function opencodeConfigDir() {
+  const dir = path.join(configHome(), "opencode");
+  try {
+    if (fs.statSync(dir).isDirectory()) return dir;
+  } catch {
+    /* not installed */
+  }
+  return null;
+}
+
+function readOpencodeAuth() {
+  for (const dir of [path.join(dataHome(), "opencode"), path.join(os.homedir(), ".opencode")]) {
+    try {
+      const auth = JSON.parse(fs.readFileSync(path.join(dir, "auth.json"), "utf8"));
+      if (auth && typeof auth === "object") return auth;
+    } catch {
+      /* try the next location */
+    }
+  }
+  return null;
+}
+
+// The Zen API key from the shared opencode auth file, or null when OpenCode
+// Zen is not connected on this device.
+export function readOpencodeKey() {
+  try {
+    const key = readOpencodeAuth()?.opencode?.key;
+    return typeof key === "string" && key ? key : null;
+  } catch {
+    return null;
+  }
+}
+
+function hasOpencodeKey() {
+  return readOpencodeKey() !== null;
 }
 
 export function readClaudeIdentity(dir) {
@@ -107,8 +158,10 @@ export function readCodexCreds(dir) {
 }
 
 // The Claude / Codex accounts (config dirs) on this device, with identity only.
+// OpenCode is usage-only (its sessions are not bindable), so it stays out of
+// this list even though discovery reports it.
 export function listAccounts() {
-  return discoverAccounts().map((acc) => {
+  return discoverAccounts().filter((acc) => acc.provider === "claude" || acc.provider === "codex").map((acc) => {
     let email;
     let plan;
     try {
