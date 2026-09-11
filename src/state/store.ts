@@ -586,8 +586,8 @@ export const useStore = create<ConsoleState>((set, get) => ({
       // Closing the editor also closes the file that was open in it; reopening
       // starts back at the folder tree with nothing selected.
       const next: TileCode = opening
-        ? { open: true, layout: cur?.layout ?? "full", root: cur?.root ?? defaultRoot, path: undefined }
-        : { open: false, layout: cur?.layout ?? "full", root: cur?.root, path: undefined };
+        ? { open: true, layout: cur?.layout ?? "side-by-side", root: cur?.root ?? defaultRoot, path: undefined }
+        : { open: false, layout: cur?.layout ?? "side-by-side", root: cur?.root, path: undefined };
       const tileCode = { ...state.tileCode, [id]: next };
       persist(TILECODE_KEY, tileCode);
       return { tileCode, activeId: id };

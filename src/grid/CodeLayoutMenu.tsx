@@ -10,7 +10,7 @@ const OPTIONS = [
 ] satisfies Array<{ value: TileCodeLayout; label: string; Icon: typeof Square }>;
 
 export function CodeLayoutMenu({ tileId }: { tileId: string }) {
-  const layout = useStore((s) => s.tileCode[tileId]?.layout ?? "full");
+  const layout = useStore((s) => s.tileCode[tileId]?.layout ?? "side-by-side");
   const setLayout = useStore((s) => s.setTileCodeLayout);
   const title = "Editor layout";
   const button = useRef<HTMLButtonElement>(null);
