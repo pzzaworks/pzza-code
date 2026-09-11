@@ -4292,6 +4292,12 @@ button {
 .pj-bad {
   color: var(--danger-foreground, var(--danger));
 }
+.pj-bad-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
 .pj-dim {
   color: var(--muted);
 }
