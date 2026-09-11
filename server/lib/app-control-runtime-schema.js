@@ -6,8 +6,6 @@ const command = (description, properties = {}, required = []) => ({ description,
 const rows = (properties, required, maxItems) => ({ type: "array", maxItems, uniqueItems: true, items: { type: "object", properties, required, additionalProperties: false } });
 const tileId = string();
 export const RUNTIME_APP_COMMANDS = {
-  get_agents_hub_view: command("Read the mounted Agents Hub library search, selection and preview state."),
-  set_agents_hub_view: command("Set search, selection, preview or visible item count in the open Agents Hub library page.", { query: { type: "string", maxLength: 500 }, selectedId: { type: "string", maxLength: 128 }, preview: boolean, limit: integer(1, 1000) }),
   get_notification_view: command("Read the open notification page's history filters and event disclosure."),
   set_notification_view: command("Set filters, visible item count or event disclosure in the open Notifications settings page.", { unreadOnly: boolean, category: enumeration("all", "sync", "terminal", "bridge", "devices", "app"), limit: integer(1, 300), eventsExpanded: boolean }),
   get_sync_view: command("Read the mounted Sync repository filter, folder paths and expanded project IDs."),
@@ -22,7 +20,7 @@ export const RUNTIME_APP_COMMANDS = {
   close_app: command("Close the desktop app after acknowledging this request. Refuses any unsaved or saving editor."),
   relaunch_app: command("Relaunch the desktop app after acknowledging this request. Refuses any unsaved or saving editor."),
   navigate: command("Open the existing session/workspace form, setup wizard, or return to the terminal canvas.", { target: enumeration("terminal", "new_session", "new_workspace", "setup") }, ["target"]),
-  open_settings: command("Open an app settings section, optionally selecting its subpage.", { section: enumeration("general", "notifications", "agents-hub", "devices", "sync", "mcp", "remote", "ports", "quick-chat", "help", "about"), page: string(80) }, ["section"]),
+  open_settings: command("Open an app settings section, optionally selecting its subpage.", { section: enumeration("general", "notifications", "quick-chat", "devices", "sync", "mcp", "remote", "ports", "help", "about"), page: string(80) }, ["section"]),
   open_help: command("Open a specific existing help topic.", { topic: string(80) }, ["topic"]),
   open_menu: command("Open or close a named toolbar dropdown using its actual control.", { menu: enumeration("layout", "remote_desktop", "port_forwarding", "usage", "notifications", "new_session", "quick_chat"), open: boolean }, ["menu", "open"]),
   set_focus_mode: command("Enable or disable the tile focus mode that dims other sessions.", { tileId, enabled: boolean }, ["tileId", "enabled"]),

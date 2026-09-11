@@ -60,7 +60,7 @@ export function QuickChatSettings() {
           options={devices.map(device => ({ value: device.id, label: device.name, icon: <DeviceIcon device={device} /> }))}
           onChange={deviceId => update({ deviceId })} /></label>
       </div>
-      <p className="set-note">Claude opens Claude directly. Codex opens <code>pz</code> through this device user's Bash or Zsh login shell.</p>
+      <p className="set-note">Claude opens Claude directly. Codex opens Codex directly.</p>
       {!deviceAvailable && <p className="set-note" role="status">Your saved device is unavailable. Choose another device.</p>}
       {notice && <p className="set-note" role="status">{notice}</p>}
     </section>
@@ -73,7 +73,6 @@ export function QuickChatSettings() {
 type Chat = Awaited<ReturnType<typeof openQuickChat>> & { deviceName: string };
 
 function chatSummary(chat: Chat): string {
-  if (chat.launcher === "pz") return `${chat.deviceName} · pz · Codex profile`;
   return `${chat.deviceName} · ${chat.agent === "claude" ? "Claude" : "Codex"}`;
 }
 
@@ -133,7 +132,6 @@ export function QuickChat({ onOpenSettings }: { onOpenSettings?: () => void }) {
         </div>}
       </div>}
       {message && <p className="quick-chat-message" role="status">{message}</p>}
-      {chat?.launcher === "codex" && <p className="quick-chat-message" role="status">This existing Codex conversation continues unchanged. It was not restarted with <code>pz</code>.</p>}
       {chat && command && <div className="quick-chat-terminal">
         <Terminal key={`${chat.host}::${chat.session}`} tileId={`quick-chat:${chat.host}`} name={chat.session} host={chat.host}
           cmd={command.cmd} args={command.args} active={open} managedChat={chat} retryToken={retryToken}

@@ -41,7 +41,6 @@ import { mcpConfigs, mcpInstall } from "./lib/mcp.js";
 import { createAppControl, createAppControlRouter } from "./lib/app-control.js";
 import { createBridge, createBridgeRouter } from "./lib/bridge.js";
 import { takeNativeConsentKey } from "./lib/bridge-consent.js";
-import { createAgentsHub, createAgentsHubRouter } from "./lib/agents-hub.js";
 import { installAgent } from "./lib/install.js";
 import { filesRouter } from "./lib/files.js";
 import { startPtyBridge, sweepOrphanViews } from "./lib/pty.js";
@@ -59,7 +58,6 @@ const appControl = createAppControl();
 const appControlRouter = createAppControlRouter(appControl, json);
 const bridge = createBridge({ stateDir: STATE_DIR, appControl, nativeConsentKey: takeNativeConsentKey() });
 const bridgeRouter = createBridgeRouter(bridge, json);
-const agentsHubRouter = createAgentsHubRouter(createAgentsHub({ stateDir: STATE_DIR }), json);
 const server = http.createServer(async (req, res) => {
   // Defeat DNS rebinding: only a loopback Host on our port is served at all.
   if (!hostOk(req)) {
@@ -79,7 +77,6 @@ const server = http.createServer(async (req, res) => {
     return json(res, 401, { error: "unauthorized" });
   }
   if (await bridgeRouter(req, res, url)) return;
-  if (await agentsHubRouter(req, res, url)) return;
   if (await appControlRouter(req, res, url)) return;
   if (await gitProtectorRouter(req, res, url, json)) return;
   if (await quickChatRouter(req, res, url, json)) return;
