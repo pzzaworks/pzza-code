@@ -121,7 +121,7 @@ test("opencode credits map to a quota window while unsupported accounts stay hid
   }
 });
 
-test("opencode zen windows map without a credits quota", async () => {
+test("opencode go windows map without a credits quota", async () => {
   const realFetch = globalThis.fetch;
   try {
     globalThis.fetch = async (url) => {
