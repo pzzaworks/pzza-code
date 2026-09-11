@@ -3,7 +3,6 @@ import { deliverDesktopAlert } from "../desktopNotifications";
 
 export type NotificationCategory = "sync" | "terminal" | "bridge" | "devices" | "app";
 export const NOTIFICATION_EVENTS = {
-  "agents-sync": "Agents Hub sync results", "agents-deploy": "Agent deployment results", "skill-import": "Skill import results",
   "device-added": "Device added", "device-removed": "Device removed", "session-opened": "Session window opened",
   "model-ready": "Voice model downloaded", "model-error": "Voice model download failed",
   "sync-completed": "Sync completed", "sync-error": "Sync errors",
@@ -12,12 +11,12 @@ export const NOTIFICATION_EVENTS = {
 } as const;
 export type NotificationEvent = keyof typeof NOTIFICATION_EVENTS;
 export const NOTIFICATION_EVENT_CATEGORIES: Record<NotificationEvent, NotificationCategory> = {
-  "agents-sync": "app", "agents-deploy": "app", "skill-import": "app", "session-opened": "app",
+  "session-opened": "app",
   "model-ready": "app", "model-error": "app", "device-added": "devices", "device-removed": "devices",
   "sync-completed": "sync", "sync-error": "sync", "terminal-bell": "terminal", "terminal-command": "terminal", "terminal-exit": "terminal",
   "bridge-approval": "bridge", "bridge-result": "bridge",
 };
-export interface NotificationTarget { tileId?: string; section?: "sync" | "mcp" | "devices" | "general" | "agents-hub" }
+export interface NotificationTarget { tileId?: string; section?: "sync" | "mcp" | "devices" | "general" | "quick-chat" }
 export interface Notice {
   event?: NotificationEvent;
   id: string; category: NotificationCategory; title: string; body: string;
@@ -33,12 +32,12 @@ interface NotificationState {
   read(id?: string): void; clear(): void; remove(id: string): void;
   configure(patch: Partial<Preferences>): void;
 }
-const key = "pzza.notifications.v1";
+const storeName = "pzza.notifications.v1";
 const defaults: Preferences = { enabled: true, desktop: false, events: {}, categories: { sync: true, terminal: true, bridge: true, devices: true, app: true }, mutedUntil: 0 };
 const categories = ["sync", "terminal", "bridge", "devices", "app"];
 function initial(): { items: Notice[]; preferences: Preferences } {
   try {
-    const saved: unknown = JSON.parse(localStorage.getItem(key) || "null");
+    const saved: unknown = JSON.parse(localStorage.getItem(storeName) || "null");
     if (!saved || typeof saved !== "object") return { items: [], preferences: defaults };
     const raw = saved as Record<string, unknown>;
     const items = Array.isArray(raw.items) ? raw.items.filter((item): item is Notice => {
@@ -51,7 +50,7 @@ function initial(): { items: Notice[]; preferences: Preferences } {
       const target: NotificationTarget = {};
       if (item.target && typeof item.target === "object") {
         if (typeof item.target.tileId === "string" && item.target.tileId.length <= 512) target.tileId = item.target.tileId;
-        if (item.target.section === "sync" || item.target.section === "mcp" || item.target.section === "devices" || item.target.section === "general" || item.target.section === "agents-hub") target.section = item.target.section;
+        if (item.target.section === "sync" || item.target.section === "mcp" || item.target.section === "devices" || item.target.section === "general" || item.target.section === "quick-chat") target.section = item.target.section;
       }
       const event = item.event && Object.hasOwn(NOTIFICATION_EVENTS, item.event) ? item.event : undefined;
       return { ...item, event, target, dedupeKey: typeof item.dedupeKey === "string" ? item.dedupeKey.slice(0, 512) : undefined };
@@ -84,7 +83,7 @@ export const useNotifications = create<NotificationState>((set) => ({
   configure: (patch) => set(state => ({ preferences: { ...state.preferences, ...patch } })),
 }));
 useNotifications.subscribe(({ items, preferences }) => {
-  try { localStorage.setItem(key, JSON.stringify({ items, preferences })); } catch { /* Keep the in-memory history when storage is full or unavailable. */ }
+  try { localStorage.setItem(storeName, JSON.stringify({ items, preferences })); } catch { /* Keep the in-memory history when storage is full or unavailable. */ }
 });
 export function notify(input: Omit<Notice, "id" | "createdAt" | "read">): void {
   const { items, preferences } = useNotifications.getState();

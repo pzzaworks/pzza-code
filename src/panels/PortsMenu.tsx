@@ -123,18 +123,18 @@ export function PortsMenu({ active = true, onLoadingChange, onOpenSettings }: {
       : null;
   const clientIsLocal = clientId === "this-mac";
   const showControls = !onOpenSettings;
+  const routeLabel = `${server?.name ?? "Source device"} → ${devices.find(device => device.id === clientId)?.name ?? "Receiver"}`;
 
   return (
     <div className={showControls ? "settings-page ports-settings" : "menu-body"}>
       {showControls ? <ForwardConfig serverId={serverId} clientId={clientId} onServer={onServer} onClient={onClient} /> : <>
         <div className="menu-head-title">Port forwarding</div>
-        <p className="ports-menu-route">{server?.name ?? "Source device"} → {devices.find(device => device.id === clientId)?.name ?? "Receiver"}</p>
       </>}
       <section className={showControls ? "settings-section" : "ports-menu-services"} aria-label="Live services">
       {HAS_TAURI ? (
-        <TauriPorts pollingActive={active} serverHost={serverHost} clientIsLocal={clientIsLocal} showControls={showControls} onLoadingChange={onLoadingChange} />
+        <TauriPorts pollingActive={active} serverHost={serverHost} clientIsLocal={clientIsLocal} showControls={showControls} onLoadingChange={onLoadingChange} route={showControls ? undefined : routeLabel} />
       ) : (
-        <ServerPorts pollingActive={active} showControls={showControls} onLoadingChange={onLoadingChange} />
+        <ServerPorts pollingActive={active} showControls={showControls} onLoadingChange={onLoadingChange} route={showControls ? undefined : routeLabel} />
       )}
       </section>
       {onOpenSettings ? <button type="button" className="menu-item" onClick={onOpenSettings}>
@@ -216,7 +216,7 @@ function OpenLink({ port }: { port: number }) {
   );
 }
 
-function ServerPorts({ pollingActive, showControls, onLoadingChange }: { pollingActive: boolean; showControls: boolean; onLoadingChange?: (loading: boolean) => void }) {
+function ServerPorts({ pollingActive, showControls, onLoadingChange, route }: { pollingActive: boolean; showControls: boolean; onLoadingChange?: (loading: boolean) => void; route?: string }) {
   const { details, unavailable, loading: detailsLoading } = usePortDetails(undefined, pollingActive);
   const [caps, setCaps] = useState<Capabilities | null>(null);
   const [ports, setPorts] = useState<number[]>([]);
@@ -287,8 +287,9 @@ function ServerPorts({ pollingActive, showControls, onLoadingChange }: { polling
   return (
     <>
       <div className="settings-row ports-status">
+        {route ? <span className="ports-route-inline">{route}</span> : null}
         <span className={`dot ${enabled ? "dot-up" : "dot-down"}`} />
-        <span className="small muted">
+        <span className="small muted ports-status-text">
           {isClient
             ? enabled
               ? `forwarding ${active.length} port${active.length === 1 ? "" : "s"}`
@@ -336,8 +337,8 @@ function NativeOpenLink({ port }: { port: number }) {
   </div>;
 }
 
-function TauriPorts({ serverHost, clientIsLocal, pollingActive, showControls, onLoadingChange }: {
-  serverHost: string | null; clientIsLocal: boolean; pollingActive: boolean; showControls: boolean; onLoadingChange?: (loading: boolean) => void;
+function TauriPorts({ serverHost, clientIsLocal, pollingActive, showControls, onLoadingChange, route }: {
+  serverHost: string | null; clientIsLocal: boolean; pollingActive: boolean; showControls: boolean; onLoadingChange?: (loading: boolean) => void; route?: string;
 }) {
   const host = serverHost;
   const { details, unavailable, loading: detailsLoading } = usePortDetails(host ?? undefined, !!host && clientIsLocal && pollingActive);
@@ -381,8 +382,9 @@ function TauriPorts({ serverHost, clientIsLocal, pollingActive, showControls, on
   const up = status?.masterUp;
   return <>
     <div className="settings-row ports-status">
+      {route ? <span className="ports-route-inline">{route}</span> : null}
       <span className={`dot ${up && enabled ? "dot-up" : "dot-down"}`} />
-      <span className="small muted" role="status">
+      <span className="small muted ports-status-text" role="status">
         {!status ? (showLoading ? "Checking ports…" : "\u00a0") : !up ? "SSH connection unavailable" : enabled ? `forwarding ${forwarded.length} ports` : "forwarding off"}
       </span>
       <div className="ports-status-spacer" />

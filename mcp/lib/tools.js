@@ -3,14 +3,12 @@
 // selected app window; device tools use the guarded backend directly.
 import { get, post, qs } from "./agent.js";
 import { BRIDGE_TOOLS } from "./bridge-tools.js";
-import { AGENTS_HUB_TOOLS } from "./agents-hub-tools.js";
 import { GIT_TOOLS } from "./git-tools.js";
 
 import { APP_TOOLS } from "./app-tools.js";
 
 const TOOLS = [
   ...BRIDGE_TOOLS,
-  ...AGENTS_HUB_TOOLS,
   ...GIT_TOOLS,
   ...APP_TOOLS,
   {

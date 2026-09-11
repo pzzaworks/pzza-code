@@ -39,7 +39,7 @@ test("invalid returned paths clean the exact receipt without accepting arbitrary
   assert.equal(calls.length, 2);
 });
 
-test("cancelled imports and drops cannot start a device request", async () => {
+test("cancelled drops cannot start a device request", async () => {
   const controller = new AbortController();
   controller.abort(new DOMException("Cancelled", "AbortError"));
   let writes = 0;
@@ -48,21 +48,15 @@ test("cancelled imports and drops cannot start a device request", async () => {
     writes++;
     return json({});
   };
-  await assert.rejects(api.agentsHubRequest("import-skill", {}, controller.signal), { name: "AbortError" });
   await assert.rejects(api.uploadTerminalDrop([new File(["x"], "one.txt")], "devbox", controller.signal), { name: "AbortError" });
   assert.equal(writes, 0);
 });
 
-test("Hub errors retain actionable status and public code", async () => {
-  globalThis.fetch = async () => json({ error: "The source revision changed", code: "revision_conflict" }, 409);
-  await assert.rejects(api.agentsHubRequest("update", {}), error => error.status === 409 && error.code === "revision_conflict" && error.message === "The source revision changed");
-});
-
 test("Quick Chat validates launcher and managed session identity", async () => {
-  globalThis.fetch = async () => json({ session: "pzza-quick-chat", host: "devbox", agent: "codex", launcher: "pz", identity: "$1:22:33" });
+  globalThis.fetch = async () => json({ session: "pzza-quick-chat", host: "devbox", agent: "codex", launcher: "codex", identity: "$1:22:33" });
   const chat = await api.openQuickChat("devbox", "codex");
   assert.equal(chat.identity, "$1:22:33");
-  assert.equal(chat.launcher, "pz");
+  assert.equal(chat.launcher, "codex");
   // Reusing a managed conversation reports its actual owning profile rather
   // than pretending a changed preference restarted it.
   assert.equal((await api.openQuickChat("devbox", "claude")).agent, "codex");

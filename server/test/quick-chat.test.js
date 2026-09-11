@@ -29,38 +29,24 @@ test("explicit local routing and strict remote SSH options", async () => {
         for (const flag of ["StrictHostKeyChecking=yes", "ForwardAgent=no", "ClearAllForwardings=yes", "ControlPath=none"]) assert.ok(args.includes(flag));
         assert.equal(args.at(-2), host);
       }
-      callback(null, "codex\npz\n$1:100:200");
+      callback(null, "codex\ncodex\n$1:100:200");
     });
-    assert.deepEqual(result, { session: "pzza-quick-chat", host, agent: "codex", launcher: "pz", identity: "$1:100:200" });
+    assert.deepEqual(result, { session: "pzza-quick-chat", host, agent: "codex", launcher: "codex", identity: "$1:100:200" });
   }
 });
 
-test("Codex Quick Chat resolves pz in the target login shell without a Codex fallback", () => {
-  const command = quickChatCommand("codex");
-  assert.match(command, /PZZA_QUICK_CHAT_LAUNCHER=pz/);
-  assert.match(command, /getent passwd/);
-  assert.match(command, /dscl \. -read/);
-  assert.match(command, /command -v pz >\/dev\/null 2>&1/);
-  assert.match(command, /-lic 'pz'/);
-  assert.doesNotMatch(command, /command -v codex/);
-  assert.ok(command.indexOf("has-session") < command.indexOf("command -v pz"));
-
-  const claude = quickChatCommand("claude");
-  assert.match(claude, /PZZA_QUICK_CHAT_LAUNCHER=claude/);
-  assert.match(claude, /command -v claude/);
-});
-
-test("Bash login shells resolve a pz alias without exposing its expansion", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "pzza-quick-chat-bash-"));
-  try {
-    await writeFile(path.join(root, ".bashrc"), "alias pz=':'\n", { mode: 0o600 });
-    await writeFile(path.join(root, ".bash_profile"), ". \"$HOME/.bashrc\"\n", { mode: 0o600 });
-    await promisify(execFile)("/bin/bash", ["-lic", "command -v pz >/dev/null 2>&1 && pz"], {
-      env: { ...process.env, HOME: root },
-    });
-  } finally {
-    await rm(root, { recursive: true, force: true });
+test("Quick Chat launches each CLI directly without a proxy launcher", () => {
+  for (const agent of ["claude", "codex"]) {
+    const command = quickChatCommand(agent);
+    assert.match(command, new RegExp(`PZZA_QUICK_CHAT_LAUNCHER=${agent}`));
+    assert.match(command, new RegExp(`command -v ${agent}`));
+    assert.ok(command.indexOf("has-session") < command.indexOf(`command -v ${agent}`));
   }
+  const codex = quickChatCommand("codex");
+  assert.doesNotMatch(codex, /command -v pz/);
+  assert.doesNotMatch(codex, /getent passwd/);
+  assert.doesNotMatch(codex, /dscl \. -read/);
+  assert.doesNotMatch(codex, /-lic 'pz'/);
 });
 
 test("connection errors are actionable and never expose subprocess output", async () => {
@@ -74,11 +60,9 @@ test("real isolated tmux: concurrent opens reuse one process, preserve agent, an
   const root = await mkdtemp(path.join(os.tmpdir(), "pzza-quick-chat-test-"));
   const bin = path.join(root, "bin");
   await mkdir(bin);
-  // Test-only launcher and shell aliases hold the pane open without contacting a provider.
+  // Test-only launchers hold the pane open without contacting a provider.
   await writeFile(path.join(bin, "claude"), "#!/bin/sh\nexec sleep 60\n", { mode: 0o700 });
-  await writeFile(path.join(root, ".zshrc"), "alias pz='exec sleep 60'\n", { mode: 0o600 });
-  await writeFile(path.join(root, ".bashrc"), "alias pz='exec sleep 60'\n", { mode: 0o600 });
-  await writeFile(path.join(root, ".bash_profile"), ". \"$HOME/.bashrc\"\n", { mode: 0o600 });
+  await writeFile(path.join(bin, "codex"), "#!/bin/sh\nexec sleep 60\n", { mode: 0o700 });
   const env = { ...process.env, HOME: root, ZDOTDIR: root, TMUX: "", TMUX_TMPDIR: root, PATH: `${bin}:${process.env.PATH}` };
   const run = (command, args, options, callback) => execFile(command, args, { ...options, env }, callback);
   const tmux = (...args) => promisify(execFile)("tmux", args, { env, timeout: 5000 });
@@ -107,7 +91,7 @@ test("real isolated tmux: concurrent opens reuse one process, preserve agent, an
     await closeQuickChat({ host: "" }, run);
     const replacement = await openQuickChat({ host: "", agent: "codex" }, run);
     assert.equal(replacement.agent, "codex");
-    assert.equal(replacement.launcher, "pz");
+    assert.equal(replacement.launcher, "codex");
     assert.notEqual(replacement.identity, existing.identity);
     await assert.rejects(verifyQuickChat({ ...existing, agent: "codex" }, run), /ended or was replaced/);
     await closeQuickChat({ host: "" }, run);
@@ -122,7 +106,7 @@ test("real isolated tmux: concurrent opens reuse one process, preserve agent, an
 });
 
 
-test("legacy managed Codex chat stays attached without starting or requiring pz", async () => {
+test("legacy managed Codex chat stays attached without restarting", async () => {
   requireIsolatedTmuxSocket();
   const root = await mkdtemp(path.join(os.tmpdir(), "pzqc-l-"));
   const { PZZA_QUICK_CHAT_AGENT: _agent, PZZA_QUICK_CHAT_LAUNCHER: _launcher, ...baseEnv } = process.env;

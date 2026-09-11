@@ -1,7 +1,7 @@
 import { get, post } from "./agent.js";
 import { APP_COMMANDS } from "../../server/lib/app-control-schema.js";
 
-const READ_ONLY = new Set(["get_agents_hub_view", "get_notification_view", "get_sync_view", "terminal_read_output", "terminal_read_selection", "terminal_get_state", "get_integrations", "get_window", "get_state", "get_dictation", "get_notifications", "get_sync_preferences", "get_sync_state", "get_forwarding", "get_remote_desktop", "get_quick_chat", "get_updates", "editor_get_state", "editor_read_buffer", "editor_list_directory"]);
+const READ_ONLY = new Set(["get_notification_view", "get_sync_view", "terminal_read_output", "terminal_read_selection", "terminal_get_state", "get_integrations", "get_window", "get_state", "get_dictation", "get_notifications", "get_sync_preferences", "get_sync_state", "get_forwarding", "get_remote_desktop", "get_quick_chat", "get_updates", "editor_get_state", "editor_read_buffer", "editor_list_directory"]);
 const DESTRUCTIVE = new Set(["terminal_submit", "terminal_key", "terminal_clear", "terminal_input", "terminal_paste", "install_integration", "check_integrations", "close_app", "relaunch_app", "delete_workspace", "remove_device", "close_tile", "terminate_tile", "cancel_dictation", "clear_notifications", "remove_notification", "sync_projects", "configure_forwarding", "configure_updates", "install_update", "editor_save", "editor_discard", "editor_move_file", "editor_delete_file"]);
 
 export const APP_TOOLS = [
