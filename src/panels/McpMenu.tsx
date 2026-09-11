@@ -10,7 +10,10 @@ import { useMcpSettings } from "../state/mcpSettings";
 const ENABLED_KEY = "pzza.mcp.enabled";
 
 // MCP dropdown: a switch to expose pzzacode-mcp to agents, and per-framework
-// add/copy so Claude / Codex / Zed / Cursor / Windsurf can reach it.
+// add so Claude / Codex / OpenCode / Cursor / Windsurf / Zed can reach it.
+// Add runs the client's own `mcp add` command where one exists, otherwise it
+// merges the entry into the client's config file (keeping a private backup);
+// Copy is for remote setups where the local machine cannot write the file.
 export function McpMenu() {
   const devices = useStore(state => state.devices);
   const health = useIntegrationHealth(state => state.devices);
@@ -106,7 +109,7 @@ export function McpMenu() {
             <div key={key} className="settings-row mcp-row">
               <div className="settings-row-copy"><span>{fw.label}</span>{note[key] ? <small role="status">{note[key]}</small> : null}</div>
               <div className="settings-actions">
-                {fw.cli && !agentHost.trim() ? (
+                {!agentHost.trim() ? (
                   <AsyncButton className="btn btn-accent btn-sm" onClick={() => install(key).catch(() => {})} loading={busy === key} disabled={busy !== null || !enabled} icon={Download} iconSize={13}>
                     Add
                   </AsyncButton>
