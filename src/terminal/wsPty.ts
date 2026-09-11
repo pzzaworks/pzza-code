@@ -20,7 +20,7 @@ export function openWsPty(
   onClose?: () => void,
   window?: number,
   host?: string,
-  managedChat?: { agent: "claude" | "codex"; identity: string },
+  managedChat?: { agent: "claude" | "codex" | "opencode"; identity: string },
 ): WsPtyHandle {
   const ws = new WebSocket(wsUrl());
   ws.binaryType = "arraybuffer";

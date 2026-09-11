@@ -20,7 +20,7 @@ export const DEVICE_APP_COMMANDS = {
   configure_remote_desktop: command("Select an existing remote device and optionally its desktop account. Passwords stay in the system keychain.", { serverId: text(), user: { ...text(64), pattern: "^[A-Za-z_][A-Za-z0-9_-]{0,63}$" } }, ["serverId"]),
   open_remote_desktop: command("Open the saved SSH-tunneled desktop connection using its system keychain credentials. Returns accepted/running; poll get_remote_desktop."),
   get_quick_chat: command("Read Quick Chat defaults, open state and session metadata without terminal output."),
-  configure_quick_chat: command("Update the saved device and profile for the next Quick Chat launch.", { deviceId: text(), agent: { type: "string", enum: ["claude", "codex"] } }),
+  configure_quick_chat: command("Update the saved device and profile for the next Quick Chat launch.", { deviceId: text(), agent: { type: "string", enum: ["claude", "codex", "opencode"] } }),
   open_quick_chat: command("Show the existing Quick Chat panel. Returns its current opening or ready state; hiding never terminates it."),
   close_quick_chat: command("Hide Quick Chat while keeping its conversation running."),
   get_updates: command("Read update availability and download/install progress."),

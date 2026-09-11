@@ -4,15 +4,24 @@ import { tmuxCommand } from "./tmux-client.js";
 
 export const QUICK_CHAT_SESSION = "pzza-quick-chat";
 
+const QUICK_CHAT_AGENTS = ["claude", "codex", "opencode"];
+const isQuickChatAgent = (agent) => QUICK_CHAT_AGENTS.includes(agent);
+
 export function quickChatCommand(agent, host = "") {
-  if (agent !== "claude" && agent !== "codex") throw new Error("Choose a supported agent.");
+  if (!isQuickChatAgent(agent)) throw new Error("Choose a supported agent.");
   // A fixed name and atomic tmux creation prevent duplicate sessions, even
   // across concurrent clients. The session environment identifies our session.
-  // Both profiles launch their CLI directly (claude / codex).
+  // Every profile launches its CLI directly (claude / codex / opencode).
   const tmux = tmuxCommand(host);
   const launcher = agent;
   const create = `
-  executable=$(command -v ${agent}) || exit 42
+  executable=$(command -v ${agent} 2>/dev/null)
+  if [ -z "$executable" ]; then
+    for candidate in "$HOME/.opencode/bin/${agent}" "$HOME/.local/bin/${agent}"; do
+      if [ -x "$candidate" ]; then executable="$candidate"; break; fi
+    done
+  fi
+  [ -n "$executable" ] || exit 42
   ${tmux} new-session -d -s pzza-quick-chat -x 160 -y 45 -c "$HOME" -e PZZA_QUICK_CHAT_AGENT=${agent} -e PZZA_QUICK_CHAT_LAUNCHER=${launcher} -e "PATH=$PATH" sh -c ${shQuote('exec "$1"')} quick-chat "$executable" 2>/dev/null || ${tmux} has-session -t '=pzza-quick-chat' 2>/dev/null || exit 43`;
   return `command -v tmux >/dev/null 2>&1 || exit 41
 if ! ${tmux} has-session -t '=pzza-quick-chat' 2>/dev/null; then${create}
@@ -20,8 +29,8 @@ fi
 owner=$(${tmux} show-environment -t '=pzza-quick-chat' PZZA_QUICK_CHAT_AGENT 2>/dev/null) || exit 44
 launcher=$(${tmux} show-environment -t '=pzza-quick-chat' PZZA_QUICK_CHAT_LAUNCHER 2>/dev/null || true)
 case "$owner:$launcher" in
-  PZZA_QUICK_CHAT_AGENT=claude:PZZA_QUICK_CHAT_LAUNCHER=claude|PZZA_QUICK_CHAT_AGENT=codex:PZZA_QUICK_CHAT_LAUNCHER=codex) ;;
-  PZZA_QUICK_CHAT_AGENT=claude:|PZZA_QUICK_CHAT_AGENT=codex:) launcher="PZZA_QUICK_CHAT_LAUNCHER=\${owner#*=}" ;;
+  PZZA_QUICK_CHAT_AGENT=claude:PZZA_QUICK_CHAT_LAUNCHER=claude|PZZA_QUICK_CHAT_AGENT=codex:PZZA_QUICK_CHAT_LAUNCHER=codex|PZZA_QUICK_CHAT_AGENT=opencode:PZZA_QUICK_CHAT_LAUNCHER=opencode) ;;
+  PZZA_QUICK_CHAT_AGENT=claude:|PZZA_QUICK_CHAT_AGENT=codex:|PZZA_QUICK_CHAT_AGENT=opencode:) launcher="PZZA_QUICK_CHAT_LAUNCHER=\${owner#*=}" ;;
   *) exit 44 ;;
 esac
 identity=$(${tmux} display-message -p -t '=pzza-quick-chat:' '#{session_id}:#{session_created}:#{pid}') || exit 45
@@ -43,7 +52,7 @@ export function verifyQuickChat(body, run = execFile) {
 }
 
 export function quickChatAttachmentGuard(agent, identity, tmux = "tmux") {
-  if ((agent !== "claude" && agent !== "codex") || !/^\$[0-9]+:[0-9]+:[0-9]+$/.test(identity)) throw new Error("Invalid Quick Chat identity.");
+  if (!isQuickChatAgent(agent) || !/^\$[0-9]+:[0-9]+:[0-9]+$/.test(identity)) throw new Error("Invalid Quick Chat identity.");
   return `${tmux} has-session -t '=pzza-quick-chat' 2>/dev/null || exit 45; ` +
     `[ "$(${tmux} show-environment -t '=pzza-quick-chat' PZZA_QUICK_CHAT_AGENT 2>/dev/null)" = ${shQuote(`PZZA_QUICK_CHAT_AGENT=${agent}`)} ] || exit 44; ` +
     `[ "$(${tmux} display-message -p -t '=pzza-quick-chat:' '#{session_id}:#{session_created}:#{pid}' 2>/dev/null)" = ${shQuote(identity)} ] || exit 45; `;
@@ -55,7 +64,7 @@ function runQuickChat(body, operation, run) {
   if (!body || typeof body !== "object" || Array.isArray(body) ||
       Object.keys(body).some(key => !["host", ...(!closing ? ["agent"] : []), ...(verifying ? ["identity"] : [])].includes(key)) ||
       typeof body.host !== "string" || (body.host && !SSH_TOKEN.test(body.host)) ||
-      (!closing && body.agent !== "claude" && body.agent !== "codex") ||
+      (!closing && !isQuickChatAgent(body.agent)) ||
       (verifying && (typeof body.identity !== "string" || !/^\$[0-9]+:[0-9]+:[0-9]+$/.test(body.identity)))) {
     return Promise.reject(Object.assign(new Error("Choose a valid device and agent."), { status: 400 }));
   }
@@ -65,7 +74,7 @@ if ! ${tmux} has-session -t '=pzza-quick-chat' 2>/dev/null; then exit 0; fi
 owner=$(${tmux} show-environment -t '=pzza-quick-chat' PZZA_QUICK_CHAT_AGENT 2>/dev/null) || exit 44
 launcher=$(${tmux} show-environment -t '=pzza-quick-chat' PZZA_QUICK_CHAT_LAUNCHER 2>/dev/null || true)
 case "$owner:$launcher" in
-  PZZA_QUICK_CHAT_AGENT=claude:PZZA_QUICK_CHAT_LAUNCHER=claude|PZZA_QUICK_CHAT_AGENT=codex:PZZA_QUICK_CHAT_LAUNCHER=codex|PZZA_QUICK_CHAT_AGENT=claude:|PZZA_QUICK_CHAT_AGENT=codex:) ${tmux} kill-session -t '=pzza-quick-chat' ;;
+  PZZA_QUICK_CHAT_AGENT=claude:PZZA_QUICK_CHAT_LAUNCHER=claude|PZZA_QUICK_CHAT_AGENT=codex:PZZA_QUICK_CHAT_LAUNCHER=codex|PZZA_QUICK_CHAT_AGENT=opencode:PZZA_QUICK_CHAT_LAUNCHER=opencode|PZZA_QUICK_CHAT_AGENT=claude:|PZZA_QUICK_CHAT_AGENT=codex:|PZZA_QUICK_CHAT_AGENT=opencode:) ${tmux} kill-session -t '=pzza-quick-chat' ;;
   *) exit 44 ;;
 esac` : verifying ? quickChatAttachmentGuard(body.agent, body.identity, tmux) : quickChatCommand(body.agent, body.host);
   // Explicit empty host always means this device, including receiver mode.
@@ -79,7 +88,9 @@ esac` : verifying ? quickChatAttachmentGuard(body.agent, body.identity, tmux) : 
           41: "tmux is not installed or is not on this device's PATH.",
           42: body.agent === "codex"
             ? "Codex is not installed or is not on this device's PATH."
-            : "Claude is not installed or is not on this device's PATH.",
+            : body.agent === "opencode"
+              ? "OpenCode is not installed or is not on this device's PATH."
+              : "Claude is not installed or is not on this device's PATH.",
           43: "Quick Chat could not start. Check the launcher installation and login on this device.",
           44: "A session named pzza-quick-chat already exists but is not the expected managed Quick Chat session.",
           45: "This Quick Chat conversation ended or was replaced. It cannot be reattached.",
@@ -90,9 +101,8 @@ esac` : verifying ? quickChatAttachmentGuard(body.agent, body.identity, tmux) : 
       if (closing) { resolve({ closed: true }); return; }
       if (verifying) { resolve({ verified: true }); return; }
       const [agent, launcher, identity, extra] = String(stdout).trim().split("\n");
-      const validLauncher = (agent === "claude" && launcher === "claude") ||
-        (agent === "codex" && launcher === "codex");
-      if ((agent !== "claude" && agent !== "codex") || !validLauncher ||
+      const validLauncher = isQuickChatAgent(agent) && launcher === agent;
+      if (!isQuickChatAgent(agent) || !validLauncher ||
           !/^\$[0-9]+:[0-9]+:[0-9]+$/.test(identity ?? "") || extra !== undefined) {
         reject(Object.assign(new Error("The device returned an invalid Quick Chat response."), { status: 502 }));
         return;

@@ -60,6 +60,10 @@ test("Quick Chat validates launcher and managed session identity", async () => {
   // Reusing a managed conversation reports its actual owning profile rather
   // than pretending a changed preference restarted it.
   assert.equal((await api.openQuickChat("devbox", "claude")).agent, "codex");
+  globalThis.fetch = async () => json({ session: "pzza-quick-chat", host: "devbox", agent: "opencode", launcher: "opencode", identity: "$4:55:66" });
+  const open = await api.openQuickChat("devbox", "opencode");
+  assert.equal(open.agent, "opencode");
+  assert.equal(open.identity, "$4:55:66");
   globalThis.fetch = async () => json({ session: "pzza-quick-chat", host: "devbox", agent: "codex", launcher: "claude", identity: "$1:22:33" });
   await assert.rejects(api.openQuickChat("devbox", "codex"), /Invalid Quick Chat response/);
   globalThis.fetch = async () => json({ verified: true });

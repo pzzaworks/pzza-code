@@ -81,7 +81,7 @@ export function attachCommand(
   session: string,
   cwd?: string,
   window?: number,
-  managedChat?: { agent: "claude" | "codex"; identity: string },
+  managedChat?: { agent: "claude" | "codex" | "opencode"; identity: string },
 ): SpawnCmd {
   const tmux = conn.host ? "tmux" : '"$@"';
   // A server started without a locale (e.g. by an older build) keeps spawning
@@ -92,7 +92,7 @@ export function attachCommand(
   if (managedChat) {
     if (session !== "pzza-quick-chat" || window !== undefined ||
         !/^\$[0-9]+:[0-9]+:[0-9]+$/.test(managedChat.identity) ||
-        (managedChat.agent !== "claude" && managedChat.agent !== "codex")) throw new Error("Invalid Quick Chat attachment.");
+        (managedChat.agent !== "claude" && managedChat.agent !== "codex" && managedChat.agent !== "opencode")) throw new Error("Invalid Quick Chat attachment.");
     const target = shQuote("=pzza-quick-chat");
     remote = `${tmux} has-session -t ${target} 2>/dev/null || exit 45; ` +
       `[ "$(${tmux} show-environment -t ${target} PZZA_QUICK_CHAT_AGENT 2>/dev/null)" = ${shQuote(`PZZA_QUICK_CHAT_AGENT=${managedChat.agent}`)} ] || exit 44; ` +

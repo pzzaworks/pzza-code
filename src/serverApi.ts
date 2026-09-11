@@ -344,8 +344,8 @@ export async function createSession(
   }
 }
 
-export type QuickChatAgent = "claude" | "codex";
-export type QuickChatLauncher = "claude" | "codex";
+export type QuickChatAgent = "claude" | "codex" | "opencode";
+export type QuickChatLauncher = "claude" | "codex" | "opencode";
 export interface QuickChatSession {
   session: string;
   host: string;
@@ -360,10 +360,8 @@ function isQuickChatResponse(value: unknown, host: string): value is QuickChatSe
   return Boolean(value && typeof value === "object" &&
     "session" in value && value.session === "pzza-quick-chat" &&
     "host" in value && value.host === host &&
-    "agent" in value && (value.agent === "claude" || value.agent === "codex") &&
-    "launcher" in value &&
-      ((value.agent === "claude" && value.launcher === "claude") ||
-       (value.agent === "codex" && value.launcher === "codex")) &&
+    "agent" in value && (value.agent === "claude" || value.agent === "codex" || value.agent === "opencode") &&
+    "launcher" in value && value.launcher === value.agent &&
     "identity" in value && typeof value.identity === "string" && /^\$[0-9]+:[0-9]+:[0-9]+$/.test(value.identity));
 }
 
@@ -380,7 +378,7 @@ export async function openQuickChat(host: string, agent: QuickChatAgent): Promis
   return value;
 }
 
-export async function verifyQuickChat(host: string, agent: "claude" | "codex", identity: string, signal?: AbortSignal): Promise<void> {
+export async function verifyQuickChat(host: string, agent: "claude" | "codex" | "opencode", identity: string, signal?: AbortSignal): Promise<void> {
   if (!/^\$[0-9]+:[0-9]+:[0-9]+$/.test(identity)) throw new Error("Quick Chat session identity is unavailable.");
   await withRequestDeadline(15000, signal, async boundedSignal => {
     const response = await agentFetch(`${SERVER_HTTP}/quick-chat/verify`, {
