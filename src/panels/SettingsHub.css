@@ -145,18 +145,22 @@
 .settings-hub-content .bridge-card.settings-section { border-bottom: 0; }
 .settings-hub-content .bridge-settings > .settings-section:first-of-type { margin-top: 18px; padding-top: 18px; border-top: 1px solid var(--border); }
 
-/* Help is a topic index; explanations and control previews expand in place. */
-.settings-hub-content .help-page .doc-content { padding: 0; overflow: visible; animation: none; }
-.help-topic { border-bottom: 1px solid var(--border); }
-.help-topic > summary { display: flex; align-items: center; gap: 10px; list-style: none; cursor: pointer; padding: 15px 0; color: var(--text); font-size: 12px; font-weight: 500; }
-.help-topic > summary::-webkit-details-marker { display: none; }
-.help-topic > summary > svg { flex-shrink: 0; color: var(--muted); transition: color 140ms; }
-.help-topic > summary:hover > svg:first-child { color: var(--text); }
-.help-topic > summary > span { flex: 1; }
-.help-topic > summary > svg:last-child { transition: transform 140ms; }
-.help-topic[open] > summary { font-weight: 650; }
-.help-topic[open] > summary > svg:last-child { transform: rotate(180deg); }
-.help-topic-body { padding: 2px 0 18px; }
+/* Help reads as flowing articles - one topic after another, nothing collapsed. */
+.settings-hub-content .help-page .doc-content { padding: 0; overflow: visible; animation: none; display: flex; flex-direction: column; }
+.help-tour-banner { display: flex; align-items: center; gap: 12px; padding: 12px 14px; margin-bottom: 6px; border: 1px solid var(--border); border-radius: 12px; background: color-mix(in srgb, var(--accent) 7%, transparent); }
+.help-tour-banner > svg { flex-shrink: 0; color: var(--text); }
+.help-tour-banner > div { flex: 1; display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.help-tour-banner strong { font-size: 12.5px; font-weight: 650; }
+.help-tour-banner span { font-size: 11px; color: var(--muted); }
+.help-tour-banner .btn { flex-shrink: 0; }
+.help-article { padding: 22px 0; border-bottom: 1px solid var(--border); }
+.help-article:first-child { padding-top: 6px; }
+.help-article:last-child { border-bottom: 0; }
+.help-article-head { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 12px; outline: none; }
+.help-article-head > svg { flex-shrink: 0; margin-top: 2px; color: var(--text); }
+.help-article-head h3 { margin: 0; font-size: 14px; font-weight: 650; letter-spacing: 0.1px; }
+.help-article-head p { margin: 3px 0 0; font-size: 11.5px; line-height: 1.5; color: var(--muted); }
+.help-article-body { min-width: 0; }
 .settings-hub-content .doc-h { margin: 18px 0 8px; font-size: 12px; font-weight: 550; text-transform: none; letter-spacing: 0; color: var(--text); }
 .settings-hub-content .doc-p { font-size: 11px; line-height: 1.75; margin: 8px 0; }
 .settings-hub-content .doc-row { padding: 11px 0; gap: 12px; }

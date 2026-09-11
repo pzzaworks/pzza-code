@@ -2004,7 +2004,7 @@ button {
   width: 24px;
   height: 24px;
   border-radius: 7px;
-  background: var(--surface-alt);
+  background: transparent;
   border: 1px solid var(--border);
   color: var(--muted);
   font-weight: 700;

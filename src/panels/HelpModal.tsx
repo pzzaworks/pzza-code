@@ -361,6 +361,7 @@ const NewSessionDemo = ({ highlightAccount = false }: { highlightAccount?: boole
 interface Sec {
   id: string;
   label: string;
+  blurb: string;
   icon: LucideIcon;
   body: ReactNode;
 }
@@ -391,11 +392,10 @@ export function HelpContent({ section, request }: { section: HelpSection; reques
   const content = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!request) return;
-    const target = content.current?.querySelector<HTMLDetailsElement>(`[data-help-topic="${request.topic}"]`);
+    const target = content.current?.querySelector<HTMLElement>(`[data-help-topic="${request.topic}"]`);
     if (target) {
-      target.open = true;
       target.scrollIntoView({ block: "start", behavior: "instant" });
-      target.querySelector<HTMLElement>("summary")?.focus();
+      target.querySelector<HTMLElement>(".help-article-head")?.focus();
     }
   }, [section, request]);
   const groups: Group[] = [
@@ -405,45 +405,39 @@ export function HelpContent({ section, request }: { section: HelpSection; reques
         {
           id: "start",
           label: "Overview",
+          blurb: "What PzzaCode is and how to open your first session",
           icon: Rocket,
           body: (
             <>
               <NewSessionDemo />
-              <H>Get started</H>
+              <H>Get started in a minute</H>
               <Steps>
                 <Step>
-                  Hit <IB icon={Plus} /> <b>New session</b> in the top bar.
+                  Hit <IB icon={Plus} /> <b>New session</b> in the top bar and give it a name.
                 </Step>
-                <Step>Pick the device, workspace and (optionally) which account it runs under.</Step>
+                <Step>Pick the device and workspace - and an account, if you keep several.</Step>
                 <Step>
-                  Drive every agent from the grid; jump between tiles with{" "}
+                  Drive everything from the grid; hop between tiles with{" "}
                   <Kbd>{ctrlBadge(1)}</Kbd>–<Kbd>{ctrlBadge(9)}</Kbd>.
                 </Step>
-                <Step>Close the app anytime - sessions keep running on the device.</Step>
+                <Step>Quit whenever - your sessions keep running on their devices.</Step>
               </Steps>
-              <H>What PzzaCode is</H>
+              <H>One grid for every terminal</H>
               <P>
-                Every terminal, every agent, one grid. Every tile on the grid is a live
-                terminal - a plain shell, or a coding agent like <b>Claude Code</b> or{" "}
-                <b>Codex</b>. Instead of hunting through tmux windows or a stack of terminal tabs,
-                you see and drive all of them from one screen.
+                Each tile is a live terminal: a plain shell, or a coding agent like{" "}
+                <b>Claude Code</b>, <b>Codex</b> or <b>OpenCode</b>. No more hunting through
+                tmux windows or terminal tabs - everything you run is visible on one screen,
+                on every device you added.
               </P>
-              <H>Persistent by design</H>
+              <H>Closing changes nothing</H>
               <P>
-                Tiles are backed by <b>tmux</b> sessions running on the device, not by the app
-                window. Closing PzzaCode - or losing the connection - just detaches your view:
-                every agent keeps running and comes back exactly where you left it when you
-                reopen. Nothing is lost between sessions.
-              </P>
-              <H>Where it runs</H>
-              <P>
-                In the browser it talks to a small <b>agent</b> on the device over a local
-                HTTP/WebSocket API; as a native desktop app the same primitives run in Rust. The
-                grid, workspaces and shortcuts are identical either way.
+                Tiles are backed by real <b>tmux</b> sessions on the device, not by the app
+                window. Closing PzzaCode - or losing the connection - only detaches your
+                view. Reopen and every agent is exactly where you left it.
               </P>
               <Tip>
-                New here? Hit <IB icon={Plus} /> in the top bar to open your first session, then
-                skim <b>Tile controls</b> and <b>Keyboard shortcuts</b> below.
+                New here? Open your first session from the top bar, then take the{" "}
+                <b>guided tour</b> below - it walks every control in place.
               </Tip>
             </>
           ),
@@ -451,6 +445,7 @@ export function HelpContent({ section, request }: { section: HelpSection; reques
         {
           id: "topbar",
           label: "The top bar",
+          blurb: "Every button above the grid, left to right",
           icon: LayoutGrid,
           body: (
             <>
@@ -469,22 +464,22 @@ export function HelpContent({ section, request }: { section: HelpSection; reques
               </Hero>
               <H>Left to right</H>
               <P>
-                The <b>brand</b> and version sit on the left, the <b>workspace tabs</b> in the
-                middle, and the tool buttons on the right:
+                Your <b>brand</b> and version sit on the left, <b>workspace tabs</b> in the
+                middle, and the tools on the right:
               </P>
               <Row ui={<IB icon={LayoutGrid} />} name="Layout">
-                Grid columns (2 / 3 / 4) for the <i>active</i> workspace - each workspace keeps its
-                own; the menu header shows which one you're changing.
-              </Row>
-              <Row ui={<IB icon={FolderSync} />} name="Sync">
-                Review and confirm the sync before it starts. A small indicator shows progress; you can request cancellation without discarding local changes.
-              </Row>
-              <Row ui={<IB icon={Monitor} />} name="Remote desktop">
-                Open the device's Linux desktop over an SSH-tunneled RDP session.
+                Grid columns for the <i>active</i> workspace - each workspace keeps its own.
               </Row>
               <Row ui={<IB icon={MessageSquare} />} name="Quick Chat">
                 A dropdown chat with your saved agent (Claude, Codex or OpenCode) - it keeps
                 running while hidden.
+              </Row>
+              <Row ui={<IB icon={FolderSync} />} name="Sync">
+                Review and confirm the sync before it starts. A small indicator shows
+                progress, and you can cancel without discarding local changes.
+              </Row>
+              <Row ui={<IB icon={Monitor} />} name="Remote desktop">
+                The device's Linux desktop over an SSH-tunneled RDP session.
               </Row>
               <Row ui={<IB icon={EthernetPort} />} name="Port forwarding">
                 Mirror the device's listening ports to your localhost.
@@ -492,14 +487,14 @@ export function HelpContent({ section, request }: { section: HelpSection; reques
               <Row ui={<IB icon={Gauge} />} name="Agent usage">
                 Live Claude / Codex / OpenCode usage and estimated spend.
               </Row>
-              <Row ui={<IB icon={SettingsIcon} />} name="Settings">
-                Open the settings sidebar for preferences, devices, sync, remote desktop, connections and help.
-              </Row>
               <Row ui={<IB icon={Bell} />} name="Notifications">
-                Read recent activity beside Settings in the toolbar.
+                Recent activity, beside Settings in the toolbar.
+              </Row>
+              <Row ui={<IB icon={SettingsIcon} />} name="Settings">
+                Preferences, devices, sync, connections, Quick Chat and help.
               </Row>
               <Row ui={<IB icon={Plus} />} name="New session">
-                Open a new terminal - pick the device, workspace and (optionally) which account.
+                A new terminal - pick the device, workspace and optionally the account.
               </Row>
             </>
           ),
@@ -507,6 +502,7 @@ export function HelpContent({ section, request }: { section: HelpSection; reques
         {
           id: "agent-tools",
           label: "Agent tools",
+          blurb: "Quick Chat and the agent MCP tools",
           icon: Sparkles,
           body: <>
             <H>Quick Chat</H>
@@ -522,11 +518,12 @@ export function HelpContent({ section, request }: { section: HelpSection; reques
         {
           id: "tiles",
           label: "Sessions & tiles",
+          blurb: "Anatomy of a tile header",
           icon: SquareTerminal,
           body: (
             <>
               <H>Anatomy of a tile</H>
-              <P>Every tile carries this header. Here is exactly what each part means:</P>
+              <P>Every tile carries this header. Here is what each part means:</P>
               <div className="doc-demo">
                 <TileHeadDemo />
               </div>
@@ -580,6 +577,7 @@ export function HelpContent({ section, request }: { section: HelpSection; reques
         {
           id: "controls",
           label: "Tile controls",
+          blurb: "Duplicate, focus, layout, maximize, hide, close",
           icon: Boxes,
           body: (
             <>
@@ -648,6 +646,7 @@ export function HelpContent({ section, request }: { section: HelpSection; reques
         {
           id: "focus",
           label: "Focus & attention",
+          blurb: "Spotlight one tile, dim the rest",
           icon: Focus,
           body: (
             <>
@@ -658,10 +657,10 @@ export function HelpContent({ section, request }: { section: HelpSection; reques
               </Hero>
               <H>Keeping your eyes on the right tile</H>
               <P>
-                Click a tile to make it <b>active</b> - every other tile gets a light grey wash so
-                the one you're working in stands out. Only the active tile scrolls or takes
-                keystrokes, so moving the mouse over a background agent never steals your scroll or
-                types into the wrong place.
+                Click a tile to make it <b>active</b> - the rest get a light grey wash so the
+                one you're working in stands out. Only the active tile scrolls or takes
+                keystrokes, so the background agents never steal your scroll or type in the
+                wrong place.
               </P>
               <Row ui={<TB icon={Focus} on />} name="Focus (spotlight)">
                 Reduce other tiles’ opacity and apply a colored overlay. Great when one session needs your full attention.
@@ -676,6 +675,7 @@ export function HelpContent({ section, request }: { section: HelpSection; reques
         {
           id: "workspaces",
           label: "Workspaces",
+          blurb: "Group sessions into tabbed contexts",
           icon: Layers,
           body: (
             <>
@@ -735,6 +735,7 @@ export function HelpContent({ section, request }: { section: HelpSection; reques
         {
           id: "layout",
           label: "Layout & grid",
+          blurb: "Columns, auto-sizing and per-tile spans",
           icon: LayoutGrid,
           body: (
             <>
@@ -775,6 +776,7 @@ export function HelpContent({ section, request }: { section: HelpSection; reques
         {
           id: "code",
           label: "Code editor",
+          blurb: "Built-in editor with go-to-definition",
           icon: FileCode,
           body: (
             <>
@@ -813,6 +815,7 @@ export function HelpContent({ section, request }: { section: HelpSection; reques
         {
           id: "shortcuts",
           label: "Keyboard shortcuts",
+          blurb: "Every key combo in one table",
           icon: Keyboard,
           body: (
             <>
@@ -876,6 +879,7 @@ export function HelpContent({ section, request }: { section: HelpSection; reques
         {
           id: "usage",
           label: "Agent usage",
+          blurb: "Live quotas, spend and token fixes",
           icon: Gauge,
           body: (
             <>
@@ -934,6 +938,7 @@ export function HelpContent({ section, request }: { section: HelpSection; reques
         {
           id: "multiaccount",
           label: "Multi-account",
+          blurb: "Run sessions under different accounts",
           icon: UsersRound,
           body: (
             <>
@@ -973,6 +978,7 @@ export function HelpContent({ section, request }: { section: HelpSection; reques
         {
           id: "devices",
           label: "Devices & the agent",
+          blurb: "Add machines and scan their sessions",
           icon: HardDrive,
           body: (
             <>
@@ -992,14 +998,14 @@ export function HelpContent({ section, request }: { section: HelpSection; reques
               <H>The agent, per device</H>
               <P>
                 A small <b>agent</b> runs on each device and serves its terminals, ports, saved
-                state and usage over a loopback API. Your state lives on the device, not only in
-                the browser, so it survives clearing site data.
+                state and usage over a loopback API. Your state lives on the device - not only
+                in the browser - so it survives clearing site data.
               </P>
               <H>Add a device</H>
               <P>
-                The setup wizard in <b>Settings → Devices</b> takes
-                the SSH details of a machine you can already reach and installs the agent on it{" "}
-                <i>over that connection</i> - you set up SSH, PzzaCode drives the rest.
+                The setup wizard in <b>Settings → Devices</b> takes the SSH details of a machine
+                you can already reach and installs the agent on it <i>over that connection</i> -
+                you set up SSH, PzzaCode drives the rest.
               </P>
               <H>Scan a device's sessions</H>
               <P>
@@ -1013,6 +1019,7 @@ export function HelpContent({ section, request }: { section: HelpSection; reques
         {
           id: "paste",
           label: "Image paste",
+          blurb: "Get images into the terminal",
           icon: ImageIcon,
           body: (
             <>
@@ -1042,6 +1049,7 @@ export function HelpContent({ section, request }: { section: HelpSection; reques
         {
           id: "ports",
           label: "Ports",
+          blurb: "Mirror device ports to localhost",
           icon: EthernetPort,
           body: (
             <>
@@ -1079,6 +1087,7 @@ export function HelpContent({ section, request }: { section: HelpSection; reques
         {
           id: "rdp",
           label: "Remote desktop",
+          blurb: "Linux desktop over SSH",
           icon: Monitor,
           body: (
             <>
@@ -1105,6 +1114,7 @@ export function HelpContent({ section, request }: { section: HelpSection; reques
         {
           id: "mcp",
           label: "MCP",
+          blurb: "Wire agents into this app",
           icon: Blocks,
           body: (
             <>
@@ -1152,6 +1162,7 @@ export function HelpContent({ section, request }: { section: HelpSection; reques
         {
           id: "tips",
           label: "Tips",
+          blurb: "Small things worth knowing",
           icon: Lightbulb,
           body: (
             <>
@@ -1160,16 +1171,6 @@ export function HelpContent({ section, request }: { section: HelpSection; reques
               </Hero>
               <H>Handy to know</H>
               <Tip>Hover almost anything for a tooltip - the icons don't need labels once you know them.</Tip>
-              <Tip>
-                Want the walkthrough again?{" "}
-                <button
-                  type="button"
-                  className="btn btn-sm"
-                  onClick={() => window.dispatchEvent(new Event("pzza:start-tour"))}
-                >
-                  Take the guided tour
-                </button>
-              </Tip>
               <Tip>
                 Renaming a tile or workspace is just a click on its name; press <Kbd>Esc</Kbd> to
                 cancel.
@@ -1196,14 +1197,28 @@ export function HelpContent({ section, request }: { section: HelpSection; reques
   const current = HELP_SECTIONS.find((entry) => entry.id === section) ?? HELP_SECTIONS[0];
   const topics = groups.flatMap((group) => group.sections);
   return <div className="settings-page help-page"><div className="doc-content" key={current.id} ref={content}>
+    <div className="help-tour-banner">
+      <Sparkles size={15} />
+      <div><strong>New here?</strong><span>Take the guided tour - it walks every control in place.</span></div>
+      <button
+        type="button"
+        className="btn btn-sm"
+        onClick={() => window.dispatchEvent(new Event("pzza:start-tour"))}
+      >
+        Start tour
+      </button>
+    </div>
     {current.topics.map((id) => {
       const topic = topics.find((entry) => entry.id === id);
       if (!topic) return null;
       const Icon = topic.icon;
-      return <details className="help-topic" key={topic.id} data-help-topic={topic.id}>
-        <summary tabIndex={0}><Icon size={16} /><span>{topic.label}</span><ChevronDown size={14} /></summary>
-        <div className="help-topic-body">{topic.body}</div>
-      </details>;
+      return <section className="help-article" key={topic.id} data-help-topic={topic.id}>
+        <div className="help-article-head" tabIndex={-1}>
+          <Icon size={17} strokeWidth={1.9} />
+          <div><h3>{topic.label}</h3><p>{topic.blurb}</p></div>
+        </div>
+        <div className="help-article-body">{topic.body}</div>
+      </section>;
     })}
   </div></div>;
 }
