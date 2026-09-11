@@ -458,6 +458,18 @@ export async function fetchUsage(fresh = false, host = ""): Promise<AccountUsage
   if (!res.ok) throw new Error(`usage ${res.status}`);
   return res.json();
 }
+export async function fixUsage(provider: string): Promise<void> {
+  const res = await agentFetch(`${SERVER_HTTP}/usage/fix`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ provider }),
+    signal: AbortSignal.timeout(120000),
+  });
+  if (!res.ok) {
+    const value: unknown = await res.json().catch(() => null);
+    throw new Error(value && typeof value === "object" && "error" in value && typeof value.error === "string" ? value.error : `usage fix ${res.status}`);
+  }
+}
 
 export interface DirEntry {
   name: string;

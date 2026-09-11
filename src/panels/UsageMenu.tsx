@@ -2,12 +2,14 @@ import { useStore } from "../state/store";
 import { deviceHost } from "../devices";
 import { loadDeviceUsage } from "../usageFallback";
 import { useDelayedLoading } from "../ui/useDelayedLoading";
+import { AsyncButton } from "../ui/AsyncButton";
 import { UsageSpend } from "./UsageSpend";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AlertTriangle, Loader2, RefreshCw } from "lucide-react";
 import {
   fetchUsage,
   fetchSpend,
+  fixUsage,
   type AccountUsage,
   type AccountSpend,
   type UsageWindow,
@@ -101,6 +103,7 @@ export function UsageMenu() {
   const [failed, setFailed] = useState(false);
   const [mode, setMode] = useState<Mode>(loadMode);
   const [spend, setSpend] = useState<Record<string, AccountSpend>>({});
+  const [fixing, setFixing] = useState<number | null>(null);
 
   const changeMode = (m: Mode) => {
     setMode(m);
@@ -137,6 +140,21 @@ export function UsageMenu() {
     });
   }, [devices]);
   useEffect(() => load(false), [load]);
+
+  // One-click repair for local Claude token errors: runs the CLI once (the
+  // documented manual fix) and reloads usage. Remote accounts use the header
+  // refresh instead - this endpoint only repairs the local device.
+  const fix = useCallback(async (index: number, provider: string) => {
+    setFixing(index);
+    try {
+      await fixUsage(provider);
+      load(true);
+    } catch {
+      load(true);
+    } finally {
+      setFixing(current => (current === index ? null : current));
+    }
+  }, [load]);
 
   return (
     <div className="menu-body usage-menu">
@@ -186,7 +204,14 @@ export function UsageMenu() {
                 {acc.sourceName ? <span className="usage-plan" title={`Usage from ${acc.sourceHost}`}>{acc.sourceName}</span> : null}
               </div>
               {acc.error ? (
-                <div className="usage-err">{acc.error}</div>
+                <>
+                  <div className="usage-err">{acc.error}</div>
+                  {acc.provider === "claude" && !acc.sourceHost && /token/i.test(acc.error) ? (
+                    <AsyncButton className="btn btn-sm" loading={fixing === i} disabled={fixing !== null} onClick={() => void fix(i, acc.provider)}>
+                      Run Claude to refresh
+                    </AsyncButton>
+                  ) : null}
+                </>
               ) : (
                 <>
                   {acc.usage?.stale && (
