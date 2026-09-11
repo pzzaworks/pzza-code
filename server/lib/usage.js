@@ -176,7 +176,7 @@ export async function fetchOpencodeUsage(apiKey) {
     return j && typeof j === "object" && j.usage && typeof j.usage === "object" ? j.usage : null;
   })();
   const win = (w) => w && Number.isFinite(Number(w?.percent))
-    ? { utilization: Math.min(100, Math.max(0, Number(w.percent))), resets_at: w.resetsAt ?? null }
+    ? { percent: Math.min(100, Math.max(0, Number(w.percent))), resets_at: w.resetsAt ?? null }
     : null;
   const weekly = windows ? win(windows.weekly) : null;
   const scoped = [
@@ -187,7 +187,9 @@ export async function fetchOpencodeUsage(apiKey) {
   if (!weekly && scoped.length === 0) {
     throw Object.assign(new Error("Zen usage is unavailable for this account."), { unsupported: true });
   }
-  return { five_hour: null, seven_day: weekly, scoped };
+  // seven_day follows the UsageWindow shape (utilization); scoped entries keep
+  // the UsageScoped shape (percent) the panel reads.
+  return { five_hour: null, seven_day: weekly ? { utilization: weekly.percent, resets_at: weekly.resets_at } : null, scoped };
 }
 
 async function opencodeAccountUsage(acc, fresh) {

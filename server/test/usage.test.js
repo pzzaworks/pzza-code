@@ -136,8 +136,8 @@ test("opencode zen windows map without a credits quota", async () => {
       five_hour: null,
       seven_day: { utilization: 34, resets_at: "2026-09-16T10:00:00Z" },
       scoped: [
-        { name: "Rolling", utilization: 12, resets_at: "2026-09-11T10:00:00Z" },
-        { name: "Monthly", utilization: 56, resets_at: "2026-10-01T10:00:00Z" },
+        { name: "Rolling", percent: 12, resets_at: "2026-09-11T10:00:00Z" },
+        { name: "Monthly", percent: 56, resets_at: "2026-10-01T10:00:00Z" },
       ],
     });
   } finally {
