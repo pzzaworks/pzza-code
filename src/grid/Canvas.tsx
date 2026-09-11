@@ -18,6 +18,7 @@ import {
   Mic,
   Plus,
   Rows2,
+  Sparkles,
   Square,
   StretchHorizontal,
   X,
@@ -106,6 +107,7 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
   const hideTile = useStore((s) => s.hideTile);
   const tileSpan = useStore((s) => s.tileSpan);
   const setTileSpan = useStore((s) => s.setTileSpan);
+  const clearTileSpan = useStore((s) => s.clearTileSpan);
   const tileTitles = useStore((s) => s.tileTitles);
   const renameTile = useStore((s) => s.renameTile);
   const devices = useStore((s) => s.devices);
@@ -358,7 +360,12 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
     const borderBg = wsColor
       ? `linear-gradient(140deg, ${wsColor} 0%, var(--border) 22%)`
       : undefined;
-    const span = tileSpan[t.id] ?? { c: 1, r: 1 };
+    // Tiles without a saved layout share the row evenly and a lone tile
+    // takes the full width, so the grid stays fluid without manual sizing.
+    // Explicit choices always win over the automatic share.
+    const explicit = tileSpan[t.id];
+    const autoC = wsTiles.length <= 1 ? columns : Math.max(1, Math.floor(columns / wsTiles.length));
+    const span = explicit ?? { c: autoC, r: 1 };
     const spanStyle = effFull
       ? undefined
       : {
@@ -777,11 +784,12 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
                 onMouseDown={(e) => e.stopPropagation()}
               >
                 {[
-                  { label: "Normal", Icon: Square, c: 1, r: 1 },
-                  { label: "Wide (2 cols)", Icon: Columns2, c: 2, r: 1 },
-                  { label: "Full width", Icon: StretchHorizontal, c: columns, r: 1 },
-                  { label: "Tall (2 rows)", Icon: Rows2, c: 1, r: 2 },
-                  { label: "Big (2×2)", Icon: LayoutGrid, c: 2, r: 2 },
+                  { label: "Auto", Icon: Sparkles, c: 0, r: 0, auto: true },
+                  { label: "Normal", Icon: Square, c: 1, r: 1, auto: false },
+                  { label: "Wide (2 cols)", Icon: Columns2, c: 2, r: 1, auto: false },
+                  { label: "Full width", Icon: StretchHorizontal, c: columns, r: 1, auto: false },
+                  { label: "Tall (2 rows)", Icon: Rows2, c: 1, r: 2, auto: false },
+                  { label: "Big (2×2)", Icon: LayoutGrid, c: 2, r: 2, auto: false },
                 ]
                   .filter((o, i, arr) => {
                     // Drop duplicates (e.g. at 2 columns "Wide" == "Full width").
@@ -790,15 +798,17 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
                     return arr.findIndex((y) => key(y) === key(o)) === i;
                   })
                   .map((o) => {
-                    const cur = tileSpan[layoutFor.id] ?? { c: 1, r: 1 };
-                    const on =
-                      Math.min(cur.c, columns) === Math.min(o.c, columns) && cur.r === o.r;
+                    const saved = tileSpan[layoutFor.id];
+                    const on = o.auto
+                      ? saved === undefined
+                      : saved !== undefined && Math.min(saved.c, columns) === Math.min(o.c, columns) && saved.r === o.r;
                     return (
                     <button
                       key={o.label}
                       className={`menu-item ${on ? "menu-item-on" : ""}`}
                       onClick={() => {
-                        setTileSpan(layoutFor.id, o.c, o.r);
+                        if (o.auto) clearTileSpan(layoutFor.id);
+                        else setTileSpan(layoutFor.id, o.c, o.r);
                         setLayoutFor(null);
                       }}
                     >
