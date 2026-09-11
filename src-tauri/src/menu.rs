@@ -71,6 +71,7 @@ pub fn install(app: &tauri::AppHandle) -> tauri::Result<()> {
                         ("focus", "Focus & attention"),
                         ("workspaces", "Workspaces"),
                         ("layout", "Layout & grid"),
+                        ("code", "Code editor"),
                         ("shortcuts", "Keyboard shortcuts"),
                     ],
                 ),
