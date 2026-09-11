@@ -130,13 +130,13 @@ export function processAgentCommand(process) {
   const basename = (value) => String(value || "").split("/").pop().replace(/^-/, "");
   const executable = process.executable || process.command;
   const direct = basename(executable);
-  if (direct === "claude" || direct === "codex") return direct;
+  if (direct === "claude" || direct === "codex" || direct === "opencode") return direct;
   if (/\/.local\/share\/claude\/versions\/\d+\.\d+\.\d+(?:[-.][A-Za-z0-9]+)*$/.test(executable || "")) return "claude";
   if (!["node", "nodejs", "bun", "deno"].includes(direct)) return "";
   const entry = process.entrypoint || "";
   if (/\/node_modules\/@anthropic-ai\/claude-code\/cli\.js$/.test(entry)) return "claude";
   if (/\/node_modules\/@openai\/codex\/bin\/codex\.js$/.test(entry)) return "codex";
-  if (["claude", "codex"].includes(basename(entry))) return basename(entry);
+  if (["claude", "codex", "opencode"].includes(basename(entry))) return basename(entry);
   return "";
 }
 
@@ -147,7 +147,7 @@ function activityMetadata(row) {
 }
 
 export function detectSessionActivity(panes, processes) {
-  const known = new Set(["claude", "codex", "bash", "zsh", "fish", "sh", "dash", "node", "nodejs", "bun", "deno", "python", "python3", "git", "vim", "nvim", "less", "ssh", "tmux", "btop", "htop", "top", "yazi", "ranger", "nnn", "lf", "docker", "lazydocker"]);
+  const known = new Set(["claude", "codex", "opencode", "bash", "zsh", "fish", "sh", "dash", "node", "nodejs", "bun", "deno", "python", "python3", "git", "vim", "nvim", "less", "ssh", "tmux", "btop", "htop", "top", "yazi", "ranger", "nnn", "lf", "docker", "lazydocker"]);
   const basename = (value) => String(value || "").split("/").pop().replace(/^-/, "");
   const label = (value) => known.has(basename(value)) ? basename(value) : "";
   const tty = (value) => String(value || "").replace(/^\/dev\//, "").replace(/^tty/, "");

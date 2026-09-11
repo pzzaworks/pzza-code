@@ -16,6 +16,7 @@ import {
 const PROVIDER: Record<string, { name: string; color: string }> = {
   claude: { name: "Claude", color: "#D97757" },
   codex: { name: "Codex", color: "#10A37F" },
+  opencode: { name: "OpenCode", color: "#94A3B8" },
 };
 
 function fmtReset(iso: string | null): string {

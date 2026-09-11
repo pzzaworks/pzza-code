@@ -9,7 +9,7 @@ const result = await build({
   format: "esm",
   platform: "node",
 });
-const { iconColor, sessionIconTooltip } = await import(`data:text/javascript;base64,${Buffer.from(result.outputFiles[0].text).toString("base64")}`);
+const { iconColor, sessionIcon, sessionIconTooltip } = await import(`data:text/javascript;base64,${Buffer.from(result.outputFiles[0].text).toString("base64")}`);
 
 test("effective provider branding overrides a Claude launcher only with normalized evidence", () => {
   assert.equal(iconColor("claude", "codex"), "#10A37F");
@@ -23,4 +23,14 @@ test("effective provider branding overrides a Claude launcher only with normaliz
     "Effective model: gpt-5.1 (Codex / OpenAI, configured by the foreground process or selected account). Launcher: Claude CLI.",
   );
   assert.equal(sessionIconTooltip("claude", null, null, null), "Launcher: Claude CLI. Effective model unavailable.");
+});
+
+test("opencode terminals keep opencode branding", () => {
+  assert.equal(sessionIcon("opencode", "claude").name, "OpenCodeIcon");
+  assert.equal(sessionIcon("/Users/berke/.opencode/bin/opencode", null).name, "OpenCodeIcon");
+  assert.equal(iconColor("opencode", "claude"), "#94A3B8");
+  assert.equal(
+    sessionIconTooltip("opencode", "claude-sonnet-4-5", "claude", "reported"),
+    "Effective model: claude-sonnet-4-5 (Claude, reported by the foreground process). Launcher: OpenCode.",
+  );
 });

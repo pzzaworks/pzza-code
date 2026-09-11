@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createUsageLimiter, usageResponseError, USAGE_FRESH_MS } from "../lib/usage.js";
+import { createUsageLimiter, fetchOpencodeUsage, usageResponseError, USAGE_FRESH_MS } from "../lib/usage.js";
 
 test("duplicate accounts and refresh requests share calls and respect freshness", async () => {
   let now = 0;
@@ -90,4 +90,30 @@ test("manual refresh still honors provider error cooldown", async () => {
   await assert.rejects(limited("account", fetchUsage), /rate limited/);
   await assert.rejects(limited("account", fetchUsage, { fresh: true }), /rate limited/);
   assert.equal(calls, 1);
+});
+
+test("opencode credits map to a quota window while unsupported accounts stay hidden", async () => {
+  const realFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = async (url, init) => {
+      assert.equal(url, "https://api.opencode.ai/v1/credits");
+      assert.equal(init.headers.Authorization, "Bearer sk-test");
+      return new Response(JSON.stringify({ data: { total_credits: 100, used_credits: 25, remaining_credits: 75 } }), {
+        headers: { "Content-Type": "application/json" },
+      });
+    };
+    assert.deepEqual(await fetchOpencodeUsage("sk-test"), {
+      five_hour: null,
+      seven_day: null,
+      scoped: [{ name: "Credits", percent: 25, resets_at: null }],
+    });
+    globalThis.fetch = async () => new Response("Not Found", { headers: { "Content-Type": "text/html" } });
+    await assert.rejects(fetchOpencodeUsage("sk-test"), /unavailable for this account/);
+    globalThis.fetch = async () => new Response("{}", { status: 401 });
+    await assert.rejects(fetchOpencodeUsage("sk-test"), /401/);
+    globalThis.fetch = async () => new Response(JSON.stringify({ data: {} }), { headers: { "Content-Type": "application/json" } });
+    await assert.rejects(fetchOpencodeUsage("sk-test"), /invalid credits/);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
 });
