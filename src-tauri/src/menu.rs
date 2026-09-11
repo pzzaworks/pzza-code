@@ -34,7 +34,7 @@ pub fn install(app: &tauri::AppHandle) -> tauri::Result<()> {
                     "Decrease Terminal Font Size",
                     Some("CmdOrCtrl+Minus"),
                 ),
-                ("agents-hub", "Agents Hub…", None),
+                ("quick-chat", "Quick Chat…", None),
                 ("notifications", "Notifications…", None),
                 ("devices", "Devices…", None),
                 ("sync", "Sync & Repositories…", None),

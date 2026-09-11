@@ -618,7 +618,8 @@ button {
   overflow-y: auto;
 }
 .menu-panel.menu-compact { padding: 5px; }
-.ports-menu-route { margin: 0; padding: 0 10px 4px; color: var(--muted); font-size: 11px; }
+.ports-route-inline { min-width: 0; flex-shrink: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--muted); font-size: 11px; }
+.ports-status-text { white-space: nowrap; flex-shrink: 0; }
 .ports-menu-services .ports-status { padding: 6px 10px; }
 .ports-menu-services .ports-box .port-row { padding: 8px 10px; }
 .ports-menu-services .settings-empty { padding: 12px 10px; }

@@ -13,7 +13,6 @@ import { APP_COMMANDS, validateAppCommand } from "../../server/lib/app-control-s
 import { createAppControl, createAppControlRouter } from "../../server/lib/app-control.js";
 
 const viewCommands = [
-  "get_agents_hub_view", "set_agents_hub_view",
   "get_notification_view", "set_notification_view",
   "get_sync_view", "set_sync_view",
 ];
@@ -22,7 +21,7 @@ function rejects(action, cases) {
   for (const args of cases) assert.throws(() => validateAppCommand(action, args), undefined, JSON.stringify(args));
 }
 
-test("the six mounted view tools expose matching strict schemas and explicit client selection", () => {
+test("the four mounted view tools expose matching strict schemas and explicit client selection", () => {
   for (const action of viewCommands) {
     const matches = APP_TOOLS.filter(tool => tool.name === `app_${action}`);
     assert.equal(matches.length, 1, action);
@@ -40,17 +39,6 @@ test("the six mounted view tools expose matching strict schemas and explicit cli
     assert.deepEqual(validateAppCommand(action, {}), {});
     rejects(action, [{ unknown: true }, [], null]);
   }
-});
-
-test("Hub view validation bounds search, selection, preview and pagination", () => {
-  const action = "set_agents_hub_view";
-  for (const args of [{ query: "", selectedId: "", preview: false, limit: 1 }, { query: "q".repeat(500), selectedId: "s".repeat(128), preview: true, limit: 1000 }]) {
-    assert.deepEqual(validateAppCommand(action, args), args);
-  }
-  rejects(action, [
-    { query: "q".repeat(501) }, { query: 1 }, { selectedId: "s".repeat(129) }, { selectedId: null },
-    { preview: "true" }, { limit: 0 }, { limit: 1001 }, { limit: 2.5 }, { limit: "12" },
-  ]);
 });
 
 test("notification view validation rejects unsupported filters and non-integer page sizes", () => {
@@ -81,7 +69,7 @@ test("Sync view validation bounds unique folder and project arrays and permits c
   ]);
 });
 
-test("source MCP advertises all six views and preserves selected-client results and errors", { timeout: 15000 }, async t => {
+test("source MCP advertises all four views and preserves selected-client results and errors", { timeout: 15000 }, async t => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "pzza-view-tools-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const broker = createAppControl({ pollMs: 200, commandMs: 2000 });
@@ -109,7 +97,6 @@ test("source MCP advertises all six views and preserves selected-client results 
   assert.deepEqual(JSON.parse(listed.content[0].text).map(item => item.clientId), ["first-view-window", "second-view-window"]);
 
   for (const [action, args] of [
-    ["get_agents_hub_view", {}], ["set_agents_hub_view", { query: "needle", selectedId: "", limit: 12 }],
     ["get_notification_view", {}], ["set_notification_view", { unreadOnly: true, category: "sync", limit: 15 }],
     ["get_sync_view", {}], ["set_sync_view", { filter: "attention", expandedFolders: ["/group"], expandedProjects: ["local:one"] }],
   ]) {

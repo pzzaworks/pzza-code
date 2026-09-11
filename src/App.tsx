@@ -143,7 +143,7 @@ export default function App() {
       }
       if (payload === "new-session") { openNewSession(); return; }
       if (payload === "new-workspace") { openNewWorkspace(); return; }
-      if (["general", "about", "notifications", "devices", "sync", "remote", "mcp", "help", "agents-hub"].includes(payload)) {
+      if (["general", "about", "notifications", "devices", "sync", "remote", "mcp", "help", "quick-chat"].includes(payload)) {
         setSessionDialogOpen(false);
         openSettings(payload as SettingsSection);
       } else if (payload === "font-increase" || payload === "font-decrease") {
@@ -158,7 +158,7 @@ export default function App() {
   useEffect(() => {
     const section = (event: Event) => {
       const value: unknown = (event as CustomEvent).detail;
-      if (value === "agents-hub" || value === "sync" || value === "mcp" || value === "devices" || value === "general") openSettings(value);
+      if (value === "quick-chat" || value === "sync" || value === "mcp" || value === "devices" || value === "general") openSettings(value);
     };
     const terminal = () => setSettingsOpen(false);
     window.addEventListener("pzza-notification-section", section);

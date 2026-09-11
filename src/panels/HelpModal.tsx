@@ -500,10 +500,8 @@ export function HelpContent({ section, request }: { section: HelpSection; reques
           icon: Sparkles,
           body: <>
             <H>Quick Chat</H>
-            <P>Open <b>Quick Chat</b> in the top bar to chat in a dropdown. It opens your saved agent immediately. Choose the agent and device for the next app launch in <b>Settings → Agents Hub → Quick Chat</b>.</P>
+            <P>Open <b>Quick Chat</b> in the top bar to chat in a dropdown. It opens your saved agent immediately. Choose the agent and device for the next app launch in <b>Settings → Quick Chat</b>.</P>
             <P>Click outside or use <b>Hide chat</b> to dismiss the dropdown while the chat keeps running. Your chat is prepared at app startup and remains available until the app closes.</P>
-            <H>Agents Hub</H>
-            <P>Open <b>Settings → Agents Hub</b> to manage your agent tools. Use the submenus to browse configuration and open an item to edit it.</P>
           </>,
         },
       ],

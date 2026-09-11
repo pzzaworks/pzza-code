@@ -344,7 +344,7 @@ export async function createSession(
 }
 
 export type QuickChatAgent = "claude" | "codex";
-export type QuickChatLauncher = "claude" | "codex" | "pz";
+export type QuickChatLauncher = "claude" | "codex";
 export interface QuickChatSession {
   session: string;
   host: string;
@@ -362,7 +362,7 @@ function isQuickChatResponse(value: unknown, host: string): value is QuickChatSe
     "agent" in value && (value.agent === "claude" || value.agent === "codex") &&
     "launcher" in value &&
       ((value.agent === "claude" && value.launcher === "claude") ||
-       (value.agent === "codex" && (value.launcher === "codex" || value.launcher === "pz"))) &&
+       (value.agent === "codex" && value.launcher === "codex")) &&
     "identity" in value && typeof value.identity === "string" && /^\$[0-9]+:[0-9]+:[0-9]+$/.test(value.identity));
 }
 
@@ -870,24 +870,6 @@ export async function bridgeRequest<T>(path: string, body?: unknown): Promise<T>
     throw Object.assign(new Error(message), { status: response.status });
   }
   return response.json();
-}
-
-export async function agentsHubRequest<T>(path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
-  return withRequestDeadline(60000, signal, async boundedSignal => {
-    const response = await agentFetch(`${SERVER_HTTP}/agents-hub/${path}`, {
-      method: body === undefined ? "GET" : "POST",
-      headers: body === undefined ? undefined : { "Content-Type": "application/json" },
-      body: body === undefined ? undefined : JSON.stringify(body),
-      signal: boundedSignal,
-    });
-    if (!response.ok) {
-      const value: unknown = await response.json().catch(() => null);
-      const message = value && typeof value === "object" && "error" in value && typeof value.error === "string" ? value.error : `Agents Hub request failed (${response.status})`;
-      const code = value && typeof value === "object" && "code" in value && typeof value.code === "string" ? value.code : undefined;
-      throw Object.assign(new Error(message), { status: response.status, code });
-    }
-    return response.json();
-  });
 }
 
 export interface McpRepairResult {
