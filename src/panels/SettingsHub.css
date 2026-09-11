@@ -150,9 +150,11 @@
 .help-topic { border-bottom: 1px solid var(--border); }
 .help-topic > summary { display: flex; align-items: center; gap: 10px; list-style: none; cursor: pointer; padding: 15px 0; color: var(--text); font-size: 12px; font-weight: 500; }
 .help-topic > summary::-webkit-details-marker { display: none; }
-.help-topic > summary > svg { flex-shrink: 0; color: var(--muted); }
+.help-topic > summary > svg { flex-shrink: 0; color: var(--muted); transition: color 140ms; }
+.help-topic > summary:hover > svg:first-child { color: var(--text); }
 .help-topic > summary > span { flex: 1; }
 .help-topic > summary > svg:last-child { transition: transform 140ms; }
+.help-topic[open] > summary { font-weight: 650; }
 .help-topic[open] > summary > svg:last-child { transform: rotate(180deg); }
 .help-topic-body { padding: 2px 0 18px; }
 .settings-hub-content .doc-h { margin: 18px 0 8px; font-size: 12px; font-weight: 550; text-transform: none; letter-spacing: 0; color: var(--text); }
