@@ -1,0 +1,127 @@
+/* Guided first-run tour: dimmed spotlight with a highlight ring and a tooltip. */
+
+.tour-root {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+}
+
+.tour-dim {
+  position: fixed;
+  background: rgba(0, 0, 0, 0.55);
+}
+
+.tour-dim-full {
+  inset: 0;
+}
+
+.tour-ring {
+  position: fixed;
+  border: 2px solid var(--accent);
+  border-radius: 12px;
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 25%, transparent);
+  pointer-events: none;
+  transition: left 0.25s ease, top 0.25s ease, width 0.25s ease, height 0.25s ease;
+}
+
+.tour-tip {
+  position: fixed;
+  padding: 14px 16px 12px;
+  animation: tour-tip-in 180ms ease-out;
+}
+
+.tour-tip-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 6px;
+}
+
+.tour-tip-head strong {
+  font-size: 13.5px;
+  font-weight: 650;
+}
+
+.tour-count {
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.tour-tip-body {
+  margin: 0 0 10px;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: color-mix(in srgb, var(--text) 85%, var(--muted));
+}
+
+.tour-dots {
+  display: flex;
+  gap: 5px;
+  margin-bottom: 12px;
+}
+
+.tour-dots span {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--border);
+}
+
+.tour-dots span.seen {
+  background: var(--muted);
+}
+
+.tour-dots span.on {
+  background: var(--accent);
+}
+
+.tour-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.tour-spacer {
+  flex: 1;
+}
+
+.tour-skip {
+  border: 0;
+  background: none;
+  padding: 4px 2px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.tour-skip:hover {
+  color: var(--text);
+}
+
+.tour-actions .btn {
+  width: auto;
+}
+
+@keyframes tour-tip-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tour-ring {
+    transition: none;
+  }
+  .tour-tip {
+    animation: none;
+  }
+}

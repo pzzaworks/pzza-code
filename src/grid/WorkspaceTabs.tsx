@@ -198,7 +198,7 @@ export function WorkspaceTabs({ openRequest = 0 }: { openRequest?: number }) {
       : { display: "none" as const };
 
   return (
-    <div className="ws-tabs" ref={ref}>
+    <div className="ws-tabs" ref={ref} data-tour="workspaces">
       {/* Only the tabs scroll; the + stays pinned after them so it is always
           reachable no matter how many workspaces there are. */}
       <div className="ws-tabs-scroll" ref={scrollRef}>

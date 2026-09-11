@@ -1161,6 +1161,16 @@ export function HelpContent({ section, request }: { section: HelpSection; reques
               <H>Handy to know</H>
               <Tip>Hover almost anything for a tooltip - the icons don't need labels once you know them.</Tip>
               <Tip>
+                Want the walkthrough again?{" "}
+                <button
+                  type="button"
+                  className="btn btn-sm"
+                  onClick={() => window.dispatchEvent(new Event("pzza:start-tour"))}
+                >
+                  Take the guided tour
+                </button>
+              </Tip>
+              <Tip>
                 Renaming a tile or workspace is just a click on its name; press <Kbd>Esc</Kbd> to
                 cancel.
               </Tip>
