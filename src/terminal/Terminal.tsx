@@ -1,6 +1,7 @@
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
+import { SearchAddon } from "@xterm/addon-search";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
@@ -23,6 +24,17 @@ import { createDictationComposition } from "./dictationComposition";
 import { notify } from "../state/notifications";
 import { createTerminalSignals } from "./notificationSignals";
 import { createTerminalAppController, registerTerminalAppControl, validateTerminalPaste } from "../appControlTerminal";
+import { IS_MAC } from "../shortcuts";
+import { ChevronDown, ChevronUp, X } from "lucide-react";
+
+// Find-all highlight colors (#RRGGBB as the addon requires). Amber reads on
+// both dark and light terminal themes.
+const FIND_DECORATIONS = {
+  matchBackground: "#66592c",
+  activeMatchBackground: "#a68b2e",
+  matchOverviewRuler: "#66592c",
+  activeMatchColorOverviewRuler: "#a68b2e",
+};
 
 // Copy text to the OS clipboard. navigator.clipboard only exists in a secure
 // context (https or localhost), so on a client that opened the app over plain
@@ -89,6 +101,56 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<XTerm | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
+  const searchRef = useRef<SearchAddon | null>(null);
+  const findInputRef = useRef<HTMLInputElement>(null);
+  const [findOpen, setFindOpen] = useState(false);
+  const [findQuery, setFindQuery] = useState("");
+  const [findCase, setFindCase] = useState(false);
+  const [findMiss, setFindMiss] = useState(false);
+  const [findCount, setFindCount] = useState<{ index: number; total: number } | null>(null);
+  const findOpenRef = useRef(false);
+  useEffect(() => {
+    findOpenRef.current = findOpen;
+  }, [findOpen]);
+
+  const searchOptions = useCallback((incremental: boolean) => ({
+    caseSensitive: findCase,
+    incremental,
+    decorations: FIND_DECORATIONS,
+  }), [findCase]);
+
+  const runFindNext = useCallback((incremental = false) => {
+    const search = searchRef.current;
+    if (!search || !findQuery) return;
+    setFindMiss(!search.findNext(findQuery, searchOptions(incremental)));
+  }, [findQuery, searchOptions]);
+
+  const runFindPrevious = useCallback(() => {
+    const search = searchRef.current;
+    if (!search || !findQuery) return;
+    setFindMiss(!search.findPrevious(findQuery, searchOptions(false)));
+  }, [findQuery, searchOptions]);
+
+  const closeFind = useCallback(() => {
+    searchRef.current?.clearDecorations();
+    setFindOpen(false);
+    setFindQuery("");
+    setFindCount(null);
+    setFindMiss(false);
+    termRef.current?.focus();
+  }, []);
+
+  useEffect(() => {
+    const search = searchRef.current;
+    if (!findOpen || !search) return;
+    if (!findQuery) {
+      search.clearDecorations();
+      setFindCount(null);
+      setFindMiss(false);
+      return;
+    }
+    setFindMiss(!search.findNext(findQuery, searchOptions(true)));
+  }, [findOpen, findQuery, findCase, searchOptions]);
   const safeFitRef = useRef<(() => void) | null>(null);
   const flushOutputRef = useRef<(() => void) | null>(null);
   const activeRef = useRef(active);
@@ -178,6 +240,27 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
 
       term.attachCustomKeyEventHandler((event) => {
         if (event.type !== "keydown") return true;
+        // Cmd+F everywhere, Ctrl+F outside macOS (there it belongs to TUIs).
+        const find = event.key.toLowerCase() === "f" && !event.altKey && !event.shiftKey &&
+          (event.metaKey || (event.ctrlKey && !IS_MAC));
+        if (find) {
+          event.preventDefault();
+          if (findOpenRef.current) findInputRef.current?.focus();
+          else {
+            const seed = term.getSelection().split("\n")[0]?.slice(0, 200) ?? "";
+            setFindQuery(seed);
+            setFindMiss(false);
+            setFindOpen(true);
+            window.setTimeout(() => {
+              const input = findInputRef.current;
+              if (input) {
+                input.focus();
+                input.select();
+              }
+            }, 0);
+          }
+          return false;
+        }
         const copy = event.key.toLowerCase() === "c" && !event.altKey &&
           ((event.metaKey && !event.ctrlKey) || (event.ctrlKey && event.shiftKey));
         if (!copy) return true;
@@ -220,6 +303,12 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
       const fit = new FitAddon();
       fitRef.current = fit;
       term.loadAddon(fit);
+      const search = new SearchAddon();
+      searchRef.current = search;
+      term.loadAddon(search);
+      const searchResults = search.onDidChangeResults(({ resultIndex, resultCount }) => {
+        if (!disposed) setFindCount(resultIndex < 0 ? null : { index: resultIndex, total: resultCount });
+      });
       term.loadAddon(new WebLinksAddon());
       term.loadAddon(new Unicode11Addon());
       term.unicode.activeVersion = "11";
@@ -637,6 +726,8 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
         disposed = true;
         recovery?.stop();
         retryRef.current = null;
+        searchResults.dispose();
+        searchRef.current = null;
         window.removeEventListener("pzza:quick-chat-cancel", cancelRecovery);
         inputListener.dispose();
         transportResize.dispose();
@@ -766,5 +857,51 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
     };
   }, [refreshNonce]);
 
-  return <div ref={containerRef} className="term-surface" />;
+  return <div ref={containerRef} className="term-surface">
+    {findOpen ? (
+      <div className="term-find-bar" role="search">
+        <input
+          ref={findInputRef}
+          className="term-find-input"
+          value={findQuery}
+          placeholder="Find"
+          aria-label="Find in terminal"
+          spellCheck={false}
+          onChange={(event) => setFindQuery(event.target.value.slice(0, 200))}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") {
+              event.preventDefault();
+              if (event.shiftKey) runFindPrevious();
+              else runFindNext(false);
+            } else if (event.key === "Escape") {
+              event.preventDefault();
+              closeFind();
+            }
+          }}
+        />
+        <button
+          type="button"
+          className={`tile-btn ${findCase ? "tile-btn-on" : ""}`}
+          title={findCase ? "Case sensitive on" : "Case sensitive off"}
+          aria-label={findCase ? "Case sensitive on" : "Case sensitive off"}
+          aria-pressed={findCase}
+          onClick={() => setFindCase((value) => !value)}
+        >
+          <span className="term-find-aa">Aa</span>
+        </button>
+        <button type="button" className="tile-btn" title="Previous match (Shift+Enter)" aria-label="Previous match" onClick={runFindPrevious}>
+          <ChevronUp size={13} />
+        </button>
+        <button type="button" className="tile-btn" title="Next match (Enter)" aria-label="Next match" onClick={() => runFindNext(false)}>
+          <ChevronDown size={13} />
+        </button>
+        <span className="term-find-count" role="status">
+          {findMiss ? "No matches" : findCount ? `${findCount.index + 1} / ${findCount.total}` : ""}
+        </span>
+        <button type="button" className="tile-btn" title="Close find (Esc)" aria-label="Close find" onClick={closeFind}>
+          <X size={13} />
+        </button>
+      </div>
+    ) : null}
+  </div>;
 }

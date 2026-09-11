@@ -2832,6 +2832,45 @@ button {
 .term-surface .xterm-viewport::-webkit-scrollbar {
   width: 7px;
 }
+
+/* In-terminal find bar (Cmd/Ctrl+F). All matches highlight; Enter jumps. */
+.term-find-bar {
+  position: absolute;
+  top: 8px;
+  right: 10px;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 5px 6px 5px 10px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+}
+.term-find-input {
+  width: 150px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font-size: 12px;
+  outline: none;
+}
+.term-find-input::placeholder {
+  color: var(--muted);
+}
+.term-find-aa {
+  font-size: 11px;
+  font-weight: 700;
+}
+.term-find-count {
+  min-width: 44px;
+  text-align: right;
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
 .term-surface .xterm-viewport::-webkit-scrollbar-thumb {
   background: var(--border);
   border-radius: 4px;
