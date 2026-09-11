@@ -18,7 +18,7 @@ export function jwtClaims(token) {
 }
 
 // Auto-discover Claude (~/.claude*) and Codex (~/.codex*) config dirs, plus the
-// OpenCode config dir (whose Zen key lives in the shared auth file).
+// OpenCode config dir (whose Go key lives in the shared auth file).
 export function discoverAccounts() {
   const home = os.homedir();
   const accounts = [];
@@ -80,8 +80,8 @@ function readOpencodeAuth() {
   return null;
 }
 
-// The Zen API key from the shared opencode auth file, or null when OpenCode
-// Zen is not connected on this device.
+// The Go API key from the shared opencode auth file, or null when OpenCode
+// Go is not connected on this device.
 export function readOpencodeKey() {
   try {
     const key = readOpencodeAuth()?.opencode?.key;

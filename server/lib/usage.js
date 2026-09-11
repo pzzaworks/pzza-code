@@ -118,7 +118,7 @@ async function fetchCodexUsage(creds) {
 }
 
 const CLAUDE_SIGNIN_HINT = "run claude once in a terminal to refresh it";
-const OPENCODE_SIGNIN_HINT = "reconnect OpenCode Zen with /connect in opencode";
+const OPENCODE_SIGNIN_HINT = "reconnect OpenCode Go with /connect in opencode";
 
 // Usage for one Claude account. Claude Code refreshes the OAuth token itself
 // whenever it runs and the agent never refreshes on its behalf (a refresh
@@ -147,9 +147,9 @@ async function claudeAccountUsage(acc, fresh) {
   }
 }
 
-// OpenCode Zen usage. Two endpoints cover the two account kinds, and neither
+// OpenCode Go usage. Two endpoints cover the two account kinds, and neither
 // is universal: the credits API answers quota accounts but returns 200 with a
-// non-JSON body otherwise, while the Zen usage API reports rolling, weekly
+// non-JSON body otherwise, while the Go usage API reports rolling, weekly
 // and monthly windows. Each side degrades to null on its own; only when both
 // come back empty does the account stay hidden instead of erroring.
 // Exported for unit tests.
@@ -185,7 +185,7 @@ export async function fetchOpencodeUsage(apiKey) {
     ...(windows && win(windows.monthly) ? [{ name: "Monthly", ...win(windows.monthly) }] : []),
   ];
   if (!weekly && scoped.length === 0) {
-    throw Object.assign(new Error("Zen usage is unavailable for this account."), { unsupported: true });
+    throw Object.assign(new Error("Go usage is unavailable for this account."), { unsupported: true });
   }
   // seven_day follows the UsageWindow shape (utilization); scoped entries keep
   // the UsageScoped shape (percent) the panel reads.
@@ -197,12 +197,12 @@ async function opencodeAccountUsage(acc, fresh) {
   // No usable key on this device: hide it rather than showing a row that can
   // never load (mirrors the Claude behavior above).
   if (!apiKey) return null;
-  const entry = { provider: "opencode", label: acc.label, plan: "Zen", usage: null, error: null };
+  const entry = { provider: "opencode", label: acc.label, plan: "Go", usage: null, error: null };
   try {
     return { ...entry, usage: await limitedUsage(credentialKey("opencode", apiKey), () => fetchOpencodeUsage(apiKey), { fresh }) };
   } catch (e) {
     if (e?.unsupported) return null;
-    if (e?.status === 401 || e?.status === 403) return { ...entry, error: `Zen API key rejected - ${OPENCODE_SIGNIN_HINT}` };
+    if (e?.status === 401 || e?.status === 403) return { ...entry, error: `Go API key rejected - ${OPENCODE_SIGNIN_HINT}` };
     throw e;
   }
 }
