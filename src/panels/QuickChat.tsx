@@ -115,7 +115,7 @@ export function QuickChat({ onOpenSettings }: { onOpenSettings?: () => void }) {
 
   const command = chat ? attachCommand({ host: chat.host || null }, chat.session, undefined, undefined, chat) : null;
   return <Dropdown controlId="quick_chat" icon={MessageSquare} title="Quick Chat" width={620} keepMounted preload={Boolean(chat)} loading={busy}
-    panelClassName="quick-chat-panel" controlledOpen={panelOpen} onOpenChange={value => useQuickChatView.setState({ open: value })} onOpen={() => {
+    panelClassName="quick-chat-panel" tourId="quick-chat" controlledOpen={panelOpen} onOpenChange={value => useQuickChatView.setState({ open: value })} onOpen={() => {
       if (!chat) void launch();
     }}>
     {(dismiss, open) => <>

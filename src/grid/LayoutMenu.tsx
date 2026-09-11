@@ -41,7 +41,7 @@ export function LayoutMenu() {
   }, [open]);
 
   return (
-    <div className="menu-wrap" ref={ref}>
+    <div className="menu-wrap" ref={ref} data-tour="layout">
       <button
         className={`icon-btn ${open ? "icon-btn-on" : ""}`}
         onClick={() => setOpen((v) => !v)}

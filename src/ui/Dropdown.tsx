@@ -19,6 +19,7 @@ interface Props {
   compact?: boolean;
   shortcut?: { label: string; keys: string };
   controlId?: string;
+  tourId?: string;
   onOpen?: () => void;
   controlledOpen?: boolean;
   onOpenChange?: (open: boolean) => void;
@@ -27,7 +28,7 @@ interface Props {
 
 // A top-bar icon button that opens an anchored dropdown panel (replaces modals
 // for the top-right controls). Handles open/close, click-outside and animation.
-export function Dropdown({ icon: Icon, title, label, accent, width = 300, keepMounted = false, preload = false, loading = false, panelClassName = "", align = "start", compact = false, shortcut, onOpen, controlledOpen, onOpenChange, controlId, children }: Props) {
+export function Dropdown({ icon: Icon, title, label, accent, width = 300, keepMounted = false, preload = false, loading = false, panelClassName = "", align = "start", compact = false, shortcut, onOpen, controlledOpen, onOpenChange, controlId, tourId, children }: Props) {
   const [internalOpen, setInternalOpen] = useState(false);
   const open = controlledOpen ?? internalOpen;
   const setOpen = useCallback((value: boolean) => { setInternalOpen(value); onOpenChange?.(value); }, [onOpenChange]);
@@ -85,7 +86,7 @@ export function Dropdown({ icon: Icon, title, label, accent, width = 300, keepMo
   }, [open, setOpen]);
 
   return (
-    <div className="menu-wrap" ref={ref}>
+    <div className="menu-wrap" ref={ref} data-tour={tourId}>
       {label ? (
         <button
           type="button"
