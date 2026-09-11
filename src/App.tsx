@@ -346,7 +346,7 @@ export default function App() {
                   {unreadNotifications ? <span className="notification-badge" aria-label={`${unreadNotifications} unread notifications`} /> : null}
                 </div>
                 <IconButton icon={SettingsIcon} title="Settings" tourId="settings" onClick={() => openSettings("general")} />
-                <Dropdown icon={Plus} title="New session" controlId="new_session" label="New session" width={420} panelClassName="creation-panel" shortcut={NEW_SESSION_SHORTCUT} tourId="new-session">
+                <Dropdown icon={Plus} title="New session" controlId="new_session" label="New session" width={340} panelClassName="creation-panel" shortcut={NEW_SESSION_SHORTCUT} tourId="new-session">
                   {(close) => <SessionMenu close={close} />}
                 </Dropdown>
               </div>
