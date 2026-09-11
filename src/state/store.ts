@@ -130,6 +130,7 @@ interface ConsoleState {
   // Per-tile grid span: {c: columns, r: rows}. Capped to the column count.
   tileSpan: Record<string, { c: number; r: number }>;
   setTileSpan: (id: string, c: number, r: number) => void;
+  clearTileSpan: (id: string) => void;
 
   // Optional per-tile display-name override (empty clears it back to default).
   tileTitles: Record<string, string>;
@@ -381,6 +382,13 @@ export const useStore = create<ConsoleState>((set, get) => ({
   tileSpan: load<Record<string, { c: number; r: number }>>(TILESPAN_KEY, {}),
   setTileSpan: (id, c, r) => {
     const tileSpan = { ...get().tileSpan, [id]: { c, r } };
+    persist(TILESPAN_KEY, tileSpan);
+    set((state) => ({ tileSpan, refreshNonce: state.refreshNonce + 1 }));
+  },
+  clearTileSpan: (id) => {
+    const tileSpan = { ...get().tileSpan };
+    if (!(id in tileSpan)) return;
+    delete tileSpan[id];
     persist(TILESPAN_KEY, tileSpan);
     set((state) => ({ tileSpan, refreshNonce: state.refreshNonce + 1 }));
   },
