@@ -59,7 +59,7 @@ function NotificationToggle({ label, hint, checked, onChange, disabled = false }
   </div>;
 }
 
-const categoryLabels: Record<NotificationCategory, string> = { sync: "Sync", terminal: "Terminals", bridge: "Device bridge", devices: "Devices", app: "App activity" };
+const categoryLabels: Record<NotificationCategory, string> = { sync: "Sync", terminal: "Terminals", devices: "Devices", app: "App activity" };
 
 export function NotificationsSettings({ page }: { page: "activity" | "preferences" }) {
   const { items, preferences, configure, read } = useNotifications();

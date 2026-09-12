@@ -10,7 +10,7 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "build:mcp": "npm ci --prefix mcp --ignore-scripts --no-audit --no-fund && esbuild mcp/server.js --bundle --platform=node --format=esm --target=node18 --outfile=build/mcp/server.js",
-    "test:mcp": "npm run build:mcp && node --test mcp/test/*.test.js server/test/mcp.test.js server/test/bridge-mcp.test.js",
+    "test:mcp": "npm run build:mcp && node --test mcp/test/*.test.js server/test/mcp.test.js",
     "test:ui": "node --test scripts/ui-safety.test.mjs",
     "test:ui:install": "playwright install chromium --only-shell",
     "test:native:full": "cargo test --manifest-path src-tauri/Cargo.toml --locked --release --lib -- --include-ignored",

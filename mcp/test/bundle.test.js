@@ -74,6 +74,8 @@ test("packaged MCP initializes and calls the agent without installed dependencie
   assert.deepEqual(tools, TOOLS.map(({ name, description, inputSchema, annotations }) => ({
     name, description, inputSchema, ...(annotations ? { annotations } : {}),
   })));
+  assert.ok(tools.every(tool => !tool.name.startsWith("bridge_")));
+  await assert.rejects(client.callTool({ name: "bridge_list_devices", arguments: {} }), /unknown tool/);
 
   const result = await client.callTool({ name: "capabilities", arguments: {} });
   assert.ok(!result.isError);

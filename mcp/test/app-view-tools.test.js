@@ -43,13 +43,13 @@ test("the four mounted view tools expose matching strict schemas and explicit cl
 
 test("notification view validation rejects unsupported filters and non-integer page sizes", () => {
   const action = "set_notification_view";
-  for (const category of ["all", "sync", "terminal", "bridge", "devices", "app"]) {
+  for (const category of ["all", "sync", "terminal", "devices", "app"]) {
     const args = { category, unreadOnly: true, eventsExpanded: false, limit: 300 };
     assert.deepEqual(validateAppCommand(action, args), args);
   }
   assert.deepEqual(validateAppCommand(action, { limit: 1 }), { limit: 1 });
   rejects(action, [
-    { category: "all categories" }, { category: "" }, { unreadOnly: 1 }, { eventsExpanded: "false" },
+    { category: "all categories" }, { category: "" }, { category: "bridge" }, { unreadOnly: 1 }, { eventsExpanded: "false" },
     { limit: 0 }, { limit: 301 }, { limit: 1.5 }, { limit: "15" },
   ]);
 });

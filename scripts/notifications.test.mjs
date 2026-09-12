@@ -3,6 +3,11 @@ import assert from "node:assert/strict";
 import { build } from "esbuild";
 
 const storage = new Map();
+const retainedNotice = { id: "terminal-history", category: "terminal", event: "terminal-command", title: "Command completed", body: "Finished", createdAt: Date.now(), read: true };
+storage.set("pzza.notifications.v1", JSON.stringify({
+  items: [retainedNotice, { ...retainedNotice, id: "retired-history", category: "bridge", event: "bridge-result" }],
+  preferences: { categories: { sync: false, bridge: false }, events: { "sync-error": false, "bridge-result": false } },
+}));
 globalThis.localStorage = { getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) };
 let focused = false;
 globalThis.document = { hasFocus: () => focused };
@@ -31,6 +36,16 @@ const notice = { category: "terminal", event: "terminal-command", title: "Privat
 const settle = () => new Promise(resolve => setImmediate(resolve));
 
 test("startup never requests OS notification permission", () => { assert.equal(native.requests, 0); });
+test("loading history removes unsupported categories and event preferences from persisted state", () => {
+  const saved = JSON.parse(storage.get("pzza.notifications.v1"));
+  assert.deepEqual(saved.items.map(item => item.id), [retainedNotice.id]);
+  assert.equal(saved.items[0].title, retainedNotice.title);
+  assert.equal(saved.preferences.categories.sync, false);
+  assert.equal(saved.preferences.events["sync-error"], false);
+  assert.equal(Object.hasOwn(saved.preferences.categories, "bridge"), false);
+  assert.equal(Object.hasOwn(saved.preferences.events, "bridge-result"), false);
+  assert.equal(Object.hasOwn(NOTIFICATION_EVENTS, "bridge-result"), false);
+});
 test("master, category and individual-event settings filter actual emission", () => {
   for (const patch of [{ enabled: false }, { categories: { ...initialPreferences.categories, terminal: false } }, { events: { "terminal-command": false } }]) {
     reset(); useNotifications.getState().configure(patch); notify(notice); assert.equal(useNotifications.getState().items.length, 0);

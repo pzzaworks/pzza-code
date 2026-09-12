@@ -8,7 +8,7 @@ async function requestOnDevice() {
   const path = await import("node:path");
   let input = "";
   for await (const chunk of process.stdin) input += chunk;
-  const { endpoint, body } = JSON.parse(input);
+  const { endpoint } = JSON.parse(input);
   const file = path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config"), "pzzacode", "agent-token");
   const fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
   let token;
@@ -18,9 +18,8 @@ async function requestOnDevice() {
     token = fs.readFileSync(fd, "utf8").trim();
   } finally { fs.closeSync(fd); }
   const response = await fetch(`http://127.0.0.1:5190${endpoint}`, {
-    method: body === undefined ? "GET" : "POST", redirect: "error", signal: AbortSignal.timeout(10000),
+    redirect: "error", signal: AbortSignal.timeout(10000),
     headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
   if (!response.ok) {
     process.stdout.write(JSON.stringify({ deviceAgentError: response.status }));
@@ -31,8 +30,8 @@ async function requestOnDevice() {
   process.stdout.write(text);
 }
 
-export function deviceAgentRequest(host, endpoint, body) {
-  const allowed = body === undefined ? /^\/(?:(?:usage|spend)(?:\?fresh=1)?|bridge\/state)$/.test(endpoint) : ["/bridge/pair-grant", "/bridge/approval-status", "/bridge/approval-cancel"].includes(endpoint);
+export function deviceAgentRequest(host, endpoint) {
+  const allowed = /^\/(?:usage|spend)(?:\?fresh=1)?$/.test(endpoint);
   if (!SSH_TOKEN.test(host) || !allowed) return Promise.reject(new Error("Invalid device agent request"));
   const script = `(${requestOnDevice.toString()})().catch(() => { process.exitCode = 1; });`;
   const command = `if command -v node >/dev/null 2>&1; then exec node -e ${shQuote(script)}; fi; for runtime in "$HOME/.local/bin/node" /opt/homebrew/bin/node /usr/local/bin/node /usr/bin/node "$HOME"/.nvm/versions/node/*/bin/node; do if test -x "$runtime"; then exec "$runtime" -e ${shQuote(script)}; fi; done; exit 127`;
@@ -44,12 +43,12 @@ export function deviceAgentRequest(host, endpoint, body) {
         try { value = JSON.parse(stdout); } catch { return reject(new Error("Device returned an invalid response")); }
         if (value?.deviceAgentError) {
           const status = value.deviceAgentError;
-          return reject(Object.assign(new Error(status === 404 ? "Update the device agent in device settings to enable bridge pairing." : status === 401 ? "The device agent authentication is out of date. Restart its managed agent." : status === 409 ? "Bridge settings changed on the device. Read its identity again and retry." : "The device rejected the bridge setup. Check its project folder and access settings."), { status }));
+          return reject(Object.assign(new Error(status === 401 ? "The device agent authentication is out of date. Restart its managed agent." : "Account data is unavailable on the device."), { status }));
         }
         resolve(value);
       });
     child.stdin?.on("error", () => {});
-    child.stdin?.end(JSON.stringify({ endpoint, ...(body === undefined ? {} : { body }) }));
+    child.stdin?.end(JSON.stringify({ endpoint }));
   });
 }
 

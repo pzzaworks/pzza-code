@@ -5,8 +5,8 @@ import { build } from "esbuild";
 const memory = new Map();
 globalThis.localStorage = { getItem: key => memory.get(key) ?? null, setItem: (key, value) => memory.set(key, value) };
 globalThis.window = Object.assign(new EventTarget(), { location: { protocol: "http:", hostname: "127.0.0.1", port: "1438" } });
-const output = await build({ stdin: { contents: 'export { useMcpSettings } from "./src/state/mcpSettings.ts"; export { useIntegrationHealth } from "./src/state/integrationHealth.ts"; export { saveBridgeConfig } from "./src/bridgeApi.ts";', resolveDir: process.cwd() }, bundle: true, platform: "browser", format: "esm", write: false });
-const { useMcpSettings, useIntegrationHealth, saveBridgeConfig } = await import(`data:text/javascript;base64,${Buffer.from(output.outputFiles[0].text).toString("base64")}`);
+const output = await build({ stdin: { contents: 'export { useMcpSettings } from "./src/state/mcpSettings.ts"; export { useIntegrationHealth } from "./src/state/integrationHealth.ts";', resolveDir: process.cwd() }, bundle: true, platform: "browser", format: "esm", write: false });
+const { useMcpSettings, useIntegrationHealth } = await import(`data:text/javascript;base64,${Buffer.from(output.outputFiles[0].text).toString("base64")}`);
 const tick = () => new Promise(resolve => setImmediate(resolve));
 
 test("integration checks coalesce per device and bound the batch to three requests", async () => {
@@ -58,31 +58,4 @@ test("config generation preserves the newest target and install output is never 
   assert.ok(!JSON.stringify(useMcpSettings.getState()).includes("Untrusted command output"));
   await assert.rejects(store.install("unknown-framework"), /copy the config/);
   assert.ok(!JSON.stringify(useMcpSettings.getState()).includes("Untrusted command output"));
-});
-
-test("bridge settings preserve the draft revision through native consent and reject stale saves", async t => {
-  const config = { enabled: false, peers: [], projects: [] };
-  const originalHash = "a".repeat(64);
-  const previousNative = window.__TAURI_INTERNALS__;
-  const previousMarker = globalThis.isTauri;
-  t.after(() => { window.__TAURI_INTERNALS__ = previousNative; globalThis.isTauri = previousMarker; });
-  globalThis.isTauri = true;
-  let request;
-  window.__TAURI_INTERNALS__ = { invoke: async (command, args) => {
-    request = { command, body: args.request };
-    throw "Bridge settings changed. Read their current state before saving.";
-  } };
-  await assert.rejects(saveBridgeConfig(config, originalHash), /settings changed/);
-  assert.equal(request.command, "bridge_local_decide");
-  assert.deepEqual(request.body, { kind: "config", config, expectedConfigHash: originalHash });
-  const currentHash = "b".repeat(64);
-  window.__TAURI_INTERNALS__.invoke = async (command, args) => {
-    assert.equal(command, "bridge_local_decide");
-    assert.deepEqual(args.request, { kind: "config", config, expectedConfigHash: currentHash });
-    return { config, configHash: currentHash, jobs: [] };
-  };
-  assert.equal((await saveBridgeConfig(config, currentHash)).configHash, currentHash);
-  globalThis.isTauri = false;
-  delete window.__TAURI_INTERNALS__;
-  await assert.rejects(saveBridgeConfig(config, currentHash), /receiving desktop app/);
 });

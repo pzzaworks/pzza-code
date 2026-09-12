@@ -30,11 +30,13 @@ import { WorkspaceTabs } from '/src/grid/WorkspaceTabs';
 import { UsageSpend } from '/src/panels/UsageSpend';
 import { UsageMenu } from '/src/panels/UsageMenu';
 import { McpMenu } from '/src/panels/McpMenu';
+import { SettingsHub } from '/src/panels/SettingsHub';
+import { readAppControlRuntime } from '/src/appControlRuntime';
 import { confirmAppControlAction } from '/src/appControlCore';
 import '/src/styles/global.css';
 import '/src/panels/SettingsHub.css';
 const app = createRoot(document.getElementById('root'));
-window.ui = { answers: [], picks: [], useStore, confirmAppControlAction, confirmUnsavedWork, hasUnsavedWork, registerUnsavedDraft, registerEditorFile, registerEditorDiscard, unmount: () => app.unmount() };
+window.ui = { answers: [], picks: [], useStore, readAppControlRuntime, confirmAppControlAction, confirmUnsavedWork, hasUnsavedWork, registerUnsavedDraft, registerEditorFile, registerEditorDiscard, unmount: () => app.unmount() };
 function Dialogs() {
   const [open, setOpen] = useState(true);
   return <><ConfirmationHost /><Modal open={open} title="Outer dialog" onClose={() => setOpen(false)}>
@@ -73,9 +75,13 @@ function Usage() {
   const empty = { day:'2026-09-04', cost:0, pricedCost:0, tokens:0, unpricedTokens:0, unpricedModels:[] };
   return <div className="menu menu-panel" style={{ position:'relative', width:420, margin:24 }}><UsageSpend color="var(--success)" spend={{ today:unknown, yesterday:known, window:partial, days:[known,unknown,partial,empty] }} /></div>;
 }
+function Settings() {
+  const [section, setSection] = useState('mcp');
+  return <SettingsHub open section={section} onSectionChange={setSection} onOpen={setSection} onClose={() => {}} />;
+}
 const mode = new URLSearchParams(location.search).get('mode');
 if (mode === 'usage-accounts') useStore.setState({ devices: [{ id:'remote', host:'devbox', name:'Devbox' }] });
-app.render(<ThemeProvider>{mode === 'dialogs' ? <Dialogs /> : mode === 'pending' ? <Pending /> : mode === 'picker' ? <Picker /> : mode === 'path' ? <Path /> : mode === 'appearance' ? <Appearance /> : mode === 'creation' ? <Creation /> : mode === 'usage' ? <Usage /> : mode === 'usage-accounts' ? <UsageMenu /> : mode === 'ports' ? <div className="menu menu-panel" style={{ position:'relative', width:320 }}><PortsMenu onOpenSettings={() => {}} /></div> : mode === 'mcp' ? <><ConfirmationHost /><McpMenu /></> : <ConfirmationHost />}</ThemeProvider>);
+app.render(<ThemeProvider>{mode === 'dialogs' ? <Dialogs /> : mode === 'pending' ? <Pending /> : mode === 'picker' ? <Picker /> : mode === 'path' ? <Path /> : mode === 'appearance' ? <Appearance /> : mode === 'creation' ? <Creation /> : mode === 'usage' ? <Usage /> : mode === 'usage-accounts' ? <UsageMenu /> : mode === 'ports' ? <div className="menu menu-panel" style={{ position:'relative', width:320 }}><PortsMenu onOpenSettings={() => {}} /></div> : mode === 'mcp' ? <><ConfirmationHost /><McpMenu /></> : mode === 'settings' ? <Settings /> : <ConfirmationHost />}</ThemeProvider>);
 `;
 let server, browser, origin, scratch;
 before(async () => {
@@ -248,6 +254,18 @@ test('text visibility changes real labels/icons in both themes, preserves hierar
   await page.getByRole('switch', { name: 'Semi-transparent mode' }).click();
   assert.equal((await sample()).body, 'rgb(31, 35, 40)');
   assert.equal(await page.evaluate(() => window.ui.useStore.getState().transparencyOptions.textVisibility), 100);
+});
+
+test('connection settings expose supported integrations and device tools', options, async t => {
+  const page = await pageFor(t, 'settings');
+  const connections = page.getByRole('group', { name: 'Connection settings' });
+  assert.deepEqual(await connections.getByRole('button').allTextContents(), ['MCP integrations', 'Remote desktop', 'Port forwarding']);
+  await page.getByRole('switch', { name: 'Allow app window control' }).waitFor();
+  assert.deepEqual(await page.evaluate(() => window.ui.readAppControlRuntime().settings.pages.mcp), ['mcp']);
+  await page.getByRole('button', { name: 'Notifications', exact: true }).click();
+  await page.getByRole('button', { name: 'Preferences', exact: true }).click();
+  assert.deepEqual(await page.getByRole('group', { name: 'Notification pages' }).getByRole('button').allTextContents(), ['Activity', 'Preferences']);
+  assert.deepEqual(await page.locator('.notification-event-group > legend').allTextContents(), ['Sync', 'Terminals', 'Devices', 'App activity']);
 });
 
 test('fresh app window control is off and enabling requires an explicit local confirmation', options, async t => {

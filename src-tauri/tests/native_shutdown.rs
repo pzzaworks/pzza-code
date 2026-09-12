@@ -4,9 +4,6 @@
 #[path = "../src/agent.rs"]
 mod agent;
 #[cfg(target_os = "macos")]
-#[path = "../src/bridge_consent.rs"]
-mod bridge_consent;
-#[cfg(target_os = "macos")]
 #[path = "../src/local_tmux.rs"]
 mod local_tmux;
 #[cfg(target_os = "macos")]

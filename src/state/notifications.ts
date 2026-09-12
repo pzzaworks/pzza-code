@@ -1,20 +1,18 @@
 import { create } from "zustand";
 import { deliverDesktopAlert } from "../desktopNotifications";
 
-export type NotificationCategory = "sync" | "terminal" | "bridge" | "devices" | "app";
+export type NotificationCategory = "sync" | "terminal" | "devices" | "app";
 export const NOTIFICATION_EVENTS = {
   "device-added": "Device added", "device-removed": "Device removed", "session-opened": "Session window opened",
   "model-ready": "Voice model downloaded", "model-error": "Voice model download failed",
   "sync-completed": "Sync completed", "sync-error": "Sync errors",
   "terminal-bell": "Terminal attention signal", "terminal-command": "Terminal command result", "terminal-exit": "Terminal process exit",
-  "bridge-approval": "Bridge approval required", "bridge-result": "Bridge job result",
 } as const;
 export type NotificationEvent = keyof typeof NOTIFICATION_EVENTS;
 export const NOTIFICATION_EVENT_CATEGORIES: Record<NotificationEvent, NotificationCategory> = {
   "session-opened": "app",
   "model-ready": "app", "model-error": "app", "device-added": "devices", "device-removed": "devices",
   "sync-completed": "sync", "sync-error": "sync", "terminal-bell": "terminal", "terminal-command": "terminal", "terminal-exit": "terminal",
-  "bridge-approval": "bridge", "bridge-result": "bridge",
 };
 export interface NotificationTarget { tileId?: string; section?: "sync" | "mcp" | "devices" | "general" | "quick-chat" }
 export interface Notice {
@@ -33,8 +31,8 @@ interface NotificationState {
   configure(patch: Partial<Preferences>): void;
 }
 const storeName = "pzza.notifications.v1";
-const defaults: Preferences = { enabled: true, desktop: false, events: {}, categories: { sync: true, terminal: true, bridge: true, devices: true, app: true }, mutedUntil: 0 };
-const categories = ["sync", "terminal", "bridge", "devices", "app"];
+const defaults: Preferences = { enabled: true, desktop: false, events: {}, categories: { sync: true, terminal: true, devices: true, app: true }, mutedUntil: 0 };
+const categories = ["sync", "terminal", "devices", "app"];
 function initial(): { items: Notice[]; preferences: Preferences } {
   try {
     const saved: unknown = JSON.parse(localStorage.getItem(storeName) || "null");
@@ -69,7 +67,7 @@ function initial(): { items: Notice[]; preferences: Preferences } {
       }
       if (value.categories && typeof value.categories === "object") {
         const flags = value.categories as Record<string, unknown>;
-        for (const category of ["sync", "terminal", "bridge", "devices", "app"] as const) if (typeof flags[category] === "boolean") preferences.categories[category] = flags[category];
+        for (const category of ["sync", "terminal", "devices", "app"] as const) if (typeof flags[category] === "boolean") preferences.categories[category] = flags[category];
       }
     }
     return { items, preferences };
@@ -82,9 +80,11 @@ export const useNotifications = create<NotificationState>((set) => ({
   remove: (id) => set(state => ({ items: state.items.filter(item => item.id !== id) })),
   configure: (patch) => set(state => ({ preferences: { ...state.preferences, ...patch } })),
 }));
-useNotifications.subscribe(({ items, preferences }) => {
+function persistNotifications({ items, preferences }: Pick<NotificationState, "items" | "preferences">): void {
   try { localStorage.setItem(storeName, JSON.stringify({ items, preferences })); } catch { /* Keep the in-memory history when storage is full or unavailable. */ }
-});
+}
+useNotifications.subscribe(persistNotifications);
+persistNotifications(useNotifications.getState());
 export function notify(input: Omit<Notice, "id" | "createdAt" | "read">): void {
   const { items, preferences } = useNotifications.getState();
   if (!preferences.enabled || !preferences.categories[input.category] || (input.event && preferences.events[input.event] === false)) return;

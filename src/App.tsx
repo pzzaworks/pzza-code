@@ -12,7 +12,6 @@ import {
 import { QuickChat } from "./panels/QuickChat";
 import { LatestNotifications } from "./panels/Notifications";
 import { useNotifications } from "./state/notifications";
-import { useBridgeNotifications } from "./notificationEvents";
 import { ContextMenu } from "./ui/ContextMenu";
 import { ThemeProvider } from "./theme/ThemeProvider";
 import { useStore } from "./state/store";
@@ -50,7 +49,6 @@ export default function App() {
     return () => window.removeEventListener("beforeunload", protectUnsavedUnload);
   }, []);
   useAppControl();
-  useBridgeNotifications();
   const unreadNotifications = useNotifications(state => state.items.filter(item => !item.read).length);
   useEffect(() => { void initializeDictation().catch(() => {}); }, []);
   const loadSessions = useStore((s) => s.loadSessions);
