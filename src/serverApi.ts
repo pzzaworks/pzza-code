@@ -577,6 +577,7 @@ export interface SpendDay extends SpendWindow {
   day: string; // YYYY-MM-DD
 }
 export interface AccountSpend {
+  sourceHost?: string;
   provider: "claude" | "codex" | "opencode";
   label: string;
   pricingBasis: "standard-api-short-context" | "opencode-billed";
@@ -586,9 +587,10 @@ export interface AccountSpend {
   days: SpendDay[]; // per-day series for the trailing window (oldest first)
 }
 // Estimated spend per account (today / yesterday / trailing 30 days), computed
-// from local transcripts. First call can take a few seconds; the agent caches it.
-export async function fetchSpend(fresh = false): Promise<AccountSpend[]> {
-  const res = await agentFetch(`${SERVER_HTTP}/spend${fresh ? "?fresh=1" : ""}`);
+// from transcripts on the requested device. First call can take a few seconds; the agent caches it.
+export async function fetchSpend(fresh = false, host = ""): Promise<AccountSpend[]> {
+  const params = new URLSearchParams({ host, ...(fresh ? { fresh: "1" } : {}) });
+  const res = await agentFetch(`${SERVER_HTTP}/spend?${params}`, { signal: host ? AbortSignal.timeout(15000) : undefined });
   if (!res.ok) throw new Error(`spend ${res.status}`);
   return res.json();
 }
