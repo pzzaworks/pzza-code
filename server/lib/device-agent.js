@@ -32,7 +32,7 @@ async function requestOnDevice() {
 }
 
 export function deviceAgentRequest(host, endpoint, body) {
-  const allowed = body === undefined ? /^\/(?:usage(?:\?fresh=1)?|bridge\/state)$/.test(endpoint) : endpoint === "/bridge/pair-grant";
+  const allowed = body === undefined ? /^\/(?:(?:usage|spend)(?:\?fresh=1)?|bridge\/state)$/.test(endpoint) : endpoint === "/bridge/pair-grant";
   if (!SSH_TOKEN.test(host) || !allowed) return Promise.reject(new Error("Invalid device agent request"));
   const script = `(${requestOnDevice.toString()})().catch(() => { process.exitCode = 1; });`;
   const command = `if command -v node >/dev/null 2>&1; then exec node -e ${shQuote(script)}; fi; for runtime in "$HOME/.local/bin/node" /opt/homebrew/bin/node /usr/local/bin/node /usr/bin/node "$HOME"/.nvm/versions/node/*/bin/node; do if test -x "$runtime"; then exec "$runtime" -e ${shQuote(script)}; fi; done; exit 127`;
@@ -53,7 +53,7 @@ export function deviceAgentRequest(host, endpoint, body) {
   });
 }
 
-export function createRemoteUsage({ request = deviceAgentRequest, now = Date.now } = {}) {
+function createRemoteAccountData(endpoint, markStale, { request = deviceAgentRequest, now = Date.now } = {}) {
   const cache = new Map();
   return async (host, fresh = false) => {
     if (!SSH_TOKEN.test(host)) throw new Error("Invalid device host");
@@ -64,14 +64,14 @@ export function createRemoteUsage({ request = deviceAgentRequest, now = Date.now
       if (entry.value) return entry.value;
       throw entry.error;
     }
-    entry.pending = request(host, `/usage${fresh ? "?fresh=1" : ""}`).then(value => {
-      if (!Array.isArray(value)) throw new Error("Invalid device usage response");
+    entry.pending = request(host, `${endpoint}${fresh ? "?fresh=1" : ""}`).then(value => {
+      if (!Array.isArray(value)) throw new Error("Invalid device account response");
       entry.value = value; entry.error = null; entry.nextAt = now() + 5 * 60 * 1000;
       return value;
     }).catch(error => {
       entry.error = error; entry.nextAt = now() + 30000;
       if (entry.value) {
-        entry.value = entry.value.map(account => ({ ...account, usage: account.usage ? { ...account.usage, stale: true } : null }));
+        entry.value = markStale(entry.value);
         return entry.value;
       }
       throw error;
@@ -79,4 +79,12 @@ export function createRemoteUsage({ request = deviceAgentRequest, now = Date.now
     if (entry.value && !fresh) { void entry.pending.catch(() => undefined); return entry.value; }
     return entry.pending;
   };
+}
+
+export function createRemoteUsage(options) {
+  return createRemoteAccountData("/usage", value => value.map(account => ({ ...account, usage: account.usage ? { ...account.usage, stale: true } : null })), options);
+}
+
+export function createRemoteSpend(options) {
+  return createRemoteAccountData("/spend", value => value, options);
 }

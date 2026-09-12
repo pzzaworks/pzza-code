@@ -28,6 +28,7 @@ import { SessionMenu } from '/src/panels/SessionMenu';
 import { PortsMenu } from '/src/panels/PortsMenu';
 import { WorkspaceTabs } from '/src/grid/WorkspaceTabs';
 import { UsageSpend } from '/src/panels/UsageSpend';
+import { UsageMenu } from '/src/panels/UsageMenu';
 import { McpMenu } from '/src/panels/McpMenu';
 import { confirmAppControlAction } from '/src/appControlCore';
 import '/src/styles/global.css';
@@ -73,7 +74,8 @@ function Usage() {
   return <div className="menu menu-panel" style={{ position:'relative', width:420, margin:24 }}><UsageSpend color="var(--success)" spend={{ today:unknown, yesterday:known, window:partial, days:[known,unknown,partial,empty] }} /></div>;
 }
 const mode = new URLSearchParams(location.search).get('mode');
-app.render(<ThemeProvider>{mode === 'dialogs' ? <Dialogs /> : mode === 'pending' ? <Pending /> : mode === 'picker' ? <Picker /> : mode === 'path' ? <Path /> : mode === 'appearance' ? <Appearance /> : mode === 'creation' ? <Creation /> : mode === 'usage' ? <Usage /> : mode === 'ports' ? <div className="menu menu-panel" style={{ position:'relative', width:320 }}><PortsMenu onOpenSettings={() => {}} /></div> : mode === 'mcp' ? <><ConfirmationHost /><McpMenu /></> : <ConfirmationHost />}</ThemeProvider>);
+if (mode === 'usage-accounts') useStore.setState({ devices: [{ id:'remote', host:'devbox', name:'Devbox' }] });
+app.render(<ThemeProvider>{mode === 'dialogs' ? <Dialogs /> : mode === 'pending' ? <Pending /> : mode === 'picker' ? <Picker /> : mode === 'path' ? <Path /> : mode === 'appearance' ? <Appearance /> : mode === 'creation' ? <Creation /> : mode === 'usage' ? <Usage /> : mode === 'usage-accounts' ? <UsageMenu /> : mode === 'ports' ? <div className="menu menu-panel" style={{ position:'relative', width:320 }}><PortsMenu onOpenSettings={() => {}} /></div> : mode === 'mcp' ? <><ConfirmationHost /><McpMenu /></> : <ConfirmationHost />}</ThemeProvider>);
 `;
 let server, browser, origin, scratch;
 before(async () => {
@@ -386,4 +388,32 @@ test('local ports exclude tunnel listeners while preserving local services and f
   assert.equal(await shared.getByRole('button', { name: 'Stop PID 13 on port 3000', exact: true }).count(), 1);
   assert.equal(await page.getByRole('button', { name: /Stop PID 10/ }).count(), 0);
   await evidence(page, 'local-services-without-tunnels');
+});
+
+
+test('remote account cards show their own token details and retain them when local scans finish', options, async t => {
+  const page = await pageFor(t, 'none');
+  const respond = (route, data) => route.fulfill({ json: data, headers: { 'Access-Control-Allow-Origin': '*' } });
+  const account = { provider: 'claude', label: 'Default', email: 'account@example.test', error: null, usage: { five_hour: { utilization: 10, resets_at: null }, seven_day: null, scoped: [] } };
+  await page.route('**/usage?**', route => respond(route, new URL(route.request().url()).searchParams.get('host') ? [account] : [{ ...account, error: 'Unavailable', usage: null }]));
+  let localSpend;
+  const summary = tokens => ({ day: '2026-09-12', cost: null, pricedCost: 0, tokens, unpricedTokens: tokens, unpricedModels: ['unpriced-model'] });
+  const spend = tokens => ({ provider: 'claude', label: 'Default', pricingBasis: 'standard-api-short-context', today: summary(tokens), yesterday: summary(0), window: summary(tokens), days: [summary(tokens)] });
+  await page.route('**/spend?**', route => {
+    if (new URL(route.request().url()).searchParams.get('host')) return respond(route, [spend(2600000)]);
+    localSpend = route;
+  });
+  await page.goto(`${origin}__ui_test?mode=usage-accounts`);
+  const card = page.locator('.usage-card').filter({ hasText: 'Devbox' });
+  await card.getByText('Token trend', { exact: true }).waitFor();
+  assert.match(await card.textContent(), /2\.6M tokens/);
+  assert.equal(await card.locator('.usage-detail').count(), 1);
+  await card.getByText('Daily breakdown', { exact: true }).click();
+  assert.match(await card.locator('tbody').textContent(), /2\.6M/);
+  assert.ok(localSpend);
+  await respond(localSpend, [spend(123000)]);
+  await page.waitForFunction(() => performance.getEntriesByType('resource').filter(entry => new URL(entry.name).pathname === '/spend').length === 2);
+  assert.match(await card.textContent(), /2\.6M tokens/);
+  assert.doesNotMatch(await card.textContent(), /123\.0K/);
+  await evidence(page, 'remote-account-token-details');
 });
