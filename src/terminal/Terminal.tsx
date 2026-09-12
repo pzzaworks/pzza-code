@@ -452,8 +452,11 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
             return null;
           }
         },
+        isWrappedRow: (row) => term.buffer.active.getLine(row)?.isWrapped ?? false,
       });
       const bellListener = term.onBell(() => notificationSignals.bell());
+      const messageListener = term.parser.registerOscHandler(9, (data) => notificationSignals.osc9(data));
+      const titledMessageListener = term.parser.registerOscHandler(777, (data) => notificationSignals.osc777(data));
       const completionListener = term.parser.registerOscHandler(133, (data) => notificationSignals.osc133(data));
 
       // The bundled Nerd Font symbols load asynchronously. Because the @font-face
@@ -775,6 +778,8 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
         disposed = true;
         notificationSignals.dispose();
         bellListener.dispose();
+        messageListener.dispose();
+        titledMessageListener.dispose();
         completionListener.dispose();
         pasteController.abort();
         cancelAnimationFrame(raf);
