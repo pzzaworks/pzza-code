@@ -85,7 +85,7 @@ test("real process exit is distinct from successful attachment detach and cleanu
   assert.equal(detached.events.length, 0);
 });
 
-test("notifications quote real screen lines when a screen is attached", () => {
+test("command and exit notifications quote real screen lines when a screen is attached", () => {
   // At D time the shell has not drawn the next prompt yet, so the cursor sits
   // on the last output line.
   const lines = ["", "$ npm test", "", "PASS 3 tests"];
@@ -106,14 +106,38 @@ test("notifications quote real screen lines when a screen is attached", () => {
   assert.ok(failed.events[0].body.includes("exited with status 2"), failed.events[0].body);
   assert.ok(failed.events[0].body.includes('"$ npm test"'), failed.events[0].body);
 
-  const bell = screenFixture(["$ vim notes.md", "~"], 1);
-  bell.signals.bell();
-  assert.ok(bell.events[0].body.includes('"~"'), bell.events[0].body);
-
   const exited = screenFixture(["$ npm test", "FAIL boom"], 1);
   exited.signals.processExit(1);
   assert.ok(exited.events[0].body.includes("status 1"), exited.events[0].body);
   assert.ok(exited.events[0].body.includes('"FAIL boom"'), exited.events[0].body);
+});
+
+test("bell notifications do not infer their reason from terminal prompts or output", () => {
+  for (const line of ["› Ask for help ⠂", "~", "PASS 3 tests", "password input"]) {
+    const f = screenFixture([line], 0);
+    f.signals.bell();
+    assert.equal(f.events[0].body, "This terminal emitted an attention signal.");
+    assert.ok(!f.events[0].body.includes(line));
+  }
+});
+
+test("focused terminal bells stay quiet without delaying later background alerts", () => {
+  let focused = true;
+  const events = [];
+  const signals = createTerminalSignals("tile-id", event => events.push(event), {
+    attachment: true, now: () => 0, isFocused: () => focused,
+  });
+  signals.bell();
+  assert.equal(events.length, 0);
+  focused = false;
+  signals.bell();
+  assert.equal(events.length, 1);
+  focused = true;
+  signals.osc133("C");
+  signals.osc133("D;2");
+  assert.equal(events[1].event, "terminal-command");
+  signals.processExit(1);
+  assert.equal(events[2].event, "terminal-exit");
 });
 
 test("missing screen rows fall back to generic text", () => {
