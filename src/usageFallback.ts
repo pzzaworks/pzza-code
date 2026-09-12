@@ -1,6 +1,35 @@
-import type { AccountUsage } from "./serverApi";
+import type { AccountSpend, AccountUsage } from "./serverApi";
 
 export interface UsageDevice { host: string; name: string }
+
+export function accountSpendKey(account: Pick<AccountUsage, "provider" | "label" | "sourceHost">): string {
+  return JSON.stringify([account.sourceHost ?? "", account.provider, account.label]);
+}
+
+export async function loadDeviceSpend(
+  devices: UsageDevice[],
+  fetch: (host: string) => Promise<AccountSpend[]>,
+  update: (spend: Record<string, AccountSpend>) => void,
+): Promise<void> {
+  const hosts = [...new Set(["", ...devices.map(device => device.host)])];
+  const spend: Record<string, AccountSpend> = {};
+  let index = 0;
+  // Publish each source separately so a slow scan or offline device cannot hide available totals.
+  await Promise.all(Array.from({ length: Math.min(3, hosts.length) }, async () => {
+    while (index < hosts.length) {
+      const host = hosts[index++];
+      try {
+        const accounts = await fetch(host);
+        for (const account of accounts) {
+          const value = { ...account, sourceHost: host };
+          spend[accountSpendKey(value)] = value;
+        }
+        update({ ...spend });
+      } catch { /* Other devices can still provide their own totals. */ }
+    }
+  }));
+}
+
 const providers = ["claude", "codex", "opencode"] as const;
 const usable = (account: AccountUsage) => Boolean(account.usage && !account.error && !account.usage.stale);
 

@@ -32,7 +32,7 @@ import { listSessions, listWindows, scanSessions, sessionActivity, terminateSess
 import { forwardStatus, setForwardEnabled, startForwardLoop } from "./lib/forward.js";
 import { listAccounts } from "./lib/accounts.js";
 import { USAGE_FRESH_MS, collectUsage, fixClaudeToken } from "./lib/usage.js";
-import { createRemoteUsage } from "./lib/device-agent.js";
+import { createRemoteSpend, createRemoteUsage } from "./lib/device-agent.js";
 import { createMcpRepair } from "./lib/mcp-repair.js";
 import { gitProtectorRouter } from "./lib/git-protector.js";
 import { SPEND_FRESH_MS, computeSpend } from "./lib/spend.js";
@@ -54,6 +54,7 @@ const queryHost = (url) => {
 };
 
 const remoteUsage = createRemoteUsage();
+const remoteSpend = createRemoteSpend();
 const repairMcp = createMcpRepair();
 const appControl = createAppControl();
 const appControlRouter = createAppControlRouter(appControl, json);
@@ -100,7 +101,12 @@ const server = http.createServer(async (req, res) => {
     return json(res, 200, { fixed: true });
   }
   if (url.pathname === "/accounts") return json(res, 200, listAccounts());
-  if (url.pathname === "/spend") return json(res, 200, await computeSpend({ fresh: url.searchParams.get("fresh") === "1" }));
+  if (url.pathname === "/spend") {
+    const host = url.searchParams.get("host") || "";
+    if (host && !SSH_TOKEN.test(host)) return json(res, 400, { error: "Invalid device host" });
+    try { return json(res, 200, host ? await remoteSpend(host, url.searchParams.get("fresh") === "1") : await computeSpend({ fresh: url.searchParams.get("fresh") === "1" })); }
+    catch { return json(res, 503, { error: "Spend is unavailable on this device" }); }
+  }
 
   // File access (local + ssh-proxied): /fs/list, /file/read|raw|write, /paste-image.
   if (await filesRouter(req, res, url)) return;

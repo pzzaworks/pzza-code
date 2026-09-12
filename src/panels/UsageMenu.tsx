@@ -1,6 +1,6 @@
 import { useStore } from "../state/store";
 import { deviceHost } from "../devices";
-import { loadDeviceUsage } from "../usageFallback";
+import { accountSpendKey, loadDeviceSpend, loadDeviceUsage } from "../usageFallback";
 import { useDelayedLoading } from "../ui/useDelayedLoading";
 import { AsyncButton } from "../ui/AsyncButton";
 import { ClaudeIcon, CodexIcon, OpenCodeIcon } from "../icons/BrandIcons";
@@ -119,22 +119,17 @@ export function UsageMenu() {
   const load = useCallback((fresh = false) => {
     const current = ++request.current;
     setLoading(true);
-    const usageRequest = loadDeviceUsage(devices.filter(device => deviceHost(device)).map(device => ({ host: deviceHost(device), name: device.name })), host => fetchUsage(fresh, host), (a) => {
+    const sources = devices.filter(device => deviceHost(device)).map(device => ({ host: deviceHost(device), name: device.name }));
+    const usageRequest = loadDeviceUsage(sources, host => fetchUsage(fresh, host), (a) => {
         if (request.current !== current) return;
         setAccounts(a); setFailed(false);
         if (a.some(account => account.usage && !account.error)) setLoading(false);
       })
       .catch(() => { if (request.current === current) setFailed(true); });
-    // Spend resolves separately (a slower local scan) so it never holds up usage.
-    const spendRequest = fetchSpend(fresh)
-      .then((s) => {
-        if (request.current !== current) return;
-        const map: Record<string, AccountSpend> = {};
-        for (const e of s) map[`${e.provider}:${e.label}`] = e;
-        setSpend(map);
-      })
-      .catch(() => undefined);
-    void spendRequest;
+    // Device transcript scans resolve separately so they never hold up usage.
+    void loadDeviceSpend(sources, host => fetchSpend(fresh, host), (values) => {
+      if (request.current === current) setSpend(values);
+    });
     void usageRequest.finally(() => {
       if (request.current !== current) return;
       setLoading(false);
@@ -240,7 +235,7 @@ export function UsageMenu() {
                     />
                   ))}
                   {(() => {
-                    const sp = (acc.sourceHost ? undefined : spend[`${acc.provider}:${acc.label}`]);
+                    const sp = spend[accountSpendKey(acc)];
                     return sp ? <UsageSpend spend={sp} color={p.color} /> : null;
                   })()}
                 </>
