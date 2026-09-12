@@ -25,6 +25,13 @@ test("foreground nested agent detection ignores background jobs, shell text and 
   assert.equal(detectSessionActivity([pane()], processes)[0].command, "bash");
 });
 
+test("opencode pane labels resolve like the other agents, stale or not", () => {
+  // A live shell with no agent process behind an opencode label: stale, hide it.
+  assert.equal(detectSessionActivity([pane({ command: "opencode" })], [processRow()])[0].command, "");
+  // No process snapshot at all: trust the pane label so old terminals brand up.
+  assert.equal(detectSessionActivity([pane({ command: "/Users/berke/.opencode/bin/opencode" })], [])[0].command, "opencode");
+});
+
 test("foreground detection is scoped to active pane, window, tty and ancestry", () => {
   const panes = [pane(), pane({ window: 1, active: false, pid: 40, tty: "/dev/ttys001", command: "zsh" }), pane({ paneActive: false, pid: 70, tty: "/dev/pts/7" })];
   const processes = [processRow(), processRow({ pid: 20, ppid: 999, pgid: 20, executable: "/bin/claude" }),
