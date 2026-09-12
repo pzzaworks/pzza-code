@@ -26,7 +26,7 @@ import {
   requestToken,
   tokenOk,
 } from "./lib/http.js";
-import { listPorts, listPortDetails } from "./lib/ports.js";
+import { listPorts, listPortDetails, terminateListener, stopPortContainer } from "./lib/ports.js";
 import { listSessions, listWindows, scanSessions, sessionActivity, terminateSession, duplicateSession } from "./lib/tmux.js";
 import { forwardStatus, setForwardEnabled, startForwardLoop } from "./lib/forward.js";
 import { listAccounts } from "./lib/accounts.js";
@@ -152,6 +152,28 @@ const server = http.createServer(async (req, res) => {
     catch (error) { return json(res, 503, { error: error.message }); }
   }
   if (url.pathname === "/ports") return json(res, 200, await listPorts());
+  if (url.pathname === "/ports/kill" && req.method === "POST") {
+    const body = await readBody(req);
+    if (!body || typeof body !== "object" || Array.isArray(body)) return json(res, 400, { error: "invalid request" });
+    if (body.host !== undefined && (typeof body.host !== "string" || (body.host && !SSH_TOKEN.test(body.host)))) {
+      return json(res, 400, { error: "invalid host" });
+    }
+    if (!Number.isInteger(body.pid)) return json(res, 400, { error: "Enter a valid process ID." });
+    try { return json(res, 200, await terminateListener({ host: body.host ?? "", pid: body.pid })); }
+    catch (error) { return json(res, error.message?.startsWith("Enter a valid") || error.message?.startsWith("Invalid") ? 400 : 503, { error: error.message }); }
+  }
+  if (url.pathname === "/ports/stop-container" && req.method === "POST") {
+    const body = await readBody(req);
+    if (!body || typeof body !== "object" || Array.isArray(body)) return json(res, 400, { error: "invalid request" });
+    if (body.host !== undefined && (typeof body.host !== "string" || (body.host && !SSH_TOKEN.test(body.host)))) {
+      return json(res, 400, { error: "invalid host" });
+    }
+    if (typeof body.id !== "string" || (body.runtime !== "docker" && body.runtime !== "podman")) {
+      return json(res, 400, { error: "Container ID or runtime is invalid." });
+    }
+    try { return json(res, 200, await stopPortContainer({ host: body.host ?? "", id: body.id, runtime: body.runtime })); }
+    catch (error) { return json(res, error.message?.startsWith("Invalid") || error.message?.startsWith("Container ID") || error.message?.startsWith("Container runtime") ? 400 : 503, { error: error.message }); }
+  }
   if (url.pathname === "/health") return json(res, 200, { ok: true, id: AGENT_ID });
   if (url.pathname === "/forward/status") return json(res, 200, forwardStatus());
 

@@ -154,6 +154,32 @@ export async function fetchPorts(): Promise<number[]> {
   if (!res.ok) throw new Error(`ports ${res.status}`);
   return res.json();
 }
+export async function killPortProcess(pid: number, host?: string): Promise<{ pid: number; ports: number[] }> {
+  const res = await agentFetch(`${SERVER_HTTP}/ports/kill`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(host === undefined ? { pid } : { pid, host }),
+    signal: AbortSignal.timeout(30000),
+  });
+  if (!res.ok) {
+    const value: unknown = await res.json().catch(() => null);
+    throw new Error(value && typeof value === "object" && "error" in value && typeof value.error === "string" ? value.error : "Could not stop the process.");
+  }
+  return res.json();
+}
+export async function stopPortContainer(id: string, runtime: "docker" | "podman", host?: string): Promise<{ id: string; runtime: string }> {
+  const res = await agentFetch(`${SERVER_HTTP}/ports/stop-container`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(host === undefined ? { id, runtime } : { id, runtime, host }),
+    signal: AbortSignal.timeout(45000),
+  });
+  if (!res.ok) {
+    const value: unknown = await res.json().catch(() => null);
+    throw new Error(value && typeof value === "object" && "error" in value && typeof value.error === "string" ? value.error : "Could not stop the container.");
+  }
+  return res.json();
+}
 
 // The live working directory of a session's active pane (empty string if it
 // cannot be resolved). Used to root the code editor at the terminal's real cwd.
