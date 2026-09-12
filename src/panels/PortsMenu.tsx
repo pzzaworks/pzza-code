@@ -521,7 +521,12 @@ function LocalPorts({ pollingActive, onLoadingChange, refreshToken, onChanged, n
   const [actionError, setActionError] = useState("");
   const showLoading = useDelayedLoading(loading);
   useLoadingReport(pollingActive && loading, onLoadingChange);
-  const rows = [...details].sort((a, b) => a.port - b.port);
+  const rows = details.flatMap(entry => {
+    // SSH client TCP listeners are tunnels; sshd is a service on this device.
+    const processes = entry.processes.filter(item => item.process !== "ssh");
+    if (entry.processes.length && !processes.length && !entry.containers?.length) return [];
+    return [{ ...entry, processes }];
+  }).sort((a, b) => a.port - b.port);
 
   return <>
     <div className="settings-row ports-status">
@@ -538,7 +543,7 @@ function LocalPorts({ pollingActive, onLoadingChange, refreshToken, onChanged, n
     <div className="ports-box">
       {rows.length === 0 ? (loading ? null : <p className="settings-empty">Nothing is listening on this device.</p>) : rows.map(entry => (
         <div key={entry.port} className="settings-row port-row">
-          <PortIdentity port={entry.port} details={details} live={false} />
+          <PortIdentity port={entry.port} details={rows} live={false} />
           <div className="port-actions">
             {native ? <NativeOpenLink port={entry.port} /> : <OpenLink port={entry.port} />}
             <StopServiceButton
