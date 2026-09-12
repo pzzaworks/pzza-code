@@ -182,12 +182,12 @@ export function detectSessionActivity(panes, processes) {
     // Once a process snapshot exists, never infer an agent or preserve stale
     // model evidence from a pane title/current-command label.
     const fallback = label(pane.command);
-    const metadata = best?.metadata || (!root && ["claude", "codex"].includes(fallback) ? activityMetadata(pane) : null);
+    const metadata = best?.metadata || (!root && ["claude", "codex", "opencode"].includes(fallback) ? activityMetadata(pane) : null);
     return {
       session: pane.session,
       window: pane.window,
       active: pane.active,
-      command: best?.command || (["claude", "codex"].includes(fallback) && root ? "" : fallback),
+      command: best?.command || (["claude", "codex", "opencode"].includes(fallback) && root ? "" : fallback),
       effectiveModel: metadata?.effectiveModel ?? null,
       effectiveProvider: metadata?.effectiveProvider ?? null,
       effectiveModelEvidence: metadata?.effectiveModelEvidence ?? null,
