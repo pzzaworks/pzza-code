@@ -77,17 +77,22 @@ test("discard reloads disk, rejects stale revisions and preserves typing during 
   await assert.rejects(f.run("editor_close_file"), /Save or explicitly discard/);
 });
 
-test("unloaded, binary and protected buffers cannot be read or edited", async t => {
+test("unloaded and binary buffers reject access while loaded configuration files remain editable", async t => {
   const f = await fixture(t);
   for (const override of [{ loaded: false }, { binary: true }, { failed: true }]) {
     Object.assign(f.state, override);
     await assert.rejects(f.run("editor_read_buffer"), /finish loading/);
+    await assert.rejects(f.run("editor_edit_buffer", { expectedRevision: f.state.revision, start: 0, deleteCount: 0, text: "text" }), /finish loading/);
     Object.assign(f.state, { loaded: true, binary: false, failed: false });
   }
   for (const name of [".env", ".env.local", "credentials.json", "private.key", ".claude.json", ".codex/auth.json"]) {
     f.state.path = path.join(f.state.root, name);
-    await assert.rejects(f.run("editor_read_buffer"), /Credential and environment/);
-    await assert.rejects(f.run("editor_edit_buffer", { expectedRevision: f.state.revision, start: 0, deleteCount: 0, text: "text" }), /Credential and environment/);
+    f.change("Configuration text", false);
+    const buffer = await f.run("editor_read_buffer");
+    assert.equal(buffer.content, "Configuration text");
+    await f.run("editor_edit_buffer", { expectedRevision: buffer.revision, start: 0, deleteCount: 0, text: "Updated " });
+    assert.equal(f.state.content, "Updated Configuration text");
+    assert.equal(f.state.dirty, true);
   }
   f.state.path = f.file;
   await assert.rejects(f.run("editor_edit_buffer", { expectedRevision: f.state.revision, start: 500, deleteCount: 0, text: "text" }), /outside/);

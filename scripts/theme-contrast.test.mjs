@@ -56,9 +56,13 @@ test('visibility defaults preserve text colors and the bounded boost retains tex
 test('native Help and in-app topics stay in sync', () => {
   const ui = readFileSync(new URL('../src/panels/HelpModal.tsx', import.meta.url), 'utf8');
   const native = readFileSync(new URL('../src-tauri/src/menu.rs', import.meta.url), 'utf8');
-  const sections = [...ui.matchAll(/id: "([\w-]+)",\s*label: "([^"]+)",\s*icon:/g)];
-  assert.equal(sections.length, 17);
-  for (const [, id, label] of sections) assert.ok(native.includes(`("${id}", "${label}")`), `Missing native Help topic: ${id}`);
+  const topics = [...ui.matchAll(/id: "([\w-]+)",\s*label: "([^"]+)",\s*blurb:/g)].map(([, id, label]) => [id, label]);
+  assert.ok(topics.length > 0, 'The in-app topic catalog must be present');
+  assert.equal(new Set(topics.map(([id]) => id)).size, topics.length, 'Help topic IDs must be unique');
+  const nativeGroups = native.match(/let groups:[\s\S]+?for \(label, topics\) in groups/);
+  assert.ok(nativeGroups, 'The native Help groups must be present');
+  const nativeTopics = [...nativeGroups[0].matchAll(/\("([\w-]+)", "([^"]+)"\)/g)].map(([, id, label]) => [id, label]);
+  assert.deepEqual(nativeTopics.sort(), topics.sort());
 });
 
 test('transparent terminals preserve the appearance used for contrast and color queries', () => {

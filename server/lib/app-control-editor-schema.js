@@ -7,7 +7,7 @@ const command = (description, properties = {}, required = []) => ({
 });
 export const EDITOR_APP_COMMANDS = {
   editor_get_state: command("Read an open editor's metadata and revision without exposing its buffer."),
-  editor_read_buffer: command("Read a bounded page of the current unsaved editor buffer. Credential and environment files are refused.", { offset: index, length: { type: "integer", minimum: 1, maximum: 65536 } }),
+  editor_read_buffer: command("Read a bounded page of the current unsaved editor buffer after the text file has finished loading.", { offset: index, length: { type: "integer", minimum: 1, maximum: 65536 } }),
   editor_edit_buffer: command("Apply a text edit to the current buffer only if its revision still matches. Offsets count UTF-16 code units; use the returned revision for the next edit.", { expectedRevision: revision, start: index, deleteCount: index, text: { type: "string", maxLength: 65536 } }, ["expectedRevision", "start", "deleteCount", "text"]),
   editor_save: command("Save the exact current editor revision to its selected device; preserve edits made while the save runs.", { expectedRevision: revision }, ["expectedRevision"]),
   editor_discard: command("Discard the specified buffer revision and reload the current file from disk.", { expectedRevision: revision }, ["expectedRevision"]),
