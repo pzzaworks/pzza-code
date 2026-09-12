@@ -476,7 +476,12 @@ mod tests {
         drop(first);
         assert!(idle_lease(&observer).unwrap().is_none());
         drop(second);
-        assert!(idle_lease(&observer).unwrap().is_some());
+        // Parallel process tests can inherit the lease briefly before exec.
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while idle_lease(&observer).unwrap().is_none() {
+            assert!(Instant::now() < deadline, "App ownership was not released");
+            std::thread::sleep(Duration::from_millis(10));
+        }
         fs::remove_dir_all(directory).unwrap();
     }
 
