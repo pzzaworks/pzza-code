@@ -1,0 +1,4 @@
+[env]
+"CMAKE_PROJECT_whisper.cpp_INCLUDE" = { value = "src-tauri/cmake/metal-shutdown.cmake", relative = true }
+# Include the native shutdown variant in the binding build cache key.
+BINDGEN_EXTRA_CLANG_ARGS = "-DGGML_METAL_INTERRUPTIBLE_SHUTDOWN=1"
