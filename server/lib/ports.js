@@ -38,7 +38,12 @@ export async function inspectPortProcesses(options = {}) {
   const os = await import("node:os");
   const { execFile } = await import("node:child_process");
   const run = options.run || ((command, args) => new Promise((resolve) => {
-    execFile(command, args, { timeout: 4000, maxBuffer: 2 * 1024 * 1024 }, (error, stdout) => resolve(error ? "" : stdout));
+    execFile(command, args, { timeout: 4000, maxBuffer: 2 * 1024 * 1024 }, (error, stdout) => {
+      // A process can disappear between the listener and directory scans.
+      // lsof then exits with 1 while still returning valid rows for other PIDs.
+      const partial = command === "lsof" && error?.code === 1 && !error.killed && !error.signal;
+      resolve(!error || partial ? stdout : "");
+    });
   }));
   const platform = options.platform || os.platform();
   const containerFormat = '{{json .ID}}\t{{json .Names}}\t{{json .Ports}}\t{{json (.Label "com.docker.compose.project")}}\t{{json (.Label "com.docker.compose.service")}}';
