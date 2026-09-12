@@ -5,7 +5,7 @@ import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { inspectPortProcesses, listPortDetails, parsePorts } from "../lib/ports.js";
+import { inspectPortProcesses, listPortDetails, parsePorts, protectedListenerPort, stopPortContainer, terminateListener, terminateRemoteListener } from "../lib/ports.js";
 
 test("port parser deduplicates IPv4 and IPv6 listeners", () => {
   assert.deepEqual(parsePorts("127.0.0.1:3000\n[::]:3000\n*:4100\n"), [3000, 4100]);
@@ -36,6 +36,99 @@ test("listener identity uses its actual project name, then working folder", { sk
 
 test("invalid SSH targets fail before process probing", async () => {
   await assert.rejects(listPortDetails("-oProxyCommand=bad"), /Invalid device host/);
+});
+
+test("protected ports refuse termination while ordinary ports pass", () => {
+  assert.equal(protectedListenerPort([3000, 8080]), null);
+  assert.equal(protectedListenerPort([3000, 5190]), 5190);
+  assert.equal(protectedListenerPort([22]), 22);
+  assert.equal(protectedListenerPort([]), null);
+});
+
+test("process termination validates its target before touching anything", async () => {
+  for (const pid of [0, 1, -5, 1.5, Number.NaN, "123", null, undefined]) {
+    await assert.rejects(terminateListener({ pid }), /valid process ID/);
+  }
+  await assert.rejects(terminateListener({ pid: process.pid }), /valid process ID/);
+  await assert.rejects(terminateListener({ host: "-oProxyCommand=bad", pid: 1234 }), /Invalid device host/);
+  // Nothing may execute for an invalid target: an unknown pid fails the
+  // ownership check without killing.
+  await assert.rejects(terminateListener({ pid: 2147483647 }), /not listening/);
+});
+
+async function spawnListener(t) {
+  const child = spawn(process.execPath, ["-e", "require('node:http').createServer((req,res)=>res.end()).listen(0,'127.0.0.1',function(){console.log(this.address().port)})"], { stdio: ["ignore", "pipe", "ignore"] });
+  t.after(() => { if (child.exitCode === null) child.kill("SIGKILL"); });
+  const [chunk] = await once(child.stdout, "data");
+  return { child, port: Number(String(chunk).trim()) };
+}
+
+// Waits for process death without an "exit" listener: under some test
+// harnesses awaiting the exit event of a just-signaled child never settles,
+// while the production path (plain node) is unaffected.
+async function waitForDeath(child, timeoutMs = 5000) {
+  const start = Date.now();
+  for (;;) {
+    if (child.exitCode !== null) return;
+    try {
+      process.kill(child.pid, 0);
+    } catch (error) {
+      if (error?.code === "ESRCH") return;
+      throw error;
+    }
+    if (Date.now() - start > timeoutMs) throw new Error(`Process ${child.pid} did not exit after SIGTERM.`);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+}
+
+test("local termination kills only a verified listener and reports its ports", { skip: !["linux", "darwin"].includes(os.platform()) }, async (t) => {
+  const { child, port } = await spawnListener(t);
+  const result = await terminateListener({ pid: child.pid });
+  assert.equal(result.pid, child.pid);
+  assert.deepEqual(result.ports, [port]);
+  await waitForDeath(child);
+  // A second attempt finds nothing to kill instead of signaling a reused pid.
+  await assert.rejects(terminateListener({ pid: child.pid }), /not listening/);
+});
+
+test("serialized remote terminator stays self-contained and enforces the same contract", async (t) => {
+  const terminate = (0, eval)(`(${terminateRemoteListener.toString()})`);
+  await assert.rejects(terminate(1, []), /valid process ID/);
+  await assert.rejects(terminate(process.pid, []), /valid process ID/);
+  if (!["linux", "darwin"].includes(os.platform())) return;
+  const { child, port } = await spawnListener(t);
+  const result = await terminate(child.pid, [22, 5190]);
+  assert.equal(result.pid, child.pid);
+  assert.deepEqual(result.ports, [port]);
+  await waitForDeath(child);
+});
+
+test("container stop validates strictly and only ever runs stop", async () => {
+  const calls = [];
+  const runExec = async (command, args) => { calls.push([command, ...args]); return ""; };
+  await assert.deepEqual(
+    await stopPortContainer({ id: "a".repeat(12), runtime: "docker" }, { runExec }),
+    { id: "a".repeat(12), runtime: "docker" },
+  );
+  assert.deepEqual(calls, [["docker", "stop", "a".repeat(12)]]);
+  await assert.deepEqual(
+    await stopPortContainer({ host: "devbox", id: "B".repeat(64), runtime: "podman" }, { runExec }),
+    { id: "B".repeat(64), runtime: "podman" },
+  );
+  assert.deepEqual(calls[1], ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "devbox", "podman", "stop", "B".repeat(64)]);
+  for (const body of [
+    { id: "short", runtime: "docker" },
+    { id: "a".repeat(65), runtime: "docker" },
+    { id: "zzzzzzzzzzzz", runtime: "docker" },
+    { id: "a".repeat(12), runtime: "exec" },
+    { id: "a".repeat(12), runtime: "docker; rm" },
+    { host: "-oProxyCommand=bad", id: "a".repeat(12), runtime: "docker" },
+  ]) {
+    const before = calls.length;
+    await assert.rejects(stopPortContainer(body, { runExec }), /invalid|Invalid/);
+    assert.equal(calls.length, before);
+  }
+  await assert.rejects(stopPortContainer({ id: "a".repeat(12), runtime: "docker" }, { runExec: async () => { throw new Error("daemon down"); } }), /container runtime/);
 });
 
 const containerRow = (id, name, ports, project = "", service = "") => [id, name, ports, project, service].map(JSON.stringify).join("\t");
