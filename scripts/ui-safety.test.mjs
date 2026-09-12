@@ -31,12 +31,14 @@ import { UsageSpend } from '/src/panels/UsageSpend';
 import { UsageMenu } from '/src/panels/UsageMenu';
 import { McpMenu } from '/src/panels/McpMenu';
 import { SettingsHub } from '/src/panels/SettingsHub';
+import { Terminal } from '/src/terminal/Terminal';
+import { useNotifications } from '/src/state/notifications';
 import { readAppControlRuntime } from '/src/appControlRuntime';
 import { confirmAppControlAction } from '/src/appControlCore';
 import '/src/styles/global.css';
 import '/src/panels/SettingsHub.css';
 const app = createRoot(document.getElementById('root'));
-window.ui = { answers: [], picks: [], useStore, readAppControlRuntime, confirmAppControlAction, confirmUnsavedWork, hasUnsavedWork, registerUnsavedDraft, registerEditorFile, registerEditorDiscard, unmount: () => app.unmount() };
+window.ui = { answers: [], picks: [], useStore, useNotifications, readAppControlRuntime, confirmAppControlAction, confirmUnsavedWork, hasUnsavedWork, registerUnsavedDraft, registerEditorFile, registerEditorDiscard, unmount: () => app.unmount() };
 function Dialogs() {
   const [open, setOpen] = useState(true);
   return <><ConfirmationHost /><Modal open={open} title="Outer dialog" onClose={() => setOpen(false)}>
@@ -79,9 +81,12 @@ function Settings() {
   const [section, setSection] = useState('mcp');
   return <SettingsHub open section={section} onSectionChange={setSection} onOpen={setSection} onClose={() => {}} />;
 }
+function Attention() {
+  return <><div style={{ position:'relative', height:320, width:700 }}><Terminal tileId="attention" name="attention" active /></div><button id="outside-terminal">Other panel</button></>;
+}
 const mode = new URLSearchParams(location.search).get('mode');
 if (mode === 'usage-accounts') useStore.setState({ devices: [{ id:'remote', host:'devbox', name:'Devbox' }] });
-app.render(<ThemeProvider>{mode === 'dialogs' ? <Dialogs /> : mode === 'pending' ? <Pending /> : mode === 'picker' ? <Picker /> : mode === 'path' ? <Path /> : mode === 'appearance' ? <Appearance /> : mode === 'creation' ? <Creation /> : mode === 'usage' ? <Usage /> : mode === 'usage-accounts' ? <UsageMenu /> : mode === 'ports' ? <div className="menu menu-panel" style={{ position:'relative', width:320 }}><PortsMenu onOpenSettings={() => {}} /></div> : mode === 'mcp' ? <><ConfirmationHost /><McpMenu /></> : mode === 'settings' ? <Settings /> : <ConfirmationHost />}</ThemeProvider>);
+app.render(<ThemeProvider>{mode === 'dialogs' ? <Dialogs /> : mode === 'pending' ? <Pending /> : mode === 'picker' ? <Picker /> : mode === 'path' ? <Path /> : mode === 'appearance' ? <Appearance /> : mode === 'creation' ? <Creation /> : mode === 'usage' ? <Usage /> : mode === 'usage-accounts' ? <UsageMenu /> : mode === 'ports' ? <div className="menu menu-panel" style={{ position:'relative', width:320 }}><PortsMenu onOpenSettings={() => {}} /></div> : mode === 'mcp' ? <><ConfirmationHost /><McpMenu /></> : mode === 'settings' ? <Settings /> : mode === 'attention' ? <Attention /> : <ConfirmationHost />}</ThemeProvider>);
 `;
 let server, browser, origin, scratch;
 before(async () => {
@@ -98,7 +103,7 @@ before(async () => {
 });
 after(async () => { await browser?.close(); await server?.close(); if (scratch) await rm(scratch, { recursive: true, force: true }); });
 const options = { timeout: 25000 };
-async function pageFor(t, mode, extra = '') {
+async function pageFor(t, mode, extra = '', setup) {
   const context = await browser.newContext({ viewport: { width: 900, height: 700 } });
   t.after(() => context.close());
   const page = await context.newPage();
@@ -110,6 +115,7 @@ async function pageFor(t, mode, extra = '') {
     if (url.origin === new URL(origin).origin || ['data:', 'blob:'].includes(url.protocol)) return route.continue();
     return route.fulfill({ status: 503, headers: { 'Access-Control-Allow-Origin': '*' }, body: '{}' });
   });
+  await setup?.(page);
   await page.goto(`${origin}__ui_test?mode=${mode}${extra}`);
   await page.waitForFunction(() => !!window.ui);
   return page;
@@ -119,6 +125,34 @@ async function evidence(page, name) {
   await mkdir(process.env.PZZA_UI_EVIDENCE_ROOT, { recursive: true });
   await page.screenshot({ path: join(process.env.PZZA_UI_EVIDENCE_ROOT, name + '.png'), fullPage: true, animations: 'disabled' });
 }
+
+test('terminal bells respect actual keyboard focus and never quote the input prompt', options, async t => {
+  let socket;
+  let acknowledge;
+  let attached;
+  const attachment = new Promise(resolve => { attached = resolve; });
+  const page = await pageFor(t, 'attention', '', page => page.routeWebSocket('**/*', route => {
+    socket = route;
+    route.onMessage(message => {
+      const packet = JSON.parse(String(message));
+      if (packet.type === 'attach') attached();
+      if (packet.type === 'ack') acknowledge?.();
+    });
+  }));
+  await attachment;
+  const write = text => new Promise(resolve => { acknowledge = resolve; socket.send(Buffer.from(text)); });
+  await page.locator('.xterm-helper-textarea').focus();
+  assert.equal(await page.evaluate(() => document.hasFocus() && document.activeElement.classList.contains('xterm-helper-textarea')), true);
+  await write('› Ask for help ⠂\x07');
+  assert.equal(await page.evaluate(() => window.ui.useNotifications.getState().items.length), 0);
+  await page.locator('#outside-terminal').click();
+  await write('\x07');
+  const items = await page.evaluate(() => window.ui.useNotifications.getState().items);
+  assert.equal(items.length, 1);
+  assert.equal(items[0].event, 'terminal-bell');
+  assert.equal(items[0].body, 'attention (This device): This terminal emitted an attention signal.');
+  assert.equal(items[0].target.tileId, 'attention');
+});
 
 test('queued confirmations default to Cancel, trap focus, restore focus and close only the top dialog', options, async t => {
   const page = await pageFor(t, 'dialogs');
