@@ -114,10 +114,15 @@ impl PtyState {
             handle.flow.cancel();
             let _ = handle.stop.send(());
         }
-        for handle in handles {
-            if let Some(reaper) = handle.reaper.lock().unwrap().take() {
-                let _ = reaper.join();
-            }
+        let reapers: Vec<_> = handles.into_iter().filter_map(|handle| {
+            let reaper = handle.reaper.lock().unwrap().take();
+            reaper
+        }).collect();
+        // Release our master/writer ownership before waiting for tty exit.
+        // Other callers may still hold handles, so the reader also drains
+        // pending output after the renderer disconnects.
+        for reaper in reapers {
+            let _ = reaper.join();
         }
     }
 }
@@ -166,6 +171,23 @@ fn coalesce(first: Vec<u8>, rx: &mpsc::Receiver<Vec<u8>>) -> Vec<u8> {
         }
     }
     batch
+}
+
+fn read_output(mut reader: Box<dyn Read + Send>, tx: mpsc::SyncSender<Vec<u8>>) {
+    let mut connected = true;
+    let mut buf = [0u8; 8192];
+    loop {
+        match reader.read(&mut buf) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => {
+                if connected && tx.send(buf[..n].to_vec()).is_err() {
+                    // macOS can wait for buffered tty output before completing
+                    // child exit. Drain it even when no renderer wants the bytes.
+                    connected = false;
+                }
+            }
+        }
+    }
 }
 
 fn size(cols: u16, rows: u16) -> PtySize {
@@ -224,7 +246,7 @@ pub fn pty_spawn(
     }
 
     // Acquire fallible master handles before spawning so failure cannot orphan a child.
-    let mut reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
+    let reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
     let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
     let child = pair
         .slave
@@ -250,20 +272,7 @@ pub fn pty_spawn(
     // A slow renderer fills this bounded queue, then naturally backpressures the PTY.
     let (tx, rx) = mpsc::sync_channel::<Vec<u8>>(READER_QUEUE_CHUNKS);
     let (exit_tx, exit_rx) = mpsc::sync_channel(1);
-    std::thread::spawn(move || {
-        let mut buf = [0u8; 8192];
-        loop {
-            match reader.read(&mut buf) {
-                Ok(0) => break,
-                Ok(n) => {
-                    if tx.send(buf[..n].to_vec()).is_err() {
-                        break;
-                    }
-                }
-                Err(_) => break,
-            }
-        }
-    });
+    std::thread::spawn(move || read_output(reader, tx));
     // Reap independently: buffered output or inherited slave descriptors must
     // not leave an exited child waiting for the renderer to consume its output.
     let reaper = std::thread::spawn(move || {
@@ -355,6 +364,37 @@ pub fn pty_kill(state: tauri::State<'_, PtyState>, id: u32) -> Result<(), String
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn output_is_drained_to_eof_after_the_renderer_disconnects() {
+        struct ObservedReader {
+            bytes: std::io::Cursor<Vec<u8>>,
+            observed: Arc<Mutex<(usize, bool)>>,
+        }
+
+        impl Read for ObservedReader {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                let count = self.bytes.read(buf)?;
+                let mut observed = self.observed.lock().unwrap();
+                observed.0 += count;
+                observed.1 |= count == 0;
+                Ok(count)
+            }
+        }
+
+        let output_size = 3 * 8192 + 17;
+        let observed = Arc::new(Mutex::new((0, false)));
+        let reader = ObservedReader {
+            bytes: std::io::Cursor::new(vec![b'x'; output_size]),
+            observed: observed.clone(),
+        };
+        let (tx, rx) = mpsc::sync_channel(READER_QUEUE_CHUNKS);
+        drop(rx);
+
+        read_output(Box::new(reader), tx);
+
+        assert_eq!(*observed.lock().unwrap(), (output_size, true));
+    }
 
     #[test]
     fn output_credit_blocks_until_consumed_and_cancel_unblocks() {
@@ -490,6 +530,77 @@ mod tests {
         stop.send(()).unwrap();
         assert_ne!(reaper.join().unwrap(), 0);
         assert!(start.elapsed() < Duration::from_secs(2));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn shutdown_drains_buffered_output_after_the_renderer_disconnects() {
+        let pair = native_pty_system().openpty(size(80, 24)).unwrap();
+        let reader = pair.master.try_clone_reader().unwrap();
+        let mut rescue_reader = pair.master.try_clone_reader().unwrap();
+        let writer = pair.master.take_writer().unwrap();
+        let child = pair.slave.spawn_command(CommandBuilder::new("/usr/bin/yes")).unwrap();
+        let pid = child.process_id().unwrap();
+        drop(pair.slave);
+        let (stop, stop_rx) = mpsc::channel();
+        let handle = Arc::new(PtyHandle {
+            master: Mutex::new(pair.master),
+            writer: Mutex::new(writer),
+            stop,
+            flow: OutputFlow::default(),
+            reaper: Mutex::new(Some(std::thread::spawn(move || {
+                reap_child(child, stop_rx);
+            }))),
+        });
+        assert!(handle.flow.reserve(OUTPUT_CREDIT));
+        let (tx, rx) = mpsc::sync_channel(READER_QUEUE_CHUNKS);
+        let reading = std::thread::spawn(move || read_output(reader, tx));
+        let forwarding_handle = handle.clone();
+        let (received_tx, received_rx) = mpsc::channel();
+        let (disconnected_tx, disconnected_rx) = mpsc::channel();
+        let forwarding = std::thread::spawn(move || {
+            let bytes = rx.recv().unwrap();
+            received_tx.send(()).unwrap();
+            assert!(!forwarding_handle.flow.reserve(bytes.len()));
+            drop(rx);
+            disconnected_tx.send(()).unwrap();
+        });
+        received_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        // The renderer has unacknowledged bytes, so the queue and tty fill
+        // while forwarding is blocked on output credit.
+        assert!(disconnected_rx.recv_timeout(Duration::from_millis(30)).is_err());
+        let state = Arc::new(PtyState::default());
+        state.inner.lock().unwrap().ptys.insert(1, handle.clone());
+        let shutdown_state = state.clone();
+        let (finished_tx, finished_rx) = mpsc::channel();
+        let shutting_down = std::thread::spawn(move || {
+            shutdown_state.shutdown();
+            finished_tx.send(()).unwrap();
+        });
+        let finished = finished_rx.recv_timeout(Duration::from_secs(2)).is_ok();
+        // If the regression returns, drain only to clean up the failing test's
+        // real child. The original deadline must still fail the assertion.
+        let rescue = if !finished {
+            Some(std::thread::spawn(move || {
+                let _ = std::io::copy(&mut rescue_reader, &mut std::io::sink());
+            }))
+        } else {
+            drop(rescue_reader);
+            None
+        };
+        if !finished {
+            finished_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        }
+        shutting_down.join().unwrap();
+        forwarding.join().unwrap();
+        reading.join().unwrap();
+        if let Some(rescue) = rescue { rescue.join().unwrap(); }
+        assert!(finished, "Shutdown stopped draining buffered tty output");
+        // Retaining another caller's handle must not prevent child exit.
+        assert_eq!(Arc::strong_count(&handle), 1);
+        assert!(state.inner.lock().unwrap().ptys.is_empty());
+        assert_eq!(unsafe { libc::waitpid(pid as libc::pid_t, std::ptr::null_mut(), libc::WNOHANG) }, -1);
+        assert_eq!(std::io::Error::last_os_error().raw_os_error(), Some(libc::ECHILD));
     }
 
 }
