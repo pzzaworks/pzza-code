@@ -124,8 +124,12 @@ def run(args):
     except (OSError, subprocess.TimeoutExpired):
         return ''
 status = run(['sudo', '-n', 'grdctl', '--system', 'status', '--show-credentials'])
-fields = dict(line.strip().split(':', 1) for line in status.splitlines() if ':' in line)
-fields = {key: value.strip() for key, value in fields.items()}
+fields = {}
+for line in status.splitlines():
+    key, separator, value = line.lstrip().partition(':')
+    if separator:
+        value = value[1:] if value.startswith(' ') else value
+        fields[key] = value if key in ('Username', 'Password') else value.strip()
 login = None
 if fields.get('Status') == 'enabled' and fields.get('Username') not in (None, '', '(empty)') and fields.get('Password') not in (None, '', '(empty)'):
     if run(['systemctl', 'is-active', 'gnome-remote-desktop.service']).strip() == 'active':

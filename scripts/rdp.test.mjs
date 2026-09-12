@@ -1,6 +1,36 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { build } from "esbuild";
+import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
+
+test("the remote status probe preserves significant whitespace in existing credentials", () => {
+  const nativeSource = readFileSync("src-tauri/src/rdp.rs", "utf8");
+  const source = nativeSource.match(/let script = r#"python3 - <<'PY'\n([\s\S]*?)\nPY"#;/)?.[1];
+  assert.ok(source);
+  const user = " remote account ";
+  const password = ` ${randomBytes(16).toString("hex")} `;
+  const status = `RDP:\n\tStatus: enabled\n\tPort: 3389\n\tUsername: ${user}\n\tPassword: ${password}\n\tTLS fingerprint: ${"ab:".repeat(31)}ab\n`;
+  const result = spawnSync("python3", ["-c", `
+import json, subprocess, sys, types
+request = json.load(sys.stdin)
+def run(args, **kwargs):
+    if args == ['sudo', '-n', 'grdctl', '--system', 'status', '--show-credentials']:
+        return types.SimpleNamespace(returncode=0, stdout=request['status'])
+    if args == ['systemctl', 'is-active', 'gnome-remote-desktop.service']:
+        return types.SimpleNamespace(returncode=0, stdout='active\\n')
+    raise AssertionError('Unexpected remote operation')
+subprocess.run = run
+exec(request['source'])
+`], { input: JSON.stringify({ source, status }), encoding: "utf8", timeout: 2000 });
+  assert.equal(result.status, 0);
+  const state = JSON.parse(result.stdout);
+  assert.ok(state.login.user === user);
+  assert.ok(state.login.password === password);
+  assert.equal(state.login.port, 3389);
+  assert.equal(state.login.fingerprint, "ab".repeat(32));
+});
 
 const notices = [];
 const saved = [];
