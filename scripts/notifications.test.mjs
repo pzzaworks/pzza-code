@@ -50,7 +50,8 @@ test("muting preserves history and suppresses OS alerts; resume delivers private
   assert.equal(useNotifications.getState().items.length, 1); assert.equal(native.deliveries.length, 0);
   useNotifications.getState().configure({ mutedUntil: 0 }); notify(notice); await settle();
   assert.equal(native.deliveries.length, 1);
-  assert.equal(native.deliveries[0].body, "New activity is available in your notification center.");
+  assert.equal(native.deliveries[0].title, "Private project");
+  assert.equal(native.deliveries[0].body, "/private/project/file");
   assert.equal(native.requests, 0);
 });
 test("focused windows, revoked permission and async disable suppress OS delivery", async () => {
@@ -96,9 +97,10 @@ test("browser delivery keeps permission prompts explicit and uses private text",
     static async requestPermission() { requests++; this.permission = "granted"; return "granted"; }
     constructor(title, options) { delivered.push({ title, ...options }); }
   };
-  await browser.deliverDesktopAlert("app", () => true); assert.equal(requests, 0); assert.equal(delivered.length, 0);
+  await browser.deliverDesktopAlert({ category: "app", title: "Private project", body: "/private/project/file" }, () => true); assert.equal(requests, 0); assert.equal(delivered.length, 0);
   assert.equal(await browser.requestDesktopAlerts(), true); assert.equal(requests, 1);
-  await browser.deliverDesktopAlert("app", () => true); assert.equal(delivered.length, 1);
-  assert.equal(delivered[0].body, "New activity is available in your notification center.");
-  await browser.deliverDesktopAlert("app", () => false); assert.equal(delivered.length, 1);
+  await browser.deliverDesktopAlert({ category: "app", title: "Private project", body: "/private/project/file" }, () => true); assert.equal(delivered.length, 1);
+  assert.equal(delivered[0].title, "Private project");
+  assert.equal(delivered[0].body, "/private/project/file");
+  await browser.deliverDesktopAlert({ category: "app", title: "Private project", body: "/private/project/file" }, () => false); assert.equal(delivered.length, 1);
 });
