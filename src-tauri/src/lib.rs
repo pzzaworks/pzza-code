@@ -26,7 +26,6 @@ pub fn run() {
         // Signed in-app updates from GitHub Releases (latest.json), plus
         // relaunch after install.
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(terminal_drop::init())
         .manage(speech::SpeechState::default())
@@ -59,6 +58,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            shutdown::app_restart,
             speech::speech_prepare,
             speech::speech_input_devices,
             speech::speech_start,

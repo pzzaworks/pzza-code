@@ -6,6 +6,7 @@ import { BRIDGE_TOOLS } from "./bridge-tools.js";
 import { GIT_TOOLS } from "./git-tools.js";
 
 import { APP_TOOLS } from "./app-tools.js";
+import { SESSION_NAME_SCHEMA } from "../../server/lib/session-name.js";
 
 const TOOLS = [
   ...BRIDGE_TOOLS,
@@ -66,7 +67,7 @@ const TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        name: { type: "string", minLength: 1, maxLength: 128, pattern: "^[A-Za-z0-9_-]+$", description: "Session name" },
+        name: { ...SESSION_NAME_SCHEMA, description: "Session name" },
         host: { type: "string", maxLength: 128, description: "Trusted SSH alias; empty selects the app host" },
         cwd: { type: "string", description: "Working directory (optional)" },
         account: {

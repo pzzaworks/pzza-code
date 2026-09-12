@@ -7,6 +7,8 @@ import os from "node:os";
 import path from "node:path";
 import { createDeviceSession } from "../lib/session-create.js";
 import { shQuote } from "../lib/shell.js";
+import { SESSION_NAME_MAX_LENGTH } from "../lib/session-name.js";
+import { validateAppCommand } from "../lib/app-control-schema.js";
 const exec = promisify(execFile);
 
 test("session creation rejects invalid targets, malformed accounts and extra inputs before executing", async () => {
@@ -18,12 +20,25 @@ test("session creation rejects invalid targets, malformed accounts and extra inp
   assert.equal(called, false);
 });
 
+test("session names enforce the character limit and reject unsafe characters before executing", async () => {
+  const run = () => { throw new Error("Unexpected process"); };
+  for (const name of ["", "   ", "x".repeat(SESSION_NAME_MAX_LENGTH + 1), "tab\tname", "line\nname", "name\n", "name\r", "name\0", "a:b", "a.b", "$(touch bad)", "semi;colon"]) {
+    await assert.rejects(createDeviceSession({ name }, run), { status: 400 });
+  }
+  await assert.rejects(createDeviceSession({ name: "x".repeat(SESSION_NAME_MAX_LENGTH + 1) }, run), /at most 128 characters/);
+  for (const name of ["My project notes", "x".repeat(SESSION_NAME_MAX_LENGTH)]) {
+    assert.equal(validateAppCommand("create_session", { name, deviceId: "this-mac" }).name, name);
+    assert.equal(validateAppCommand("open_session", { session: name, cwd: "/tmp" }).session, name);
+  }
+  assert.throws(() => validateAppCommand("create_session", { name: "x".repeat(SESSION_NAME_MAX_LENGTH + 1), deviceId: "this-mac" }));
+});
+
 test("remote session requests use explicit trusted SSH and never carry the local tmux socket", async () => {
   const prior = process.env.PZZA_TMUX_SOCKET;
   process.env.PZZA_TMUX_SOCKET = "/tmp/local-session-service";
   try {
     let request;
-    const result = await createDeviceSession({ name: "remote-work", host: "devbox", cwd: "/home/user/project" }, (command, args, options, callback) => {
+    const result = await createDeviceSession({ name: "  remote work  ", host: "devbox", cwd: "/home/user/project" }, (command, args, options, callback) => {
       assert.equal(command, "ssh");
       assert.ok(args.includes("StrictHostKeyChecking=yes"));
       assert.equal(args.at(-2), "devbox");
@@ -32,6 +47,8 @@ test("remote session requests use explicit trusted SSH and never carry the local
       return { stdin: { on() {}, end(data) { request = JSON.parse(data); callback(null, JSON.stringify({ ok: true })); } } };
     });
     assert.deepEqual(request.tmuxOptions, []);
+    assert.equal(request.name, "remote work");
+    assert.equal(result.name, "remote work");
     assert.equal(result.host, "devbox");
   } finally { if (prior === undefined) delete process.env.PZZA_TMUX_SOCKET; else process.env.PZZA_TMUX_SOCKET = prior; }
 });
@@ -52,12 +69,15 @@ test("creation binds only an actual account on the destination and preserves lit
   const previous = process.env.PZZA_TMUX_SOCKET;
   process.env.PZZA_TMUX_SOCKET = socket;
   try {
-    await createDeviceSession({ name: "account-work", cwd, account: { provider: "codex", dir: path.join(home, ".codex") } }, run);
-    const result = await tmux(["show-environment", "-t", "=account-work", "CODEX_HOME"]);
+    const boundaryName = "x".repeat(SESSION_NAME_MAX_LENGTH);
+    await createDeviceSession({ name: boundaryName, cwd }, run);
+    await tmux(["has-session", "-t", `=${boundaryName}`]);
+    await createDeviceSession({ name: "account work", cwd, account: { provider: "codex", dir: path.join(home, ".codex") } }, run);
+    const result = await tmux(["show-environment", "-t", "=account work", "CODEX_HOME"]);
     assert.equal(result.stdout.trim(), `CODEX_HOME=${await fs.realpath(path.join(home, ".codex"))}`);
     const report = path.join(home, "working-directory.txt");
-    await tmux(["send-keys", "-t", "=account-work:", "-l", `pwd > ${shQuote(report)}; tmux -S ${shQuote(socket)} wait-for -S cwd-ready`]);
-    await tmux(["send-keys", "-t", "=account-work:", "Enter"]);
+    await tmux(["send-keys", "-t", "=account work:", "-l", `pwd > ${shQuote(report)}; tmux -S ${shQuote(socket)} wait-for -S cwd-ready`]);
+    await tmux(["send-keys", "-t", "=account work:", "Enter"]);
     await tmux(["wait-for", "cwd-ready"]);
     assert.equal(await fs.realpath((await fs.readFile(report, "utf8")).trim()), await fs.realpath(cwd));
     await assert.rejects(createDeviceSession({ name: "missing-account", account: { provider: "codex", dir: path.join(home, ".codex-missing") } }, run), { status: 400 });

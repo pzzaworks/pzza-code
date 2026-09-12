@@ -40,6 +40,6 @@ export async function checkForUpdate(): Promise<AvailableUpdate | null> {
 
 export async function relaunchApp(): Promise<void> {
   if (!HAS_TAURI) return;
-  const { relaunch } = await import("@tauri-apps/plugin-process");
-  await relaunch();
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke("app_restart");
 }

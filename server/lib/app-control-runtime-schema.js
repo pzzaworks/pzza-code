@@ -1,3 +1,5 @@
+import { SESSION_NAME_SCHEMA } from "./session-name.js";
+
 const string = (maxLength = 512) => ({ type: "string", minLength: 1, maxLength, pattern: "^[^\\u0000-\\u001f\\u007f]+$" });
 const enumeration = (...values) => ({ type: "string", enum: values });
 const boolean = { type: "boolean" };
@@ -11,7 +13,7 @@ export const RUNTIME_APP_COMMANDS = {
   get_sync_view: command("Read the mounted Sync repository filter, folder paths and expanded project IDs."),
   set_sync_view: command("Set the attention filter and expanded folders/projects in the open Sync repositories page.", { filter: enumeration("all", "attention"), expandedFolders: { type: "array", maxItems: 1000, uniqueItems: true, items: string(4096) }, expandedProjects: { type: "array", maxItems: 1000, uniqueItems: true, items: string(4096) } }),
   create_session: command("Create a session on a configured device and open it in the chosen workspace. Returns accepted operation state; poll get_state runtime.sessionCreation for completion.", {
-    name: { type: "string", minLength: 1, maxLength: 128, pattern: "^[A-Za-z0-9_-]+$" }, deviceId: string(128), workspaceId: string(128),
+    name: SESSION_NAME_SCHEMA, deviceId: string(128), workspaceId: string(128),
     cwd: { type: "string", minLength: 1, maxLength: 4096, pattern: "^/[^\\u0000-\\u001f\\u007f]*$" },
     account: { type: "object", properties: { provider: enumeration("claude", "codex"), dir: { type: "string", minLength: 1, maxLength: 4096, pattern: "^/[^\\u0000-\\u001f\\u007f]*$" } }, required: ["provider", "dir"], additionalProperties: false },
   }, ["name", "deviceId"]),

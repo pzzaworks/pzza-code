@@ -330,3 +330,29 @@ test('creation forms keep consistent widths and reachable actions on short narro
   assert.ok(actionBox.y >= 0 && actionBox.y + actionBox.height <= 440);
   await evidence(page, 'new-workspace-narrow');
 });
+
+test('new session names preserve typed spaces and enforce the visible character limit', options, async t => {
+  const page = await pageFor(t, 'creation', '&form=session');
+  const requests = [];
+  await page.route('**/create', route => {
+    requests.push(route.request().postDataJSON());
+    return route.fulfill({ status: 200, headers: { 'Access-Control-Allow-Origin': '*' }, contentType: 'application/json', body: '{"ok":true}' });
+  });
+  const input = page.getByRole('textbox', { name: 'New session name' });
+  await input.pressSequentially('My project notes');
+  assert.equal(await input.inputValue(), 'My project notes');
+  assert.equal(await input.getAttribute('maxlength'), '128');
+  await page.getByText('16/128 characters · Spaces allowed', { exact: true }).waitFor();
+  await page.getByRole('button', { name: 'Create', exact: true }).click();
+  await page.waitForFunction(() => window.ui.useStore.getState().tiles.some(tile => tile.session === 'My project notes'));
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].name, 'My project notes');
+  await input.fill('x'.repeat(128));
+  await input.press('End');
+  await input.pressSequentially('extra');
+  assert.equal(await input.inputValue(), 'x'.repeat(128));
+  await page.getByText('128/128 characters · Spaces allowed', { exact: true }).waitFor();
+  await input.fill('   ');
+  assert.equal(await page.getByRole('button', { name: 'Create', exact: true }).isDisabled(), true);
+  await evidence(page, 'session-name-limit');
+});

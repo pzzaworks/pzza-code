@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { SSH_TOKEN, shQuote, deviceEnv } from "./shell.js";
 import { tmuxArgs } from "./tmux-client.js";
+import { normalizeSessionName } from "./session-name.js";
 
 export const SESSION_CREATE_TARGET = String.raw`
 import json, os, re, stat, subprocess, sys
@@ -45,7 +46,8 @@ json.dump({'ok': True}, sys.stdout)
 export async function createDeviceSession(body, run = execFile) {
   const invalid = message => Promise.reject(Object.assign(new Error(message), { status: 400 }));
   if (!body || typeof body !== "object" || Array.isArray(body) || Object.keys(body).some(key => !["name", "cwd", "account", "host"].includes(key))) return invalid("Invalid session request.");
-  if (typeof body.name !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(body.name)) return invalid("Use a session name containing letters, numbers, hyphens or underscores.");
+  let name;
+  try { name = normalizeSessionName(body.name); } catch (error) { return invalid(error.message); }
   if (body.host !== undefined && (typeof body.host !== "string" || (body.host && !SSH_TOKEN.test(body.host)))) return invalid("Invalid session device.");
   if (body.cwd !== undefined && (typeof body.cwd !== "string" || body.cwd.length > 4096 || /[\x00-\x1f\x7f]/.test(body.cwd) || (body.cwd && !body.cwd.startsWith("/") && body.cwd !== "~" && !body.cwd.startsWith("~/")))) return invalid("Choose an absolute or home-relative working directory.");
   if (body.account !== undefined && (!body.account || typeof body.account !== "object" || Array.isArray(body.account) || Object.keys(body.account).some(key => !["provider", "dir"].includes(key)) || !["claude", "codex"].includes(body.account.provider) || typeof body.account.dir !== "string" || !body.account.dir.startsWith("/") || body.account.dir.length > 4096 || /[\x00-\x1f\x7f]/.test(body.account.dir))) return invalid("Choose a supported provider and its absolute account directory.");
@@ -59,9 +61,9 @@ export async function createDeviceSession(body, run = execFile) {
       try { result = JSON.parse(output); } catch { return reject(Object.assign(new Error("Invalid session creation response."), { status: 502 })); }
       if (!result || typeof result !== "object" || Array.isArray(result)) return reject(Object.assign(new Error("Invalid session creation response."), { status: 502 }));
       if (result.ok !== true) return reject(Object.assign(new Error(result.status === 400 ? result.error : "Could not create the session on this device. Check the terminal service and choose an unused name."), { status: result.status === 400 ? 400 : 503 }));
-      resolve({ ok: true, host, name: body.name });
+      resolve({ ok: true, host, name });
     });
     child.stdin?.on("error", () => {});
-    child.stdin?.end(JSON.stringify({ name: body.name, cwd: body.cwd, account: body.account, tmuxOptions }));
+    child.stdin?.end(JSON.stringify({ name, cwd: body.cwd, account: body.account, tmuxOptions }));
   });
 }

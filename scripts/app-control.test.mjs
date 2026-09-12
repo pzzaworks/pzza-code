@@ -47,10 +47,10 @@ test("focus reveals a hidden remote tile and switches its workspace", () => {
 test("opening a project session stays local while the app is connected remotely", () => {
   const f = fixture();
   f.state.connection.host = "devbox";
-  const result = f.run("open_session", { session: "build-project", cwd: "/projects/demo" });
-  assert.equal(result.activeId, "build-project");
-  assert.equal(result.tiles.find((tile) => tile.id === "build-project").host, "");
-  f.run("open_session", { session: "build-project", cwd: "/projects/demo" });
+  const result = f.run("open_session", { session: "build project", cwd: "/projects/demo" });
+  assert.equal(result.activeId, "build project");
+  assert.equal(result.tiles.find((tile) => tile.id === "build project").host, "");
+  f.run("open_session", { session: "build project", cwd: "/projects/demo" });
   assert.equal(f.state.tiles.length, 2);
   assert.throws(() => f.run("open_session", { session: "bad:target", cwd: "/project" }));
   assert.throws(() => f.run("open_session", { session: "valid", cwd: "relative" }));
