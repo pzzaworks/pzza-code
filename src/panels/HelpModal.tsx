@@ -482,8 +482,8 @@ export function HelpContent({ section, request }: { section: HelpSection; reques
               <Row ui={<IB icon={Monitor} />} name="Remote desktop">
                 The device's Linux desktop over an SSH-tunneled RDP session.
               </Row>
-              <Row ui={<IB icon={EthernetPort} />} name="Port forwarding">
-                Mirror the device's listening ports to your localhost.
+              <Row ui={<IB icon={EthernetPort} />} name="Port manager">
+                Forwarded ports plus this device's listeners, each with Open and Stop.
               </Row>
               <Row ui={<IB icon={Gauge} />} name="Agent usage">
                 Live Claude / Codex / OpenCode usage and estimated spend.
@@ -1070,13 +1070,19 @@ export function HelpContent({ section, request }: { section: HelpSection; reques
                   your browser.
                 </Step>
               </Steps>
-              <H>Port forwarding</H>
+              <H>Port manager</H>
               <P>
                 <IB icon={EthernetPort} /> mirrors the device's listening ports to your machine
                 automatically - start a server on the device and it appears on your{" "}
                 <code className="doc-code">localhost</code> at the same port. On the device itself
                 ports are local; on a client machine the agent forwards them over SSH and you get a
                 global enable / disable.
+              </P>
+              <P>
+                The <b>This device</b> tab lists everything listening locally. Every row has{" "}
+                <b>Open</b> and a <b>Stop</b> action: containers are stopped, plain processes are
+                terminated after a confirmation. System services and the agent itself can never
+                be stopped from here.
               </P>
               <Note>
                 Keeping the origin on <code className="doc-code">localhost</code> also keeps OAuth

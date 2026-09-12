@@ -1,9 +1,10 @@
 import { DeviceIcon } from "../ui/DeviceIcon";
 import { useEffect, useRef, useState } from "react";
-import { ExternalLink, LoaderCircle, Settings } from "lucide-react";
+import { ExternalLink, LoaderCircle, Settings, Square } from "lucide-react";
 import { create } from "zustand";
 import { AsyncButton } from "../ui/AsyncButton";
 import { useDelayedLoading } from "../ui/useDelayedLoading";
+import { confirmAction } from "../ui/ConfirmDialog";
 import { useStore } from "../state/store";
 import { Select } from "../ui/Select";
 import { HAS_TAURI } from "../tauriEnv";
@@ -12,6 +13,8 @@ import {
   fetchForwardState,
   fetchPorts,
   fetchPortDetails,
+  killPortProcess,
+  stopPortContainer,
   type PortDetails,
   setForwardEnabled,
   type Capabilities,
@@ -26,6 +29,13 @@ import {
 } from "../forward";
 
 const POLL_MS = 4000;
+
+// Ports whose listeners are never offered a Stop action in the UI. Mirrors
+// PROTECTED_PORTS in server/lib/ports.js (the backend enforces the same list,
+// so this only controls whether the button renders).
+const PROTECTED_PORTS = [22, 53, 631, 3389, 5190];
+
+type PortView = "forwarded" | "local";
 
 // Port-forwarding settings. Forwarding is automatic for every port at
 // once; the global enable/disable is a client-side control.
@@ -124,19 +134,35 @@ export function PortsMenu({ active = true, onLoadingChange, onOpenSettings }: {
   const clientIsLocal = clientId === "this-mac";
   const showControls = !onOpenSettings;
   const routeLabel = `${server?.name ?? "Source device"} → ${devices.find(device => device.id === clientId)?.name ?? "Receiver"}`;
+  const [view, setView] = useState<PortView>("forwarded");
+  const [refreshToken, setRefreshToken] = useState(0);
+  const refresh = () => setRefreshToken(value => value + 1);
 
   return (
     <div className={showControls ? "settings-page ports-settings" : "menu-body"}>
       {showControls ? <ForwardConfig serverId={serverId} clientId={clientId} onServer={onServer} onClient={onClient} /> : <>
-        <div className="menu-head-title">Port forwarding</div>
+        <div className="menu-head-title">Port manager</div>
       </>}
-      <section className={showControls ? "settings-section" : "ports-menu-services"} aria-label="Live services">
-      {HAS_TAURI ? (
-        <TauriPorts pollingActive={active} serverHost={serverHost} clientIsLocal={clientIsLocal} showControls={showControls} onLoadingChange={onLoadingChange} route={showControls ? undefined : routeLabel} />
-      ) : (
-        <ServerPorts pollingActive={active} showControls={showControls} onLoadingChange={onLoadingChange} route={showControls ? undefined : routeLabel} />
+      <div className="ports-tabs" role="tablist" aria-label="Port views">
+        <div className="usage-seg" role="group">
+          <button type="button" role="tab" aria-selected={view === "forwarded"} className={view === "forwarded" ? "on" : ""} onClick={() => setView("forwarded")}>Forwarded</button>
+          <button type="button" role="tab" aria-selected={view === "local"} className={view === "local" ? "on" : ""} onClick={() => setView("local")}>This device</button>
+        </div>
+      </div>
+      {view === "forwarded" ? <>
+        {!showControls ? <p className="ports-menu-route">{routeLabel}</p> : null}
+        <section className={showControls ? "settings-section" : "ports-menu-services"} aria-label="Forwarded services">
+        {HAS_TAURI ? (
+          <TauriPorts pollingActive={active} serverHost={serverHost} hostName={server?.name ?? "Source device"} clientIsLocal={clientIsLocal} showControls={showControls} onLoadingChange={onLoadingChange} route={showControls ? undefined : routeLabel} refreshToken={refreshToken} onChanged={refresh} />
+        ) : (
+          <ServerPorts pollingActive={active} showControls={showControls} onLoadingChange={onLoadingChange} route={showControls ? undefined : routeLabel} refreshToken={refreshToken} onChanged={refresh} />
+        )}
+        </section>
+      </> : (
+        <section className={showControls ? "settings-section" : "ports-menu-services"} aria-label="This device services">
+          <LocalPorts pollingActive={active} onLoadingChange={onLoadingChange} refreshToken={refreshToken} onChanged={refresh} native={HAS_TAURI} />
+        </section>
       )}
-      </section>
       {onOpenSettings ? <button type="button" className="menu-item" onClick={onOpenSettings}>
         <Settings size={16} strokeWidth={1.9} />
         Settings
@@ -164,7 +190,7 @@ function ForwardSwitch({ enabled, onToggle, loading = false }: { enabled: boolea
   );
 }
 
-function usePortDetails(host?: string, enabled = true) {
+function usePortDetails(host?: string, enabled = true, revision = 0) {
   const [details, setDetails] = useState<PortDetails[]>([]);
   const [unavailable, setUnavailable] = useState(false);
   const [loading, setLoading] = useState(enabled);
@@ -185,7 +211,7 @@ function usePortDetails(host?: string, enabled = true) {
     };
     void refresh();
     return () => { controller.abort(); clearTimeout(timer); };
-  }, [host, enabled]);
+  }, [host, enabled, revision]);
   return { details, unavailable, loading };
 }
 
@@ -216,8 +242,62 @@ function OpenLink({ port }: { port: number }) {
   );
 }
 
-function ServerPorts({ pollingActive, showControls, onLoadingChange, route }: { pollingActive: boolean; showControls: boolean; onLoadingChange?: (loading: boolean) => void; route?: string }) {
-  const { details, unavailable, loading: detailsLoading } = usePortDetails(undefined, pollingActive);
+// Stop the service behind one port row: published containers are stopped,
+// otherwise the owning processes are terminated. Containers take precedence
+// because a bare process kill would only take down the container's proxy.
+// host follows the ports API convention: undefined (or "") addresses the
+// agent's own machine, anything else goes over SSH to that device.
+function StopServiceButton({ port, host, hostName, containers, processes, onStopped, onError }: {
+  port: number;
+  host: string | undefined;
+  hostName: string;
+  containers: NonNullable<PortDetails["containers"]>;
+  processes: PortDetails["processes"];
+  onStopped: () => void;
+  onError: (message: string) => void;
+}) {
+  const [stopping, setStopping] = useState(false);
+  const showSpinner = useDelayedLoading(stopping);
+  if (PROTECTED_PORTS.includes(port) || (!containers.length && !processes.length)) return null;
+  const names = [...containers.map(container => `${container.name} (container)`),
+    ...processes.map(item => `PID ${item.pid}${item.process ? ` (${item.process})` : ""}`)];
+  const title = containers.length ? `Stop ${containers.map(c => c.name).join(", ")}` : `Stop ${processes.map(p => `PID ${p.pid}`).join(", ")}`;
+  return (
+    <button
+      type="button"
+      className="tile-btn tile-btn-danger"
+      title={title}
+      aria-label={`${title} on port ${port}`}
+      disabled={stopping}
+      onClick={async () => {
+        if (!await confirmAction({
+          title: `Stop service on port ${port}?`,
+          message: `This ${containers.length ? "stops" : "terminates"} ${names.join(", ")} on ${hostName}. The service stays down until it is started again.`,
+          confirmLabel: "Stop service",
+          danger: true,
+        })) return;
+        setStopping(true);
+        try {
+          for (const container of containers) await stopPortContainer(container.id, container.runtime, host);
+          if (!containers.length) for (const item of processes) await killPortProcess(item.pid, host);
+          onStopped();
+        } catch (error) {
+          onError(error instanceof Error ? error.message : "Could not stop the service.");
+        } finally {
+          setStopping(false);
+        }
+      }}
+    >
+      {showSpinner ? <LoaderCircle size={13} className="async-spinner" /> : <Square size={13} />}
+    </button>
+  );
+}
+
+function ServerPorts({ pollingActive, showControls, onLoadingChange, route, refreshToken, onChanged }: {
+  pollingActive: boolean; showControls: boolean; onLoadingChange?: (loading: boolean) => void; route?: string;
+  refreshToken: number; onChanged: () => void;
+}) {
+  const { details, unavailable, loading: detailsLoading } = usePortDetails(undefined, pollingActive, refreshToken);
   const [caps, setCaps] = useState<Capabilities | null>(null);
   const [ports, setPorts] = useState<number[]>([]);
   const [enabled, setEnabled] = useState(true);
@@ -263,12 +343,16 @@ function ServerPorts({ pollingActive, showControls, onLoadingChange, route }: { 
       alive = false;
       clearTimeout(timer);
     };
-  }, [caps, pollingActive]);
+  }, [caps, pollingActive, refreshToken]);
 
   if (!caps) return <p className="settings-empty" role="status">{error || (showLoading ? "Checking ports…" : "\u00a0")}</p>;
 
   const isClient = caps.forward;
   const rows = isClient ? active : [...new Set([...ports, ...details.map(detail => detail.port).filter(port => port >= DEFAULT_MIN_PORT && !DEFAULT_SKIP.includes(port))])].sort((a, b) => a - b);
+  // Stopping needs a confirmed identity, which only exists for the agent's
+  // own machine - forwarded rows on a client stay read-only.
+  const stoppable = !isClient;
+  const rowDetail = (port: number) => details.find(entry => entry.port === port);
 
   const toggle = async () => {
     if (togglingRef.current) return;
@@ -311,7 +395,16 @@ function ServerPorts({ pollingActive, showControls, onLoadingChange, route }: { 
           rows.map((port) => (
             <div key={port} className="settings-row port-row">
               <PortIdentity port={port} details={details} live={isClient} />
-              <OpenLink port={port} />
+              <div className="port-actions">
+                <OpenLink port={port} />
+                {stoppable ? (
+                  <StopServiceButton
+                    port={port} host={undefined} hostName="this device"
+                    containers={rowDetail(port)?.containers ?? []} processes={rowDetail(port)?.processes ?? []}
+                    onStopped={onChanged} onError={setActionError}
+                  />
+                ) : null}
+              </div>
             </div>
           ))
         )}
@@ -337,15 +430,17 @@ function NativeOpenLink({ port }: { port: number }) {
   </div>;
 }
 
-function TauriPorts({ serverHost, clientIsLocal, pollingActive, showControls, onLoadingChange, route }: {
-  serverHost: string | null; clientIsLocal: boolean; pollingActive: boolean; showControls: boolean; onLoadingChange?: (loading: boolean) => void; route?: string;
+function TauriPorts({ serverHost, hostName, clientIsLocal, pollingActive, showControls, onLoadingChange, route, refreshToken, onChanged }: {
+  serverHost: string | null; hostName: string; clientIsLocal: boolean; pollingActive: boolean; showControls: boolean; onLoadingChange?: (loading: boolean) => void; route?: string;
+  refreshToken: number; onChanged: () => void;
 }) {
   const host = serverHost;
-  const { details, unavailable, loading: detailsLoading } = usePortDetails(host ?? undefined, !!host && clientIsLocal && pollingActive);
+  const { details, unavailable, loading: detailsLoading } = usePortDetails(host ?? undefined, !!host && clientIsLocal && pollingActive, refreshToken);
   const [status, setStatus] = useState<ForwardStatus | null>(null);
   const enabled = useForwardConfig((state) => state.enabled);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [actionError, setActionError] = useState("");
   const showLoading = useDelayedLoading(loading);
   const scanQueue = useRef<Promise<void>>(Promise.resolve());
   useLoadingReport(pollingActive && !!host && clientIsLocal && (loading || detailsLoading), onLoadingChange);
@@ -355,8 +450,7 @@ function TauriPorts({ serverHost, clientIsLocal, pollingActive, showControls, on
     if (!host || !clientIsLocal || !pollingActive) return;
     let alive = true;
     let timer: ReturnType<typeof setTimeout>;
-    setLoading(true); setError("");
-    const tick = () => {
+    setLoading(true); setError("");    const tick = () => {
       const task = scanQueue.current.then(async () => {
         if (!alive) return;
         try {
@@ -373,7 +467,7 @@ function TauriPorts({ serverHost, clientIsLocal, pollingActive, showControls, on
     };
     void tick();
     return () => { alive = false; clearTimeout(timer); };
-  }, [host, enabled, clientIsLocal, pollingActive]);
+  }, [host, enabled, clientIsLocal, pollingActive, refreshToken]);
 
   if (!clientIsLocal) return <p className="settings-empty">Forwarding runs on this device - select it as the client.</p>;
   if (!host) return <p className="settings-empty">Pick a remote device as the server to mirror its ports here.</p>;
@@ -394,14 +488,68 @@ function TauriPorts({ serverHost, clientIsLocal, pollingActive, showControls, on
       }} /> : null}
     </div>
     {error ? <p className="small pad" role="alert">{error}</p> : null}
+    {actionError ? <p className="small pad" role="alert">{actionError}</p> : null}
     {unavailable ? <p className="small muted pad">Could not refresh service details. Showing last known names.</p> : null}
     <div className="ports-box">
       {forwarded.length === 0 ? <p className="settings-empty">
         {!status && loading ? (showLoading ? "Checking ports…" : "\u00a0") : !enabled ? "Forwarding is off." : up ? "No ports to forward." : "Waiting for the source device."}
-      </p> : forwarded.map(port => <div key={port} className="settings-row port-row">
-        <PortIdentity port={port} details={details} live />
-        <NativeOpenLink port={port} />
-      </div>)}
+      </p> : forwarded.map(port => {
+        const entry = details.find(detail => detail.port === port);
+        return <div key={port} className="settings-row port-row">
+          <PortIdentity port={port} details={details} live />
+          <div className="port-actions">
+            <NativeOpenLink port={port} />
+            <StopServiceButton
+              port={port} host={host ?? undefined} hostName={hostName}
+              containers={entry?.containers ?? []} processes={entry?.processes ?? []}
+              onStopped={onChanged} onError={setActionError}
+            />
+          </div>
+        </div>;
+      })}
+    </div>
+  </>;
+}
+
+// This device's own listeners with per-service Stop actions. An explicit
+// empty host addresses the agent's own machine even when it otherwise
+// proxies to a source device (receiver mode).
+function LocalPorts({ pollingActive, onLoadingChange, refreshToken, onChanged, native }: {
+  pollingActive: boolean; onLoadingChange?: (loading: boolean) => void;
+  refreshToken: number; onChanged: () => void; native: boolean;
+}) {
+  const { details, unavailable, loading } = usePortDetails("", pollingActive, refreshToken);
+  const [actionError, setActionError] = useState("");
+  const showLoading = useDelayedLoading(loading);
+  useLoadingReport(pollingActive && loading, onLoadingChange);
+  const rows = [...details].sort((a, b) => a.port - b.port);
+
+  return <>
+    <div className="settings-row ports-status">
+      <span className="small muted ports-status-text" role="status">
+        {loading ? (showLoading ? "Checking ports…" : "\u00a0")
+          : unavailable && rows.length === 0 ? "Port details unavailable"
+          : rows.length === 0 ? "No listening ports."
+          : `${rows.length} listening port${rows.length === 1 ? "" : "s"} on this device`}
+      </span>
+      <div className="ports-status-spacer" />
+    </div>
+    {actionError ? <p className="small pad" role="alert">{actionError}</p> : null}
+    {unavailable && rows.length > 0 ? <p className="small muted pad">Could not refresh service details. Showing last known names.</p> : null}
+    <div className="ports-box">
+      {rows.length === 0 ? (loading ? null : <p className="settings-empty">Nothing is listening on this device.</p>) : rows.map(entry => (
+        <div key={entry.port} className="settings-row port-row">
+          <PortIdentity port={entry.port} details={details} live={false} />
+          <div className="port-actions">
+            {native ? <NativeOpenLink port={entry.port} /> : <OpenLink port={entry.port} />}
+            <StopServiceButton
+              port={entry.port} host={undefined} hostName="this device"
+              containers={entry.containers ?? []} processes={entry.processes}
+              onStopped={() => { setActionError(""); onChanged(); }} onError={setActionError}
+            />
+          </div>
+        </div>
+      ))}
     </div>
   </>;
 }
