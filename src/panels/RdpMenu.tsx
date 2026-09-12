@@ -6,7 +6,7 @@ import { Monitor } from "lucide-react";
 import { useStore } from "../state/store";
 import { notify } from "../state/notifications";
 import { THIS_MAC, deviceHost } from "../devices";
-import { rdpIsOpen, rdpLaunch } from "../rdp";
+import { rdpErrorMessage, rdpIsOpen, rdpLaunch } from "../rdp";
 import { HAS_TAURI } from "../tauriEnv";
 import { Select } from "../ui/Select";
 
@@ -38,7 +38,7 @@ export async function openSaved(): Promise<boolean> {
     setDeviceRdp(server.id, { user, keychainService, port: result.port, mode: result.mode });
     return true;
   } catch (error) {
-    notify({ category: "app", title: "Could not open remote desktop", body: `Check the server in Settings → Connections → Remote desktop and its SSH connection. ${String(error)}` });
+    notify({ category: "app", title: "Could not open remote desktop", body: rdpErrorMessage(error) });
     return false;
   } finally { useRdpConnection.setState({ busy: false }); }
 }

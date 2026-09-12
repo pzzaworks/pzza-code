@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::{Mutex, OnceLock};
@@ -20,16 +21,13 @@ fn open_desktops() -> &'static Mutex<HashMap<String, Launched>> {
 // Whether a desktop is already open for a device (its Keychain service key).
 #[tauri::command]
 pub fn rdp_is_open(keychain_service: String) -> bool {
-    open_desktops().lock().unwrap().contains_key(&keychain_service)
+    open_desktops()
+        .lock()
+        .unwrap()
+        .contains_key(&keychain_service)
 }
 
-// Opens a device's Linux desktop over RDP. One call does the whole job: read
-// (or create) the RDP password in the login Keychain, make sure GNOME Remote
-// Desktop on the device is enabled with exactly those credentials, open a
-// dedicated ssh tunnel on a fresh local port, and launch sdl-freerdp through
-// it. Nothing is reused between launches - a stale tunnel (ssh multiplexing
-// keeps old forwards alive inside the control master) or drifted credentials
-// cannot break the next attempt.
+// The selected SSH device and its saved desktop-sharing account.
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RdpOptions {
@@ -47,7 +45,133 @@ pub struct Launched {
     pub mode: String,
 }
 
-const FREERDP_CANDIDATES: [&str; 2] = ["/opt/homebrew/bin/sdl-freerdp", "/usr/local/bin/sdl-freerdp"];
+#[derive(serde::Serialize, Debug)]
+pub struct RdpFailure {
+    code: &'static str,
+    message: &'static str,
+}
+
+fn failure(code: &'static str) -> RdpFailure {
+    let message = match code {
+        "RDP_INVALID_OPTIONS" => "Check the remote server address and desktop account in Settings → Connections → Remote desktop.",
+        "RDP_CREDENTIALS" => "Could not read the remote desktop credentials. Check the saved account and Keychain access, then try again.",
+        "RDP_SETUP_FAILED" => "Remote desktop is unavailable on the server. Check that GNOME Remote Desktop is enabled, then try again.",
+        "RDP_DESKTOP_LOCKED" => "The server's desktop is locked. Enable Remote Login on the server, or unlock its desktop before connecting.",
+        "RDP_SSH_FAILED" => "Could not reach the server over SSH. Check its SSH connection, then try again.",
+        "RDP_VIEWER_MISSING" => "The desktop viewer is missing. Install FreeRDP on this Mac, then try again.",
+        "RDP_AUTH_FAILED" => "The server rejected the desktop login. Check its Remote Login credentials, then try again.",
+        _ => "The remote desktop connection closed. Check Remote Login on the server and its SSH connection, then try again.",
+    };
+    RdpFailure { code, message }
+}
+
+#[derive(serde::Deserialize)]
+struct RemoteLogin {
+    port: u16,
+    user: String,
+    password: String,
+    fingerprint: String,
+}
+
+#[derive(serde::Deserialize)]
+struct RemoteState {
+    login: Option<RemoteLogin>,
+    locked: bool,
+}
+
+fn valid_line(value: &str, limit: usize) -> bool {
+    !value.is_empty() && value.len() <= limit && !value.chars().any(char::is_control)
+}
+
+impl RemoteLogin {
+    fn validate(&self) -> Result<(), RdpFailure> {
+        if self.port == 0
+            || !valid_line(&self.user, 256)
+            || !valid_line(&self.password, 4096)
+            || self.fingerprint.len() != 64
+            || !self.fingerprint.bytes().all(|b| b.is_ascii_hexdigit())
+        {
+            return Err(failure("RDP_SETUP_FAILED"));
+        }
+        Ok(())
+    }
+}
+
+fn select_remote_login(state: RemoteState) -> Result<Option<RemoteLogin>, RdpFailure> {
+    if let Some(login) = state.login {
+        login.validate()?;
+        return Ok(Some(login));
+    }
+    if state.locked {
+        return Err(failure("RDP_DESKTOP_LOCKED"));
+    }
+    Ok(None)
+}
+
+// Remote Login creates a login session even while desktop sharing is locked.
+// Read its existing configuration through the trusted SSH connection; never
+// replace system credentials or change the physical session's lock state.
+fn remote_login(opts: &RdpOptions) -> Result<Option<RemoteLogin>, RdpFailure> {
+    let script = r#"python3 - <<'PY'
+import json, os, subprocess
+os.environ['LC_ALL'] = 'C'
+os.environ['XDG_RUNTIME_DIR'] = '/run/user/' + str(os.getuid())
+os.environ['DBUS_SESSION_BUS_ADDRESS'] = 'unix:path=' + os.environ['XDG_RUNTIME_DIR'] + '/bus'
+def run(args):
+    try:
+        result = subprocess.run(args, capture_output=True, text=True, timeout=6)
+        return result.stdout if result.returncode == 0 else ''
+    except (OSError, subprocess.TimeoutExpired):
+        return ''
+status = run(['sudo', '-n', 'grdctl', '--system', 'status', '--show-credentials'])
+fields = dict(line.strip().split(':', 1) for line in status.splitlines() if ':' in line)
+fields = {key: value.strip() for key, value in fields.items()}
+login = None
+if fields.get('Status') == 'enabled' and fields.get('Username') not in (None, '', '(empty)') and fields.get('Password') not in (None, '', '(empty)'):
+    if run(['systemctl', 'is-active', 'gnome-remote-desktop.service']).strip() == 'active':
+        login = {'port': int(fields.get('Port', '0')), 'user': fields['Username'], 'password': fields['Password'], 'fingerprint': fields.get('TLS fingerprint', '').replace(':', '')}
+locked = False
+if login is None:
+    locked = run(['gdbus', 'call', '--session', '--dest', 'org.gnome.ScreenSaver', '--object-path', '/org/gnome/ScreenSaver', '--method', 'org.gnome.ScreenSaver.GetActive']).strip() == '(true,)'
+print(json.dumps({'login': login, 'locked': locked}))
+PY"#;
+    let output = ssh_script(opts, script).map_err(|_| failure("RDP_SSH_FAILED"))?;
+    if !output.status.success() {
+        return Err(failure(if output.status.code() == Some(255) {
+            "RDP_SSH_FAILED"
+        } else {
+            "RDP_SETUP_FAILED"
+        }));
+    }
+    let state = serde_json::from_slice(&output.stdout).map_err(|_| failure("RDP_SETUP_FAILED"))?;
+    select_remote_login(state)
+}
+
+fn ssh_script(opts: &RdpOptions, script: &str) -> std::io::Result<std::process::Output> {
+    let mut child = Command::new("ssh")
+        .args(ssh_base(opts.port, &opts.identity))
+        .args(["-T", "--", &opts.host, "timeout 30s sh -s"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let result = child
+        .stdin
+        .take()
+        .ok_or_else(|| std::io::Error::other("SSH input unavailable"))
+        .and_then(|mut stdin| stdin.write_all(script.as_bytes()));
+    if let Err(error) = result {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(error);
+    }
+    child.wait_with_output()
+}
+
+const FREERDP_CANDIDATES: [&str; 2] = [
+    "/opt/homebrew/bin/sdl-freerdp",
+    "/usr/local/bin/sdl-freerdp",
+];
 
 fn port_open(port: u16) -> bool {
     let addr = format!("127.0.0.1:{port}");
@@ -80,7 +204,16 @@ fn keychain_password(service: &str) -> Option<String> {
 // persisted by the app in plaintext.
 fn keychain_set(service: &str, account: &str, password: &str) -> Result<(), String> {
     let status = Command::new("security")
-        .args(["add-generic-password", "-U", "-s", service, "-a", account, "-w", password])
+        .args([
+            "add-generic-password",
+            "-U",
+            "-s",
+            service,
+            "-a",
+            account,
+            "-w",
+            password,
+        ])
         .status()
         .map_err(|e| e.to_string())?;
     if status.success() {
@@ -97,6 +230,10 @@ fn ssh_base(port: Option<u16>, identity: &Option<String>) -> Vec<String> {
         "-o".into(),
         "ConnectTimeout=12".into(),
         "-o".into(),
+        "ServerAliveInterval=5".into(),
+        "-o".into(),
+        "ServerAliveCountMax=2".into(),
+        "-o".into(),
         "StrictHostKeyChecking=accept-new".into(),
     ];
     if let Some(p) = port {
@@ -112,13 +249,9 @@ fn ssh_base(port: Option<u16>, identity: &Option<String>) -> Vec<String> {
     args
 }
 
-// Make GNOME Remote Desktop on the device serve RDP with the given credentials
-// and report the port. Prefers the *headless* daemon (it spins up a virtual
-// monitor per client; the session daemon accepts and immediately drops clients
-// on a box with no desktop) on its own port, since 3389 is usually held by the
-// system-level remote-login daemon. Only restarts the daemon when it is not
-// listening or its credentials differ from ours, so an open desktop survives
-// a second launch. Credentials are alphanumeric, so single quotes suffice.
+// Provision the saved desktop-sharing account only when Remote Login is not
+// configured and the current desktop is unlocked. The script travels on stdin
+// so its credentials are never embedded in the local SSH process arguments.
 fn ensure_remote(opts: &RdpOptions, password: &str) -> Result<(u16, String), String> {
     let script = format!(
         r#"set -e
@@ -159,14 +292,7 @@ echo "PORT:$PORT""#,
         user = opts.user,
         password = password,
     );
-    let mut args = ssh_base(opts.port, &opts.identity);
-    args.push(opts.host.clone());
-    args.push(script);
-    let out = Command::new("ssh")
-        .args(&args)
-        .stdin(Stdio::null())
-        .output()
-        .map_err(|e| e.to_string())?;
+    let out = ssh_script(opts, &script).map_err(|_| "SSH setup failed")?;
     let stdout = String::from_utf8_lossy(&out.stdout);
     let line = |prefix: &str| {
         stdout
@@ -195,38 +321,65 @@ echo "PORT:$PORT""#,
 }
 
 fn log_path(name: &str) -> PathBuf {
-    std::env::temp_dir().join(format!("pzzacode-{name}.log"))
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    std::env::temp_dir().join(format!(
+        "pzzacode-{name}-{}-{timestamp}.log",
+        std::process::id()
+    ))
 }
 
-// Last few meaningful lines of a process log, for error messages.
-fn log_tail(path: &PathBuf) -> String {
+// Diagnostics are used only for classification, never copied into a notification.
+fn viewer_failure(path: &PathBuf, sharing: bool) -> RdpFailure {
     let mut text = String::new();
-    if let Ok(mut f) = File::open(path) {
-        let _ = f.read_to_string(&mut text);
+    if let Ok(f) = File::open(path) {
+        let _ = f.take(128 * 1024).read_to_string(&mut text);
     }
-    let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
-    let errors: Vec<&str> = lines
-        .iter()
-        .copied()
-        .filter(|l| l.contains("ERR") || l.contains("error"))
-        .collect();
-    let pick = if errors.is_empty() { &lines } else { &errors };
-    pick.iter()
-        .rev()
-        .take(3)
-        .rev()
-        .map(|l| l.trim())
-        .collect::<Vec<_>>()
-        .join(" | ")
+    classify_viewer_failure(&text, sharing)
+}
+
+fn classify_viewer_failure(text: &str, sharing: bool) -> RdpFailure {
+    if text.contains("LOGON_FAILURE") || text.contains("AUTHENTICATION_FAILED") {
+        failure("RDP_AUTH_FAILED")
+    } else if sharing
+        && (text.contains("ERRINFO_LOGOFF_BY_USER") || text.contains("Session creation inhibited"))
+    {
+        failure("RDP_DESKTOP_LOCKED")
+    } else {
+        failure("RDP_CONNECT_FAILED")
+    }
+}
+
+fn private_log(path: &PathBuf) -> std::io::Result<File> {
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)
+}
+
+struct DesktopProcess {
+    child: Child,
+    log: PathBuf,
+}
+
+impl Drop for DesktopProcess {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        let _ = std::fs::remove_file(&self.log);
+    }
 }
 
 // A private ssh tunnel to the device's RDP port on a fresh local port. Runs
 // outside any ControlMaster so it is exactly what we asked for and dies with
 // the viewer instead of lingering (and being reused) inside a shared master.
-fn open_tunnel(opts: &RdpOptions, remote_port: u16) -> Result<(u16, Child), String> {
-    let local = free_port()?;
+fn open_tunnel(opts: &RdpOptions, remote_port: u16) -> Result<(u16, DesktopProcess), RdpFailure> {
+    let local = free_port().map_err(|_| failure("RDP_SSH_FAILED"))?;
     let log = log_path(&format!("rdp-tunnel-{local}"));
-    let logf = File::create(&log).map_err(|e| e.to_string())?;
+    let logf = private_log(&log).map_err(|_| failure("RDP_SSH_FAILED"))?;
     let mut args = ssh_base(opts.port, &opts.identity);
     args.extend(
         [
@@ -243,26 +396,27 @@ fn open_tunnel(opts: &RdpOptions, remote_port: u16) -> Result<(u16, Child), Stri
         .map(|s| s.to_string()),
     );
     args.push(format!("127.0.0.1:{local}:127.0.0.1:{remote_port}"));
+    args.push("--".into());
     args.push(opts.host.clone());
-    let mut child = Command::new("ssh")
+    let child = Command::new("ssh")
         .args(&args)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::from(logf))
         .spawn()
-        .map_err(|e| format!("could not start ssh: {e}"))?;
+        .map_err(|_| failure("RDP_SSH_FAILED"))?;
+    let mut process = DesktopProcess { child, log };
     let deadline = Instant::now() + Duration::from_secs(15);
     while Instant::now() < deadline {
         if port_open(local) {
-            return Ok((local, child));
+            return Ok((local, process));
         }
-        if let Ok(Some(_)) = child.try_wait() {
-            return Err(format!("SSH tunnel to the device failed: {}", log_tail(&log)));
+        if !matches!(process.child.try_wait(), Ok(None)) {
+            return Err(failure("RDP_SSH_FAILED"));
         }
         thread::sleep(Duration::from_millis(150));
     }
-    let _ = child.kill();
-    Err("SSH tunnel to the device did not come up in time.".into())
+    Err(failure("RDP_SSH_FAILED"))
 }
 
 fn freerdp_bin() -> Result<&'static str, String> {
@@ -279,94 +433,254 @@ fn freerdp_bin() -> Result<&'static str, String> {
 // with the work moved to spawn_blocking, keeps the window responsive the whole
 // time instead of freezing until the desktop appears.
 #[tauri::command]
-pub async fn rdp_launch(opts: RdpOptions) -> Result<Launched, String> {
+pub async fn rdp_launch(opts: RdpOptions) -> Result<Launched, RdpFailure> {
     tauri::async_runtime::spawn_blocking(move || launch_blocking(opts))
         .await
-        .map_err(|e| format!("remote desktop task failed: {e}"))?
+        .map_err(|_| failure("RDP_TASK_FAILED"))?
 }
 
-// The device's desktop in its own sdl-freerdp window. The window is external by
-// design; in-tile embedding is a later phase. Returns only once the viewer has
-// stayed up for a moment, so a connection or logon failure comes back as an
-// error instead of a window that flashes and closes.
-fn launch_blocking(opts: RdpOptions) -> Result<Launched, String> {
-    if opts.user.is_empty() || opts.user.chars().any(|c| !c.is_ascii_alphanumeric()) {
-        return Err("the RDP user must be alphanumeric".into());
+fn validate_options(opts: &RdpOptions) -> Result<(), RdpFailure> {
+    let mut user = opts.user.bytes();
+    if !matches!(user.next(), Some(c) if c.is_ascii_alphabetic() || c == b'_')
+        || opts.user.len() > 64
+        || !user.all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-')
+        || !valid_line(&opts.host, 512)
+        || opts.host.starts_with('-')
+        || opts.host.chars().any(char::is_whitespace)
+        || !opts.keychain_service.starts_with("pzzacode-rdp-")
+        || !valid_line(&opts.keychain_service, 256)
+        || opts.port == Some(0)
+        || opts
+            .identity
+            .as_ref()
+            .is_some_and(|path| path.contains('\0'))
+    {
+        return Err(failure("RDP_INVALID_OPTIONS"));
     }
-    // Already open for this device: reuse the live window, do not stack another.
-    if let Some(existing) = open_desktops().lock().unwrap().get(&opts.keychain_service).cloned() {
+    Ok(())
+}
+
+fn launch_blocking(opts: RdpOptions) -> Result<Launched, RdpFailure> {
+    validate_options(&opts)?;
+    if let Some(existing) = open_desktops()
+        .lock()
+        .unwrap()
+        .get(&opts.keychain_service)
+        .cloned()
+    {
         return Ok(existing);
     }
-    let bin = freerdp_bin()?;
-    let password = match keychain_password(&opts.keychain_service) {
-        Some(pw) => pw,
-        None => {
-            let pw = crate::agent::random_hex(16).ok_or("could not generate an RDP password")?;
-            keychain_set(&opts.keychain_service, &opts.user, &pw)?;
-            pw
+    let bin = freerdp_bin().map_err(|_| failure("RDP_VIEWER_MISSING"))?;
+    let (remote_port, mode, user, password, certificate) = if let Some(login) = remote_login(&opts)?
+    {
+        (
+            login.port,
+            "Remote Login".to_string(),
+            login.user,
+            login.password,
+            format!("/cert:fingerprint:sha256:{}", login.fingerprint),
+        )
+    } else {
+        let password = match keychain_password(&opts.keychain_service) {
+            Some(pw) => pw,
+            None => {
+                let pw = crate::agent::random_hex(16).ok_or_else(|| failure("RDP_CREDENTIALS"))?;
+                keychain_set(&opts.keychain_service, &opts.user, &pw)
+                    .map_err(|_| failure("RDP_CREDENTIALS"))?;
+                pw
+            }
+        };
+        // The provisioning script accepts only the generated hexadecimal secret.
+        if !valid_line(&password, 4096) || !password.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(failure("RDP_CREDENTIALS"));
         }
+        let (port, mode) =
+            ensure_remote(&opts, &password).map_err(|_| failure("RDP_SETUP_FAILED"))?;
+        (
+            port,
+            mode,
+            opts.user.clone(),
+            password,
+            "/cert:ignore".to_string(),
+        )
     };
-    let (remote_port, mode) = ensure_remote(&opts, &password)?;
-    let (local, mut tunnel) = open_tunnel(&opts, remote_port)?;
-
+    let (local, tunnel) = open_tunnel(&opts, remote_port)?;
     let log = log_path(&format!("rdp-viewer-{local}"));
-    let logf = File::create(&log).map_err(|e| e.to_string())?;
-    let errf = logf.try_clone().map_err(|e| e.to_string())?;
-    let mut viewer = match Command::new(bin)
-        .arg(format!("/v:127.0.0.1:{local}"))
-        .arg(format!("/u:{}", opts.user))
-        .arg(format!("/p:{password}"))
-        .arg("/ipv4:force")
-        // The session already rides an authenticated, encrypted ssh tunnel to
-        // 127.0.0.1, so the daemon's self-signed TLS cert adds nothing - accept
-        // it instead of pinning a fingerprint that drifts when it regenerates.
-        .arg("/cert:ignore")
-        // Open straight into fullscreen (toggle with Ctrl+Alt+Enter); the
-        // remote resizes to match via dynamic-resolution.
-        .arg("/f")
-        .arg("/dynamic-resolution")
-        .arg("/network:lan")
-        .arg("/gfx:AVC444")
-        .arg("-compression")
-        .arg("+clipboard")
-        .stdin(Stdio::null())
+    let logf = private_log(&log).map_err(|_| failure("RDP_CONNECT_FAILED"))?;
+    let errf = logf
+        .try_clone()
+        .map_err(|_| failure("RDP_CONNECT_FAILED"))?;
+    let child = Command::new(bin)
+        .arg("/args-from:stdin")
+        .stdin(Stdio::piped())
         .stdout(Stdio::from(logf))
         .stderr(Stdio::from(errf))
         .spawn()
-    {
-        Ok(c) => c,
-        Err(e) => {
-            let _ = tunnel.kill();
-            return Err(format!("could not launch sdl-freerdp: {e}"));
-        }
-    };
+        .map_err(|_| failure("RDP_CONNECT_FAILED"))?;
+    let mut viewer = DesktopProcess { child, log };
+    // Keep credentials out of process listings. FreeRDP reads one argument per
+    // line, including the certificate fingerprint verified through SSH.
+    let arguments = [
+        format!("/v:127.0.0.1:{local}"),
+        format!("/u:{user}"),
+        format!("/p:{password}"),
+        certificate,
+        "/ipv4:force".into(),
+        "/f".into(),
+        "/dynamic-resolution".into(),
+        "/network:auto".into(),
+        "/gfx".into(),
+        "+clipboard".into(),
+        "/log-level:WARN".into(),
+    ];
+    let mut input = viewer
+        .child
+        .stdin
+        .take()
+        .ok_or_else(|| failure("RDP_CONNECT_FAILED"))?;
+    input
+        .write_all(format!("{}\n", arguments.join("\n")).as_bytes())
+        .map_err(|_| failure("RDP_CONNECT_FAILED"))?;
+    drop(input);
 
-    // A logon or protocol failure makes the viewer exit within a second or two.
     let deadline = Instant::now() + Duration::from_secs(5);
     while Instant::now() < deadline {
-        if let Ok(Some(status)) = viewer.try_wait() {
-            let _ = tunnel.kill();
-            return Err(format!(
-                "The desktop closed right away ({}): {}",
-                status.code().map(|c| format!("exit {c}")).unwrap_or_else(|| "signal".into()),
-                log_tail(&log)
-            ));
+        match viewer.child.try_wait() {
+            Ok(None) => {}
+            Ok(Some(_)) => return Err(viewer_failure(&viewer.log, mode != "Remote Login")),
+            Err(_) => return Err(failure("RDP_CONNECT_FAILED")),
         }
         thread::sleep(Duration::from_millis(200));
     }
-    // Mark it open and keep it so until the window closes: the tunnel lives
-    // exactly as long as the viewer, and the registry entry with it.
     let launched = Launched {
         port: remote_port,
         mode,
     };
-    let key = opts.keychain_service.clone();
-    open_desktops().lock().unwrap().insert(key.clone(), launched.clone());
+    let key = opts.keychain_service;
+    open_desktops()
+        .lock()
+        .unwrap()
+        .insert(key.clone(), launched.clone());
     thread::spawn(move || {
-        let _ = viewer.wait();
-        let _ = tunnel.kill();
-        let _ = tunnel.wait();
+        let _ = viewer.child.wait();
+        drop(viewer);
+        drop(tunnel);
         open_desktops().lock().unwrap().remove(&key);
     });
     Ok(launched)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dropping_a_desktop_process_reaps_it_and_removes_its_private_log() {
+        use std::os::unix::fs::PermissionsExt;
+        let log = log_path("rdp-cleanup-test");
+        let output = private_log(&log).unwrap();
+        assert_eq!(
+            output.metadata().unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        let child = Command::new("sleep")
+            .arg("30")
+            .stdout(Stdio::from(output))
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        drop(DesktopProcess {
+            child,
+            log: log.clone(),
+        });
+        assert!(!log.exists());
+        let result =
+            unsafe { libc::waitpid(pid as libc::pid_t, std::ptr::null_mut(), libc::WNOHANG) };
+        assert_eq!(result, -1);
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::ECHILD)
+        );
+    }
+
+    #[test]
+    fn remote_login_is_selected_while_desktop_sharing_is_locked() {
+        let state = RemoteState {
+            login: Some(RemoteLogin {
+                port: 3389,
+                user: "remote-account".into(),
+                password: crate::agent::random_hex(16).unwrap(),
+                fingerprint: "ab".repeat(32),
+            }),
+            locked: true,
+        };
+        assert_eq!(select_remote_login(state).unwrap().unwrap().port, 3389);
+        assert_eq!(
+            select_remote_login(RemoteState {
+                login: None,
+                locked: true
+            })
+            .err()
+            .unwrap()
+            .code,
+            "RDP_DESKTOP_LOCKED"
+        );
+        assert!(select_remote_login(RemoteState {
+            login: None,
+            locked: false
+        })
+        .unwrap()
+        .is_none());
+    }
+
+    #[test]
+    fn remote_credentials_cannot_inject_viewer_arguments() {
+        let mut login = RemoteLogin {
+            port: 3389,
+            user: "remote-account".into(),
+            password: crate::agent::random_hex(16).unwrap(),
+            fingerprint: "ab".repeat(32),
+        };
+        assert!(login.validate().is_ok());
+        login.user.push_str("\n/cert:ignore");
+        assert!(login.validate().is_err());
+        login.user = "remote-account".into();
+        login.fingerprint.push(':');
+        assert!(login.validate().is_err());
+    }
+
+    #[test]
+    fn user_names_match_the_settings_validation_and_ssh_options_are_rejected() {
+        let mut opts = RdpOptions {
+            host: "user@server".into(),
+            port: None,
+            identity: None,
+            user: "remote_account-2".into(),
+            keychain_service: "pzzacode-rdp-test".into(),
+        };
+        assert!(validate_options(&opts).is_ok());
+        opts.host = "-oProxyCommand=command".into();
+        assert!(validate_options(&opts).is_err());
+        opts.host = "server\ncommand".into();
+        assert!(validate_options(&opts).is_err());
+    }
+
+    #[test]
+    fn diagnostic_errors_are_classified_without_exposing_logs() {
+        assert_eq!(
+            classify_viewer_failure("[rdp] ERRINFO_LOGOFF_BY_USER", true).code,
+            "RDP_DESKTOP_LOCKED"
+        );
+        assert_eq!(
+            classify_viewer_failure("[rdp] ERRINFO_LOGOFF_BY_USER", false).code,
+            "RDP_CONNECT_FAILED"
+        );
+        assert_eq!(
+            classify_viewer_failure("[rdp] ERRCONNECT_LOGON_FAILURE", false).code,
+            "RDP_AUTH_FAILED"
+        );
+        let error = classify_viewer_failure("[rdp] arbitrary diagnostic output", false);
+        assert!(!error.message.contains("[rdp]"));
+        assert!(error.message.len() < 200);
+    }
 }
