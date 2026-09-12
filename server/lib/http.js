@@ -19,11 +19,16 @@ export const AGENT_TOKEN =
 // the port first.
 export const AGENT_ID = (process.env.PZZA_AGENT_ID || "").trim() || crypto.randomBytes(8).toString("hex");
 const TOKEN_FILE = path.join(STATE_DIR, "agent-token");
-try {
-  fs.writeFileSync(TOKEN_FILE, AGENT_TOKEN, { mode: 0o600 });
-  fs.chmodSync(TOKEN_FILE, 0o600);
-} catch {
-  /* best effort - the app still passes the token in-process */
+// Publish only after binding the listener. Imports and unsuccessful starts must
+// never replace the credential used by an already-running agent.
+export function publishAgentToken() {
+  const temporary = path.join(STATE_DIR, `.agent-token-${crypto.randomUUID()}`);
+  try {
+    fs.writeFileSync(temporary, AGENT_TOKEN, { mode: 0o600, flag: "wx" });
+    fs.renameSync(temporary, TOKEN_FILE);
+  } finally {
+    fs.rmSync(temporary, { force: true });
+  }
 }
 
 export function tokenOk(candidate) {

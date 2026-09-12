@@ -1,8 +1,31 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { randomBytes } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+
+test("importing HTTP helpers preserves the active credential until explicit publication", async t => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "pzza-http-credential-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const directory = path.join(root, "pzzacode");
+  const file = path.join(directory, "agent-token");
+  await mkdir(directory);
+  const previous = randomBytes(24).toString("hex");
+  const next = randomBytes(24).toString("hex");
+  await writeFile(file, previous, { mode: 0o600 });
+  const module = new URL("../lib/http.js", import.meta.url).href;
+  const run = promisify(execFile);
+  const options = { env: { ...process.env, XDG_CONFIG_HOME: root, PZZA_AGENT_TOKEN: next }, timeout: 5000 };
+  await run(process.execPath, ["--input-type=module", "-e", `await import(${JSON.stringify(module)})`], options);
+  assert.ok(await readFile(file, "utf8") === previous, "Imports must leave the live credential unchanged");
+  await run(process.execPath, ["--input-type=module", "-e", `const { publishAgentToken } = await import(${JSON.stringify(module)}); publishAgentToken();`], options);
+  assert.ok(await readFile(file, "utf8") === next, "Explicit publication must update the credential");
+  assert.equal((await stat(file)).mode & 0o777, 0o600);
+  assert.equal((await readdir(directory)).some(name => name.startsWith(".agent-token-")), false);
+});
 
 test("project scan streams expose CORS only to trusted app origins", async (t) => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "pzza-http-test-"));
