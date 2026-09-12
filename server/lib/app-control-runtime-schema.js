@@ -9,7 +9,7 @@ const rows = (properties, required, maxItems) => ({ type: "array", maxItems, uni
 const tileId = string();
 export const RUNTIME_APP_COMMANDS = {
   get_notification_view: command("Read the open notification page's history filters and event disclosure."),
-  set_notification_view: command("Set filters, visible item count or event disclosure in the open Notifications settings page.", { unreadOnly: boolean, category: enumeration("all", "sync", "terminal", "bridge", "devices", "app"), limit: integer(1, 300), eventsExpanded: boolean }),
+  set_notification_view: command("Set filters, visible item count or event disclosure in the open Notifications settings page.", { unreadOnly: boolean, category: enumeration("all", "sync", "terminal", "devices", "app"), limit: integer(1, 300), eventsExpanded: boolean }),
   get_sync_view: command("Read the mounted Sync repository filter, folder paths and expanded project IDs."),
   set_sync_view: command("Set the attention filter and expanded folders/projects in the open Sync repositories page.", { filter: enumeration("all", "attention"), expandedFolders: { type: "array", maxItems: 1000, uniqueItems: true, items: string(4096) }, expandedProjects: { type: "array", maxItems: 1000, uniqueItems: true, items: string(4096) } }),
   create_session: command("Create a session on a configured device and open it in the chosen workspace. Returns accepted operation state; poll get_state runtime.sessionCreation for completion.", {
@@ -36,8 +36,8 @@ export const RUNTIME_APP_COMMANDS = {
   start_dictation: command("Start microphone dictation in a ready, connected tile.", { tileId }, ["tileId"]),
   stop_dictation: command("Stop recording and finalize pending speech."),
   cancel_dictation: command("Cancel capture or pending recognition."),
-  get_notifications: command("Read a bounded notification history and preferences.", { limit: integer(1, 100), unreadOnly: boolean, category: enumeration("sync", "terminal", "bridge", "devices", "app") }),
-  configure_notifications: command("Persist notification preferences. System alerts request the normal platform permission.", { enabled: boolean, desktop: boolean, mutedUntil: integer(0, 8640000000000000), categories: rows({ category: enumeration("sync", "terminal", "bridge", "devices", "app"), enabled: boolean }, ["category", "enabled"], 5), events: rows({ event: string(80), enabled: boolean }, ["event", "enabled"], 64) }),
+  get_notifications: command("Read a bounded notification history and preferences.", { limit: integer(1, 100), unreadOnly: boolean, category: enumeration("sync", "terminal", "devices", "app") }),
+  configure_notifications: command("Persist notification preferences. System alerts request the normal platform permission.", { enabled: boolean, desktop: boolean, mutedUntil: integer(0, 8640000000000000), categories: rows({ category: enumeration("sync", "terminal", "devices", "app"), enabled: boolean }, ["category", "enabled"], 4), events: rows({ event: string(80), enabled: boolean }, ["event", "enabled"], 64) }),
   mark_notifications_read: command("Mark a notification read, or all notifications when id is omitted.", { id: string(128) }),
   remove_notification: command("Remove a specific notification from history.", { id: string(128) }, ["id"]),
   clear_notifications: command("Clear notification history on this app client."),

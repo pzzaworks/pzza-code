@@ -13,7 +13,7 @@ import { watchDesktopLifetime } from "./lib/agent-lifecycle.js";
 import { quickChatRouter } from "./lib/quick-chat.js";
 import { createDeviceSession } from "./lib/session-create.js";
 
-import { DEVBOX, IS_CLIENT, MCP_PATH, PORT, STATE_DIR } from "./lib/config.js";
+import { DEVBOX, IS_CLIENT, MCP_PATH, PORT } from "./lib/config.js";
 import { SSH_TOKEN, shOn, shQuote } from "./lib/shell.js";
 import { tmuxCommand } from "./lib/tmux-client.js";
 import {
@@ -40,8 +40,6 @@ import { deviceInfo } from "./lib/device-info.js";
 import { deviceOs, doctor, sshHosts } from "./lib/system.js";
 import { mcpConfigs, mcpInstall } from "./lib/mcp.js";
 import { createAppControl, createAppControlRouter } from "./lib/app-control.js";
-import { createBridge, createBridgeRouter } from "./lib/bridge.js";
-import { takeNativeConsentKey } from "./lib/bridge-consent.js";
 import { installAgent } from "./lib/install.js";
 import { filesRouter } from "./lib/files.js";
 import { startPtyBridge, sweepOrphanViews } from "./lib/pty.js";
@@ -58,8 +56,6 @@ const remoteSpend = createRemoteSpend();
 const repairMcp = createMcpRepair();
 const appControl = createAppControl();
 const appControlRouter = createAppControlRouter(appControl, json);
-const bridge = createBridge({ stateDir: STATE_DIR, appControl, nativeConsentKey: takeNativeConsentKey() });
-const bridgeRouter = createBridgeRouter(bridge, json);
 const server = http.createServer(async (req, res) => {
   // Defeat DNS rebinding: only a loopback Host on our port is served at all.
   if (!hostOk(req)) {
@@ -72,13 +68,10 @@ const server = http.createServer(async (req, res) => {
     return res.end();
   }
   const url = new URL(req.url, `http://${req.headers.host}`);
-  // Signed bridge requests authenticate independently and never receive the local token.
-  if (await bridgeRouter(req, res, url, true)) return;
   // Everything except the liveness probe needs the per-launch token.
   if (url.pathname !== "/health" && !tokenOk(requestToken(req, url))) {
     return json(res, 401, { error: "unauthorized" });
   }
-  if (await bridgeRouter(req, res, url)) return;
   if (await appControlRouter(req, res, url)) return;
   if (await gitProtectorRouter(req, res, url, json)) return;
   if (await quickChatRouter(req, res, url, json)) return;
@@ -311,18 +304,14 @@ server.listen(PORT, "127.0.0.1", () => {
 });
 
 
-// Cancel owned bridge jobs before the device agent exits normally.
+// Finish active HTTP requests before the managed agent exits.
 let stopping = false;
 function shutdown() {
   if (stopping) return;
   stopping = true;
-  server.close();
-  // Bound cleanup even when bridge jobs or sockets have not settled.
-  const timeout = setTimeout(() => process.exit(1), 3000);
-  void bridge.close().then(() => {
-    clearTimeout(timeout);
-    process.exit(0);
-  }, () => process.exit(1));
+  server.close(() => process.exit(0));
+  // Open terminal sockets must not keep the agent alive after the desktop exits.
+  setTimeout(() => process.exit(0), 3000).unref();
 }
 for (const signal of ["SIGTERM", "SIGINT"]) process.once(signal, shutdown);
 watchDesktopLifetime(shutdown);

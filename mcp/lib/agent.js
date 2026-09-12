@@ -104,10 +104,3 @@ export const qs = (params) => {
   const s = u.toString();
   return s ? `?${s}` : "";
 };
-
-// Bridge calls always begin at this device, even when ordinary tools target
-// another app host. Remote peers only receive signed, scoped bridge requests.
-export const localGet = (endpoint) => localApi(endpoint);
-export const localPost = (endpoint, body) => localApi(endpoint, {
-  method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body ?? {}),
-});

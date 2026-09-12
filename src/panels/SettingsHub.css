@@ -142,8 +142,6 @@
 .settings-hub-content .mcp-list { gap: 0; }
 .settings-hub-content .ports-box { max-height: none; overflow: visible; }
 .settings-hub-content :is(.remote-settings, .quick-chat-settings, .fwd-config) { border: 0; border-radius: 0; padding: 0; background: transparent; }
-.settings-hub-content .bridge-card.settings-section { border-bottom: 0; }
-.settings-hub-content .bridge-settings > .settings-section:first-of-type { margin-top: 18px; padding-top: 18px; border-top: 1px solid var(--border); }
 
 /* Help reads as flowing articles - one topic after another, nothing collapsed. */
 .settings-hub-content .help-page .doc-content { padding: 0; overflow: visible; animation: none; display: flex; flex-direction: column; }
@@ -201,7 +199,6 @@
   .settings-hub-content :is(.settings-row, .set-row) { flex-wrap: wrap; gap: 10px; }
   .settings-hub-content .set-label { min-width: 140px; }
   .settings-hub-content .set-control { max-width: 100%; }
-  .settings-hub-content .bridge-form, .settings-hub-content .bridge-permissions { grid-template-columns: 1fr; }
   .notification-history-actions { align-items: start; flex-direction: column; }
 }
 @media (max-width: 560px) {

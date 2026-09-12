@@ -896,21 +896,6 @@ export async function fetchDeviceOs(host: string): Promise<DeviceOs> {
   return "unknown";
 }
 
-export async function bridgeRequest<T>(path: string, body?: unknown): Promise<T> {
-  const response = await agentFetch(`${SERVER_HTTP}/bridge/${path}`, {
-    method: body === undefined ? "GET" : "POST",
-    headers: body === undefined ? undefined : { "Content-Type": "application/json" },
-    body: body === undefined ? undefined : JSON.stringify(body),
-    signal: AbortSignal.timeout(15000),
-  });
-  if (!response.ok) {
-    const value: unknown = await response.json().catch(() => null);
-    const message = value && typeof value === "object" && "error" in value && typeof value.error === "string" ? value.error : `Bridge request failed (${response.status})`;
-    throw Object.assign(new Error(message), { status: response.status });
-  }
-  return response.json();
-}
-
 export interface McpRepairResult {
   framework: string;
   server: string;
