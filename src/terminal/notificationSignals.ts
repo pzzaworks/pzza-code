@@ -10,6 +10,7 @@ export interface TerminalSignalNotification {
 interface SignalOptions {
   attachment: boolean;
   now?: () => number;
+  isFocused?: () => boolean;
   // Live screen hooks (provided by the terminal view). Both are optional: when
   // absent the signals fall back to generic text. Rows are absolute buffer
   // rows; readRow returns trimmed line text or null for missing rows.
@@ -39,7 +40,7 @@ function screenLines(readRow: ((row: number) => string | null) | undefined, from
 export function createTerminalSignals(
   tileId: string,
   send: (notification: TerminalSignalNotification) => void,
-  { attachment, now = () => performance.now(), cursorRow, readRow }: SignalOptions,
+  { attachment, now = () => performance.now(), isFocused = () => false, cursorRow, readRow }: SignalOptions,
 ) {
   let disposed = false;
   let exited = false;
@@ -58,11 +59,12 @@ export function createTerminalSignals(
   };
   return {
     bell() {
-      if (disposed || exited || now() - lastBell < 10_000) return;
+      if (disposed || exited || isFocused() || now() - lastBell < 10_000) return;
       lastBell = now();
-      const line = lastLine();
+      // A bell carries no reason or message. The cursor may be on an input
+      // prompt, so nearby screen text cannot explain the attention signal.
       emit("Terminal needs attention",
-        line ? `Attention signal after ${quote(line)}.` : "This terminal emitted an attention signal.",
+        "This terminal emitted an attention signal.",
         "terminal-bell");
     },
     osc133(data: string) {

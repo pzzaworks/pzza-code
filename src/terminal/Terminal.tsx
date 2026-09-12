@@ -433,12 +433,13 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
         notify({ ...notification, body: `${label || "Terminal"} (${device}): ${notification.body}` });
       }, {
         attachment: true,
+        isFocused: () => document.hasFocus() && container.contains(document.activeElement),
         // Real screen context for notifications: absolute cursor row and the
         // trimmed text of an absolute row (control characters stripped).
         cursorRow: () => {
           try {
             const buffer = term.buffer.active;
-            return buffer.viewportY + buffer.cursorY;
+            return buffer.baseY + buffer.cursorY;
           } catch {
             return null;
           }
