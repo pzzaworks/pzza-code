@@ -33,6 +33,7 @@ import { McpMenu } from '/src/panels/McpMenu';
 import { SettingsHub } from '/src/panels/SettingsHub';
 import { Terminal } from '/src/terminal/Terminal';
 import { useNotifications } from '/src/state/notifications';
+import { LatestNotifications } from '/src/panels/Notifications';
 import { readAppControlRuntime } from '/src/appControlRuntime';
 import { confirmAppControlAction } from '/src/appControlCore';
 import '/src/styles/global.css';
@@ -82,7 +83,7 @@ function Settings() {
   return <SettingsHub open section={section} onSectionChange={setSection} onOpen={setSection} onClose={() => {}} />;
 }
 function Attention() {
-  return <><div style={{ position:'relative', height:320, width:700 }}><Terminal tileId="attention" name="attention" active /></div><button id="outside-terminal">Other panel</button></>;
+  return <><div style={{ position:'relative', height:320, width:700 }}><Terminal tileId="attention" name="attention" active /></div><button id="outside-terminal">Other panel</button><div style={{ width:560 }}><LatestNotifications viewAll={() => {}} /></div></>;
 }
 const mode = new URLSearchParams(location.search).get('mode');
 if (mode === 'usage-accounts') useStore.setState({ devices: [{ id:'remote', host:'devbox', name:'Devbox' }] });
@@ -150,8 +151,38 @@ test('terminal bells respect actual keyboard focus and never quote the input pro
   const items = await page.evaluate(() => window.ui.useNotifications.getState().items);
   assert.equal(items.length, 1);
   assert.equal(items[0].event, 'terminal-bell');
-  assert.equal(items[0].body, 'attention (This device): This terminal emitted an attention signal.');
+  assert.equal(items[0].body, 'attention (This device): No message was provided. Open this terminal to check what needs attention.');
   assert.equal(items[0].target.tileId, 'attention');
+});
+
+test('terminal notifications render real messages and useful output through the parser', options, async t => {
+  let socket, acknowledge, attached;
+  const attachment = new Promise(resolve => { attached = resolve; });
+  const page = await pageFor(t, 'attention', '', page => page.routeWebSocket('**/*', ws => {
+    socket = ws;
+    ws.onMessage(message => {
+      const packet = JSON.parse(String(message));
+      if (packet.type === 'attach') attached();
+      if (packet.type === 'ack') acknowledge?.();
+    });
+  }));
+  await attachment;
+  const write = text => new Promise(resolve => { acknowledge = resolve; socket.send(Buffer.from(text)); });
+  await page.locator('#outside-terminal').click();
+  await write('Build completed. Review the changes.\r\n› Ask for help\x07');
+  await page.getByText('attention (This device): Recent output: Build completed. Review the changes.', { exact: true }).waitFor();
+  await write('\x1b]777;notify;Approval required;Allow the database migration?\x1b\\');
+  await page.locator('.notification-title strong', { hasText: 'Approval required' }).waitFor();
+  await page.getByText('attention (This device): Allow the database migration?', { exact: true }).waitFor();
+  await write('\x1b]9;The export is ready.\x07');
+  await page.getByText('attention (This device): The export is ready.', { exact: true }).waitFor();
+  const count = await page.locator('.notification-row').count();
+  await write('\x1b]9;4;1;75\x07\x1b]9;The export is ready.\x07');
+  assert.equal(await page.locator('.notification-row').count(), count);
+  assert.ok(!(await page.locator('.notification-list').innerText()).includes('Ask for help'));
+  await evidence(page, 'notification-details');
+  await page.getByRole('button', { name: 'Dismiss Approval required', exact: true }).click();
+  assert.equal(await page.locator('.notification-title strong', { hasText: 'Approval required' }).count(), 0);
 });
 
 test('queued confirmations default to Cancel, trap focus, restore focus and close only the top dialog', options, async t => {
