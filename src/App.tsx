@@ -333,7 +333,7 @@ export default function App() {
                     </button>
                   </>}
                 </Dropdown>
-                <Dropdown icon={EthernetPort} title="Port forwarding" controlId="port_forwarding" width={320} loading={portsLoading} align="end" compact tourId="ports">
+                <Dropdown icon={EthernetPort} title="Port manager" controlId="port_forwarding" width={320} loading={portsLoading} align="end" compact tourId="ports">
                   {(close, open) => <PortsMenu active={open && !settingsOpen} onLoadingChange={setPortsLoading} onOpenSettings={() => { close(); openSettings("ports"); }} />}
                 </Dropdown>
                 <Dropdown icon={Gauge} title="Agent usage" controlId="usage" width={320} tourId="usage">
