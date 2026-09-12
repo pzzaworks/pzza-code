@@ -5,10 +5,30 @@ import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import childProcess from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
 import { inspectPortProcesses, listPortDetails, parsePorts, protectedListenerPort, stopPortContainer, terminateListener, terminateRemoteListener } from "../lib/ports.js";
 
 test("port parser deduplicates IPv4 and IPv6 listeners", () => {
   assert.deepEqual(parsePorts("127.0.0.1:3000\n[::]:3000\n*:4100\n"), [3000, 4100]);
+});
+
+test("macOS process scans preserve surviving identities when another process disappears", async (t) => {
+  const root = await mkdtemp(path.join(os.homedir(), ".pzza-port-test-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await writeFile(path.join(root, "package.json"), JSON.stringify({ name: "surviving-project" }));
+  let exitCode = 1;
+  t.mock.method(childProcess, "execFile", (command, args, options, callback) => {
+    assert.equal(command, "lsof");
+    if (args.includes("-iTCP")) callback(null, "p1234\ncnode\nn127.0.0.1:4567\n");
+    else callback(Object.assign(new Error("Process selection incomplete"), { code: exitCode }), `p1234\nn${root}\n`);
+  });
+  syncBuiltinESMExports();
+  t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+  const inspect = () => inspectPortProcesses({ platform: "darwin", containers: false });
+  assert.equal((await inspect())[0].processes[0].name, "surviving-project");
+  exitCode = 2;
+  assert.equal((await inspect())[0].processes[0].name, "node");
 });
 
 test("listener identity uses its actual project name, then working folder", { skip: !["linux", "darwin"].includes(os.platform()) }, async (t) => {
