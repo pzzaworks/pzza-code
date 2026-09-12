@@ -178,18 +178,22 @@ export async function fetchOpencodeUsage(apiKey) {
   const win = (w) => w && Number.isFinite(Number(w?.percent))
     ? { percent: Math.min(100, Math.max(0, Number(w.percent))), resets_at: w.resetsAt ?? null }
     : null;
+  // The Go API's rolling window is the 5-hour window the CLI shows, so it
+  // feeds the shared five_hour slot and renders as the familiar "5h" bar.
+  const rolling = windows ? win(windows.rolling) : null;
   const weekly = windows ? win(windows.weekly) : null;
+  const monthly = windows ? win(windows.monthly) : null;
   const scoped = [
     ...(credits ? [credits] : []),
-    ...(windows && win(windows.rolling) ? [{ name: "Rolling", ...win(windows.rolling) }] : []),
-    ...(windows && win(windows.monthly) ? [{ name: "Monthly", ...win(windows.monthly) }] : []),
+    ...(monthly ? [{ name: "Monthly", ...monthly }] : []),
   ];
-  if (!weekly && scoped.length === 0) {
+  if (!rolling && !weekly && scoped.length === 0) {
     throw Object.assign(new Error("Go usage is unavailable for this account."), { unsupported: true });
   }
-  // seven_day follows the UsageWindow shape (utilization); scoped entries keep
-  // the UsageScoped shape (percent) the panel reads.
-  return { five_hour: null, seven_day: weekly ? { utilization: weekly.percent, resets_at: weekly.resets_at } : null, scoped };
+  // five_hour/seven_day follow the UsageWindow shape (utilization); scoped
+  // entries keep the UsageScoped shape (percent) the panel reads.
+  const asWindow = (w) => w ? { utilization: w.percent, resets_at: w.resets_at } : null;
+  return { five_hour: asWindow(rolling), seven_day: asWindow(weekly), scoped };
 }
 
 async function opencodeAccountUsage(acc, fresh) {
