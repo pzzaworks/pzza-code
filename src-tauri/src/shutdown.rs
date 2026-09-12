@@ -53,6 +53,7 @@ fn cleanup(app: &tauri::AppHandle) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     app.state::<crate::speech::SpeechState>()
         .shutdown(std::time::Duration::from_secs(15))?;
+    crate::rdp::shutdown()?;
     crate::agent::stop(app)?;
     app.state::<crate::pty::PtyState>().shutdown();
     #[cfg(target_os = "macos")]
