@@ -2,14 +2,12 @@
 // HTTP API. UI commands wait for an acknowledgement from the explicitly
 // selected app window; device tools use the guarded backend directly.
 import { get, post, qs } from "./agent.js";
-import { BRIDGE_TOOLS } from "./bridge-tools.js";
 import { GIT_TOOLS } from "./git-tools.js";
 
 import { APP_TOOLS } from "./app-tools.js";
 import { SESSION_NAME_SCHEMA } from "../../server/lib/session-name.js";
 
 const TOOLS = [
-  ...BRIDGE_TOOLS,
   ...GIT_TOOLS,
   ...APP_TOOLS,
   {

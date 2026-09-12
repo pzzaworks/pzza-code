@@ -1,5 +1,4 @@
 mod agent;
-mod bridge_consent;
 mod terminal_drop;
 mod shutdown;
 mod menu;
@@ -78,7 +77,6 @@ pub fn run() {
             rdp::rdp_is_open,
             agent::agent_token,
             agent::agent_instance,
-            bridge_consent::bridge_local_decide,
             terminal_drop::read_dropped_file,
             terminal_drop::release_drop,
             sys::open_url,

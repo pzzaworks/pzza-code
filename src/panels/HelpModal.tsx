@@ -1141,18 +1141,6 @@ export function HelpContent({ section, request }: { section: HelpSection; reques
                   For a remote setup, copy the configuration into its MCP settings.
                 </Step>
               </Steps>
-              <H>Device bridge</H>
-              <P>
-                In <b>Connections</b>, the <b>Device bridge</b> starts disabled.
-                Use <b>Copy pairing identity</b> and <b>Add paired device</b> to explicitly pair devices,
-                choose <b>Approved projects on this device</b>, and save the permissions you intend to grant.
-                <b> Allow incoming requests</b> controls each paired device; <b>Revoke device now</b> removes its access.
-              </P>
-              <P>
-                Review <b>Jobs and submission approvals</b> before approving requested work.
-                Bridge permissions constrain requests; they are not an operating system sandbox for builds or terminal commands.
-                Pairing or enabling the bridge does not automatically submit work.
-              </P>
               <H>Model Context Protocol</H>
               <P>
                 <IB icon={Blocks} /> provides tools for sessions, files, devices and app control.

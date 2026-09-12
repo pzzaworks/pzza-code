@@ -10,7 +10,6 @@ import { QuickChatSettings } from "./QuickChat";
 import { PortsMenu } from "./PortsMenu";
 import { RdpMenu } from "./RdpMenu";
 import { McpMenu } from "./McpMenu";
-import { BridgeSettings } from "./BridgeSettings";
 import { HelpContent, HELP_SECTIONS, type HelpSection, type HelpRequest } from "./HelpModal";
 import { About } from "./About";
 import { NotificationsSettings } from "./Notifications";
@@ -48,23 +47,22 @@ export function SettingsHub({ open, section, onSectionChange, onOpen, onClose, s
     const group = HELP_SECTIONS.find(entry => entry.topics.some(topic => topic === helpRequest.topic));
     if (group) setHelpSection(group.id);
   }, [helpRequest]);
-  const [connectionTab, setConnectionTab] = useState<"mcp" | "bridge" | "bridge-activity">("mcp");
   const [syncPage, setSyncPage] = useState<"repositories" | "preferences">("repositories");
   const [syncVisited, setSyncVisited] = useState(false);
   const [mcpVisited, setMcpVisited] = useState(false);
   const [portsVisited, setPortsVisited] = useState(false);
-  const controlRef = useRef({ open, section, generalSection, notificationPage, helpSection, connectionTab, syncPage, onOpen });
-  controlRef.current = { open, section, generalSection, notificationPage, helpSection, connectionTab, syncPage, onOpen };
+  const controlRef = useRef({ open, section, generalSection, notificationPage, helpSection, syncPage, onOpen });
+  controlRef.current = { open, section, generalSection, notificationPage, helpSection, syncPage, onOpen };
   useEffect(() => {
     const pages: Record<SettingsSection, readonly string[]> = {
       general: generalSections.map(item => item.id), notifications: ["activity", "preferences"],
       "quick-chat": [], devices: [], sync: ["repositories", "preferences"],
-      mcp: ["mcp", "bridge", "bridge-activity"], help: HELP_SECTIONS.map(item => item.id), about: [], remote: [], ports: [],
+      mcp: ["mcp"], help: HELP_SECTIONS.map(item => item.id), about: [], remote: [], ports: [],
     };
     const cleanups = [
       registerAppControlState("settings", () => {
         const current = controlRef.current;
-        return { open: current.open, section: current.section, pages, page: current.section === "general" ? current.generalSection : current.section === "notifications" ? current.notificationPage : current.section === "help" ? current.helpSection : current.section === "mcp" ? current.connectionTab : current.section === "sync" ? current.syncPage : null };
+        return { open: current.open, section: current.section, pages, page: current.section === "general" ? current.generalSection : current.section === "notifications" ? current.notificationPage : current.section === "help" ? current.helpSection : current.section === "mcp" ? "mcp" : current.section === "sync" ? current.syncPage : null };
       }),
       registerAppControlHandler("open_settings", args => {
         const target = args.section as SettingsSection;
@@ -74,7 +72,6 @@ export function SettingsHub({ open, section, onSectionChange, onOpen, onClose, s
           if (target === "general") setGeneralSection(page as GeneralSection);
           if (target === "notifications") setNotificationPage(page as "activity" | "preferences");
           if (target === "help") setHelpSection(page as HelpSection);
-          if (target === "mcp") setConnectionTab(page as "mcp" | "bridge" | "bridge-activity");
           if (target === "sync") setSyncPage(page as "repositories" | "preferences");
         }
         controlRef.current.onOpen(target);
@@ -87,7 +84,7 @@ export function SettingsHub({ open, section, onSectionChange, onOpen, onClose, s
   const dialog = useRef<HTMLDivElement>(null);
   useEffect(() => {
     dialog.current?.querySelector(".settings-hub-content")?.scrollTo({ top: 0 });
-  }, [section, generalSection, notificationPage, helpSection, connectionTab, syncPage]);
+  }, [section, generalSection, notificationPage, helpSection, syncPage]);
   useModalFocus(open, dialog, onClose);
   useEffect(() => {
     if ((open && section === "sync") || syncRequest > 0) setSyncVisited(true);
@@ -113,7 +110,7 @@ export function SettingsHub({ open, section, onSectionChange, onOpen, onClose, s
                 {active && id === "general" ? <SettingsSubnav label="General settings" items={generalSections} value={generalSection} onChange={setGeneralSection} /> : null}
                 {active && id === "notifications" ? <SettingsSubnav label="Notification pages" items={[{ id: "activity", label: "Activity" }, { id: "preferences", label: "Preferences" }]} value={notificationPage} onChange={setNotificationPage} /> : null}
                 {active && id === "sync" ? <SettingsSubnav label="Sync pages" items={[{ id: "repositories", label: "Repositories" }, { id: "preferences", label: "Preferences" }]} value={syncPage} onChange={setSyncPage} /> : null}
-                {active && id === "mcp" ? <SettingsSubnav label="Connection settings" items={[{ id: "mcp", label: "MCP integrations" }, { id: "bridge", label: "Device bridge" }, { id: "bridge-activity", label: "Bridge activity" }, { id: "remote", label: "Remote desktop" }, { id: "ports", label: "Port forwarding" }]} value={section === "remote" || section === "ports" ? section : connectionTab} onChange={(value: "mcp" | "bridge" | "bridge-activity" | "remote" | "ports") => { if (value === "remote" || value === "ports") onSectionChange(value); else { setConnectionTab(value); onSectionChange("mcp"); } }} /> : null}
+                {active && id === "mcp" ? <SettingsSubnav label="Connection settings" items={[{ id: "mcp", label: "MCP integrations" }, { id: "remote", label: "Remote desktop" }, { id: "ports", label: "Port forwarding" }]} value={section === "remote" || section === "ports" ? section : "mcp"} onChange={(value: "mcp" | "remote" | "ports") => onSectionChange(value)} /> : null}
                 {active && id === "help" ? <SettingsSubnav label="Help topics" items={HELP_SECTIONS} value={helpSection} onChange={setHelpSection} /> : null}
               </div>;
             })}
@@ -128,7 +125,7 @@ export function SettingsHub({ open, section, onSectionChange, onOpen, onClose, s
               {syncVisited || syncRequest > 0 || (open && section === "sync") ? <div hidden={!open || section !== "sync"}><ProjectsMenu active={open && section === "sync"} page={syncPage} syncRequest={syncRequest} onSyncingChange={onSyncingChange} /></div> : null}
               {portsVisited || (open && section === "ports") ? <div hidden={!open || section !== "ports"}><PortsMenu active={open && section === "ports"} /></div> : null}
               {open && section === "remote" ? <RdpMenu close={onClose} /> : null}
-              {mcpVisited || (open && section === "mcp") ? <div hidden={!open || section !== "mcp"}><div hidden={connectionTab !== "bridge" && connectionTab !== "bridge-activity"}><BridgeSettings page={connectionTab === "bridge-activity" ? "activity" : "access"} active={open && section === "mcp" && (connectionTab === "bridge" || connectionTab === "bridge-activity")} /></div><div hidden={connectionTab !== "mcp"}><McpMenu /></div></div> : null}
+              {mcpVisited || (open && section === "mcp") ? <div hidden={!open || section !== "mcp"}><McpMenu /></div> : null}
               {open && section === "about" ? <About /> : null}
               {open && section === "help" ? <HelpContent section={helpSection} request={helpRequest} /> : null}
             </div>
