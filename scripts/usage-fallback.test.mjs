@@ -28,10 +28,10 @@ test("publishes a healthy remote device while another connected device is still 
   await work;
 });
 
-test("does not contact devices when both local providers already have usage", async () => {
+test("does not contact devices when all local providers already have usage", async () => {
   const calls = [];
   await loadDeviceUsage([{ host: "remote", name: "Remote" }], async host => {
-    calls.push(host); return [account("claude", "a@example.test"), account("codex", "b@example.test")];
+    calls.push(host); return [account("claude", "a@example.test"), account("codex", "b@example.test"), account("opencode", "c@example.test")];
   }, () => {});
   assert.deepEqual(calls, [""]);
 });

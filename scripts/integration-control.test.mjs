@@ -48,11 +48,16 @@ test("config generation preserves the newest target and install output is never 
   responses.get("first")(Response.json({ path: "/first/mcp.js", frameworks: {} })); await first;
   assert.equal(useMcpSettings.getState().config.path, "/second/mcp.js");
   store.select({ agentHost: "" });
-  globalThis.fetch = async () => Response.json({ ok: true, output: "Untrusted command output" });
+  globalThis.fetch = async (_url, init) => {
+    const { framework } = JSON.parse(init.body);
+    if (framework === "unknown-framework") return Response.json({ ok: false, manual: true, error: "no installer - copy the config into your settings" });
+    return Response.json({ ok: true, output: "Untrusted command output" });
+  };
   await store.install("claude");
   assert.equal(useMcpSettings.getState().notes.claude, "added ✓");
   assert.ok(!JSON.stringify(useMcpSettings.getState()).includes("Untrusted command output"));
-  await assert.rejects(store.install("unknown-framework"), /requires copying/);
+  await assert.rejects(store.install("unknown-framework"), /copy the config/);
+  assert.ok(!JSON.stringify(useMcpSettings.getState()).includes("Untrusted command output"));
 });
 
 test("bridge settings preserve the draft revision through native consent and reject stale saves", async t => {
