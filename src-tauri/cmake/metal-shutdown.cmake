@@ -1,0 +1,35 @@
+# Apply to the speech dependency's generated build copy, never its registry source.
+# Keep the residency heartbeat at 500 ms and wake it immediately during shutdown.
+if(NOT APPLE)
+    return()
+endif()
+get_filename_component(generated_source "$ENV{OUT_DIR}/whisper.cpp" REALPATH)
+get_filename_component(current_source "${CMAKE_CURRENT_SOURCE_DIR}" REALPATH)
+if(NOT current_source STREQUAL generated_source)
+    message(FATAL_ERROR "Refusing to patch speech sources outside the generated build directory.")
+endif()
+execute_process(COMMAND "${CMAKE_COMMAND}" -E echo "cargo:rerun-if-changed=${CMAKE_CURRENT_LIST_FILE}")
+execute_process(COMMAND "${CMAKE_COMMAND}" -E echo "cargo:rerun-if-env-changed=CMAKE_PROJECT_whisper.cpp_INCLUDE")
+set(metal_source "${CMAKE_CURRENT_SOURCE_DIR}/ggml/src/ggml-metal/ggml-metal-device.m")
+file(SHA256 "${metal_source}" metal_hash)
+if(metal_hash STREQUAL "dac7cad0473bef51a6c3d3130ef46d0a0074581cca75df8e5d10047b6be389c5")
+    return()
+endif()
+if(NOT metal_hash STREQUAL "568c08dab4df586ddb68cae95b36cf84e8fc80b34757a9d243ede4cb5f9d5280")
+    message(FATAL_ERROR "Speech engine source changed; review the Metal shutdown patch before building.")
+endif()
+file(READ "${metal_source}" metal_text)
+string(REPLACE [=[    dispatch_group_t d_group;]=] [=[    dispatch_group_t d_group;
+    dispatch_semaphore_t d_wake;]=] metal_text "${metal_text}")
+string(REPLACE [=[    res->d_group = dispatch_group_create();]=] [=[    res->d_group = dispatch_group_create();
+    res->d_wake = dispatch_semaphore_create(0);]=] metal_text "${metal_text}")
+string(REPLACE [=[                  usleep(500 * 1000);]=] [=[                  dispatch_semaphore_wait(res->d_wake, dispatch_time(DISPATCH_TIME_NOW, 500 * NSEC_PER_MSEC));]=] metal_text "${metal_text}")
+string(REPLACE [=[    atomic_store_explicit(&rsets->d_stop, true, memory_order_relaxed);]=] [=[    atomic_store_explicit(&rsets->d_stop, true, memory_order_relaxed);
+    dispatch_semaphore_signal(rsets->d_wake);]=] metal_text "${metal_text}")
+string(REPLACE [=[    dispatch_release(rsets->d_group);]=] [=[    dispatch_release(rsets->d_group);
+    dispatch_release(rsets->d_wake);]=] metal_text "${metal_text}")
+string(SHA256 patched_hash "${metal_text}")
+if(NOT patched_hash STREQUAL "dac7cad0473bef51a6c3d3130ef46d0a0074581cca75df8e5d10047b6be389c5")
+    message(FATAL_ERROR "The Metal shutdown patch did not produce the expected source.")
+endif()
+file(WRITE "${metal_source}" "${metal_text}")
