@@ -32,7 +32,7 @@ async function requestOnDevice() {
 }
 
 export function deviceAgentRequest(host, endpoint, body) {
-  const allowed = body === undefined ? /^\/(?:(?:usage|spend)(?:\?fresh=1)?|bridge\/state)$/.test(endpoint) : endpoint === "/bridge/pair-grant";
+  const allowed = body === undefined ? /^\/(?:(?:usage|spend)(?:\?fresh=1)?|bridge\/state)$/.test(endpoint) : ["/bridge/pair-grant", "/bridge/approval-status", "/bridge/approval-cancel"].includes(endpoint);
   if (!SSH_TOKEN.test(host) || !allowed) return Promise.reject(new Error("Invalid device agent request"));
   const script = `(${requestOnDevice.toString()})().catch(() => { process.exitCode = 1; });`;
   const command = `if command -v node >/dev/null 2>&1; then exec node -e ${shQuote(script)}; fi; for runtime in "$HOME/.local/bin/node" /opt/homebrew/bin/node /usr/local/bin/node /usr/bin/node "$HOME"/.nvm/versions/node/*/bin/node; do if test -x "$runtime"; then exec "$runtime" -e ${shQuote(script)}; fi; done; exit 127`;
