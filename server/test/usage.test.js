@@ -133,10 +133,9 @@ test("opencode go windows map without a credits quota", async () => {
       } }), { headers: { "Content-Type": "application/json" } });
     };
     assert.deepEqual(await fetchOpencodeUsage("sk-test"), {
-      five_hour: null,
+      five_hour: { utilization: 12, resets_at: "2026-09-11T10:00:00Z" },
       seven_day: { utilization: 34, resets_at: "2026-09-16T10:00:00Z" },
       scoped: [
-        { name: "Rolling", percent: 12, resets_at: "2026-09-11T10:00:00Z" },
         { name: "Monthly", percent: 56, resets_at: "2026-10-01T10:00:00Z" },
       ],
     });
