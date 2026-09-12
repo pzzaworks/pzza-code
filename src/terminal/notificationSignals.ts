@@ -1,3 +1,5 @@
+import { redactTerminalOutput } from "../../server/lib/terminal-redaction.js";
+
 export interface TerminalSignalNotification {
   category: "terminal";
   event: "terminal-bell" | "terminal-command" | "terminal-exit";
@@ -16,12 +18,21 @@ interface SignalOptions {
   // rows; readRow returns trimmed line text or null for missing rows.
   cursorRow?: () => number | null;
   readRow?: (row: number) => string | null;
+  isWrappedRow?: (row: number) => boolean;
 }
 
 const CONTEXT_CHARS = 120;
+const MESSAGE_CHARS = 220;
+
+function safeText(text: string): string {
+  // Strip formatting before redaction so escape codes cannot split a credential.
+  const plain = text.replace(/\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\))/g, "")
+    .replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]/g, "");
+  return redactTerminalOutput(plain).text;
+}
 
 function quote(text: string): string {
-  const clean = text.replace(/\s+/g, " ").trim();
+  const clean = safeText(text).replace(/\s+/g, " ").trim();
   return `"${clean.length > CONTEXT_CHARS ? `${clean.slice(0, CONTEXT_CHARS - 1)}…` : clean}"`;
 }
 
@@ -40,16 +51,17 @@ function screenLines(readRow: ((row: number) => string | null) | undefined, from
 export function createTerminalSignals(
   tileId: string,
   send: (notification: TerminalSignalNotification) => void,
-  { attachment, now = () => performance.now(), isFocused = () => false, cursorRow, readRow }: SignalOptions,
+  { attachment, now = () => performance.now(), isFocused = () => false, cursorRow, readRow, isWrappedRow }: SignalOptions,
 ) {
   let disposed = false;
   let exited = false;
   let commandStarted = false;
   let commandStartRow: number | null = null;
   let lastBell = -Infinity;
-  const emit = (title: string, body: string, key: TerminalSignalNotification["event"]) => {
+  let pendingBell = false;
+  const emit = (title: string, body: string, key: TerminalSignalNotification["event"], detail = "") => {
     if (disposed || exited) return;
-    send({ category: "terminal", event: key, title, body, target: { tileId }, dedupeKey: `${key}:${tileId}` });
+    send({ category: "terminal", event: key, title, body, target: { tileId }, dedupeKey: `${key}:${tileId}${detail ? `:${detail}` : ""}` });
   };
   // Most recent non-empty screen line at or above the cursor.
   const lastLine = () => {
@@ -57,15 +69,61 @@ export function createTerminalSignals(
     const lines = screenLines(readRow, cursor === null ? null : cursor - 10, cursor);
     return lines.length ? lines[lines.length - 1] : null;
   };
+  const recentOutput = () => {
+    const cursor = cursorRow?.() ?? null;
+    if (cursor === null || !readRow) return "";
+    const rows: string[] = [];
+    for (let row = Math.max(0, cursor - 40); row <= cursor; row++) {
+      const text = readRow(row) ?? "";
+      if (isWrappedRow?.(row) && rows.length) rows[rows.length - 1] += text;
+      else rows.push(text);
+    }
+    const lines = safeText(rows.join("\n")).split("\n");
+    // Exclude whole input lines, including their wrapped rows. Output after a
+    // completed shell prompt remains useful, but never establishes the cause.
+    const prompt = /^\s*[│┃]?\s*(?:[›❯»>$#%](?:\s|$)|\S*[@:/~]\S*\s*[$#%](?:\s|$))/;
+    const output = lines.filter(line =>
+      !prompt.test(line) && /[\p{L}\p{N}]/u.test(line) &&
+      !/^\s*(?:[?] for shortcuts|esc to |\d+% context left|password\b|passphrase\b)/i.test(line));
+    const text = output.slice(-2).join(" ").replace(/\s+/g, " ").trim();
+    return text.length > MESSAGE_CHARS ? `${text.slice(0, MESSAGE_CHARS - 1)}…` : text;
+  };
+  const message = (title: string, body: string) => {
+    pendingBell = false;
+    if (disposed || exited || isFocused()) return;
+    const cleanTitle = safeText(title).replace(/\s+/g, " ").trim().slice(0, 120);
+    const cleanBody = safeText(body).replace(/\s+/g, " ").trim().slice(0, MESSAGE_CHARS);
+    if (!cleanTitle && !cleanBody) return;
+    lastBell = now();
+    emit(cleanTitle || "Terminal notification", cleanBody || cleanTitle, "terminal-bell", `${cleanTitle}:${cleanBody}`);
+  };
   return {
     bell() {
-      if (disposed || exited || isFocused() || now() - lastBell < 10_000) return;
-      lastBell = now();
-      // A bell carries no reason or message. The cursor may be on an input
-      // prompt, so nearby screen text cannot explain the attention signal.
-      emit("Terminal needs attention",
-        "This terminal emitted an attention signal.",
-        "terminal-bell");
+      if (disposed || exited || pendingBell || isFocused() || now() - lastBell < 10_000) return;
+      pendingBell = true;
+      // Finish parsing the output batch first. A message in the same batch
+      // supersedes its bell, and the screen preview includes the final text.
+      queueMicrotask(() => {
+        if (!pendingBell) return;
+        pendingBell = false;
+        if (disposed || exited || isFocused()) return;
+        lastBell = now();
+        const output = recentOutput();
+        emit("Terminal rang its bell", output ? `Recent output: ${output}`
+          : "No message was provided. Open this terminal to check what needs attention.", "terminal-bell");
+      });
+    },
+    osc9(data: string) {
+      // Numeric subcommands are progress or shell metadata, not notifications.
+      if (!data || data.length > 4096 || /^\d+;/.test(data)) return false;
+      message("", data);
+      return true;
+    },
+    osc777(data: string) {
+      if (!data.startsWith("notify;") || data.length > 4096) return false;
+      const separator = data.indexOf(";", 7);
+      message(separator < 0 ? data.slice(7) : data.slice(7, separator), separator < 0 ? "" : data.slice(separator + 1));
+      return true;
     },
     osc133(data: string) {
       if (disposed || exited || data.length > 32) return false;
@@ -85,7 +143,7 @@ export function createTerminalSignals(
           const lines = screenLines(readRow, startRow ?? (cursor === null ? null : cursor - 30), cursor);
           const command = lines.length ? lines[0] : null;
           const output = lines.length > 1 && lines[lines.length - 1] !== command ? lines[lines.length - 1] : null;
-          const context = command ? ` ${quote(command)}${output ? ` — last line ${quote(output)}` : ""}` : "";
+          const context = command ? ` ${quote(command)}${output ? ` - last line ${quote(output)}` : ""}` : "";
           emit(code === 0 ? "Terminal reported completion" : "Terminal reported failure",
             code === 0
               ? (command ? `Finished${context}.` : "Shell integration reported that a command finished successfully.")
@@ -112,6 +170,6 @@ export function createTerminalSignals(
       commandStarted = false;
       commandStartRow = null;
     },
-    dispose() { disposed = true; commandStarted = false; commandStartRow = null; },
+    dispose() { disposed = true; pendingBell = false; commandStarted = false; commandStartRow = null; },
   };
 }
