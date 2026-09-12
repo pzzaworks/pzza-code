@@ -551,9 +551,9 @@ export interface SpendDay extends SpendWindow {
   day: string; // YYYY-MM-DD
 }
 export interface AccountSpend {
-  provider: "claude" | "codex";
+  provider: "claude" | "codex" | "opencode";
   label: string;
-  pricingBasis: "standard-api-short-context";
+  pricingBasis: "standard-api-short-context" | "opencode-billed";
   today: SpendWindow;
   yesterday: SpendWindow;
   window: SpendWindow;

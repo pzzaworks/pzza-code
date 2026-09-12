@@ -52,9 +52,10 @@ export function UsageSpend({ spend, color }: { spend: AccountSpend; color: strin
       </span>
     </div>
   );
+  const billed = spend.pricingBasis === "opencode-billed";
   return (
-    <div className="usage-detail" title="Standard short-context API-equivalent estimates from local token counts. Long-context and service-tier adjustments are not included.">
-      <p className="usage-estimate-note" role="note"><Info size={12} aria-hidden="true" /><span>API estimate (short context), not billed spend.</span></p>
+    <div className="usage-detail" title={billed ? "Billed spend from local OpenCode session records." : "Standard short-context API-equivalent estimates from local token counts. Long-context and service-tier adjustments are not included."}>
+      <p className="usage-estimate-note" role="note"><Info size={12} aria-hidden="true" /><span>{billed ? "Billed spend, not an estimate." : "API estimate (short context), not billed spend."}</span></p>
       <div className="usage-detail-row">
         <span className="usage-detail-label">Token trend</span>
         <Trend days={spend.days} color={color} />

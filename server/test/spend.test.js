@@ -162,3 +162,46 @@ test("worker scans preserve fresh requests, incremental totals, large UTF-8 reco
   });
   assert.equal(stdout, "ok");
 });
+
+test("opencode spend reads billed cost and tokens from the local session database", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "pzza-spend-opencode-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const dataDir = path.join(root, "data", "opencode");
+  await mkdir(dataDir, { recursive: true });
+  await mkdir(path.join(root, "opencode"), { recursive: true });
+  // Discovery needs the config dir plus a connected key, like a real install.
+  await writeFile(path.join(root, "opencode", "placeholder"), "");
+  await writeFile(path.join(dataDir, "auth.json"), JSON.stringify({ opencode: { key: "sk-test" } }));
+  const dbPath = path.join(dataDir, "opencode.db");
+  const script = path.join(root, "check.mjs");
+  await writeFile(script, `
+    import assert from 'node:assert/strict';
+    import { DatabaseSync } from 'node:sqlite';
+    import { scanSpend } from ${JSON.stringify(new URL("../lib/spend-scan.js", import.meta.url).href)};
+    const db = new DatabaseSync(${JSON.stringify(dbPath)});
+    db.exec("CREATE TABLE session (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, cost REAL DEFAULT 0 NOT NULL, tokens_input INTEGER DEFAULT 0 NOT NULL, tokens_output INTEGER DEFAULT 0 NOT NULL, tokens_reasoning INTEGER DEFAULT 0 NOT NULL, time_created INTEGER NOT NULL)");
+    const insert = db.prepare("INSERT INTO session (id, project_id, cost, tokens_input, tokens_output, tokens_reasoning, time_created) VALUES (?, 'p', ?, ?, ?, ?, ?)");
+    const day = (iso) => new Date(iso).getTime();
+    insert.run('a', 1.5, 1000, 500, 100, day('2026-09-10T10:00:00Z'));
+    insert.run('b', 2.5, 2000, 1000, 0, day('2026-09-09T10:00:00Z'));
+    insert.run('c', 0, 0, 0, 0, day('2026-09-10T11:00:00Z'));
+    db.close();
+    const now = new Date('2026-09-10T12:00:00Z').getTime();
+    const accounts = await scanSpend(now);
+    assert.equal(accounts.length, 1);
+    const result = accounts[0];
+    assert.equal(result.provider, 'opencode');
+    assert.equal(result.pricingBasis, 'opencode-billed');
+    assert.deepEqual([result.today.cost, result.today.tokens], [1.5, 1600]);
+    assert.deepEqual([result.yesterday.cost, result.yesterday.tokens], [2.5, 3000]);
+    assert.deepEqual([result.window.cost, result.window.tokens], [4.0, 4600]);
+    assert.equal(result.days.at(-1).day, '2026-09-10');
+    assert.equal(result.days.at(-1).cost, 1.5);
+    assert.equal(result.days.at(-2).cost, 2.5);
+    process.stdout.write('ok');
+  `);
+  const { stdout } = await execute(process.execPath, [script], {
+    env: { ...process.env, HOME: root, XDG_CONFIG_HOME: root, XDG_DATA_HOME: path.join(root, "data"), TZ: "UTC" }, timeout: 10_000,
+  });
+  assert.equal(stdout, "ok");
+});
