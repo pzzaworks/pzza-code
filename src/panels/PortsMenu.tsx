@@ -150,7 +150,6 @@ export function PortsMenu({ active = true, onLoadingChange, onOpenSettings }: {
         </div>
       </div>
       {view === "forwarded" ? <>
-        {!showControls ? <p className="ports-menu-route">{routeLabel}</p> : null}
         <section className={showControls ? "settings-section" : "ports-menu-services"} aria-label="Forwarded services">
         {HAS_TAURI ? (
           <TauriPorts pollingActive={active} serverHost={serverHost} hostName={server?.name ?? "Source device"} clientIsLocal={clientIsLocal} showControls={showControls} onLoadingChange={onLoadingChange} route={showControls ? undefined : routeLabel} refreshToken={refreshToken} onChanged={refresh} />
