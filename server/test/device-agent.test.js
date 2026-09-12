@@ -1,5 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import childProcess from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { syncBuiltinESMExports } from "node:module";
 import { createRemoteSpend, createRemoteUsage, deviceAgentRequest } from "../lib/device-agent.js";
 
 test("remote usage shares requests and immediately serves warm samples", async () => {
@@ -31,6 +34,57 @@ test("unavailable devices are cooled down and host or endpoint injection is reje
   await assert.rejects(deviceAgentRequest("host", "/file/read?path=private"), /Invalid/);
   await assert.rejects(deviceAgentRequest("host", "/spend?host=other"), /Invalid/);
   await assert.rejects(deviceAgentRequest("host", "/spend", {}), /Invalid/);
+});
+
+test("pairing can check and withdraw a receiving-device approval through trusted SSH", async t => {
+  const requests = [];
+  const approvalId = randomUUID();
+  const transport = t.mock.method(childProcess, "execFile", (command, args, _options, callback) => {
+    assert.equal(command, "ssh");
+    assert.ok(args.includes("BatchMode=yes"));
+    assert.ok(args.includes("StrictHostKeyChecking=yes"));
+    assert.ok(args.includes("ForwardAgent=no"));
+    assert.ok(args.includes("PermitLocalCommand=no"));
+    assert.equal(args.at(-2), "trusted-device");
+    return { stdin: {
+      on() {},
+      end(input) {
+        const request = JSON.parse(input);
+        requests.push(request);
+        callback(null, JSON.stringify({ id: approvalId, status: request.endpoint === "/bridge/approval-status" ? "waiting_approval" : "cancelled" }));
+      },
+    } };
+  });
+  syncBuiltinESMExports();
+  try {
+    assert.deepEqual(await deviceAgentRequest("trusted-device", "/bridge/approval-status", { approvalId }), { id: approvalId, status: "waiting_approval" });
+    assert.deepEqual(await deviceAgentRequest("trusted-device", "/bridge/approval-cancel", { approvalId }), { id: approvalId, status: "cancelled" });
+    assert.deepEqual(requests, [
+      { endpoint: "/bridge/approval-status", body: { approvalId } },
+      { endpoint: "/bridge/approval-cancel", body: { approvalId } },
+    ]);
+  } finally {
+    transport.mock.restore();
+    syncBuiltinESMExports();
+  }
+});
+
+test("approval transport cannot approve access or call unrelated endpoints", async t => {
+  const transport = t.mock.method(childProcess, "execFile", () => { assert.fail("Rejected routes must never start SSH"); });
+  syncBuiltinESMExports();
+  try {
+    for (const endpoint of ["/bridge/approve", "/bridge/local-decision", "/bridge/configure", "/bridge/dispatch", "/bridge/revoke", "/bridge/approval-status?approved=true", "/bridge/approval-cancel/../local-decision"]) {
+      await assert.rejects(deviceAgentRequest("trusted-device", endpoint, { approvalId: randomUUID(), approved: true }), /Invalid device agent request/);
+    }
+    for (const endpoint of ["/bridge/approval-status", "/bridge/approval-cancel"]) {
+      await assert.rejects(deviceAgentRequest("trusted-device", endpoint), /Invalid device agent request/);
+      await assert.rejects(deviceAgentRequest("-x", endpoint, { approvalId: randomUUID() }), /Invalid device agent request/);
+    }
+    assert.equal(transport.mock.callCount(), 0);
+  } finally {
+    transport.mock.restore();
+    syncBuiltinESMExports();
+  }
 });
 
 test("remote spend caches each device, deduplicates requests, and forwards explicit refresh", async () => {
