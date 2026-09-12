@@ -161,7 +161,7 @@ export function executeAppControl(action: string, args: Record<string, unknown>,
   if (action === "open_session") {
     const session = text(args.session, "session");
     const cwd = text(args.cwd, "cwd");
-    if (!/^[A-Za-z0-9_-]{1,128}$/.test(session) || !cwd.startsWith("/")) throw new Error("Invalid local session or directory.");
+    if (!cwd.startsWith("/")) throw new Error("Choose an absolute session directory.");
     const host = args.host as string | undefined ?? "";
     const window = args.window as number | undefined;
     const id = `${host ? `${host}::` : ""}${session}${window === undefined ? "" : `::w::${window}`}`;

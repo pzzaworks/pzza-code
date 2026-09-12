@@ -37,6 +37,20 @@ fn main() {
     };
     assert!(PathBuf::from(&model).is_file());
     if let Ok(mode) = std::env::var("PZZA_SHUTDOWN_CASE") {
+        if mode.starts_with("restart-") {
+            let root = PathBuf::from(std::env::var_os("PZZA_SHUTDOWN_ROOT").unwrap());
+            if root.join("restart-requested").exists() {
+                use std::io::Write;
+                assert!(root.join("restart-cleanup").is_file(), "Restart ran before cleanup finished");
+                let mut successor = fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(root.join("restart-successor"))
+                    .expect("Restart must launch exactly one successor");
+                writeln!(successor, "{}", std::process::id()).unwrap();
+                return;
+            }
+        }
         run_child(model.into(), mode);
         return;
     }
@@ -72,6 +86,8 @@ fn main() {
         "close-warm",
         "close-active",
         "cancel-then-quit",
+        "restart-warm",
+        "restart-active",
     ];
     if std::env::var_os("PZZA_SHUTDOWN_REPRODUCE").is_some() {
         cases.insert(0, "baseline-leak");
@@ -103,6 +119,23 @@ fn main() {
             }
             std::thread::sleep(Duration::from_millis(20));
         };
+        if mode.starts_with("restart-") {
+            let deadline = Instant::now() + Duration::from_secs(3);
+            loop {
+                let successor = fs::read_to_string(case_root.join("restart-successor"))
+                    .ok()
+                    .and_then(|pid| pid.trim().parse::<i32>().ok());
+                if let Some(pid) = successor {
+                    if unsafe { libc::kill(pid, 0) } == -1
+                        && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+                    {
+                        break;
+                    }
+                }
+                assert!(Instant::now() < deadline, "Restart successor did not finish: {mode}");
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
         let log = fs::read_to_string(case_root.join("native.log")).unwrap();
         if mode == "baseline-leak" {
             assert_eq!(
@@ -181,6 +214,7 @@ fn run_child(model: std::path::PathBuf, mode: String) {
     let active = mode.ends_with("active");
     let baseline = mode == "baseline-leak";
     let cancelled = mode == "cancel-then-quit";
+    let restarts = mode.starts_with("restart-");
     let closes = Arc::new(AtomicUsize::new(0));
     let mut context = tauri::generate_context!();
     context.config_mut().identifier =
@@ -277,7 +311,10 @@ fn run_child(model: std::path::PathBuf, mode: String) {
                     speech::assert_cancelled_quit_regression(&handle);
                     println!("cancelled native Quit retained usable speech");
                 }
-                if mode.starts_with("close-") {
+                if restarts {
+                    fs::write(root.join("restart-requested"), std::process::id().to_string()).unwrap();
+                    tauri::async_runtime::block_on(shutdown::app_restart(handle.clone())).unwrap();
+                } else if mode.starts_with("close-") {
                     handle.get_webview_window("main").unwrap().close().unwrap();
                 } else {
                     request_native_quit(&handle);
@@ -304,10 +341,9 @@ fn run_child(model: std::path::PathBuf, mode: String) {
                 println!("Destroyed observed after window removal: {destroyed_empty}");
             }
             if matches!(event, tauri::RunEvent::Exit) {
-                assert!(
-                    destroyed_empty,
-                    "Exit must follow actual last-window removal"
-                );
+                if !restarts {
+                    assert!(destroyed_empty, "Exit must follow actual last-window removal");
+                }
                 assert!(handle.state::<shutdown::ShutdownState>().complete());
                 speech::assert_shutdown_regression(handle, active);
                 assert!(handle
@@ -317,6 +353,12 @@ fn run_child(model: std::path::PathBuf, mode: String) {
                     .unwrap()
                     .is_none());
                 println!("managed cleanup verified");
+                if restarts {
+                    fs::write(
+                        PathBuf::from(std::env::var_os("PZZA_SHUTDOWN_ROOT").unwrap()).join("restart-cleanup"),
+                        std::process::id().to_string(),
+                    ).unwrap();
+                }
             }
             shutdown::handle_event(handle, event);
         }

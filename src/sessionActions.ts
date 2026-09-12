@@ -4,6 +4,7 @@ import { deviceHost } from "./devices";
 import { ALL_WORKSPACE_ID, DEFAULT_WORKSPACE_ID } from "./workspaces";
 import { createSession } from "./serverApi";
 import { notify } from "./state/notifications";
+import { normalizeSessionName } from "../server/lib/session-name.js";
 
 export interface SessionCreationInput {
   name: string;
@@ -19,8 +20,7 @@ export const useSessionCreation = create<{ operation: Creation | null; error: st
 
 export function createSessionInApp(input: SessionCreationInput): Promise<string> {
   const state = useStore.getState();
-  const name = input.name.trim();
-  if (!/^[A-Za-z0-9_-]{1,128}$/.test(name)) throw new Error("Use letters, numbers, hyphens or underscores for the session name.");
+  const name = normalizeSessionName(input.name);
   const device = state.devices.find(item => item.id === input.deviceId);
   if (!device) throw new Error("Choose a configured device.");
   const host = deviceHost(device);

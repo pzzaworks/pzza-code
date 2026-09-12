@@ -18,7 +18,7 @@ export type UpdateStatus =
   | { kind: "latest" }
   | { kind: "available"; update: AvailableUpdate }
   | { kind: "installing"; update: AvailableUpdate; pct: number }
-  | { kind: "ready"; update: AvailableUpdate }
+  | { kind: "ready"; update: AvailableUpdate; restarting?: boolean; error?: string }
   | { kind: "error"; msg: string };
 
 interface UpdateState {
@@ -87,7 +87,21 @@ export const useUpdates = create<UpdateState>((set, get) => ({
       set({ status: { kind: "error", msg: errMsg(e) } });
     }
   },
-  relaunch: async () => { if (await confirmUnsavedWork()) { window.dispatchEvent(new Event("pzza:quick-chat-cancel")); await relaunchApp(); } },
+  relaunch: async () => {
+    const status = get().status;
+    if (status.kind !== "ready" || status.restarting) return;
+    set({ status: { ...status, restarting: true, error: undefined } });
+    try {
+      if (!await confirmUnsavedWork()) {
+        set({ status: { ...status, restarting: false, error: undefined } });
+        return;
+      }
+      window.dispatchEvent(new Event("pzza:quick-chat-cancel"));
+      await relaunchApp();
+    } catch (error) {
+      set({ status: { ...status, restarting: false, error: errMsg(error) } });
+    }
+  },
   dismiss: () => {
     const st = get().status;
     if (st.kind === "available" || st.kind === "ready") set({ dismissed: st.update.version });
