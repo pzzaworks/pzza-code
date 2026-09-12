@@ -25,6 +25,7 @@ import { useStore } from '/src/state/store';
 import { registerUnsavedDraft, confirmUnsavedWork, hasUnsavedWork } from '/src/state/unsavedWork';
 import { registerEditorFile, registerEditorDiscard } from '/src/editorChanges';
 import { SessionMenu } from '/src/panels/SessionMenu';
+import { PortsMenu } from '/src/panels/PortsMenu';
 import { WorkspaceTabs } from '/src/grid/WorkspaceTabs';
 import { UsageSpend } from '/src/panels/UsageSpend';
 import { McpMenu } from '/src/panels/McpMenu';
@@ -72,7 +73,7 @@ function Usage() {
   return <div className="menu menu-panel" style={{ position:'relative', width:420, margin:24 }}><UsageSpend color="var(--success)" spend={{ today:unknown, yesterday:known, window:partial, days:[known,unknown,partial,empty] }} /></div>;
 }
 const mode = new URLSearchParams(location.search).get('mode');
-app.render(<ThemeProvider>{mode === 'dialogs' ? <Dialogs /> : mode === 'pending' ? <Pending /> : mode === 'picker' ? <Picker /> : mode === 'path' ? <Path /> : mode === 'appearance' ? <Appearance /> : mode === 'creation' ? <Creation /> : mode === 'usage' ? <Usage /> : mode === 'mcp' ? <><ConfirmationHost /><McpMenu /></> : <ConfirmationHost />}</ThemeProvider>);
+app.render(<ThemeProvider>{mode === 'dialogs' ? <Dialogs /> : mode === 'pending' ? <Pending /> : mode === 'picker' ? <Picker /> : mode === 'path' ? <Path /> : mode === 'appearance' ? <Appearance /> : mode === 'creation' ? <Creation /> : mode === 'usage' ? <Usage /> : mode === 'ports' ? <div className="menu menu-panel" style={{ position:'relative', width:320 }}><PortsMenu onOpenSettings={() => {}} /></div> : mode === 'mcp' ? <><ConfirmationHost /><McpMenu /></> : <ConfirmationHost />}</ThemeProvider>);
 `;
 let server, browser, origin, scratch;
 before(async () => {
@@ -355,4 +356,34 @@ test('new session names preserve typed spaces and enforce the visible character 
   await input.fill('   ');
   assert.equal(await page.getByRole('button', { name: 'Create', exact: true }).isDisabled(), true);
   await evidence(page, 'session-name-limit');
+});
+
+test('local ports exclude tunnel listeners while preserving local services and forwarded rows', options, async t => {
+  const page = await pageFor(t, 'ports');
+  const process = (pid, name) => ({ pid, process: name, name, source: 'process', folder: null });
+  const details = [
+    { port: 1455, processes: [process(10, 'ssh')] },
+    { port: 1420, processes: [process(11, 'node')] },
+    { port: 22, processes: [process(12, 'sshd')] },
+    { port: 3000, processes: [process(10, 'ssh'), process(13, 'node')] },
+    { port: 4000, processes: [] },
+    { port: 5000, processes: [process(10, 'ssh')], containers: [{ id: 'a'.repeat(64), name: 'Local container', container: 'local', runtime: 'docker' }] },
+  ];
+  const respond = (route, data) => route.fulfill({ status: 200, headers: { 'Access-Control-Allow-Origin': '*' }, contentType: 'application/json', body: JSON.stringify(data) });
+  await page.route('**/capabilities', route => respond(route, { role: 'receiver', forward: true, host: 'devbox' }));
+  await page.route('**/forward/status', route => respond(route, { enabled: true, active: [1455] }));
+  await page.route('**/ports/details**', route => respond(route, new URL(route.request().url()).searchParams.has('host') ? details : [{ port: 1455, processes: [process(20, 'node')] }]));
+  await page.reload();
+  await page.getByText('forwarding 1 port', { exact: true }).waitFor();
+  assert.equal(await page.locator('.ports-menu-route').count(), 0);
+  assert.equal(await page.locator('.ports-route-inline').count(), 1);
+  assert.equal(await page.locator('.port-row').count(), 1);
+  await page.getByRole('tab', { name: 'This device', exact: true }).click();
+  await page.getByRole('status').filter({ hasText: '5 listening ports on this device' }).waitFor();
+  assert.deepEqual(await page.locator('.port-row .port-num').allTextContents(), ['22', '1420', '3000', '4000', '5000']);
+  const shared = page.locator('.port-row').filter({ has: page.locator('.port-num', { hasText: /^3000$/ }) });
+  assert.equal(await shared.locator('.port-process').textContent(), 'node');
+  assert.equal(await shared.getByRole('button', { name: 'Stop PID 13 on port 3000', exact: true }).count(), 1);
+  assert.equal(await page.getByRole('button', { name: /Stop PID 10/ }).count(), 0);
+  await evidence(page, 'local-services-without-tunnels');
 });
