@@ -1,6 +1,18 @@
 // Listening TCP ports on the connected device.
 import { sh } from "./shell.js";
 
+// Ports whose listeners are never terminated through the port manager: local
+// system services plus this agent itself (killing it would sever the app).
+export const PROTECTED_PORTS = [22, 53, 631, 3389, 5190];
+
+// Returns the offending protected port from a list, or null when safe.
+export function protectedListenerPort(ports) {
+  for (const port of ports) {
+    if (PROTECTED_PORTS.includes(port)) return port;
+  }
+  return null;
+}
+
 export function parsePorts(stdout) {
   const ports = new Set();
   for (const line of stdout.split("\n")) {
@@ -190,4 +202,132 @@ export async function listPortDetails(host) {
   })().finally(() => pendingDetails.delete(target));
   pendingDetails.set(target, pending);
   return pending;
+}
+
+// Terminate the process behind a listening port. Self-contained on purpose:
+// the same source runs locally and, serialized, on the SSH source device (see
+// listPortDetails above). Only dependency-free Node builtins are used, and the
+// protected list travels as an argument so nothing leaks in from outer scope.
+//
+// Safety contract, enforced on both sides:
+// - the pid must be a positive integer, never 1 and never the caller itself;
+// - the pid must currently own at least one listening TCP port (this closes
+//   the stale-PID race: a reused pid that no longer listens is refused);
+// - none of its listening ports may be protected (system services, the agent).
+// Only SIGTERM is sent; processes that ignore it are left alone rather than
+// escalated to SIGKILL.
+export async function terminateRemoteListener(pid, protectedPorts) {
+  const { execFileSync } = await import("node:child_process");
+  const os = await import("node:os");
+  if (!Number.isInteger(pid) || pid <= 1 || pid === process.pid) throw new Error("Enter a valid process ID.");
+  const platform = os.platform();
+  const owned = new Set();
+  if (platform === "linux") {
+    let output = "";
+    try {
+      output = execFileSync("ss", ["-ltnpH"], { timeout: 4000, maxBuffer: 2 * 1024 * 1024 }).toString();
+    } catch {
+      throw new Error("Could not list listening ports on this device.");
+    }
+    for (const line of output.split("\n")) {
+      const port = Number(line.trim().split(/\s+/)[3]?.match(/:(\d+)$/)?.[1]);
+      if (!Number.isInteger(port) || port < 1 || port > 65535) continue;
+      for (const match of line.matchAll(/\("([^"]+)",pid=(\d+)/g)) {
+        if (Number(match[2]) === pid) owned.add(port);
+      }
+    }
+  } else if (platform === "darwin") {
+    let output = "";
+    try {
+      output = execFileSync("lsof", ["-nP", "-iTCP", "-sTCP:LISTEN", "-Fpn"], { timeout: 4000, maxBuffer: 2 * 1024 * 1024 }).toString();
+    } catch {
+      throw new Error("Could not list listening ports on this device.");
+    }
+    let current = null;
+    for (const line of output.split("\n")) {
+      if (line.startsWith("p")) current = Number(line.slice(1));
+      if (line.startsWith("n") && current === pid) {
+        const port = Number(line.match(/:(\d+)$/)?.[1]);
+        if (Number.isInteger(port) && port >= 1 && port <= 65535) owned.add(port);
+      }
+    }
+  } else {
+    throw new Error("Process termination is not available on this operating system.");
+  }
+  if (owned.size === 0) throw new Error(`Process ${pid} is not listening on any port.`);
+  for (const port of owned) {
+    if (protectedPorts.includes(port)) throw new Error(`Refusing to stop a system service on port ${port}.`);
+  }
+  try {
+    process.kill(pid, "SIGTERM");
+  } catch (error) {
+    if (error?.code === "ESRCH") throw new Error(`Process ${pid} already exited.`);
+    if (error?.code === "EPERM") throw new Error(`Permission denied - process ${pid} belongs to another user.`);
+    throw new Error(`Could not stop process ${pid}.`);
+  }
+  return { pid, ports: [...owned].sort((a, b) => a - b) };
+}
+
+// Stop a process listener on this device (host "") or over SSH. The remote
+// path reuses the serialized probe pattern: the target only needs Node.js.
+export async function terminateListener({ host = "", pid }, deps = {}) {
+  const { SSH_TOKEN } = await import("./shell.js");
+  if (host && !SSH_TOKEN.test(host)) throw new Error("Invalid device host");
+  if (!Number.isInteger(pid) || pid <= 1) throw new Error("Enter a valid process ID.");
+  if (!host) {
+    if (pid === process.pid) throw new Error("Enter a valid process ID.");
+    const inspect = deps.inspect || inspectPortProcesses;
+    const listeners = await inspect({ containers: false });
+    const owned = listeners.filter((entry) => entry.processes.some((item) => item.pid === pid)).map((entry) => entry.port);
+    if (owned.length === 0) throw new Error(`Process ${pid} is not listening on any port.`);
+    const blocked = protectedListenerPort(owned);
+    if (blocked !== null) throw new Error(`Refusing to stop a system service on port ${blocked}.`);
+    try {
+      process.kill(pid, "SIGTERM");
+    } catch (error) {
+      if (error?.code === "ESRCH") throw new Error(`Process ${pid} already exited.`);
+      if (error?.code === "EPERM") throw new Error(`Permission denied - process ${pid} belongs to another user.`);
+      throw new Error(`Could not stop process ${pid}.`);
+    }
+    return { pid, ports: [...owned].sort((a, b) => a - b) };
+  }
+  const { execFile } = await import("node:child_process");
+  const { shQuote } = await import("./shell.js");
+  const script = `(${terminateRemoteListener.toString()})(${JSON.stringify(pid)}, ${JSON.stringify(PROTECTED_PORTS)}).then(result => console.log(JSON.stringify({ ok: true, result }))).catch((error) => { console.log(JSON.stringify({ ok: false, error: error instanceof Error ? error.message : "Could not stop the process." })); process.exit(1); })`;
+  const runSsh = deps.runSsh || ((args) => new Promise((resolve, reject) => {
+    execFile("ssh", args, { timeout: 15000, maxBuffer: 2 * 1024 * 1024 }, (error, stdout) => (error ? reject(error) : resolve(stdout)));
+  }));
+  let output = "";
+  try {
+    output = await runSsh(["-o", "BatchMode=yes", "-o", "ConnectTimeout=5", host, `node -e ${shQuote(script)}`]);
+  } catch {
+    throw new Error("Could not reach the device. Check trusted SSH access and that Node.js is installed.");
+  }
+  let parsed = null;
+  try { parsed = JSON.parse(String(output).trim().split("\n").at(-1)); } catch { /* fall through */ }
+  if (!parsed || typeof parsed !== "object") throw new Error("Invalid response from the device.");
+  if (!parsed.ok) throw new Error(typeof parsed.error === "string" && parsed.error ? parsed.error : "Could not stop the process.");
+  return parsed.result;
+}
+
+// Stop a published container on this device or over SSH. Container IDs are
+// content hashes validated strictly; only `stop` is ever invoked, never
+// `rm`, `exec`, or anything that runs code inside the container.
+export async function stopPortContainer({ host = "", id, runtime }, deps = {}) {
+  const { SSH_TOKEN } = await import("./shell.js");
+  const { execFile } = await import("node:child_process");
+  if (host && !SSH_TOKEN.test(host)) throw new Error("Invalid device host");
+  if (typeof id !== "string" || !/^[a-f0-9]{12,64}$/i.test(id)) throw new Error("Container ID is invalid.");
+  if (runtime !== "docker" && runtime !== "podman") throw new Error("Container runtime is invalid.");
+  const runExec = deps.runExec || ((command, args) => new Promise((resolve, reject) => {
+    execFile(command, args, { timeout: 30000, maxBuffer: 512 * 1024 }, (error, stdout, stderr) =>
+      (error ? reject(error) : resolve(`${stdout || ""}${stderr || ""}`.trim())));
+  }));
+  try {
+    await (host ? runExec("ssh", ["-o", "BatchMode=yes", "-o", "ConnectTimeout=5", host, runtime, "stop", id])
+      : runExec(runtime, ["stop", id]));
+  } catch {
+    throw new Error(host ? "Could not stop the container. Check trusted SSH access and the container runtime." : "Could not stop the container. Is the container runtime available?");
+  }
+  return { id, runtime };
 }
