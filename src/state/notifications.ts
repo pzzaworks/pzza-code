@@ -97,5 +97,5 @@ export function notify(input: Omit<Notice, "id" | "createdAt" | "read">): void {
     const current = useNotifications.getState().preferences;
     return current.enabled && current.desktop && current.categories[input.category] && (!input.event || current.events[input.event] !== false) && current.mutedUntil <= Date.now() && !document.hasFocus();
   };
-  if (canDeliver()) void deliverDesktopAlert(input.category, canDeliver).catch(() => { /* Activity history remains available when the OS rejects an alert. */ });
+  if (canDeliver()) void deliverDesktopAlert(notice, canDeliver).catch(() => { /* Activity history remains available when the OS rejects an alert. */ });
 }
