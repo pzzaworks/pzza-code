@@ -2857,6 +2857,16 @@ button {
 ::root[data-appearance="light"] .term-find-bar {
   background: #f6f8fa;
 }
+/* OpenCode brand mark ships both theme variants; only one is visible. */
+.opencode-mark-light {
+  display: none;
+}
+::root[data-appearance="light"] .opencode-mark-dark {
+  display: none;
+}
+::root[data-appearance="light"] .opencode-mark-light {
+  display: inline;
+}
 .term-find-input {
   width: 150px;
   border: 0;
