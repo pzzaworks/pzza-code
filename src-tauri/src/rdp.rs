@@ -5,26 +5,143 @@ use std::net::{TcpListener, TcpStream};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
-// Desktops currently open, keyed by the device's Keychain service (unique per
-// device), so a second "Open desktop" reuses the live window instead of
-// stacking another. The background thread that waits on each viewer removes its
-// entry when the window closes, so the state follows the real window's life.
-fn open_desktops() -> &'static Mutex<HashMap<String, Launched>> {
-    static R: OnceLock<Mutex<HashMap<String, Launched>>> = OnceLock::new();
-    R.get_or_init(|| Mutex::new(HashMap::new()))
+#[derive(Default)]
+struct DesktopState {
+    closing: bool,
+    sessions: HashMap<String, Option<Launched>>,
+    processes: HashMap<u32, Arc<Mutex<Child>>>,
 }
 
-// Whether a desktop is already open for a device (its Keychain service key).
+#[derive(Default)]
+struct DesktopManager {
+    state: Mutex<DesktopState>,
+    changed: Condvar,
+}
+
+fn desktops() -> &'static Arc<DesktopManager> {
+    static STATE: OnceLock<Arc<DesktopManager>> = OnceLock::new();
+    STATE.get_or_init(|| Arc::new(DesktopManager::default()))
+}
+
+enum DesktopStart {
+    Existing(Launched),
+    Launch(DesktopSession),
+}
+
+struct DesktopSession {
+    manager: Arc<DesktopManager>,
+    key: String,
+}
+
+impl DesktopManager {
+    fn reserve(self: &Arc<Self>, key: &str) -> Result<DesktopStart, RdpFailure> {
+        let mut state = self.state.lock().unwrap();
+        if state.closing {
+            return Err(failure("RDP_TASK_FAILED"));
+        }
+        match state.sessions.get(key) {
+            Some(Some(launched)) => return Ok(DesktopStart::Existing(launched.clone())),
+            Some(None) => return Err(failure("RDP_TASK_FAILED")),
+            None => {}
+        }
+        state.sessions.insert(key.into(), None);
+        Ok(DesktopStart::Launch(DesktopSession {
+            manager: self.clone(),
+            key: key.into(),
+        }))
+    }
+
+    // Register every child before shutdown can pass the launch gate, including
+    // SSH setup and credential reads that precede the visible desktop window.
+    fn spawn(
+        self: &Arc<Self>,
+        command: &mut Command,
+        log: Option<PathBuf>,
+    ) -> std::io::Result<DesktopProcess> {
+        let mut state = self.state.lock().unwrap();
+        if state.closing {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Interrupted,
+                "Desktop shutdown started",
+            ));
+        }
+        let child = command.spawn()?;
+        let id = child.id();
+        let child = Arc::new(Mutex::new(child));
+        state.processes.insert(id, child.clone());
+        Ok(DesktopProcess {
+            manager: self.clone(),
+            id,
+            child,
+            log,
+        })
+    }
+
+    fn shutdown(&self, timeout: Duration) -> Result<(), String> {
+        let children = {
+            let mut state = self.state.lock().unwrap();
+            state.closing = true;
+            state.processes.values().cloned().collect::<Vec<_>>()
+        };
+        for child in children {
+            let mut child = child.lock().unwrap();
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        let state = self.state.lock().unwrap();
+        let (state, _) = self
+            .changed
+            .wait_timeout_while(state, timeout, |state| {
+                !state.sessions.is_empty() || !state.processes.is_empty()
+            })
+            .unwrap();
+        if !state.sessions.is_empty() || !state.processes.is_empty() {
+            return Err("The remote desktop connection is still closing".into());
+        }
+        Ok(())
+    }
+}
+
+impl DesktopSession {
+    fn opened(&self, launched: Launched) -> Result<(), RdpFailure> {
+        let mut state = self.manager.state.lock().unwrap();
+        if state.closing {
+            return Err(failure("RDP_TASK_FAILED"));
+        }
+        state.sessions.insert(self.key.clone(), Some(launched));
+        Ok(())
+    }
+}
+
+impl Drop for DesktopSession {
+    fn drop(&mut self) {
+        self.manager
+            .state
+            .lock()
+            .unwrap()
+            .sessions
+            .remove(&self.key);
+        self.manager.changed.notify_all();
+    }
+}
+
 #[tauri::command]
 pub fn rdp_is_open(keychain_service: String) -> bool {
-    open_desktops()
+    desktops()
+        .state
         .lock()
         .unwrap()
-        .contains_key(&keychain_service)
+        .sessions
+        .get(&keychain_service)
+        .is_some_and(Option::is_some)
+}
+
+pub fn shutdown() -> Result<(), String> {
+    desktops().shutdown(Duration::from_secs(5))
 }
 
 // The selected SSH device and its saved desktop-sharing account.
@@ -151,25 +268,55 @@ PY"#;
     select_remote_login(state)
 }
 
-fn ssh_script(opts: &RdpOptions, script: &str) -> std::io::Result<std::process::Output> {
-    let mut child = Command::new("ssh")
-        .args(ssh_base(opts.port, &opts.identity))
-        .args(["-T", "--", &opts.host, "timeout 30s sh -s"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
-    let result = child
-        .stdin
+fn run_command(command: &mut Command, input: &[u8]) -> std::io::Result<std::process::Output> {
+    let process = desktops().spawn(
+        command
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null()),
+        None,
+    )?;
+    let stdout = process
+        .child
+        .lock()
+        .unwrap()
+        .stdout
         .take()
-        .ok_or_else(|| std::io::Error::other("SSH input unavailable"))
-        .and_then(|mut stdin| stdin.write_all(script.as_bytes()));
-    if let Err(error) = result {
-        let _ = child.kill();
-        let _ = child.wait();
+        .ok_or_else(|| std::io::Error::other("Command output unavailable"))?;
+    let reader = thread::spawn(move || {
+        let mut bytes = Vec::new();
+        stdout
+            .take(64 * 1024)
+            .read_to_end(&mut bytes)
+            .map(|_| bytes)
+    });
+    let stdin = process.child.lock().unwrap().stdin.take();
+    let write = stdin
+        .ok_or_else(|| std::io::Error::other("Command input unavailable"))
+        .and_then(|mut stdin| stdin.write_all(input));
+    if let Err(error) = write {
+        drop(process);
+        let _ = reader.join();
         return Err(error);
     }
-    child.wait_with_output()
+    let status = process.wait()?;
+    let stdout = reader
+        .join()
+        .map_err(|_| std::io::Error::other("Command output interrupted"))??;
+    Ok(std::process::Output {
+        status,
+        stdout,
+        stderr: Vec::new(),
+    })
+}
+
+fn ssh_script(opts: &RdpOptions, script: &str) -> std::io::Result<std::process::Output> {
+    run_command(
+        Command::new("ssh")
+            .args(ssh_base(opts.port, &opts.identity))
+            .args(["-T", "--", &opts.host, "timeout 30s sh -s"]),
+        script.as_bytes(),
+    )
 }
 
 const FREERDP_CANDIDATES: [&str; 2] = [
@@ -193,10 +340,11 @@ fn free_port() -> Result<u16, String> {
 }
 
 fn keychain_password(service: &str) -> Option<String> {
-    let out = Command::new("security")
-        .args(["find-generic-password", "-s", service, "-w"])
-        .output()
-        .ok()?;
+    let out = run_command(
+        Command::new("security").args(["find-generic-password", "-s", service, "-w"]),
+        &[],
+    )
+    .ok()?;
     if !out.status.success() {
         return None;
     }
@@ -207,8 +355,8 @@ fn keychain_password(service: &str) -> Option<String> {
 // Store an RDP password in the login Keychain (created/updated), so it is never
 // persisted by the app in plaintext.
 fn keychain_set(service: &str, account: &str, password: &str) -> Result<(), String> {
-    let status = Command::new("security")
-        .args([
+    let status = run_command(
+        Command::new("security").args([
             "add-generic-password",
             "-U",
             "-s",
@@ -217,9 +365,11 @@ fn keychain_set(service: &str, account: &str, password: &str) -> Result<(), Stri
             account,
             "-w",
             password,
-        ])
-        .status()
-        .map_err(|e| e.to_string())?;
+        ]),
+        &[],
+    )
+    .map_err(|e| e.to_string())?
+    .status;
     if status.success() {
         Ok(())
     } else {
@@ -365,15 +515,46 @@ fn private_log(path: &PathBuf) -> std::io::Result<File> {
 }
 
 struct DesktopProcess {
-    child: Child,
-    log: PathBuf,
+    manager: Arc<DesktopManager>,
+    id: u32,
+    child: Arc<Mutex<Child>>,
+    log: Option<PathBuf>,
+}
+
+impl DesktopProcess {
+    fn try_wait(&self) -> std::io::Result<Option<std::process::ExitStatus>> {
+        self.child.lock().unwrap().try_wait()
+    }
+
+    fn wait(&self) -> std::io::Result<std::process::ExitStatus> {
+        loop {
+            if let Some(status) = self.try_wait()? {
+                return Ok(status);
+            }
+            // Never hold a child lock while waiting: app shutdown must be able
+            // to terminate both a connected viewer and an in-flight SSH request.
+            thread::sleep(Duration::from_millis(50));
+        }
+    }
 }
 
 impl Drop for DesktopProcess {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-        let _ = std::fs::remove_file(&self.log);
+        {
+            let mut child = self.child.lock().unwrap();
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        if let Some(log) = &self.log {
+            let _ = std::fs::remove_file(log);
+        }
+        self.manager
+            .state
+            .lock()
+            .unwrap()
+            .processes
+            .remove(&self.id);
+        self.manager.changed.notify_all();
     }
 }
 
@@ -402,20 +583,22 @@ fn open_tunnel(opts: &RdpOptions, remote_port: u16) -> Result<(u16, DesktopProce
     args.push(format!("127.0.0.1:{local}:127.0.0.1:{remote_port}"));
     args.push("--".into());
     args.push(opts.host.clone());
-    let child = Command::new("ssh")
-        .args(&args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::from(logf))
-        .spawn()
+    let process = desktops()
+        .spawn(
+            Command::new("ssh")
+                .args(&args)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::from(logf)),
+            Some(log),
+        )
         .map_err(|_| failure("RDP_SSH_FAILED"))?;
-    let mut process = DesktopProcess { child, log };
     let deadline = Instant::now() + Duration::from_secs(15);
     while Instant::now() < deadline {
         if port_open(local) {
             return Ok((local, process));
         }
-        if !matches!(process.child.try_wait(), Ok(None)) {
+        if !matches!(process.try_wait(), Ok(None)) {
             return Err(failure("RDP_SSH_FAILED"));
         }
         thread::sleep(Duration::from_millis(150));
@@ -466,14 +649,10 @@ fn validate_options(opts: &RdpOptions) -> Result<(), RdpFailure> {
 
 fn launch_blocking(opts: RdpOptions) -> Result<Launched, RdpFailure> {
     validate_options(&opts)?;
-    if let Some(existing) = open_desktops()
-        .lock()
-        .unwrap()
-        .get(&opts.keychain_service)
-        .cloned()
-    {
-        return Ok(existing);
-    }
+    let session = match desktops().reserve(&opts.keychain_service)? {
+        DesktopStart::Existing(launched) => return Ok(launched),
+        DesktopStart::Launch(session) => session,
+    };
     let bin = freerdp_bin().map_err(|_| failure("RDP_VIEWER_MISSING"))?;
     let (remote_port, mode, user, password, certificate) = if let Some(login) = remote_login(&opts)?
     {
@@ -514,14 +693,16 @@ fn launch_blocking(opts: RdpOptions) -> Result<Launched, RdpFailure> {
     let errf = logf
         .try_clone()
         .map_err(|_| failure("RDP_CONNECT_FAILED"))?;
-    let child = Command::new(bin)
-        .arg("/args-from:stdin")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::from(logf))
-        .stderr(Stdio::from(errf))
-        .spawn()
+    let viewer = desktops()
+        .spawn(
+            Command::new(bin)
+                .arg("/args-from:stdin")
+                .stdin(Stdio::piped())
+                .stdout(Stdio::from(logf))
+                .stderr(Stdio::from(errf)),
+            Some(log.clone()),
+        )
         .map_err(|_| failure("RDP_CONNECT_FAILED"))?;
-    let mut viewer = DesktopProcess { child, log };
     // Keep credentials out of process listings. FreeRDP reads one argument per
     // line, including the certificate fingerprint verified through SSH.
     let arguments = [
@@ -539,6 +720,8 @@ fn launch_blocking(opts: RdpOptions) -> Result<Launched, RdpFailure> {
     ];
     let mut input = viewer
         .child
+        .lock()
+        .unwrap()
         .stdin
         .take()
         .ok_or_else(|| failure("RDP_CONNECT_FAILED"))?;
@@ -549,9 +732,9 @@ fn launch_blocking(opts: RdpOptions) -> Result<Launched, RdpFailure> {
 
     let deadline = Instant::now() + Duration::from_secs(5);
     while Instant::now() < deadline {
-        match viewer.child.try_wait() {
+        match viewer.try_wait() {
             Ok(None) => {}
-            Ok(Some(_)) => return Err(viewer_failure(&viewer.log, mode != "Remote Login")),
+            Ok(Some(_)) => return Err(viewer_failure(&log, mode != "Remote Login")),
             Err(_) => return Err(failure("RDP_CONNECT_FAILED")),
         }
         thread::sleep(Duration::from_millis(200));
@@ -560,16 +743,12 @@ fn launch_blocking(opts: RdpOptions) -> Result<Launched, RdpFailure> {
         port: remote_port,
         mode,
     };
-    let key = opts.keychain_service;
-    open_desktops()
-        .lock()
-        .unwrap()
-        .insert(key.clone(), launched.clone());
+    session.opened(launched.clone())?;
     thread::spawn(move || {
-        let _ = viewer.child.wait();
+        let _ = viewer.wait();
         drop(viewer);
         drop(tunnel);
-        open_desktops().lock().unwrap().remove(&key);
+        drop(session);
     });
     Ok(launched)
 }
@@ -587,16 +766,15 @@ mod tests {
             output.metadata().unwrap().permissions().mode() & 0o777,
             0o600
         );
-        let child = Command::new("sleep")
-            .arg("30")
-            .stdout(Stdio::from(output))
-            .spawn()
+        let manager = Arc::new(DesktopManager::default());
+        let process = manager
+            .spawn(
+                Command::new("sleep").arg("30").stdout(Stdio::from(output)),
+                Some(log.clone()),
+            )
             .unwrap();
-        let pid = child.id();
-        drop(DesktopProcess {
-            child,
-            log: log.clone(),
-        });
+        let pid = process.id;
+        drop(process);
         assert!(!log.exists());
         let result =
             unsafe { libc::waitpid(pid as libc::pid_t, std::ptr::null_mut(), libc::WNOHANG) };
@@ -605,6 +783,35 @@ mod tests {
             std::io::Error::last_os_error().raw_os_error(),
             Some(libc::ECHILD)
         );
+    }
+
+    #[test]
+    fn shutdown_cancels_pending_launches_and_rejects_new_children() {
+        let manager = Arc::new(DesktopManager::default());
+        let DesktopStart::Launch(session) = manager.reserve("pending").unwrap() else {
+            panic!("Expected a new session")
+        };
+        let process = manager
+            .spawn(Command::new("sleep").arg("30"), None)
+            .unwrap();
+        let worker = thread::spawn(move || {
+            process.wait().unwrap();
+            assert!(session
+                .opened(Launched {
+                    port: 3389,
+                    mode: "Remote Login".into()
+                })
+                .is_err());
+            drop(process);
+            drop(session);
+        });
+        manager.shutdown(Duration::from_secs(2)).unwrap();
+        worker.join().unwrap();
+        assert!(manager.reserve("later").is_err());
+        assert!(manager
+            .spawn(Command::new("sleep").arg("30"), None)
+            .is_err());
+        assert!(manager.state.lock().unwrap().processes.is_empty());
     }
 
     #[test]
@@ -686,5 +893,56 @@ mod tests {
         let error = classify_viewer_failure("[rdp] arbitrary diagnostic output", false);
         assert!(!error.message.contains("[rdp]"));
         assert!(error.message.len() < 200);
+    }
+}
+
+#[cfg(test)]
+pub mod testing {
+    use super::*;
+    static CHILDREN: Mutex<Vec<u32>> = Mutex::new(Vec::new());
+
+    pub fn prepare_shutdown_regression() {
+        let DesktopStart::Launch(session) = desktops().reserve("native-shutdown").unwrap() else {
+            panic!("Expected a new desktop session")
+        };
+        let viewer = desktops()
+            .spawn(Command::new("sleep").arg("45"), None)
+            .unwrap();
+        let tunnel = desktops()
+            .spawn(Command::new("sleep").arg("45"), None)
+            .unwrap();
+        *CHILDREN.lock().unwrap() = vec![viewer.id, tunnel.id];
+        session
+            .opened(Launched {
+                port: 3389,
+                mode: "Remote Login".into(),
+            })
+            .unwrap();
+        thread::spawn(move || {
+            let _ = viewer.wait();
+            drop(viewer);
+            drop(tunnel);
+            drop(session);
+        });
+    }
+
+    pub fn assert_cancelled_quit_regression() {
+        assert_eq!(desktops().state.lock().unwrap().processes.len(), 2);
+        for pid in CHILDREN.lock().unwrap().iter() {
+            assert_eq!(unsafe { libc::kill(*pid as libc::pid_t, 0) }, 0);
+        }
+    }
+
+    pub fn assert_shutdown_regression() {
+        let state = desktops().state.lock().unwrap();
+        assert!(state.sessions.is_empty());
+        assert!(state.processes.is_empty());
+        for pid in CHILDREN.lock().unwrap().iter() {
+            assert_eq!(unsafe { libc::kill(*pid as libc::pid_t, 0) }, -1);
+            assert_eq!(
+                std::io::Error::last_os_error().raw_os_error(),
+                Some(libc::ESRCH)
+            );
+        }
     }
 }

@@ -10,6 +10,9 @@ mod local_tmux;
 #[path = "../src/pty.rs"]
 mod pty;
 #[cfg(target_os = "macos")]
+#[path = "../src/rdp.rs"]
+mod rdp;
+#[cfg(target_os = "macos")]
 #[path = "../src/shutdown.rs"]
 mod shutdown;
 #[cfg(target_os = "macos")]
@@ -291,6 +294,7 @@ fn run_child(model: std::path::PathBuf, mode: String) {
                     tauri::ipc::Channel::new(|_| Ok(())),
                     tauri::ipc::Channel::new(|_| Ok(())),
                 )?;
+                rdp::testing::prepare_shutdown_regression();
             }
             let handle = app.handle().clone();
             std::thread::spawn(move || {
@@ -306,6 +310,7 @@ fn run_child(model: std::path::PathBuf, mode: String) {
                     assert!(!handle.state::<shutdown::ShutdownState>().complete());
                     // A cancelled close must still allow actual engine use.
                     speech::assert_cancelled_quit_regression(&handle);
+                    rdp::testing::assert_cancelled_quit_regression();
                     println!("cancelled native Quit retained usable speech");
                 }
                 if restarts {
@@ -343,6 +348,7 @@ fn run_child(model: std::path::PathBuf, mode: String) {
                 }
                 assert!(handle.state::<shutdown::ShutdownState>().complete());
                 speech::assert_shutdown_regression(handle, active);
+                rdp::testing::assert_shutdown_regression();
                 assert!(handle
                     .state::<agent::AgentState>()
                     .child
