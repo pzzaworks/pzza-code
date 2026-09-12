@@ -21,13 +21,21 @@ export function CodexIcon({ size = 16, className }: IconProps) {
   );
 }
 
-// OpenCode mark - a terminal prompt in a rounded square.
+// OpenCode mark - official geometry from the opencode.ai brand kit
+// (packages/console/app/src/asset/lander/opencode-logo-*.svg). Two-tone, so
+// the visible variant flips with the app theme via CSS (see .opencode-mark-*
+// rules); currentColor cannot express the two fills.
 export function OpenCodeIcon({ size = 16, className }: IconProps) {
   return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className={className}>
-      <rect x="3" y="3" width="18" height="18" rx="4" />
-      <path d="m8 9 3 3-3 3" />
-      <path d="M13 15h4" />
+    <svg width={size} height={size} viewBox="0 0 32 40" fill="none" xmlns="http://www.w3.org/2000/svg" className={className} role="img" aria-label="OpenCode">
+      <g className="opencode-mark-dark">
+        <path d="M24 32H8V16H24V32Z" fill="#4B4646" />
+        <path d="M24 8H8V32H24V8ZM32 40H0V0H32V40Z" fill="#F1ECEC" />
+      </g>
+      <g className="opencode-mark-light">
+        <path d="M24 32H8V16H24V32Z" fill="#BCBBBB" />
+        <path d="M24 8H8V32H24V8ZM32 40H0V0H32V40Z" fill="#211E1E" />
+      </g>
     </svg>
   );
 }
