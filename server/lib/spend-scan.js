@@ -1,7 +1,9 @@
-// Estimated spend from local Claude/Codex transcripts (ccusage-style). Scans
-// JSONL transcripts, prices token buckets per model, and caches the result;
+// Estimated spend from local Claude/Codex transcripts (ccusage-style) plus
+// billed OpenCode session costs from its local database. Scans JSONL
+// transcripts, prices token buckets per model, and caches the result;
 // warmed in the background so the usage panel never waits on the scan.
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { STATE_DIR } from "./config.js";
 import { discoverAccounts } from "./accounts.js";
@@ -328,6 +330,85 @@ function emptySpendWindow() {
   return { cost: 0, pricedCost: 0, tokens: 0, unpricedTokens: 0, unpricedModels: [] };
 }
 
+// Billed OpenCode spend from its local session database (per-session cost and
+// token totals with creation timestamps). Read-only and best-effort: a
+// missing, locked, or unreadable database simply yields no entry instead of
+// a misleading zero row.
+function opencodeDbPath() {
+  const home = os.homedir();
+  const candidates = [
+    path.join(process.env.XDG_DATA_HOME || path.join(home, ".local", "share"), "opencode", "opencode.db"),
+    path.join(home, ".opencode", "opencode.db"),
+  ];
+  for (const file of candidates) {
+    try {
+      if (fs.statSync(file).isFile()) return file;
+    } catch {
+      /* try the next location */
+    }
+  }
+  return null;
+}
+
+async function opencodeSpendEntry(acc, now, dayStr, dayToday, dayYesterday, horizon) {
+  const dbPath = opencodeDbPath();
+  if (!dbPath) return null;
+  let rows;
+  try {
+    const { DatabaseSync } = await import("node:sqlite");
+    const db = new DatabaseSync(dbPath, { readonly: true });
+    try {
+      rows = db
+        .prepare("SELECT time_created AS t, cost AS c, tokens_input AS i, tokens_output AS o, tokens_reasoning AS r FROM session WHERE time_created >= ?")
+        .all(horizon);
+    } finally {
+      db.close();
+    }
+  } catch {
+    return null;
+  }
+  const byDay = new Map();
+  for (const row of rows || []) {
+    const t = Number(row?.t);
+    if (!Number.isFinite(t)) continue;
+    const day = dayStr(t);
+    const cost = Number(row?.c) || 0;
+    const tokens = (Number(row?.i) || 0) + (Number(row?.o) || 0) + (Number(row?.r) || 0);
+    if (!(cost > 0 || tokens > 0)) continue;
+    const entry = byDay.get(day) ?? { cost: 0, tokens: 0 };
+    entry.cost += cost;
+    entry.tokens += tokens;
+    byDay.set(day, entry);
+  }
+  const winOf = (days) => {
+    const win = emptySpendWindow();
+    for (const day of days) {
+      const entry = byDay.get(day);
+      if (!entry) continue;
+      win.cost += entry.cost;
+      win.pricedCost += entry.cost;
+      win.tokens += entry.tokens;
+    }
+    return win;
+  };
+  const inWindow = [...byDay.keys()].filter((day) => new Date(`${day}T00:00:00`).getTime() >= horizon);
+  const series = [];
+  for (let i = SPEND_WINDOW_DAYS - 1; i >= 0; i--) {
+    const day = dayStr(now - i * 86400000);
+    const entry = byDay.get(day);
+    series.push({ day, ...emptySpendWindow(), ...(entry ? { cost: entry.cost, pricedCost: entry.cost, tokens: entry.tokens } : null) });
+  }
+  return {
+    provider: acc.provider,
+    label: acc.label,
+    pricingBasis: "opencode-billed",
+    today: winOf([dayToday]),
+    yesterday: winOf([dayYesterday]),
+    window: winOf(inWindow),
+    days: series,
+  };
+}
+
 function addSpend(total, buckets, model, day) {
   const tokens = buckets.reduce((a, b) => a + b, 0);
   if (!tokens) return;
@@ -358,6 +439,11 @@ export async function scanSpend(now) {
   const nextCache = {};
   const data = [];
   for (const acc of discoverAccounts()) {
+    if (acc.provider === "opencode") {
+      const entry = await opencodeSpendEntry(acc, now, dayStr, dayToday, dayYesterday, horizon);
+      if (entry) data.push(entry);
+      continue;
+    }
     const days = {};
     for (const file of transcriptFiles(acc.provider, acc.dir)) {
       let st;
