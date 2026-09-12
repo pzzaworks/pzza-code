@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { once } from "node:events";
 import { promisify } from "node:util";
+import { randomBytes } from "node:crypto";
 import { mkdtemp, mkdir, writeFile, readFile, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import net from "node:net";
@@ -111,18 +112,29 @@ test("create endpoint reports missing managed service and acknowledges only succ
   await once(listener, "listening");
   const port = listener.address().port;
   await new Promise(resolve => listener.close(resolve));
-  const child = spawn(process.execPath, ["server/index.js"], { env: {
+  const token = randomBytes(24).toString("hex");
+  const environment = {
     ...process.env, PORT: String(port), HOME: root, XDG_CONFIG_HOME: root, PZZA_SERVER_HOST: "",
-    PZZA_TMUX_SOCKET: socket, PZZA_AGENT_TOKEN: "fixture-auth", PZZA_MANAGED_AGENT: "0",
-  }, stdio: ["ignore", "pipe", "pipe"] });
+    PZZA_TMUX_SOCKET: socket, PZZA_AGENT_TOKEN: token, PZZA_MANAGED_AGENT: "0",
+  };
+  const child = spawn(process.execPath, ["server/index.js"], { env: environment, stdio: ["ignore", "pipe", "pipe"] });
   t.after(async () => {
     child.kill("SIGTERM");
     if (child.exitCode === null && child.signalCode === null) await once(child, "exit");
     await run("tmux", ["-S", socket, "kill-server"]).catch(() => {});
   });
   await once(child.stdout, "data");
+  const tokenFile = path.join(root, "pzzacode", "agent-token");
+  assert.ok(await readFile(tokenFile, "utf8") === token, "The bound agent must publish its credential");
+  const competitor = spawn(process.execPath, ["server/index.js"], {
+    env: { ...environment, PZZA_AGENT_TOKEN: randomBytes(24).toString("hex") }, stdio: "ignore",
+  });
+  t.after(() => { if (competitor.exitCode === null && competitor.signalCode === null) competitor.kill("SIGTERM"); });
+  await once(competitor, "exit");
+  assert.ok(await readFile(tokenFile, "utf8") === token, "A failed bind must not replace the active credential");
+  assert.equal((await fetch(`http://127.0.0.1:${port}/capabilities`, { signal: AbortSignal.timeout(5000) })).status, 401);
   const create = (name) => fetch(`http://127.0.0.1:${port}/create`, {
-    method: "POST", headers: { Authorization: "Bearer fixture-auth", "Content-Type": "application/json" },
+    method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
     body: JSON.stringify({ name }), signal: AbortSignal.timeout(5000),
   });
   assert.equal((await create("")).status, 400);

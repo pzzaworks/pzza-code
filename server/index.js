@@ -23,6 +23,7 @@ import {
   json,
   ndjson,
   readBody,
+  publishAgentToken,
   requestToken,
   tokenOk,
 } from "./lib/http.js";
@@ -280,6 +281,11 @@ server.on("error", (e) => {
   process.exit(2);
 });
 server.listen(PORT, "127.0.0.1", () => {
+  try { publishAgentToken(); }
+  catch {
+    console.error("PzzaCode agent: cannot publish its local credential file");
+    process.exit(2);
+  }
   console.log(
     `PzzaCode agent on 127.0.0.1:${PORT} · role=${IS_CLIENT ? `client (ssh ${DEVBOX})` : "source"}`,
   );
