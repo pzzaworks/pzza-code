@@ -431,7 +431,27 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
           .replace(/[\x00-\x1f\x7f-\x9f]/g, "").slice(0, 100);
         const device = (tile?.host ?? host ?? "This device").replace(/[\x00-\x1f\x7f-\x9f]/g, "").slice(0, 100) || "This device";
         notify({ ...notification, body: `${label || "Terminal"} (${device}): ${notification.body}` });
-      }, { attachment: true });
+      }, {
+        attachment: true,
+        // Real screen context for notifications: absolute cursor row and the
+        // trimmed text of an absolute row (control characters stripped).
+        cursorRow: () => {
+          try {
+            const buffer = term.buffer.active;
+            return buffer.viewportY + buffer.cursorY;
+          } catch {
+            return null;
+          }
+        },
+        readRow: (row) => {
+          try {
+            const text = term.buffer.active.getLine(row)?.translateToString(true).replace(/[\x00-\x1f\x7f-\x9f]/g, "").trim();
+            return text || null;
+          } catch {
+            return null;
+          }
+        },
+      });
       const bellListener = term.onBell(() => notificationSignals.bell());
       const completionListener = term.parser.registerOscHandler(133, (data) => notificationSignals.osc133(data));
 
