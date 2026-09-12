@@ -1,7 +1,7 @@
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct ShutdownState {
     phase: Arc<AtomicU8>,
 }
@@ -11,6 +11,22 @@ impl ShutdownState {
         self.phase.load(Ordering::Acquire) == 2
     }
 
+    fn begin(&self) -> Result<(), String> {
+        self.phase
+            .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire)
+            .map(|_| ())
+            .map_err(|_| "PzzaCode is already shutting down. Wait for it to finish.".into())
+    }
+
+    fn finish_cleanup(&self, cleanup: impl FnOnce() -> Result<(), String>) -> Result<(), String> {
+        if let Err(error) = cleanup() {
+            self.phase.store(0, Ordering::Release);
+            return Err(error);
+        }
+        self.phase.store(2, Ordering::Release);
+        Ok(())
+    }
+
     // Exit requests must return to the native event loop immediately. Waiting
     // for child processes here would make macOS report an unresponsive app.
     pub fn start(
@@ -18,24 +34,45 @@ impl ShutdownState {
         cleanup: impl FnOnce() -> Result<(), String> + Send + 'static,
         finish: impl FnOnce() + Send + 'static,
     ) {
-        if self
-            .phase
-            .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire)
-            .is_err()
-        {
+        if self.begin().is_err() {
             return;
         }
-        let phase = self.phase.clone();
+        let state = self.clone();
         std::thread::spawn(move || {
-            if let Err(error) = cleanup() {
+            if let Err(error) = state.finish_cleanup(cleanup) {
                 eprintln!("PzzaCode could not finish shutting down: {error}. Quit again to retry.");
-                phase.store(0, Ordering::Release);
                 return;
             }
-            phase.store(2, Ordering::Release);
             finish();
         });
     }
+}
+
+fn cleanup(app: &tauri::AppHandle) -> Result<(), String> {
+    use tauri::Manager;
+    #[cfg(target_os = "macos")]
+    app.state::<crate::speech::SpeechState>()
+        .shutdown(std::time::Duration::from_secs(15))?;
+    crate::agent::stop(app)?;
+    app.state::<crate::pty::PtyState>().shutdown();
+    #[cfg(target_os = "macos")]
+    crate::local_tmux::stop();
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn app_restart(app: tauri::AppHandle) -> Result<(), String> {
+    use tauri::Manager;
+    app.state::<ShutdownState>().begin()?;
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<ShutdownState>().finish_cleanup(|| cleanup(&app))?;
+        // Restart exit requests cannot be prevented by Tauri. Release native
+        // resources before requesting one, while failures can still reach the UI.
+        app.request_restart();
+        Ok(())
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 pub fn handle_event(app: &tauri::AppHandle, event: tauri::RunEvent) {
@@ -59,15 +96,7 @@ pub fn handle_event(app: &tauri::AppHandle, event: tauri::RunEvent) {
         let exit_app = app.clone();
         shutdown.start(
             move || {
-                let result: Result<(), String> = (|| {
-                    #[cfg(target_os = "macos")]
-                    cleanup_app
-                        .state::<crate::speech::SpeechState>()
-                        .shutdown(std::time::Duration::from_secs(15))?;
-                    crate::agent::stop(&cleanup_app)?;
-                    cleanup_app.state::<crate::pty::PtyState>().shutdown();
-                    Ok(())
-                })();
+                let result = cleanup(&cleanup_app);
                 #[cfg(target_os = "macos")]
                 if let Err(error) = &result {
                     show_shutdown_error(&cleanup_app, error);

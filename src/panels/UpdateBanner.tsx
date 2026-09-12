@@ -28,6 +28,7 @@ export function UpdateBanner() {
         {status.kind === "ready" ? (
           <>
             PzzaCode <b>{v}</b> is installed. Restart to finish updating.
+            {status.error ? <span role="alert"> {status.error}</span> : null}
           </>
         ) : (
           <>
@@ -46,16 +47,16 @@ export function UpdateBanner() {
           {status.pct < 1 ? `Downloading ${Math.round(status.pct * 100)}%` : "Installing…"}
         </span>
       ) : (
-        <button className="btn btn-accent btn-sm" onClick={relaunch}>
+        <button className="btn btn-accent btn-sm" onClick={relaunch} disabled={status.restarting}>
           <RotateCw size={13} strokeWidth={2} />
-          Restart now
+          {status.restarting ? "Restarting…" : "Restart now"}
         </button>
       )}
       <button
         className="icon-btn update-dismiss"
         title="Not now"
         onClick={dismiss}
-        disabled={status.kind === "installing"}
+        disabled={status.kind === "installing" || status.kind === "ready" && status.restarting}
       >
         <X size={14} />
       </button>

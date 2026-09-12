@@ -1,6 +1,6 @@
 import { LiveSessionIcon } from "../ui/LiveSessionIcon";
 import { DeviceIcon } from "../ui/DeviceIcon";
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { ChevronRight, CornerDownLeft, SquareTerminal } from "lucide-react";
 import { useStore } from "../state/store";
 import { tileTitle, sessionDisplayName } from "../sessionMeta";
@@ -8,6 +8,7 @@ import { Select } from "../ui/Select";
 import { HAS_TAURI } from "../tauriEnv";
 import { createSessionInApp, useSessionCreation } from "../sessionActions";
 import { fetchAccounts, type Account } from "../serverApi";
+import { SESSION_NAME_MAX_LENGTH } from "../../server/lib/session-name.js";
 
 const DEVICE_KEY = "pzza.session.device";
 
@@ -23,6 +24,7 @@ export function SessionMenu({ close }: { close: () => void }) {
   const devices = useStore((s) => s.devices);
 
   const [name, setName] = useState("");
+  const nameLimitId = useId();
   const creating = useSessionCreation(state => state.operation?.status === "running");
   const [creationError, setCreationError] = useState<string | null>(null);
   const [wsId, setWsId] = useState(activeWorkspaceId);
@@ -146,6 +148,8 @@ export function SessionMenu({ close }: { close: () => void }) {
           className="ns-input"
           disabled={creating}
           aria-label="New session name"
+          aria-describedby={nameLimitId}
+          maxLength={SESSION_NAME_MAX_LENGTH}
           autoFocus
           placeholder="Name a new session…"
           value={name}
@@ -158,6 +162,7 @@ export function SessionMenu({ close }: { close: () => void }) {
         </button>
       </div>
 
+      <p className="set-note" id={nameLimitId}>{name.length}/{SESSION_NAME_MAX_LENGTH} characters · Spaces allowed</p>
       {creationError ? <p className="set-note" role="alert">{creationError}</p> : null}
       {available.length > 0 ? (
         <>

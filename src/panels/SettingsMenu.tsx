@@ -117,9 +117,9 @@ export function UpdatesSection() {
             {status.pct < 1 ? `Downloading ${Math.round(status.pct * 100)}%` : "Installing…"}
           </span>
         ) : status.kind === "ready" ? (
-          <button className="btn btn-accent btn-sm" onClick={relaunch}>
+          <button className="btn btn-accent btn-sm" onClick={relaunch} disabled={status.restarting}>
             <RotateCw size={13} strokeWidth={2} />
-            Restart for {status.update.version}
+            {status.restarting ? "Restarting…" : `Restart for ${status.update.version}`}
           </button>
         ) : (
           <AsyncButton className="btn btn-sm" onClick={() => check(true)} loading={status.kind === "checking"} icon={RefreshCw} iconSize={13}>
@@ -140,6 +140,7 @@ export function UpdatesSection() {
       </Row>
       {status.kind === "latest" ? <p className="set-note">You are on the latest version.</p> : null}
       {status.kind === "error" ? <p className="set-note">{status.msg}</p> : null}
+      {status.kind === "ready" && status.error ? <p className="set-note" role="alert">{status.error}</p> : null}
     </Section>
   );
 }

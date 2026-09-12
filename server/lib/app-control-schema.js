@@ -3,6 +3,7 @@ import { INTEGRATION_APP_COMMANDS } from "./app-control-integration-schema.js";
 import { DEVICE_APP_COMMANDS } from "./app-control-device-schema.js";
 import { EDITOR_APP_COMMANDS } from "./app-control-editor-schema.js";
 import { RUNTIME_APP_COMMANDS } from "./app-control-runtime-schema.js";
+import { SESSION_NAME_SCHEMA } from "./session-name.js";
 
 // Shared bounded schemas drive server validation, frontend validation and tools.
 const command = (description, properties = {}, required = []) => ({ description, type: "object", properties, required, additionalProperties: false });
@@ -12,7 +13,7 @@ export const APP_COMMANDS = {
   open_session: command("Open or reveal a session or tmux window on a selected device. Omitted host means local; use create_session first when the session does not exist.", {
     host: {"type":"string","maxLength":128,"pattern":"^(?:[A-Za-z0-9._][A-Za-z0-9._@-]{0,127})?$"},
     window: {"type":"integer","minimum":0,"maximum":2147483647},
-    session: {"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9_-]+$"},
+    session: SESSION_NAME_SCHEMA,
     cwd: {"type":"string","minLength":1,"maxLength":4096,"pattern":"^/[^\\u0000-\\u001f\\u007f]*$"},
   }, ["session","cwd"]),
   focus_tile: command("Focus and reveal an existing tile.", {
