@@ -9,7 +9,7 @@
 // connected backend can actually forward. This file is the composition root: it
 // wires the HTTP routes to the focused modules in ./lib and boots the server.
 import http from "node:http";
-import { watchDesktopLifetime } from "./lib/agent-lifecycle.js";
+import { createServerShutdown, watchDesktopLifetime } from "./lib/agent-lifecycle.js";
 import { quickChatRouter } from "./lib/quick-chat.js";
 import { createDeviceSession } from "./lib/session-create.js";
 
@@ -57,6 +57,10 @@ const repairMcp = createMcpRepair();
 const appControl = createAppControl();
 const appControlRouter = createAppControlRouter(appControl, json);
 const server = http.createServer(async (req, res) => {
+  if (shutdown.stopping) {
+    res.setHeader("Connection", "close");
+    return json(res, 503, { error: "Device agent is shutting down" });
+  }
   // Defeat DNS rebinding: only a loopback Host on our port is served at all.
   if (!hostOk(req)) {
     res.writeHead(421, { "Content-Type": "application/json" });
@@ -265,6 +269,8 @@ const server = http.createServer(async (req, res) => {
   json(res, 404, { error: "not found" });
 });
 
+const shutdown = createServerShutdown(server, () => process.exit(0));
+
 // If the port is already taken, a previous agent that has not yet noticed its
 // own parent died may still hold it, so retry the bind for a few seconds to let
 // that stale sibling self-exit. Past that window the occupant is not a
@@ -304,14 +310,5 @@ server.listen(PORT, "127.0.0.1", () => {
 });
 
 
-// Finish active HTTP requests before the managed agent exits.
-let stopping = false;
-function shutdown() {
-  if (stopping) return;
-  stopping = true;
-  server.close(() => process.exit(0));
-  // Open terminal sockets must not keep the agent alive after the desktop exits.
-  setTimeout(() => process.exit(0), 3000).unref();
-}
-for (const signal of ["SIGTERM", "SIGINT"]) process.once(signal, shutdown);
-watchDesktopLifetime(shutdown);
+for (const signal of ["SIGTERM", "SIGINT"]) process.once(signal, shutdown.stop);
+watchDesktopLifetime(shutdown.stop);
