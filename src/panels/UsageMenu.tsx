@@ -224,7 +224,7 @@ export function UsageMenu() {
               ) : (
                 <>
                   {acc.usage?.stale && (
-                    <div className="muted" role="status">
+                    <div className="muted usage-stale" role="status">
                       Showing last successful usage{acc.usage.updatedAt ? ` from ${new Date(acc.usage.updatedAt).toLocaleTimeString()}` : ""}.
                       {acc.usage.retryAt ? ` Retrying after ${new Date(acc.usage.retryAt).toLocaleTimeString()}.` : ""}
                     </div>
