@@ -3,6 +3,8 @@ import { deviceHost } from "../devices";
 import { loadDeviceUsage } from "../usageFallback";
 import { useDelayedLoading } from "../ui/useDelayedLoading";
 import { AsyncButton } from "../ui/AsyncButton";
+import { ClaudeIcon, CodexIcon, OpenCodeIcon } from "../icons/BrandIcons";
+import type { ComponentType } from "react";
 import { UsageSpend } from "./UsageSpend";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AlertTriangle, Loader2, RefreshCw } from "lucide-react";
@@ -15,10 +17,10 @@ import {
   type UsageWindow,
 } from "../serverApi";
 
-const PROVIDER: Record<string, { name: string; color: string }> = {
-  claude: { name: "Claude", color: "#D97757" },
-  codex: { name: "Codex", color: "#10A37F" },
-  opencode: { name: "OpenCode", color: "#94A3B8" },
+const PROVIDER: Record<string, { name: string; color: string; Icon: ComponentType<{ size?: number | string; className?: string }> }> = {
+  claude: { name: "Claude", color: "#D97757", Icon: ClaudeIcon },
+  codex: { name: "Codex", color: "#10A37F", Icon: CodexIcon },
+  opencode: { name: "OpenCode", color: "#94A3B8", Icon: OpenCodeIcon },
 };
 
 function fmtReset(iso: string | null): string {
@@ -193,11 +195,18 @@ export function UsageMenu() {
         <div className="usage-empty muted">No signed-in agent accounts found on available devices.</div>
       ) : (
         accounts.map((acc, i) => {
-          const p = PROVIDER[acc.provider] ?? { name: acc.label, color: "var(--accent)" };
+          const p = PROVIDER[acc.provider] ?? { name: acc.label, color: "var(--accent)", Icon: null };
+          const Brand = (p as { Icon?: ComponentType<{ size?: number | string; className?: string }> | null }).Icon ?? null;
           return (
             <div className="usage-card" key={i}>
               <div className="usage-card-head">
-                <span className="usage-dot" style={{ background: p.color }} />
+                {Brand ? (
+                  <span className="usage-brand" style={{ color: p.color }}>
+                    <Brand size={15} />
+                  </span>
+                ) : (
+                  <span className="usage-dot" style={{ background: p.color }} />
+                )}
                 <span className="usage-name">{p.name}</span>
                 {acc.plan ? <span className="usage-plan">{acc.plan.replace(/_/g, " ")}</span> : null}
                 {acc.email ? <span className="usage-email">{acc.email}</span> : null}
