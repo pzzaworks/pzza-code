@@ -38,6 +38,8 @@ fn main() {
     assert!(PathBuf::from(&model).is_file());
     if let Ok(mode) = std::env::var("PZZA_SHUTDOWN_CASE") {
         if mode.starts_with("restart-") {
+            tauri::process::current_binary(&tauri::Env::default())
+                .expect("Native restart cases must start from an executable path without symlinks");
             let root = PathBuf::from(std::env::var_os("PZZA_SHUTDOWN_ROOT").unwrap());
             if root.join("restart-requested").exists() {
                 use std::io::Write;
@@ -80,6 +82,9 @@ fn main() {
         }
     }
     let _server = Server(socket.clone());
+    // Shared Cargo target directories may be symlinked. Launch the actual
+    // binary so macOS restart validation accepts the child executable path.
+    let executable = std::env::current_exe().unwrap().canonicalize().unwrap();
     let mut cases = vec![
         "quit-warm",
         "quit-active",
@@ -96,7 +101,7 @@ fn main() {
         let case_root = root.join(mode);
         fs::create_dir(&case_root).unwrap();
         let log = fs::File::create(case_root.join("native.log")).unwrap();
-        let mut child = Command::new(std::env::current_exe().unwrap())
+        let mut child = Command::new(&executable)
             .env("PZZA_SHUTDOWN_CASE", mode)
             .env("PZZA_SHUTDOWN_ROOT", &case_root)
             .env("PZZA_SHUTDOWN_SOCKET", &socket)
