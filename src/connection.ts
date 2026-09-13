@@ -101,11 +101,12 @@ export function attachCommand(
   } else if (window !== undefined) {
     // View a specific window through a grouped session (independent view,
     // auto-destroyed on detach).
-    const view = `pzza-v-${Date.now().toString(36)}`;
+    const view = `pzza-v-${crypto.randomUUID()}`;
     remote =
       heal +
-      `${tmux} new-session -d -t ${shQuote(session)} -s ${shQuote(view)} 2>/dev/null; ` +
-      `${tmux} set-option -t ${shQuote(view)} destroy-unattached on 2>/dev/null; ` +
+      `${tmux} new-session -d -t ${shQuote(session)} -s ${shQuote(view)} 2>/dev/null || exit 1; ` +
+      // Arm cleanup only after attachment; an unattached view is otherwise destroyed immediately.
+      `${tmux} set-hook -t ${shQuote(view)} client-attached ${shQuote(`set-option -t ${shQuote(view)} destroy-unattached on`)}; ` +
       `${tmux} select-window -t ${shQuote(view + ":" + window)} 2>/dev/null; ` +
       `exec ${tmux} -u attach -t ${shQuote(view)}`;
   } else {

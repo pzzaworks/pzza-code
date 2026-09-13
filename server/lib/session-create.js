@@ -9,7 +9,7 @@ request = json.load(sys.stdin)
 def fail(message, status=400):
     json.dump({'error': message, 'status': status}, sys.stdout)
     sys.exit(0)
-args = ['tmux', *request['tmuxOptions'], 'new-session', '-d', '-s', request['name']]
+args = ['tmux', *request['tmuxOptions'], 'new-session', '-d', '-P', '-F', '#{session_id}:#{window_id}', '-s', request['name'], '-e', 'OPENTUI_NOTIFICATION_PROTOCOL=osc777']
 cwd = os.path.expanduser(request.get('cwd') or '~')
 if not os.path.isabs(cwd) or not os.path.isdir(cwd):
     fail('Choose an existing absolute working directory on the selected device.')
@@ -34,11 +34,23 @@ if account:
         args += ['-e', key + '=' + canonical]
     except OSError:
         fail('The selected account is unavailable on this device.')
+created_session = None
 try:
-    result = subprocess.run(args, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=8)
+    result = subprocess.run(args, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=8)
     if result.returncode != 0:
         fail('Could not create the session. Check the terminal service and choose an unused name.', 503)
-except (OSError, subprocess.TimeoutExpired):
+    identity = re.fullmatch(r'(\$[0-9]+):(@[0-9]+)', result.stdout.strip())
+    if not identity:
+        fail('Invalid terminal session response.', 503)
+    created_session, window = identity.groups()
+    # Native notifications pass through only the newly created terminal window.
+    subprocess.run(['tmux', *request['tmuxOptions'], 'set-option', '-w', '-t', window, 'allow-passthrough', 'on'], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3, check=True)
+except (OSError, subprocess.TimeoutExpired, subprocess.CalledProcessError):
+    if created_session:
+        try:
+            subprocess.run(['tmux', *request['tmuxOptions'], 'kill-session', '-t', created_session], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
     fail('The terminal service is unavailable on the selected device.', 503)
 json.dump({'ok': True}, sys.stdout)
 `;

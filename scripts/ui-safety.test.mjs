@@ -83,7 +83,7 @@ function Settings() {
   return <SettingsHub open section={section} onSectionChange={setSection} onOpen={setSection} onClose={() => {}} />;
 }
 function Attention() {
-  return <><div style={{ position:'relative', height:320, width:700 }}><Terminal tileId="attention" name="attention" active /></div><button id="outside-terminal">Other panel</button><div style={{ width:560 }}><LatestNotifications viewAll={() => {}} /></div></>;
+  return <><div style={{ position:'relative', height:320, width:Number(new URLSearchParams(location.search).get('terminalWidth') ?? 700) }}><Terminal tileId="attention" name="attention" active /></div><button id="outside-terminal">Other panel</button><div style={{ width:560 }}><LatestNotifications viewAll={() => {}} /></div></>;
 }
 const mode = new URLSearchParams(location.search).get('mode');
 if (mode === 'usage-accounts') useStore.setState({ devices: [{ id:'remote', host:'devbox', name:'Devbox' }] });
@@ -151,7 +151,7 @@ test('terminal bells respect actual keyboard focus and never quote the input pro
   const items = await page.evaluate(() => window.ui.useNotifications.getState().items);
   assert.equal(items.length, 1);
   assert.equal(items[0].event, 'terminal-bell');
-  assert.equal(items[0].body, 'attention (This device): No message was provided. Open this terminal to check what needs attention.');
+  assert.equal(items[0].body, 'attention (This device)\n\nNo message was provided. Open this terminal to check what needs attention.');
   assert.equal(items[0].target.tileId, 'attention');
 });
 
@@ -170,12 +170,12 @@ test('terminal notifications render real messages and useful output through the 
   const write = text => new Promise(resolve => { acknowledge = resolve; socket.send(Buffer.from(text)); });
   await page.locator('#outside-terminal').click();
   await write('Build completed. Review the changes.\r\n› Ask for help\x07');
-  await page.getByText('attention (This device): Recent output: Build completed. Review the changes.', { exact: true }).waitFor();
+  await page.getByText('attention (This device)\n\nBuild completed. Review the changes.', { exact: true }).waitFor();
   await write('\x1b]777;notify;Approval required;Allow the database migration?\x1b\\');
   await page.locator('.notification-title strong', { hasText: 'Approval required' }).waitFor();
-  await page.getByText('attention (This device): Allow the database migration?', { exact: true }).waitFor();
+  await page.getByText('attention (This device)\n\nAllow the database migration?', { exact: true }).waitFor();
   await write('\x1b]9;The export is ready.\x07');
-  await page.getByText('attention (This device): The export is ready.', { exact: true }).waitFor();
+  await page.getByText('attention (This device)\n\nThe export is ready.', { exact: true }).waitFor();
   const count = await page.locator('.notification-row').count();
   await write('\x1b]9;4;1;75\x07\x1b]9;The export is ready.\x07');
   assert.equal(await page.locator('.notification-row').count(), count);
@@ -183,6 +183,55 @@ test('terminal notifications render real messages and useful output through the 
   await evidence(page, 'notification-details');
   await page.getByRole('button', { name: 'Dismiss Approval required', exact: true }).click();
   assert.equal(await page.locator('.notification-title strong', { hasText: 'Approval required' }).count(), 0);
+});
+
+for (const width of [700, 360]) test(`notification capture excludes a wrapped footer at ${width}px`, options, async t => {
+  let socket, acknowledge, attached;
+  const attachment = new Promise(resolve => { attached = resolve; });
+  const page = await pageFor(t, 'attention', '&terminalWidth=' + width, page => page.routeWebSocket('**/*', ws => {
+    socket = ws;
+    ws.onMessage(message => {
+      const packet = JSON.parse(String(message));
+      if (packet.type === 'attach') attached();
+      if (packet.type === 'ack') acknowledge?.();
+    });
+  }));
+  await attachment;
+  const write = text => new Promise(resolve => { acknowledge = resolve; socket.send(Buffer.from(text)); });
+  await page.locator('#outside-terminal').click();
+  await write('The update is ready for review.\r\n\u2014 Worked for 3m 50s\r\n' + '\u2500'.repeat(230));
+  await write(' macos-release-auto-update ─\r\n ›\u2801Ask for help\r\n \u2808 \u2808 \u2801 \u2801 \x07');
+  await page.locator('.notification-row').waitFor();
+  await evidence(page, 'notification-footer-' + width);
+  const items = await page.evaluate(() => window.ui.useNotifications.getState().items);
+  assert.equal(items[0].body, 'attention (This device)\n\nThe update is ready for review.');
+});
+
+test('notification retains a complete answer through a clipped redraw and renders readable spacing', options, async t => {
+  let socket, acknowledge, attached;
+  const attachment = new Promise(resolve => { attached = resolve; });
+  const page = await pageFor(t, 'attention', '&terminalWidth=700', page => page.routeWebSocket('**/*', ws => {
+    socket = ws;
+    ws.onMessage(message => {
+      const packet = JSON.parse(String(message));
+      if (packet.type === 'attach') attached();
+      if (packet.type === 'ack') acknowledge?.();
+    });
+  }));
+  await attachment;
+  const write = text => new Promise(resolve => { acknowledge = resolve; socket.send(Buffer.from(text)); });
+  const opening = "No dude, a name that's only spaces gets rejected, because !value.trim() ";
+  const ending = 'at server/lib/session-name.js:8 throws "Enter a session name." for it. The max length is 128 characters (SESSION_NAME_MAX_LENGTH at server/lib/session-name.js:1), and it is checked before trimming.';
+  const footer = '\r\n' + '─'.repeat(35) + ' macos-release-auto-update ─\r\n❯ ';
+  await page.locator('#outside-terminal').click();
+  await write(opening + ending + footer + '\x1b[H\x1b[2J' + ending + footer + '\x07');
+  await page.locator('.notification-row').waitFor();
+  const body = await page.locator('.notification-body').textContent();
+  assert.equal(body, 'attention (This device)\n\n' + opening + ending);
+  const style = await page.locator('.notification-body').evaluate(node => ({ whitespace: getComputedStyle(node).whiteSpace, height: parseFloat(getComputedStyle(node).lineHeight), font: parseFloat(getComputedStyle(node).fontSize) }));
+  assert.equal(style.whitespace, 'pre-wrap');
+  assert.ok(style.height >= style.font * 1.5);
+  await evidence(page, 'complete-answer');
 });
 
 test('queued confirmations default to Cancel, trap focus, restore focus and close only the top dialog', options, async t => {

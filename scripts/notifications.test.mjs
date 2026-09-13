@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { build } from "esbuild";
 
 const storage = new Map();
-const retainedNotice = { id: "terminal-history", category: "terminal", event: "terminal-command", title: "Command completed", body: "Finished", createdAt: Date.now(), read: true };
+const retainedNotice = { id: "terminal-history", category: "terminal", event: "terminal-command", title: "Command completed", body: "The complete response remains available.\n".repeat(20), createdAt: Date.now(), read: true };
 storage.set("pzza.notifications.v1", JSON.stringify({
   items: [retainedNotice, { ...retainedNotice, id: "retired-history", category: "bridge", event: "bridge-result" }],
   preferences: { categories: { sync: false, bridge: false }, events: { "sync-error": false, "bridge-result": false } },
@@ -40,6 +40,7 @@ test("loading history removes unsupported categories and event preferences from 
   const saved = JSON.parse(storage.get("pzza.notifications.v1"));
   assert.deepEqual(saved.items.map(item => item.id), [retainedNotice.id]);
   assert.equal(saved.items[0].title, retainedNotice.title);
+  assert.equal(saved.items[0].body, retainedNotice.body);
   assert.equal(saved.preferences.categories.sync, false);
   assert.equal(saved.preferences.events["sync-error"], false);
   assert.equal(Object.hasOwn(saved.preferences.categories, "bridge"), false);
@@ -58,6 +59,13 @@ test("reading only changes unread state and preserves navigation target", () => 
   useNotifications.getState().read(item.id);
   assert.deepEqual(useNotifications.getState().items[0], { ...item, read: true });
   assert.equal(JSON.parse(storage.get("pzza.notifications.v1")).items[0].read, true);
+});
+
+test("long answer notifications are saved without the old preview truncation", () => {
+  reset();
+  notify({ ...notice, body: retainedNotice.body });
+  assert.equal(useNotifications.getState().items[0].body, retainedNotice.body);
+  assert.equal(JSON.parse(storage.get("pzza.notifications.v1")).items[0].body, retainedNotice.body);
 });
 test("muting preserves history and suppresses OS alerts; resume delivers private text", async () => {
   reset(); useNotifications.getState().configure({ desktop: true, mutedUntil: Date.now() + 60_000 });
