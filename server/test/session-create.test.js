@@ -73,6 +73,9 @@ test("creation binds only an actual account on the destination and preserves lit
     await createDeviceSession({ name: boundaryName, cwd }, run);
     await tmux(["has-session", "-t", `=${boundaryName}`]);
     await createDeviceSession({ name: "account work", cwd, account: { provider: "codex", dir: path.join(home, ".codex") } }, run);
+    assert.equal((await tmux(["show-environment", "-t", "=account work", "OPENTUI_NOTIFICATION_PROTOCOL"])).stdout.trim(), "OPENTUI_NOTIFICATION_PROTOCOL=osc777");
+    assert.equal((await tmux(["show-options", "-wv", "-t", "=account work:", "allow-passthrough"])).stdout.trim(), "on");
+    assert.equal((await tmux(["show-options", "-wAv", "-t", "=anchor:", "allow-passthrough"])).stdout.trim(), "off");
     const result = await tmux(["show-environment", "-t", "=account work", "CODEX_HOME"]);
     assert.equal(result.stdout.trim(), `CODEX_HOME=${await fs.realpath(path.join(home, ".codex"))}`);
     const report = path.join(home, "working-directory.txt");

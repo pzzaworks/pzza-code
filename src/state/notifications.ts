@@ -42,7 +42,7 @@ function initial(): { items: Notice[]; preferences: Preferences } {
       if (!item || typeof item !== "object") return false;
       const row = item as Record<string, unknown>;
       return typeof row.id === "string" && typeof row.category === "string" && categories.includes(row.category) &&
-        typeof row.title === "string" && row.title.length <= 160 && typeof row.body === "string" && row.body.length <= 400 &&
+        typeof row.title === "string" && row.title.length <= 160 && typeof row.body === "string" && row.body.length <= 4000 &&
         typeof row.createdAt === "number" && Number.isFinite(row.createdAt) && row.createdAt <= Date.now() && row.createdAt > Date.now() - 30 * 86400000 && typeof row.read === "boolean";
     }).slice(0, 300).map(item => {
       const target: NotificationTarget = {};
@@ -90,7 +90,7 @@ export function notify(input: Omit<Notice, "id" | "createdAt" | "read">): void {
   if (!preferences.enabled || !preferences.categories[input.category] || (input.event && preferences.events[input.event] === false)) return;
   const now = Date.now();
   if (input.dedupeKey && items.some(item => item.dedupeKey === input.dedupeKey && now - item.createdAt < 30000)) return;
-  const notice: Notice = { ...input, title: input.title.slice(0, 160), body: input.body.slice(0, 400), id: crypto.randomUUID(), createdAt: now, read: false };
+  const notice: Notice = { ...input, title: input.title.slice(0, 160), body: input.body.slice(0, 4000), id: crypto.randomUUID(), createdAt: now, read: false };
   useNotifications.setState({ items: [notice, ...items.filter(item => now - item.createdAt < 30 * 86400000)].slice(0, 300) });
   if (preferences.mutedUntil > now) return;
   const canDeliver = () => {

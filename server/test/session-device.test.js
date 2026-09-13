@@ -79,3 +79,56 @@ test("local attachment rejects an empty or relative managed socket before invoki
     }), { code: 1 });
   }
 });
+
+test("a window view survives attachment and disappears on detach without closing its source", { timeout: 15000 }, async t => {
+  const root = await mkdtemp("/tmp/pzza-view-lifetime-");
+  const socket = path.join(root, "tmux");
+  const tmux = args => promisify(execFile)("tmux", ["-S", socket, ...args], { timeout: 3000 });
+  t.after(async () => { await tmux(["kill-server"]).catch(() => {}); await rm(root, { recursive: true, force: true }); });
+  await tmux(["-f", "/dev/null", "new-session", "-d", "-s", "source", "sleep 30"]);
+  const index = Number((await tmux(["display-message", "-p", "-t", "=source:", "#{window_index}"])).stdout.trim());
+  const command = attachCommand({ host: null }, "source", undefined, index);
+  await promisify(execFile)("python3", ["-c", String.raw`
+import json, os, pty, subprocess, sys, time
+command, socket = json.loads(sys.argv[1]), sys.argv[2]
+def tmux(*args):
+    return subprocess.check_output(['tmux', '-S', socket, *args], text=True, timeout=3).strip()
+pid, fd = pty.fork()
+if pid == 0:
+    os.execvpe(command['cmd'], [command['cmd'], *command['args']], {**os.environ, 'PZZA_TMUX_SOCKET': socket, 'TERM': 'xterm-256color'})
+try:
+    deadline, view = time.monotonic() + 5, None
+    while time.monotonic() < deadline:
+        for row in tmux('list-sessions', '-F', '#{session_name}:#{session_attached}').splitlines():
+            name, attached = row.rsplit(':', 1)
+            if name.startswith('pzza-v-') and attached == '1':
+                view = name
+        if view and tmux('show-options', '-Av', '-t', view, 'destroy-unattached') == 'on':
+            break
+        time.sleep(0.05)
+    else:
+        raise AssertionError('The window view did not attach and arm cleanup')
+    tmux('detach-client', '-s', view)
+    while time.monotonic() < deadline:
+        if view not in tmux('list-sessions', '-F', '#{session_name}').splitlines():
+            break
+        time.sleep(0.05)
+    else:
+        raise AssertionError('The detached window view was not removed')
+    tmux('has-session', '-t', '=source')
+finally:
+    os.close(fd)
+    os.waitpid(pid, 0)
+`, JSON.stringify(command), socket], { timeout: 10000 });
+});
+
+
+test("simultaneous window attachments have distinct view names", () => {
+  const original = Date.now;
+  Date.now = () => 123456;
+  try {
+    const commands = Array.from({ length: 20 }, () => attachCommand({ host: null }, "source", undefined, 2).args.at(-1));
+    const names = commands.map(command => command.match(/pzza-v-[a-f0-9-]+/)[0]);
+    assert.equal(new Set(names).size, commands.length);
+  } finally { Date.now = original; }
+});

@@ -430,12 +430,12 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
         const label = sessionDisplayName(tile ?? { id: tileId, name, session: name, host, window: win }, state.tileTitles)
           .replace(/[\x00-\x1f\x7f-\x9f]/g, "").slice(0, 100);
         const device = (tile?.host ?? host ?? "This device").replace(/[\x00-\x1f\x7f-\x9f]/g, "").slice(0, 100) || "This device";
-        notify({ ...notification, body: `${label || "Terminal"} (${device}): ${notification.body}` });
+        notify({ ...notification, body: `${label || "Terminal"} (${device})\n\n${notification.body}` });
       }, {
         attachment: true,
         isFocused: () => document.hasFocus() && container.contains(document.activeElement),
-        // Real screen context for notifications: absolute cursor row and the
-        // trimmed text of an absolute row (control characters stripped).
+        // Preserve wrap-boundary spaces and limit reads to visible columns;
+        // buffer lines can retain cells beyond the width after a resize.
         cursorRow: () => {
           try {
             const buffer = term.buffer.active;
@@ -446,15 +446,23 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
         },
         readRow: (row) => {
           try {
-            const text = term.buffer.active.getLine(row)?.translateToString(true).replace(/[\x00-\x1f\x7f-\x9f]/g, "").trim();
-            return text || null;
+            const text = term.buffer.active.getLine(row)?.translateToString(false, 0, term.cols).replace(/[\x00-\x1f\x7f-\x9f]/g, "");
+            return text?.trim() ? text : null;
           } catch {
             return null;
           }
         },
         isWrappedRow: (row) => term.buffer.active.getLine(row)?.isWrapped ?? false,
+        lastRow: () => term.buffer.active.length - 1,
       });
       const bellListener = term.onBell(() => notificationSignals.bell());
+      const outputCaptureListener = term.onWriteParsed(() => notificationSignals.captureOutput());
+      // One transport batch can contain a complete response and its replacement.
+      // Observe the buffer before erasure while leaving terminal parsing unchanged.
+      const eraseCaptureListeners = ["J"].map(final => term.parser.registerCsiHandler({ final }, () => {
+        notificationSignals.captureOutput(true);
+        return false;
+      }));
       const messageListener = term.parser.registerOscHandler(9, (data) => notificationSignals.osc9(data));
       const titledMessageListener = term.parser.registerOscHandler(777, (data) => notificationSignals.osc777(data));
       const completionListener = term.parser.registerOscHandler(133, (data) => notificationSignals.osc133(data));
@@ -595,6 +603,7 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
       };
       const inputListener = term.onData(text => {
         if (disposed || exited || !attachmentReady) return;
+        notificationSignals.input(text);
         const epoch = connectionEpoch;
         if (HAS_TAURI) {
           if (tauriId === null) return;
@@ -721,6 +730,7 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
         pasteClipboard: async () => { const data = await readClipboardData(); await enqueuePaste(() => performPaste(data, true)); },
         sendControl: value => enqueuePaste(async () => {
           if (!connected()) throw new Error("The terminal is disconnected.");
+          notificationSignals.input(value);
           cancelDictationInput();
           if (HAS_TAURI && tauriId !== null) await writePty(tauriId, value);
           else if (!ws?.write(value)) throw new Error("Terminal input could not be sent.");
@@ -778,6 +788,8 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
         disposed = true;
         notificationSignals.dispose();
         bellListener.dispose();
+        outputCaptureListener.dispose();
+        eraseCaptureListeners.forEach(listener => listener.dispose());
         messageListener.dispose();
         titledMessageListener.dispose();
         completionListener.dispose();
