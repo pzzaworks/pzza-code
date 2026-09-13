@@ -13,16 +13,35 @@ interface SignalOptions {
   attachment: boolean;
   now?: () => number;
   isFocused?: () => boolean;
-  // Live screen hooks (provided by the terminal view). Both are optional: when
-  // absent the signals fall back to generic text. Rows are absolute buffer
-  // rows; readRow returns trimmed line text or null for missing rows.
+  // Absolute screen rows, including spaces at wrap boundaries. Missing screen
+  // hooks leave message-free bells without a preview.
   cursorRow?: () => number | null;
+  lastRow?: () => number;
   readRow?: (row: number) => string | null;
   isWrappedRow?: (row: number) => boolean;
 }
 
 const CONTEXT_CHARS = 120;
 const MESSAGE_CHARS = 220;
+const OUTPUT_CHARS = 3000;
+
+function rowContent(text: string): string {
+  return text.trim().replace(/^[\s\u2500-\u257f\u2013\u2014]+|[\s\u2500-\u257f\u2013\u2014]+$/g, "");
+}
+
+function isInputRow(text: string): boolean {
+  return /^(?:[›❯»>$#%](?:[\s\u2800-\u28ff]|$)|\S*[@:/~]\S*\s*[$#%](?:\s|$)|(?:password|passphrase)(?:\s|:\s*$|$))/i.test(text);
+}
+
+function isDividerRow(text: string): boolean {
+  return /^\s*[─━═]{3,}/u.test(text);
+}
+
+function isStatusRow(text: string): boolean {
+  return /^(?:Worked for|[✻✽✶✳✢✦]\s+[\p{L}-]+ for)\s+(?:\d+(?:\.\d+)?\s*(?:ms|s|m|h|d)\s*)+(?:·\s*done\b.*)?$/iu.test(text) ||
+    /^▣\s+.+\s+·\s+\d+(?:\.\d+)?(?:ms|s|m|h)$/.test(text) ||
+    /^(?:[?] for shortcuts|esc to |\d+% context left|\d+ background terminals? running\b)/i.test(text);
+}
 
 function safeText(text: string): string {
   // Strip formatting before redaction so escape codes cannot split a credential.
@@ -51,7 +70,7 @@ function screenLines(readRow: ((row: number) => string | null) | undefined, from
 export function createTerminalSignals(
   tileId: string,
   send: (notification: TerminalSignalNotification) => void,
-  { attachment, now = () => performance.now(), isFocused = () => false, cursorRow, readRow, isWrappedRow }: SignalOptions,
+  { attachment, now = () => performance.now(), isFocused = () => false, cursorRow, lastRow, readRow, isWrappedRow }: SignalOptions,
 ) {
   let disposed = false;
   let exited = false;
@@ -59,6 +78,10 @@ export function createTerminalSignals(
   let commandStartRow: number | null = null;
   let lastBell = -Infinity;
   let pendingBell = false;
+  let capturedOutput = "";
+  let capturedFrames: string[] = [];
+  let previousTurnOutput = "";
+  let capturedAt = -Infinity;
   const emit = (title: string, body: string, key: TerminalSignalNotification["event"], detail = "") => {
     if (disposed || exited) return;
     send({ category: "terminal", event: key, title, body, target: { tileId }, dedupeKey: `${key}:${tileId}${detail ? `:${detail}` : ""}` });
@@ -69,24 +92,78 @@ export function createTerminalSignals(
     const lines = screenLines(readRow, cursor === null ? null : cursor - 10, cursor);
     return lines.length ? lines[lines.length - 1] : null;
   };
-  const recentOutput = () => {
+  const recentOutput = (beforeErase = false) => {
     const cursor = cursorRow?.() ?? null;
     if (cursor === null || !readRow) return "";
+    let end = Math.max(cursor, lastRow?.() ?? cursor);
+    for (let row = end; row >= Math.max(0, end - 80); row--) {
+      const content = rowContent(readRow(row) ?? "");
+      if (/^[›❯»>$#%]$/u.test(content) || (!beforeErase && row === cursor && isInputRow(content))) { end = row; break; }
+    }
     const rows: string[] = [];
-    for (let row = Math.max(0, cursor - 40); row <= cursor; row++) {
+    let joinPrevious = false;
+    let skipWrapped = false;
+    let skipDividerWrap = false;
+    let pendingInput = false;
+    for (let row = Math.max(0, end - 80); row <= end; row++) {
       const text = readRow(row) ?? "";
-      if (isWrappedRow?.(row) && rows.length) rows[rows.length - 1] += text;
+      const content = rowContent(text);
+      const wrapped = isWrappedRow?.(row) ?? false;
+      skipDividerWrap = isDividerRow(text) || (wrapped && skipDividerWrap);
+      const indented = /^[ \t]/.test(text);
+      if ((!wrapped && !indented) || !content) skipWrapped = false;
+      if (isInputRow(content)) pendingInput = true;
+      if (isInputRow(content) || isStatusRow(content)) skipWrapped = true;
+      // Classify physical rows before joining. A full-width divider can wrap
+      // straight into a prompt, even though they are separate UI elements.
+      if (skipDividerWrap || skipWrapped || !/[\p{L}\p{N}]/u.test(content)) {
+        joinPrevious = false;
+        if (rows.length && rows[rows.length - 1] !== "") rows.push("");
+        continue;
+      }
+      if (pendingInput) { rows.length = 0; joinPrevious = false; pendingInput = false; }
+      if (wrapped && joinPrevious) rows[rows.length - 1] += text;
+      // A multiplexer can redraw wrapped prose as separate, indented rows.
+      else if (indented && joinPrevious) {
+        const previous = rows[rows.length - 1].trimEnd();
+        const separator = /[\p{L}\p{N}][/-]$/u.test(previous) ? "" : " ";
+        rows[rows.length - 1] = previous + separator + text.trimStart();
+      }
       else rows.push(text);
+      joinPrevious = true;
     }
     const lines = safeText(rows.join("\n")).split("\n");
-    // Exclude whole input lines, including their wrapped rows. Output after a
-    // completed shell prompt remains useful, but never establishes the cause.
-    const prompt = /^\s*[│┃]?\s*(?:[›❯»>$#%](?:\s|$)|\S*[@:/~]\S*\s*[$#%](?:\s|$))/;
-    const output = lines.filter(line =>
-      !prompt.test(line) && /[\p{L}\p{N}]/u.test(line) &&
-      !/^\s*(?:[?] for shortcuts|esc to |\d+% context left|password\b|passphrase\b)/i.test(line));
-    const text = output.slice(-2).join(" ").replace(/\s+/g, " ").trim();
-    return text.length > MESSAGE_CHARS ? `${text.slice(0, MESSAGE_CHARS - 1)}…` : text;
+    // A status label can itself span rows in a narrow pane. Check the joined
+    // text too, after redacting complete output lines and credential blocks.
+    const output = lines.map(line => {
+      const content = rowContent(line);
+      return isInputRow(content) || isStatusRow(content) ? "" : line;
+    });
+    const paragraphs = output.join("\n").trim().split(/\n\s*\n/);
+    let responseStart = -1;
+    for (let index = output.length - 1; index >= 0; index--) {
+      if (/^\s*⏺\s/u.test(output[index])) { responseStart = index; break; }
+    }
+    const response = responseStart < 0 ? paragraphs[paragraphs.length - 1] : output.slice(responseStart).join("\n");
+    return response.replace(/[ \t]+/g, " ").trim();
+  };
+  const captureOutput = (beforeErase = false) => {
+    let current = recentOutput(beforeErase);
+    if (now() - capturedAt > 300_000) { capturedOutput = ""; capturedFrames = []; }
+    if (!current) return capturedOutput;
+    // A delayed bell may arrive after a resize has clipped the opening rows.
+    // Retain the complete, already-redacted paragraph when its tail is still visible.
+    const flat = (text: string) => text.replace(/\s+/g, " ").trim();
+    if (previousTurnOutput && previousTurnOutput.includes(flat(current))) return current;
+    if (current.length >= 32) previousTurnOutput = "";
+    const complete = current.length >= 32 ? capturedFrames.filter(frame => flat(frame).endsWith(flat(current))).sort((a, b) => b.length - a.length)[0] : undefined;
+    // Cache observed snapshots only. Overlapping redraws are not proof that
+    // text was appended, and stitching them can invent duplicated sentences.
+    current = current.length > OUTPUT_CHARS ? `${current.slice(0, OUTPUT_CHARS - 1)}…` : current;
+    if (current.length >= 32) capturedFrames = [current, ...capturedFrames.filter(frame => frame !== current)].slice(0, 16);
+    capturedOutput = complete ?? current;
+    capturedAt = now();
+    return capturedOutput;
   };
   const message = (title: string, body: string) => {
     pendingBell = false;
@@ -98,6 +175,14 @@ export function createTerminalSignals(
     emit(cleanTitle || "Terminal notification", cleanBody || cleanTitle, "terminal-bell", `${cleanTitle}:${cleanBody}`);
   };
   return {
+    captureOutput,
+    input(text: string) {
+      if (/[\r\n\x03\x0c]/.test(text)) {
+        previousTurnOutput = recentOutput().replace(/\s+/g, " ").trim().slice(0, OUTPUT_CHARS);
+        capturedOutput = "";
+        capturedFrames = [];
+      }
+    },
     bell() {
       if (disposed || exited || pendingBell || isFocused() || now() - lastBell < 10_000) return;
       pendingBell = true;
@@ -108,8 +193,8 @@ export function createTerminalSignals(
         pendingBell = false;
         if (disposed || exited || isFocused()) return;
         lastBell = now();
-        const output = recentOutput();
-        emit("Terminal rang its bell", output ? `Recent output: ${output}`
+        const output = captureOutput();
+        emit("Terminal rang its bell", output ? safeText(output)
           : "No message was provided. Open this terminal to check what needs attention.", "terminal-bell");
       });
     },
