@@ -151,7 +151,8 @@ test('terminal bells respect actual keyboard focus and never quote the input pro
   const items = await page.evaluate(() => window.ui.useNotifications.getState().items);
   assert.equal(items.length, 1);
   assert.equal(items[0].event, 'terminal-bell');
-  assert.equal(items[0].body, 'attention (This device)\n\nNo message was provided. Open this terminal to check what needs attention.');
+  assert.equal(items[0].body, 'No message was provided. Open this terminal to check what needs attention.');
+  assert.equal(items[0].source, 'attention (This device)');
   assert.equal(items[0].target.tileId, 'attention');
 });
 
@@ -170,12 +171,13 @@ test('terminal notifications render real messages and useful output through the 
   const write = text => new Promise(resolve => { acknowledge = resolve; socket.send(Buffer.from(text)); });
   await page.locator('#outside-terminal').click();
   await write('Build completed. Review the changes.\r\n› Ask for help\x07');
-  await page.getByText('attention (This device)\n\nBuild completed. Review the changes.', { exact: true }).waitFor();
+  await page.locator('.notification-body', { hasText: 'Build completed. Review the changes.' }).waitFor();
+  await page.locator('.notification-title strong', { hasText: 'attention (This device) - Terminal rang its bell' }).waitFor();
   await write('\x1b]777;notify;Approval required;Allow the database migration?\x1b\\');
   await page.locator('.notification-title strong', { hasText: 'Approval required' }).waitFor();
-  await page.getByText('attention (This device)\n\nAllow the database migration?', { exact: true }).waitFor();
+  await page.locator('.notification-body', { hasText: 'Allow the database migration?' }).waitFor();
   await write('\x1b]9;The export is ready.\x07');
-  await page.getByText('attention (This device)\n\nThe export is ready.', { exact: true }).waitFor();
+  await page.locator('.notification-body', { hasText: 'The export is ready.' }).first().waitFor();
   const count = await page.locator('.notification-row').count();
   await write('\x1b]9;4;1;75\x07\x1b]9;The export is ready.\x07');
   assert.equal(await page.locator('.notification-row').count(), count);
@@ -204,7 +206,8 @@ for (const width of [700, 360]) test(`notification capture excludes a wrapped fo
   await page.locator('.notification-row').waitFor();
   await evidence(page, 'notification-footer-' + width);
   const items = await page.evaluate(() => window.ui.useNotifications.getState().items);
-  assert.equal(items[0].body, 'attention (This device)\n\nThe update is ready for review.');
+  assert.equal(items[0].body, 'The update is ready for review.');
+  assert.equal(items[0].source, 'attention (This device)');
 });
 
 test('notification retains a complete answer through a clipped redraw and renders readable spacing', options, async t => {
@@ -227,7 +230,7 @@ test('notification retains a complete answer through a clipped redraw and render
   await write(opening + ending + footer + '\x1b[H\x1b[2J' + ending + footer + '\x07');
   await page.locator('.notification-row').waitFor();
   const body = await page.locator('.notification-body').textContent();
-  assert.equal(body, 'attention (This device)\n\n' + opening + ending);
+  assert.equal(body, opening + ending);
   const style = await page.locator('.notification-body').evaluate(node => ({ whitespace: getComputedStyle(node).whiteSpace, height: parseFloat(getComputedStyle(node).lineHeight), font: parseFloat(getComputedStyle(node).fontSize) }));
   assert.equal(style.whitespace, 'pre-wrap');
   assert.ok(style.height >= style.font * 1.5);

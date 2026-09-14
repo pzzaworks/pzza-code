@@ -38,7 +38,7 @@ function Rows({ items, readOnly = false }: { items: Notice[]; readOnly?: boolean
   const remove = useNotifications(state => state.remove);
   return <div className="notification-list">{items.length ? items.map(item => <article key={item.id} className={`notification-row ${item.read ? "" : "unread"}`}>
     <button className="notification-content" onClick={() => readOnly ? useNotifications.getState().read(item.id) : openNotice(item)}>
-      <span className="notification-title"><strong>{item.title}</strong>{!item.read ? <span className="notification-new">New</span> : null}</span><span className="notification-body">{item.body}</span>
+      <span className="notification-title"><strong>{item.source ? <><span className="notification-source">{item.source}</span> - </> : null}{item.title}</strong>{!item.read ? <span className="notification-new">New</span> : null}</span><span className="notification-body">{item.body}</span>
       <small>{item.category} · <time dateTime={new Date(item.createdAt).toISOString()}>{new Date(item.createdAt).toLocaleString()}</time></small>
     </button>
     <div className="notification-row-actions">

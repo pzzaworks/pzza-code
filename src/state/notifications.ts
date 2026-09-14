@@ -18,6 +18,7 @@ export interface NotificationTarget { tileId?: string; section?: "sync" | "mcp" 
 export interface Notice {
   event?: NotificationEvent;
   id: string; category: NotificationCategory; title: string; body: string;
+  source?: string;
   createdAt: number; read: boolean; target?: NotificationTarget; dedupeKey?: string;
 }
 interface Preferences {
@@ -51,7 +52,7 @@ function initial(): { items: Notice[]; preferences: Preferences } {
         if (item.target.section === "sync" || item.target.section === "mcp" || item.target.section === "devices" || item.target.section === "general" || item.target.section === "quick-chat") target.section = item.target.section;
       }
       const event = item.event && Object.hasOwn(NOTIFICATION_EVENTS, item.event) ? item.event : undefined;
-      return { ...item, event, target, dedupeKey: typeof item.dedupeKey === "string" ? item.dedupeKey.slice(0, 512) : undefined };
+      return { ...item, event, target, dedupeKey: typeof item.dedupeKey === "string" ? item.dedupeKey.slice(0, 512) : undefined, source: typeof item.source === "string" && item.source ? item.source.slice(0, 160) : undefined };
     }) : [];
     const preferences = { ...defaults, categories: { ...defaults.categories } };
     if (raw.preferences && typeof raw.preferences === "object") {
@@ -90,12 +91,12 @@ export function notify(input: Omit<Notice, "id" | "createdAt" | "read">): void {
   if (!preferences.enabled || !preferences.categories[input.category] || (input.event && preferences.events[input.event] === false)) return;
   const now = Date.now();
   if (input.dedupeKey && items.some(item => item.dedupeKey === input.dedupeKey && now - item.createdAt < 30000)) return;
-  const notice: Notice = { ...input, title: input.title.slice(0, 160), body: input.body.slice(0, 4000), id: crypto.randomUUID(), createdAt: now, read: false };
+  const notice: Notice = { ...input, title: input.title.slice(0, 160), body: input.body.slice(0, 4000), source: input.source?.slice(0, 160) || undefined, id: crypto.randomUUID(), createdAt: now, read: false };
   useNotifications.setState({ items: [notice, ...items.filter(item => now - item.createdAt < 30 * 86400000)].slice(0, 300) });
   if (preferences.mutedUntil > now) return;
   const canDeliver = () => {
     const current = useNotifications.getState().preferences;
     return current.enabled && current.desktop && current.categories[input.category] && (!input.event || current.events[input.event] !== false) && current.mutedUntil <= Date.now() && !document.hasFocus();
   };
-  if (canDeliver()) void deliverDesktopAlert(notice, canDeliver).catch(() => { /* Activity history remains available when the OS rejects an alert. */ });
+  if (canDeliver()) void deliverDesktopAlert({ ...notice, title: notice.source ? `${notice.source} - ${notice.title}` : notice.title }, canDeliver).catch(() => { /* Activity history remains available when the OS rejects an alert. */ });
 }
