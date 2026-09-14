@@ -18,6 +18,8 @@ import {
   Folder,
   FolderOpen,
   Loader2,
+  Pencil,
+  Trash2,
   type LucideIcon,
 } from "lucide-react";
 import type { SimpleIcon } from "simple-icons";
@@ -421,8 +423,8 @@ export function FolderTree({ root, activePath, onOpenFile, host, control }: {
             items[(index + (event.key === "ArrowDown" ? 1 : items.length - 1)) % items.length]?.focus();
           }
         }}>
-        <button className="menu-item" role="menuitem" onClick={() => start({ kind: "rename", item: menu.item })}>Rename…</button>
-        <button className="menu-item" role="menuitem" onClick={() => start({ kind: "delete", item: menu.item })}>Delete…</button>
+        <button className="menu-item" role="menuitem" onClick={() => start({ kind: "rename", item: menu.item })}><Pencil size={16} strokeWidth={1.9} aria-hidden="true" />Rename…</button>
+        <button className="menu-item" role="menuitem" onClick={() => start({ kind: "delete", item: menu.item })}><Trash2 size={16} strokeWidth={1.9} aria-hidden="true" />Delete…</button>
       </div>
     </div>, document.body) : null}
     <Modal open={!!operation} onClose={() => { if (!busy) setOperation(null); }} title={operation?.kind === "delete" ? "Delete permanently?" : operation?.kind === "move" ? "Move item?" : "Rename item"} size="sm">
