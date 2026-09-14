@@ -119,7 +119,8 @@ test("parallel sync updates all repos, leaves dirty changes alone, and reports f
   const rows = results(stdout);
   assert.equal(rows.length, 6);
   assert.equal(rows.find((row) => row[1] === plan[0].rel)[2], "dirty");
-  assert.equal(rows.find((row) => row[1] === plan[1].rel)[2], "failed");
+  assert.equal(rows.find((row) => row[1] === plan[1].rel)[2], "skipped");
+  assert.match(rows.find((row) => row[1] === plan[1].rel)[3], /origin changed since scan/);
   assert.equal(rows.filter((row) => row[2] === "updated").length, 4);
   assert.equal(await readFile(path.join(projects, plan[0].rel, "tracked.txt"), "utf8"), "local edit\n");
   for (const step of plan.slice(2)) {
@@ -360,16 +361,19 @@ test("matching origins in different folders update their own paths and clone the
   ]);
 });
 
-test("unrelated same-path origins remain separate and all occupied or competing clones are blocked", () => {
+test("unrelated same-path origins each get their own checkout instead of blocking", () => {
   const first = repoMetadata("same", "https://example.com/team/one.git");
   const second = repoMetadata("same", "https://example.com/team/two.git");
   const scan = { devices: [deviceMetadata("a", [first]), deviceMetadata("b", [second]), deviceMetadata("c", [])] };
   assert.equal(groupProjects(scan).length, 2);
   const plans = planSync(scan);
-  assert.deepEqual(plans.map((device) => device.plan.map((step) => step.action)), [["update"], ["update"], []]);
-  assert.deepEqual(plans.map((device) => device.skipped.length), [1, 1, 2]);
-  assert.ok(plans.every((device) => device.skipped.every((result) => result.status === "failed" && /clone path conflict/.test(result.detail))));
-  assert.equal(new Set(plans[2].skipped.map((result) => result.projectId)).size, 2);
+  assert.deepEqual(plans.map((device) => device.plan.map((step) => [step.action, step.rel])), [
+    [["update", "same"], ["clone", "same-2"]],
+    [["update", "same"], ["clone", "same-2"]],
+    [["clone", "same"], ["clone", "same-2"]],
+  ]);
+  assert.deepEqual(plans.map((device) => device.skipped.length), [0, 0, 0]);
+  assert.match(plans[2].plan[1].note, /cloned as same-2/);
 });
 
 test("unpublished and unsupported origins at the same path stay device-local and never exchange env files", () => {
@@ -391,7 +395,9 @@ test("project ID options isolate unrelated projects sharing a folder name", () =
   const scan = { devices: [deviceMetadata("a", [first]), deviceMetadata("b", [second])] };
   const options = normalizeOptions({ repos: { [projectIdFor("a", first)]: { enabled: false } } });
   const plans = planSync(scan, options);
-  assert.equal(plans[0].plan.length, 0);
+  assert.equal(plans[0].plan.length, 1);
+  assert.equal(plans[0].plan[0].rel, "same-2");
+  assert.equal(plans[0].plan[0].projectId, projectIdFor("b", second));
   assert.ok(plans[0].skipped.some((result) => result.projectId === projectIdFor("a", first) && result.status === "skipped"));
   assert.equal(plans[1].plan.length, 1);
   assert.equal(plans[1].plan[0].projectId, projectIdFor("b", second));
@@ -470,6 +476,25 @@ test("saved path exclusions migrate against newly available repos without crossi
   assert.equal(identityOnly.repos[secondId], undefined);
 });
 
+test("suffixed clones report their adjusted folder in results", async () => {
+  const scan = { root: "~/Projects", devices: [
+    { id: "a", name: "a", host: "", error: null, repos: [{ rel: "titan", origin: "https://example.invalid/x.git", envs: [] }] },
+    { id: "b", name: "b", host: "", error: null, repos: [] },
+    { id: "c", name: "c", host: "", error: null, repos: [{ rel: "titan", origin: "https://example.invalid/y.git", envs: [] }] },
+  ] };
+  const result = await syncProjects({ root: "~/Projects" }, {
+    scan: async () => scan,
+    run: async (_host, script) => {
+      const rels = [...script.matchAll(/pz_clone \S+ '([^']+)'/g)].map((match) => match[1]);
+      return { ok: true, stdout: rels.map((rel) => `PZZA_R\t${rel}\tcloned\tmain`).join("\n"), stderr: "" };
+    },
+    copy: async () => { throw new Error("no env copies expected"); },
+  });
+  const device = result.devices.find((d) => d.id === "b");
+  assert.deepEqual(device.results.map((r) => [r.rel, r.status]), [["titan", "cloned"], ["titan-2", "cloned"]]);
+  assert.match(device.results[1].detail, /cloned as titan-2/);
+});
+
 test("sync refuses an origin changed after planning without touching the worktree", async (t) => {
   const { projects, origin, plan } = await fixture(t, 1);
   const repo = path.join(projects, plan[0].rel);
@@ -477,10 +502,89 @@ test("sync refuses an origin changed after planning without touching the worktre
   await git(repo, "remote", "set-url", "origin", path.join(origin, "changed"));
   const { stdout } = await run("sh", ["-c", syncScript(rootExpr(projects), plan, normalizeOptions())]);
   const rows = results(stdout);
-  assert.equal(rows[0][2], "failed");
+  assert.equal(rows[0][2], "skipped");
   assert.match(rows[0][3], /origin changed since scan/);
   assert.equal(await readFile(path.join(repo, "tracked.txt"), "utf8"), "keep this edit\n");
   assert.equal((await git(repo, "stash", "list")).stdout, "");
+});
+
+test("dead origins skip before stashing so local work is never touched", async (t) => {
+  const { projects, plan } = await fixture(t, 1);
+  const repo = path.join(projects, plan[0].rel);
+  await writeFile(path.join(repo, "tracked.txt"), "precious local edit\n");
+  await writeFile(path.join(repo, "untracked.txt"), "untracked work\n");
+  const dead = { ...plan[0], origin: "https://localhost:1/dead.git" };
+  await git(repo, "remote", "set-url", "origin", dead.origin);
+  const { stdout } = await run("sh", ["-c", syncScript(rootExpr(projects), [dead], normalizeOptions({ stashDirty: true }))]);
+  const rows = results(stdout);
+  assert.equal(rows[0][2], "skipped");
+  assert.match(rows[0][3], /check origin/);
+  assert.equal(await readFile(path.join(repo, "tracked.txt"), "utf8"), "precious local edit\n");
+  assert.equal(await readFile(path.join(repo, "untracked.txt"), "utf8"), "untracked work\n");
+  assert.equal((await git(repo, "stash", "list")).stdout, "");
+  assert.equal((await git(repo, "for-each-ref", "refs/pzza-sync")).stdout, "");
+});
+
+test("unfinished merge, cherry-pick and rebase states skip without stashing", async (t) => {
+  const { projects, plan } = await fixture(t, 3);
+  const repos = plan.map((step) => path.join(projects, step.rel));
+  for (const repo of repos) await writeFile(path.join(repo, "tracked.txt"), "local edit\n");
+  const gitdir = (await git(repos[0], "rev-parse", "--absolute-git-dir")).stdout.trim();
+  await writeFile(path.join(gitdir, "MERGE_HEAD"), `${"0".repeat(40)}\n`);
+  await writeFile(path.join(gitdir, "CHERRY_PICK_HEAD"), `${"0".repeat(40)}\n`);
+  const secondDir = (await git(repos[1], "rev-parse", "--absolute-git-dir")).stdout.trim();
+  await mkdir(path.join(secondDir, "rebase-apply"));
+  const thirdDir = (await git(repos[2], "rev-parse", "--absolute-git-dir")).stdout.trim();
+  await writeFile(path.join(thirdDir, "REVERT_HEAD"), `${"0".repeat(40)}\n`);
+  const { stdout } = await run("sh", ["-c", syncScript(rootExpr(projects), plan, normalizeOptions())]);
+  const rows = results(stdout);
+  assert.equal(rows.length, 3);
+  for (const row of rows) {
+    assert.equal(row[2], "skipped");
+    assert.match(row[3], /unfinished merge or rebase/);
+  }
+  for (const repo of repos) {
+    assert.equal(await readFile(path.join(repo, "tracked.txt"), "utf8"), "local edit\n");
+    assert.equal((await git(repo, "stash", "list")).stdout, "");
+  }
+});
+
+test("a checkout blocked by racing files retries and then aligns", async (t) => {
+  const { root, origin, projects, plan } = await fixture(t, 1);
+  const repo = path.join(projects, plan[0].rel);
+  await writeFile(path.join(origin, "tracked.txt"), "updated\n");
+  await git(origin, "commit", "-am", "Update fixture");
+  await writeFile(path.join(repo, "tracked.txt"), "local edit\n");
+  const bin = path.join(root, "bin");
+  const marker = path.join(root, "checkout-failed-once");
+  const realGit = (await run("sh", ["-c", "command -v git"])).stdout.trim();
+  await mkdir(bin);
+  await writeFile(path.join(bin, "git"), `#!/bin/sh
+if [ "$3" = checkout ] && [ ! -f "$PZZA_SHIM_MARKER" ]; then touch "$PZZA_SHIM_MARKER"; echo "error: Your local changes to the following files would be overwritten by checkout" >&2; exit 1; fi
+exec "$PZZA_TEST_GIT" "$@"
+`, { mode: 0o700 });
+  const { stdout } = await run("sh", ["-c", syncScript(rootExpr(projects), plan, normalizeOptions())], {
+    env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, PZZA_SHIM_MARKER: marker, PZZA_TEST_GIT: realGit },
+  });
+  const rows = results(stdout);
+  assert.equal(rows[0][2], "stashed");
+  assert.match(rows[0][3], /aligned/);
+  assert.equal(await readFile(marker, "utf8"), "");
+  assert.equal(await readFile(path.join(repo, "tracked.txt"), "utf8"), "updated\n");
+  assert.match((await git(repo, "stash", "list")).stdout, /pzza-sync/);
+  assert.match((await git(repo, "stash", "show", "-p", "stash@{0}")).stdout, /local edit/);
+  assert.notEqual((await git(repo, "for-each-ref", "refs/pzza-sync/stashes")).stdout, "");
+});
+
+test("cloning a dead origin skips without creating anything", async (t) => {
+  const { projects } = await fixture(t, 0);
+  const { stdout } = await run("sh", ["-c", syncScript(rootExpr(projects), [{ rel: "dead", action: "clone", origin: "https://localhost:1/dead.git" }], normalizeOptions())]);
+  const rows = results(stdout);
+  assert.equal(rows[0][2], "skipped");
+  assert.match(rows[0][3], /nothing cloned/);
+  let missing = false;
+  try { await readFile(path.join(projects, "dead", ".git", "HEAD"), "utf8"); } catch { missing = true; }
+  assert.equal(missing, true);
 });
 
 test("sync stops before alignment when another edit arrives during fetch", async (t) => {
@@ -502,10 +606,14 @@ exec "$PZZA_TEST_GIT" "$@"
   const { stdout } = await run("sh", ["-c", syncScript(rootExpr(projects), plan, normalizeOptions())], {
     env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, PZZA_EDIT_PATH: edited, PZZA_TEST_GIT: realGit },
   });
-  assert.equal(results(stdout)[0][2], "failed");
+  assert.equal(results(stdout)[0][2], "skipped");
   assert.match(results(stdout)[0][3], /working files changed during sync/);
+  assert.match(results(stdout)[0][3], /stashed 1 change\(s\) in refs\/pzza-sync\/stashes\//);
   assert.equal((await git(repo, "rev-parse", "HEAD")).stdout.trim(), before);
-  assert.equal(await readFile(edited, "utf8"), "concurrent edit\n");
+  // The racing file was preserved in a durable stash on every attempt, never lost.
+  // Untracked content lives in the stash's third parent, not in `stash show`.
+  assert.match((await git(repo, "stash", "list")).stdout, /pzza-sync/);
+  assert.equal((await git(repo, "ls-tree", "-r", "--name-only", "stash@{0}^3")).stdout.trim(), "arrived-during-sync.txt");
 });
 
 test("per-repository Sync lock leaves a live owner checkout alone", async (t) => {
@@ -671,7 +779,9 @@ test("transferred GitHub origins reconcile only with immutable identity proof an
   ]) {
     const unverified = await reconcileGithubOrigins(makeScan(), resolver);
     assert.equal(groupProjects(unverified).length, 2);
-    assert.ok(planSync(unverified).every((device) => device.skipped.length === 1));
+    const unverifiedPlans = planSync(unverified);
+    assert.ok(unverifiedPlans.every((device) => device.plan.length === 2 && device.skipped.length === 0));
+    assert.ok(unverifiedPlans.every((device) => device.plan.some((step) => step.rel === "same-2" && step.action === "clone")));
   }
 });
 
@@ -743,7 +853,7 @@ test("sync never overwrites ignored local files during integration", async t => 
   await git(origin, "add", "local.config");
   await git(origin, "commit", "-m", "Add configuration fixture");
   const { stdout } = await run("sh", ["-c", syncScript(rootExpr(projects), plan, normalizeOptions())]);
-  assert.equal(results(stdout)[0][2], "failed");
+  assert.equal(results(stdout)[0][2], "skipped");
   assert.equal(await readFile(path.join(repo, "local.config"), "utf8"), "local settings\n");
 });
 
@@ -824,7 +934,7 @@ test("live checks handle selected development/main branches without origin HEAD"
   await git(origin, "checkout", "-b", "next");
   await git(origin, "branch", "-D", "main");
   const neither = await run("sh", ["-c", syncScript(rootExpr(projects), plan, normalizeOptions())]);
-  assert.equal(results(neither.stdout)[0][2], "failed");
+  assert.equal(results(neither.stdout)[0][2], "skipped");
   assert.match(results(neither.stdout)[0][3], /neither development nor main/);
   assert.equal((await git(repo, "branch", "--show-current")).stdout.trim(), "main");
 });
