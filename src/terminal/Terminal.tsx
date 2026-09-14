@@ -430,7 +430,7 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
         const label = sessionDisplayName(tile ?? { id: tileId, name, session: name, host, window: win }, state.tileTitles)
           .replace(/[\x00-\x1f\x7f-\x9f]/g, "").slice(0, 100);
         const device = (tile?.host ?? host ?? "This device").replace(/[\x00-\x1f\x7f-\x9f]/g, "").slice(0, 100) || "This device";
-        notify({ ...notification, body: `${label || "Terminal"} (${device})\n\n${notification.body}` });
+        notify({ ...notification, source: `${label || "Terminal"} (${device})`, body: notification.body });
       }, {
         attachment: true,
         isFocused: () => document.hasFocus() && container.contains(document.activeElement),
