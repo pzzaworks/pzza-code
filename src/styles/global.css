@@ -3927,6 +3927,7 @@ button {
 }
 .ns-bar:focus-within {
   border-color: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 28%, transparent);
 }
 .ns-input {
   flex: 1;
@@ -3935,7 +3936,8 @@ button {
   color: var(--text);
   font-size: 13.5px;
 }
-.ns-input:focus {
+.ns-input:focus,
+.ns-bar .ns-input:focus-visible {
   outline: none;
 }
 .ns-divider {
