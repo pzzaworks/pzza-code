@@ -43,6 +43,23 @@ test("startup reuses the conversation without closing it and deduplicates matchi
   assert.equal((await retry("", "claude")).agent, "claude");
 });
 
+test("evicting drops closed conversations so a profile change opens fresh", async () => {
+  const calls = [];
+  const prepare = createQuickChatPreparation(async (host, agent) => {
+    calls.push([host, agent]);
+    return { session: "pzza-quick-chat", host, agent, launcher: agent, identity: `$1:100:${200 + calls.length}` };
+  });
+  const first = await prepare("", "claude");
+  prepare.evict("", "claude");
+  const second = await prepare("", "claude");
+  assert.notEqual(second.identity, first.identity);
+  assert.deepEqual(calls, [["", "claude"], ["", "claude"]]);
+  await prepare("", "codex");
+  prepare.evict();
+  await prepare("", "claude");
+  assert.deepEqual(calls, [["", "claude"], ["", "claude"], ["", "codex"], ["", "claude"]]);
+});
+
 test("failed verification backs off with bounded jitter, never attaches, and pauses after six attempts", async () => {
   const time = clock();
   const statuses = [];

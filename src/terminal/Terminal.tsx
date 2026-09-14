@@ -25,7 +25,7 @@ import { notify } from "../state/notifications";
 import { createTerminalSignals } from "./notificationSignals";
 import { createTerminalAppController, registerTerminalAppControl, validateTerminalPaste } from "../appControlTerminal";
 import { IS_MAC } from "../shortcuts";
-import { ChevronDown, ChevronUp, X } from "lucide-react";
+import { ChevronDown, ChevronUp, ClipboardPaste, Copy, Eraser, TextSelect, X } from "lucide-react";
 
 // Find-all highlight colors (#RRGGBB as the addon requires). Amber reads on
 // both dark and light terminal themes.
@@ -203,12 +203,12 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
         });
       };
       const unregisterMenu = registerContextMenu(container, () => [
-        { label: "Copy text", disabled: !term.hasSelection(), run: async () => {
+        { label: "Copy text", icon: Copy, disabled: !term.hasSelection(), run: async () => {
           if (!await copyToClipboard(term.getSelection())) throw new Error("Clipboard access failed. Try the keyboard copy shortcut.");
         } },
-        { label: "Paste text or image", run: () => clipboardPaste(term.textarea ?? container) },
-        { label: "Select all", run: () => { term.selectAll(); copySelection(); term.focus(); } },
-        { label: "Clear selection", disabled: !term.hasSelection(), run: () => term.clearSelection() },
+        { label: "Paste text or image", icon: ClipboardPaste, run: () => clipboardPaste(term.textarea ?? container) },
+        { label: "Select all", icon: TextSelect, run: () => { term.selectAll(); copySelection(); term.focus(); } },
+        { label: "Clear selection", icon: Eraser, disabled: !term.hasSelection(), run: () => term.clearSelection() },
       ]);
       let pointerSelecting = false;
       let selectionChanged = false;

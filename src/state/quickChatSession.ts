@@ -10,11 +10,19 @@ export interface ChatSession {
 
 // Startup reuses the device's managed conversation. Hiding, mounting twice, or
 // losing a transport must never turn into a close/open cycle.
+export interface QuickChatPreparation {
+  (host: string, agent: ChatSession["agent"]): Promise<ChatSession>;
+  // Drop cached sessions. Called when the saved profile changes: the outgoing
+  // conversation is closed, so a cached promise for it (or for a previously
+  // closed incoming profile) must never be reused for the next launch.
+  evict(host?: string, agent?: ChatSession["agent"]): void;
+}
+
 export function createQuickChatPreparation(
   open: (host: string, agent: ChatSession["agent"]) => Promise<ChatSession>,
-): (host: string, agent: ChatSession["agent"]) => Promise<ChatSession> {
+): QuickChatPreparation {
   const prepared = new Map<string, Promise<ChatSession>>();
-  return (host, agent) => {
+  const prepare = ((host: string, agent: ChatSession["agent"]) => {
     const key = JSON.stringify([host, agent]);
     let request = prepared.get(key);
     if (!request) {
@@ -25,7 +33,22 @@ export function createQuickChatPreparation(
       prepared.set(key, request);
     }
     return request;
+  }) as QuickChatPreparation;
+  prepare.evict = (host?: string, agent?: ChatSession["agent"]) => {
+    if (host === undefined) {
+      prepared.clear();
+      return;
+    }
+    for (const key of Array.from(prepared.keys())) {
+      try {
+        const [entryHost, entryAgent] = JSON.parse(key) as [string, string];
+        if (entryHost === host && (agent === undefined || entryAgent === agent)) prepared.delete(key);
+      } catch {
+        prepared.delete(key);
+      }
+    }
   };
+  return prepare;
 }
 
 export interface AttachmentStatus {
