@@ -4,7 +4,7 @@ import { MessageSquare, RotateCw, X } from "lucide-react";
 import { create } from "zustand";
 import { deviceHost, THIS_MAC } from "../devices";
 import { attachCommand } from "../connection";
-import { openQuickChat } from "../serverApi";
+import { openQuickChat, closeQuickChat } from "../serverApi";
 import { createQuickChatPreparation, type AttachmentStatus } from "../state/quickChatSession";
 import { useStore } from "../state/store";
 import { Terminal } from "../terminal/Terminal";
@@ -37,13 +37,30 @@ export const useQuickChatPreferences = create<QuickChatPreferences>((set, get) =
   defaults: readDefaults(),
   notice: "",
   update: change => {
-    const defaults = { ...get().defaults, ...change };
+    const previous = get().defaults;
+    const defaults = { ...previous, ...change };
     let notice = "";
     try { localStorage.setItem(KEY, JSON.stringify(defaults)); }
     catch { notice = "Your choice applies now, but could not be saved on this device."; }
-    const previous = get().defaults;
+    const previousDeviceId = previous.deviceId;
+    const nextDefaults = defaults;
     set({ defaults, notice });
-    if (previous.deviceId !== defaults.deviceId || previous.agent !== defaults.agent) window.dispatchEvent(new Event("pzza:quick-chat-cancel"));
+    if (previous.deviceId === defaults.deviceId && previous.agent === defaults.agent) return;
+    // Stop attachment retries on the outgoing conversation, then close its
+    // fixed-name session before dropping it: otherwise the next launch would
+    // reattach to the previous agent and the new profile would never open.
+    // Closing is idempotent, and the chat is only cleared after it settles so
+    // the relaunch cannot reuse the session being replaced.
+    window.dispatchEvent(new Event("pzza:quick-chat-cancel"));
+    void (async () => {
+      const chat = useQuickChatView.getState().chat;
+      const devices = useStore.getState().devices;
+      const device = devices.find(item => item.id === previousDeviceId) ?? devices.find(item => item.id === nextDefaults.deviceId);
+      const host = chat?.host ?? (device ? deviceHost(device) : "");
+      try { await closeQuickChat(host); }
+      catch { /* A foreign or unreachable session stays put; opening reports it. */ }
+      useQuickChatView.setState({ chat: null, error: "", attachment: null });
+    })();
   },
 }));
 
@@ -65,7 +82,7 @@ export function QuickChatSettings() {
       {notice && <p className="set-note" role="status">{notice}</p>}
     </section>
     <section className="settings-section">
-      <div className="settings-row-copy"><span>Keep your conversation</span><small>Hiding the dropdown keeps your chat running. Reopening the app reuses its existing conversation. Device and agent choices apply on the next launch; changing them stops current attachment retries.</small></div>
+        <div className="settings-row-copy"><span>Keep your conversation</span><small>Hiding the dropdown keeps your chat running. Reopening the app reuses its existing conversation. Changing the device or agent closes the current conversation and opens the new profile.</small></div>
     </section>
   </div>;
 }
