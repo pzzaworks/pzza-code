@@ -7,6 +7,14 @@ const { code } = await transform(source, { loader: "ts", format: "esm" });
 const { accountSpendKey, loadDeviceSpend, mergeDeviceUsage, loadDeviceUsage } = await import(`data:text/javascript;base64,${Buffer.from(code).toString("base64")}`);
 const account = (provider, email, good = true) => ({ provider, label: provider, email, usage: good ? { scoped: [] } : null, error: good ? null : "Unavailable" });
 
+test("free-plan cards are hidden no matter which device reported them", () => {
+  const free = { ...account("codex", "free@example.test"), plan: "Free" };
+  const paid = account("codex", "paid@example.test");
+  assert.deepEqual(mergeDeviceUsage([], [free, paid]), [paid]);
+  assert.deepEqual(mergeDeviceUsage([free], [paid]), [paid]);
+  assert.deepEqual(mergeDeviceUsage([{ ...free, plan: "free" }], []), []);
+});
+
 test("healthy local providers win while remote devices fill missing providers and deduplicate accounts", () => {
   const local = [account("claude", "local@example.test"), account("codex", "other@example.test", false)];
   const remote = [account("claude", "remote@example.test"), account("codex", "other@example.test"), account("codex", "other@example.test")];

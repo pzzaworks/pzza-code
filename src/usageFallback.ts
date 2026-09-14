@@ -32,18 +32,23 @@ export async function loadDeviceSpend(
 
 const providers = ["claude", "codex", "opencode"] as const;
 const usable = (account: AccountUsage) => Boolean(account.usage && !account.error && !account.usage.stale);
+// Free-plan cards stay out of the panel no matter which device reported them:
+// older agents still send them, so the panel filters as well as the server.
+const shown = (account: AccountUsage) => (account.plan ?? "").trim().toLowerCase() !== "free";
 
 export function mergeDeviceUsage(local: AccountUsage[], remote: AccountUsage[]): AccountUsage[] {
-  const result = local.map(account => {
+  const localAccounts = local.filter(shown);
+  const remoteAccounts = remote.filter(shown);
+  const result = localAccounts.map(account => {
     if (usable(account)) return account;
-    return remote.find(candidate => candidate.provider === account.provider && usable(candidate) &&
+    return remoteAccounts.find(candidate => candidate.provider === account.provider && usable(candidate) &&
       (account.email ? candidate.email?.toLowerCase() === account.email.toLowerCase() : candidate.label === account.label)) ?? account;
   });
   for (const provider of providers) {
-    const missing = !local.some(account => account.provider === provider && usable(account));
+    const missing = !localAccounts.some(account => account.provider === provider && usable(account));
     if (!missing) continue;
     const seen = new Set<string>();
-    const replacements = remote.filter(account => {
+    const replacements = remoteAccounts.filter(account => {
       if (account.provider !== provider || !usable(account)) return false;
       const key = account.email?.toLowerCase() || account.label;
       if (seen.has(key)) return false;
