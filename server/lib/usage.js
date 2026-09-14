@@ -119,6 +119,10 @@ async function fetchCodexUsage(creds) {
 
 const OPENCODE_SIGNIN_HINT = "reconnect OpenCode Go with /connect in opencode";
 
+// Free-plan accounts stay out of the usage panel entirely: their quota rows
+// are noise next to paid usage, matching the hidden treatment above.
+const isFreePlan = (plan) => String(plan ?? "").trim().toLowerCase() === "free";
+
 // Usage for one Claude account. Claude Code refreshes the OAuth token itself
 // whenever it runs and the agent never refreshes on its behalf (a refresh
 // rotates the token and could sign the CLI out), so an expired or rejected
@@ -128,6 +132,7 @@ async function claudeAccountUsage(acc, fresh) {
   // No usable creds on this device (e.g. a devbox-only account seen from the
   // Mac): hide it rather than showing a "not signed in" row.
   if (!oauth?.accessToken) return null;
+  if (isFreePlan(readClaudeIdentity(acc.dir).plan)) return null;
   if (oauth.expiresAt && Number(oauth.expiresAt) <= Date.now()) {
     return null;
   }
@@ -229,6 +234,7 @@ async function codexAccountUsage(acc, fresh) {
     return null;
   }
   if (!creds?.accessToken) return null;
+  if (isFreePlan(creds.plan)) return null;
   const entry = { provider: "codex", label: acc.label, email: creds.email, plan: creds.plan, usage: null, error: null };
   try {
     return { ...entry, usage: await limitedUsage(credentialKey("codex", creds.accessToken, creds.accountId), () => fetchCodexUsage(creds), { fresh }) };
