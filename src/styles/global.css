@@ -4850,7 +4850,7 @@ button {
 
 .ft-drop-target { background: color-mix(in srgb, var(--accent) 20%, var(--bg)); outline: 1px solid var(--accent); outline-offset: -1px; }
 .ft-root { border-bottom: 1px solid var(--border); font-weight: 600; }
-.ft-context-menu { position: fixed; right: auto; width: 180px; padding: 12px 14px 14px; }
+.ft-context-menu { position: fixed; right: auto; width: 180px; }
 .ft-operation-path { overflow-wrap: anywhere; font-size: 12px; }
 
 .port-identity { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
@@ -5000,8 +5000,8 @@ html[data-transparency="on"] .tile-code { background: transparent; }
 .image-copy-actions { flex-shrink: 0; max-width: 100%; flex-wrap: wrap; display: flex; align-items: center; gap: 10px; padding: 8px; background: var(--opaque-bg); color: var(--text); border: 1px solid var(--border); border-radius: 8px; font-size: 12px; }
 
 .app-context-backdrop { position: fixed; inset: 0; z-index: 6000; }
-.app-context-menu { position: fixed; width: 220px; max-width: calc(100vw - 16px); max-height: calc(100vh - 16px); overflow: auto; padding: 12px 14px 14px; outline: none; }
-.app-context-menu .menu-item { width: 100%; border-radius: 5px; }
+.app-context-menu { position: fixed; width: 220px; max-width: calc(100vw - 16px); max-height: calc(100vh - 16px); overflow: auto; padding: 5px; outline: none; }
+.app-context-menu .menu-item { width: 100%; }
 .app-context-menu .menu-item:focus-visible { outline: 1px solid var(--muted); background: var(--surface-alt); }
 .context-error { padding: 8px; color: var(--danger-foreground, var(--danger)); font-size: 12px; overflow-wrap: anywhere; }
 
