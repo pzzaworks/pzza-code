@@ -420,6 +420,24 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
       let disposed = false;
       let tauriId: number | null = null;
       let ws: WsPtyHandle | null = null;
+      // A fullscreen transition (native macOS fullscreen or a maximized tile)
+      // resizes through every intermediate size on the way to the final one.
+      // Coalesce those bursts into one fit per frame: each fit reflows the
+      // whole scrollback buffer, so running it more than once per frame is
+      // pure CPU burn across every mounted tile.
+      let fitRaf = 0;
+      const scheduleFit = () => {
+        if (fitRaf || disposed) return;
+        fitRaf = requestAnimationFrame(() => {
+          fitRaf = 0;
+          if (!disposed) safeFit();
+        });
+      };
+      // The terminal itself resizes live, but the backend notice is debounced:
+      // every intermediate SIGWINCH makes tmux answer with a full redraw whose
+      // output we then have to parse, and that storm is the sustained CPU
+      // spike. Debounced, tmux redraws once, at the size we settle on.
+      let ptyResizeTimer: ReturnType<typeof setTimeout> | undefined;
       let lastWrite = Promise.resolve();
       let previewDispose: (() => void) | null = null;
       let gotData = false;
@@ -523,7 +541,7 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
         updateRendererVisibility();
         if (tileVisible) {
           output.flush();
-          safeFit();
+          scheduleFit();
         }
       });
       visibilityObserver.observe(container);
@@ -613,10 +631,15 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
           if (!disposed && epoch === connectionEpoch) transportFailed(error instanceof Error ? error.message : "Terminal input failed.");
         });
       });
-      const transportResize = term.onResize(({ cols, rows }) => {
+      const transportResize = term.onResize(() => {
         if (exited || disposed) return;
-        if (tauriId !== null) void resizePty(tauriId, cols, rows).catch(() => {});
-        else ws?.resize(cols, rows);
+        clearTimeout(ptyResizeTimer);
+        ptyResizeTimer = setTimeout(() => {
+          if (exited || disposed) return;
+          // Read the live size at fire time so only the settled size is sent.
+          if (tauriId !== null) void resizePty(tauriId, term.cols, term.rows).catch(() => {});
+          else ws?.resize(term.cols, term.rows);
+        }, 150);
       });
       if (managedChat) {
         recovery = createAttachmentRecovery({
@@ -753,7 +776,7 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
       };
       container.addEventListener("wheel", onWheel, { capture: true });
 
-      const resizeObserver = new ResizeObserver(safeFit);
+      const resizeObserver = new ResizeObserver(scheduleFit);
       resizeObserver.observe(container);
 
       return () => {
@@ -795,8 +818,10 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
         completionListener.dispose();
         pasteController.abort();
         cancelAnimationFrame(raf);
+        cancelAnimationFrame(fitRaf);
         clearTimeout(t1);
         clearTimeout(t2);
+        clearTimeout(ptyResizeTimer);
         clearTimeout(idleTimer);
         output.dispose();
         visibilityObserver.disconnect();
