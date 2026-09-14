@@ -178,6 +178,38 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
       !hiddenTiles.includes(t.id),
   );
 
+  // Automatic widths for tiles without a saved layout: share the row evenly,
+  // except the last one which stretches across whatever columns are left in
+  // its row. Simulates row wrapping (a tile wider than the remaining space
+  // starts a fresh row) so the fill matches the browser's placement.
+  const autoSpanById = (() => {
+    const spans = new Map<string, { c: number; r: number }>();
+    if (columns < 1) return spans;
+    const even = wsTiles.length <= 1 ? columns : Math.max(1, Math.floor(columns / wsTiles.length));
+    let cursor = 0;
+    const place = (width: number) => {
+      const w = Math.max(1, Math.min(width, columns));
+      const pos = ((cursor % columns) + columns) % columns;
+      if (pos + w > columns) cursor += columns - pos;
+      cursor += w;
+    };
+    wsTiles.forEach((entry, index) => {
+      const saved = tileSpan[entry.id];
+      if (saved) {
+        place(saved.c);
+        return;
+      }
+      if (index < wsTiles.length - 1) {
+        spans.set(entry.id, { c: even, r: 1 });
+        place(even);
+        return;
+      }
+      const pos = ((cursor % columns) + columns) % columns;
+      spans.set(entry.id, { c: pos === 0 ? columns : columns - pos, r: 1 });
+    });
+    return spans;
+  })();
+
   const pointerIntent = useRef<{ id: string; pointer: number; x: number; y: number; started: number; cancelled: boolean } | null>(null);
   const scrollToTile = useCallback((id: string) => {
     if (fullId) return;
@@ -362,10 +394,14 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
       : undefined;
     // Tiles without a saved layout share the row evenly and a lone tile
     // takes the full width, so the grid stays fluid without manual sizing.
-    // Explicit choices always win over the automatic share.
+    // Explicit choices always win over the automatic share. The last visible
+    // tile without a saved layout stretches across the leftover columns so
+    // the final row never leaves an empty gap (e.g. 3 sessions in 2 columns);
+    // rows already share the height through the grid, so width is all it takes.
     const explicit = tileSpan[t.id];
     const autoC = wsTiles.length <= 1 ? columns : Math.max(1, Math.floor(columns / wsTiles.length));
-    const span = explicit ?? { c: autoC, r: 1 };
+    const autoSpan = autoSpanById.get(t.id);
+    const span = explicit ?? autoSpan ?? { c: autoC, r: 1 };
     const spanStyle = effFull
       ? undefined
       : {

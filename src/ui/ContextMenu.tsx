@@ -1,10 +1,21 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import {
+  ClipboardPaste,
+  Copy,
+  Image as ImageIcon,
+  Redo2,
+  Scissors,
+  TextSelect,
+  Undo2,
+  type LucideIcon,
+} from "lucide-react";
 import { copyImageToClipboard } from "../imageClipboard";
 import { AsyncButton } from "./AsyncButton";
 
 export interface ContextAction {
   label: string;
+  icon?: LucideIcon;
   disabled?: boolean;
   run(): void | Promise<void>;
 }
@@ -68,20 +79,20 @@ export function ContextMenu() {
         const writeable = editable && (!(editable instanceof HTMLInputElement || editable instanceof HTMLTextAreaElement) || (!editable.readOnly && !editable.disabled));
         const command = (name: string) => { editable?.focus(); if (!document.execCommand(name)) throw new Error("This action is unavailable here. Use its keyboard shortcut."); };
         actions = [
-          { label: "Copy text", disabled: !selected, run: async () => { await navigator.clipboard.writeText(selected); } },
+          { label: "Copy text", icon: Copy, disabled: !selected, run: async () => { await navigator.clipboard.writeText(selected); } },
           ...(writeable ? [
-            { label: "Cut", disabled: !selected, run: () => command("cut") },
-            { label: "Paste", run: async () => {
+            { label: "Cut", icon: Scissors, disabled: !selected, run: () => command("cut") },
+            { label: "Paste", icon: ClipboardPaste, run: async () => {
               const text = await navigator.clipboard.readText();
               if (!editable.isConnected) throw new Error("The paste target is no longer open.");
               editable.focus();
               if (!document.execCommand("insertText", false, text)) throw new Error("Use the keyboard paste shortcut in this field.");
             } },
-            { label: "Undo", run: () => command("undo") },
-            { label: "Redo", run: () => command("redo") },
-            { label: "Select all", run: () => { if (editable instanceof HTMLInputElement || editable instanceof HTMLTextAreaElement) editable.select(); else command("selectAll"); } },
+            { label: "Undo", icon: Undo2, run: () => command("undo") },
+            { label: "Redo", icon: Redo2, run: () => command("redo") },
+            { label: "Select all", icon: TextSelect, run: () => { if (editable instanceof HTMLInputElement || editable instanceof HTMLTextAreaElement) editable.select(); else command("selectAll"); } },
           ] : []),
-          ...(target instanceof HTMLImageElement ? [{ label: "Copy image", run: () => copyImageToClipboard(target) }] : []),
+          ...(target instanceof HTMLImageElement ? [{ label: "Copy image", icon: ImageIcon, run: () => copyImageToClipboard(target) }] : []),
         ];
       }
       menuEpoch.current++; setError(null); setBusy(false); setPendingAction(null);
@@ -124,7 +135,7 @@ export function ContextMenu() {
           items[next]?.focus();
         }
       }}>
-      {menu.actions.map((action) => <AsyncButton key={action.label} className="menu-item" role="menuitem" loading={busy && pendingAction === action.label} disabled={busy || action.disabled}
+      {menu.actions.map((action) => <AsyncButton key={action.label} className="menu-item" role="menuitem" icon={action.icon} iconSize={16} loading={busy && pendingAction === action.label} disabled={busy || action.disabled}
         onClick={() => {
           const epoch = menuEpoch.current;
           setBusy(true); setPendingAction(action.label); setError(null);

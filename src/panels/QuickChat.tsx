@@ -59,6 +59,10 @@ export const useQuickChatPreferences = create<QuickChatPreferences>((set, get) =
       const host = chat?.host ?? (device ? deviceHost(device) : "");
       try { await closeQuickChat(host); }
       catch { /* A foreign or unreachable session stays put; opening reports it. */ }
+      // The closed conversation must not be reused: drop every cached session
+      // so the relaunch below opens the newly selected device/agent instead
+      // of reattaching to the previous session.
+      prepareChat.evict();
       useQuickChatView.setState({ chat: null, error: "", attachment: null });
     })();
   },
@@ -150,7 +154,7 @@ export function QuickChat({ onOpenSettings }: { onOpenSettings?: () => void }) {
       </div>}
       {message && <p className="quick-chat-message" role="status">{message}</p>}
       {chat && command && <div className="quick-chat-terminal">
-        <Terminal key={`${chat.host}::${chat.session}`} tileId={`quick-chat:${chat.host}`} name={chat.session} host={chat.host}
+        <Terminal key={`${chat.host}::${chat.session}::${chat.agent}::${chat.identity}`} tileId={`quick-chat:${chat.host}`} name={chat.session} host={chat.host}
           cmd={command.cmd} args={command.args} active={open} managedChat={chat} retryToken={retryToken}
           onAttachment={value => useQuickChatView.setState({ attachment: value })} />
       </div>}
