@@ -12,13 +12,13 @@ import {
   FolderInput,
   Focus,
   LayoutGrid,
+  LayoutTemplate,
   Loader2,
   Maximize2,
   Minimize2,
   Mic,
   Plus,
   Rows2,
-  Sparkles,
   Square,
   StretchHorizontal,
   X,
@@ -784,7 +784,7 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
                 onMouseDown={(e) => e.stopPropagation()}
               >
                 {[
-                  { label: "Auto", Icon: Sparkles, c: 0, r: 0, auto: true },
+                  { label: "Auto", Icon: LayoutTemplate, c: 0, r: 0, auto: true },
                   { label: "Normal", Icon: Square, c: 1, r: 1, auto: false },
                   { label: "Wide (2 cols)", Icon: Columns2, c: 2, r: 1, auto: false },
                   { label: "Full width", Icon: StretchHorizontal, c: columns, r: 1, auto: false },
