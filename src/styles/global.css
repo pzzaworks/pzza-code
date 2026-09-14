@@ -4986,7 +4986,7 @@ html[data-transparency="on"] .tile-code { background: transparent; }
 .dictation-licenses pre { max-height: 180px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 10px; }
 
 /* Floating content must remain readable above translucent terminal surfaces. */
-:is(.menu, .cselect-menu, .modal, .pzza-tooltip) {
+:is(.menu, .cselect-menu, .modal, .pzza-tooltip, .topbar-tools.open) {
   --bg: var(--opaque-bg);
   --surface: var(--opaque-surface);
   --surface-alt: var(--opaque-surface-alt);
