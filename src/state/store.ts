@@ -80,6 +80,16 @@ function persist(key: string, value: unknown): void {
   }
 }
 
+// Remove one saved tile span, returning the original map untouched when the
+// id has no explicit layout (the common case: fresh tiles are auto).
+function dropTileSpan(spans: Record<string, { c: number; r: number }>, id: string): Record<string, { c: number; r: number }> {
+  if (!(id in spans)) return spans;
+  const tileSpan = { ...spans };
+  delete tileSpan[id];
+  persist(TILESPAN_KEY, tileSpan);
+  return tileSpan;
+}
+
 async function listSessions(conn: Connection): Promise<RemoteSession[]> {
   return HAS_TAURI ? listRemoteSessions(conn) : fetchSessions();
 }
@@ -514,7 +524,11 @@ export const useStore = create<ConsoleState>((set, get) => ({
       const tile: Session = host !== undefined ? { id, name, session: name, host, cwd } : { id, name, cwd };
       const tiles = [...state.tiles, tile];
       persist(TILES_KEY, tiles);
-      return { tiles, activeId: id, refreshNonce: state.refreshNonce + 1 };
+      // Fresh tiles always start on the automatic grid layout: drop any span
+      // saved by an earlier tile with the same id so an old explicit size
+      // never leaks into a newly created session.
+      const tileSpan = dropTileSpan(state.tileSpan, id);
+      return { tiles, tileSpan, activeId: id, refreshNonce: state.refreshNonce + 1 };
     }),
 
   openWindow: (w, displayName, host) =>
@@ -533,7 +547,9 @@ export const useStore = create<ConsoleState>((set, get) => ({
       };
       const tiles = [...state.tiles, tile];
       persist(TILES_KEY, tiles);
-      return { tiles, activeId: id, refreshNonce: state.refreshNonce + 1 };
+      // Fresh tiles always start on the automatic grid layout (see openSession).
+      const tileSpan = dropTileSpan(state.tileSpan, id);
+      return { tiles, tileSpan, activeId: id, refreshNonce: state.refreshNonce + 1 };
     }),
 
   closeTile: (id) =>
@@ -645,6 +661,32 @@ export const useStore = create<ConsoleState>((set, get) => ({
     if (changed) {
       persist(TILECODE_KEY, tileCode);
       useStore.setState({ tileCode });
+    }
+    localStorage.setItem(FLAG, "1");
+  } catch {
+    /* preview / private mode - defaults apply */
+  }
+})();
+
+// One-time cleanup: explicit tile sizes used to survive their tile, so a span
+// saved long ago could leak into a newly created session with the same id.
+// Fresh tiles always start auto now (see openSession/openWindow); drop spans
+// whose tile is no longer open, keep the ones still on the grid.
+(function migrateStaleTileSpans() {
+  const FLAG = "pzza.tileSpanStaleCleaned";
+  try {
+    if (localStorage.getItem(FLAG)) return;
+    const state = useStore.getState();
+    const open = new Set(state.tiles.map((tile) => tile.id));
+    const tileSpan: Record<string, { c: number; r: number }> = {};
+    let changed = false;
+    for (const [id, span] of Object.entries(state.tileSpan)) {
+      if (open.has(id)) tileSpan[id] = span;
+      else changed = true;
+    }
+    if (changed) {
+      persist(TILESPAN_KEY, tileSpan);
+      useStore.setState({ tileSpan });
     }
     localStorage.setItem(FLAG, "1");
   } catch {
