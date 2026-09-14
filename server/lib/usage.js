@@ -117,33 +117,38 @@ async function fetchCodexUsage(creds) {
   return { five_hour, seven_day, scoped };
 }
 
-const CLAUDE_SIGNIN_HINT = "run claude once in a terminal to refresh it";
 const OPENCODE_SIGNIN_HINT = "reconnect OpenCode Go with /connect in opencode";
 
 // Usage for one Claude account. Claude Code refreshes the OAuth token itself
 // whenever it runs and the agent never refreshes on its behalf (a refresh
 // rotates the token and could sign the CLI out), so an expired or rejected
-// token is reported as exactly that instead of a bare "usage 401".
+// token hides the card instead of showing an error row.
 async function claudeAccountUsage(acc, fresh) {
   const oauth = await readClaudeOAuth(acc.dir);
   // No usable creds on this device (e.g. a devbox-only account seen from the
   // Mac): hide it rather than showing a "not signed in" row.
   if (!oauth?.accessToken) return null;
-  const entry = { provider: "claude", label: acc.label, ...readClaudeIdentity(acc.dir), usage: null, error: null };
   if (oauth.expiresAt && Number(oauth.expiresAt) <= Date.now()) {
-    return { ...entry, error: `Session token expired - ${CLAUDE_SIGNIN_HINT}` };
+    return null;
   }
   try {
+    const entry = { provider: "claude", label: acc.label, ...readClaudeIdentity(acc.dir), usage: null, error: null };
     return { ...entry, usage: await limitedUsage(credentialKey("claude", oauth.accessToken), () => fetchClaudeUsage(oauth.accessToken), { fresh }) };
   } catch (e) {
-    if (!/\b401\b/.test(String(e.message))) throw e;
+    if (!/\b401\b/.test(String(e.message)) && e?.status !== 401 && e?.status !== 403) throw e;
     // The CLI may have rotated the token between our read and the call: re-read
     // once and retry with the new one before giving up.
     const again = await readClaudeOAuth(acc.dir);
     if (again?.accessToken && again.accessToken !== oauth.accessToken) {
-      return { ...entry, usage: await limitedUsage(credentialKey("claude", again.accessToken), () => fetchClaudeUsage(again.accessToken), { fresh }) };
+      try {
+        const entry = { provider: "claude", label: acc.label, ...readClaudeIdentity(acc.dir), usage: null, error: null };
+        return { ...entry, usage: await limitedUsage(credentialKey("claude", again.accessToken), () => fetchClaudeUsage(again.accessToken), { fresh }) };
+      } catch (retryErr) {
+        if (retryErr?.status === 401 || retryErr?.status === 403 || /\b401\b/.test(String(retryErr.message))) return null;
+        throw retryErr;
+      }
     }
-    return { ...entry, error: `Session token rejected - ${CLAUDE_SIGNIN_HINT}` };
+    return null;
   }
 }
 
@@ -211,6 +216,28 @@ async function opencodeAccountUsage(acc, fresh) {
   }
 }
 
+// Codex usage. A 401/403 from the usage endpoint means the token is expired
+// or the account has no usable Codex entitlement (e.g. no Pro plan) - either
+// way there is nothing useful to render, so hide the card instead of showing
+// a bare "usage 401" row (mirrors the no-creds behavior above).
+async function codexAccountUsage(acc, fresh) {
+  if (!fs.existsSync(path.join(acc.dir, "auth.json"))) return null;
+  let creds;
+  try {
+    creds = readCodexCreds(acc.dir);
+  } catch {
+    return null;
+  }
+  if (!creds?.accessToken) return null;
+  const entry = { provider: "codex", label: acc.label, email: creds.email, plan: creds.plan, usage: null, error: null };
+  try {
+    return { ...entry, usage: await limitedUsage(credentialKey("codex", creds.accessToken, creds.accountId), () => fetchCodexUsage(creds), { fresh }) };
+  } catch (e) {
+    if (e?.status === 401 || e?.status === 403) return null;
+    throw e;
+  }
+}
+
 // Fetch every account's usage from the provider APIs (in parallel) and cache it.
 async function refreshUsage(fresh) {
   const accounts = discoverAccounts();
@@ -220,11 +247,8 @@ async function refreshUsage(fresh) {
         try {
           if (acc.provider === "claude") return await claudeAccountUsage(acc, fresh);
           if (acc.provider === "opencode") return await opencodeAccountUsage(acc, fresh);
-          if (!fs.existsSync(path.join(acc.dir, "auth.json"))) return null;
-          const creds = readCodexCreds(acc.dir);
-          if (!creds.accessToken) return null;
-          const usage = await limitedUsage(credentialKey("codex", creds.accessToken, creds.accountId), () => fetchCodexUsage(creds), { fresh });
-          return { provider: "codex", label: acc.label, email: creds.email, plan: creds.plan, usage, error: null };
+          if (acc.provider === "codex") return await codexAccountUsage(acc, fresh);
+          return null;
         } catch (e) {
           return { provider: acc.provider, label: acc.label, usage: null, error: String(e.message || e) };
         }
