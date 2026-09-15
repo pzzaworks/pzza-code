@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ComponentType } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useModalFocus } from "../ui/Modal";
 import { registerAppControlHandler, registerAppControlState } from "../appControlRuntime";
 import { createPortal } from "react-dom";
@@ -138,11 +138,11 @@ export function SettingsHub({ open, section, onSectionChange, onOpen, onClose, s
 
 function SettingsSubnav<T extends string>({ label, items, value, onChange }: {
   label: string;
-  items: readonly { id: T; label: string; icon?: ComponentType<{ size?: number | string; className?: string }> }[];
+  items: readonly { id: T; label: string }[];
   value: T;
   onChange: (value: T) => void;
 }) {
   return <div className="settings-nav-children" role="group" aria-label={label}>
-    {items.map(({ id, label: itemLabel, icon: Icon }) => <button type="button" key={id} aria-current={value === id ? "page" : undefined} className={`settings-hub-sublink ${value === id ? "active" : ""}`} onClick={() => onChange(id)}>{Icon ? <Icon size={14} /> : null}<span>{itemLabel}</span></button>)}
+    {items.map(({ id, label: itemLabel }) => <button type="button" key={id} aria-current={value === id ? "page" : undefined} className={`settings-hub-sublink ${value === id ? "active" : ""}`} onClick={() => onChange(id)}><span>{itemLabel}</span></button>)}
   </div>;
 }

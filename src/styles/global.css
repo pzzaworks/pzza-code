@@ -254,6 +254,14 @@ button {
   flex: 0 0 auto;
   opacity: 0.85;
 }
+.ws-tab-dot {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--success);
+  pointer-events: none;
+}
 
 /* Workspace settings / add dropdowns */
 .icon-picker {
