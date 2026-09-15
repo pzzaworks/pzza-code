@@ -11,9 +11,11 @@ import {
 import { fetchSessions, fetchWindows, type RemoteWindow } from "../serverApi";
 import { HAS_TAURI } from "../tauriEnv";
 import {
+  ALL_WORKSPACE_ID,
   DEFAULT_WORKSPACES,
   DEFAULT_WORKSPACE_ID,
   markFor,
+  wsKeyOf,
   type Workspace,
 } from "../workspaces";
 import { DEFAULT_DEVICES, THIS_MAC, type Device } from "../devices";
@@ -257,7 +259,22 @@ export const useStore = create<ConsoleState>((set, get) => ({
   ),
   activeWorkspaceId: DEFAULT_WORKSPACE_ID,
   setWorkspace: (id) => {
-    set((state) => ({ activeWorkspaceId: id, refreshNonce: state.refreshNonce + 1 }));
+    set((state) => {
+      // Switching workspaces with nothing focused there feels dead: when the
+      // active tile is not visible in the target workspace, focus its first
+      // visible tile (same visibility rule as the canvas).
+      const visible = state.tiles.filter(
+        (t) =>
+          (id === ALL_WORKSPACE_ID || (state.sessionWs[wsKeyOf(t)] ?? DEFAULT_WORKSPACE_ID) === id) &&
+          !state.hiddenTiles.includes(t.id),
+      );
+      const first = visible.length ? visible[0] : undefined;
+      return {
+        activeWorkspaceId: id,
+        refreshNonce: state.refreshNonce + 1,
+        ...(first && !visible.some((t) => t.id === state.activeId) ? { activeId: first.id } : {}),
+      };
+    });
   },
   reorderWorkspace: (id, targetId, placement) => set((state) => {
     const source = state.workspaces.find((workspace) => workspace.id === id);
