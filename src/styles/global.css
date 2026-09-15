@@ -213,6 +213,7 @@ button {
   flex: 0 0 auto;
 }
 .ws-tab {
+  position: relative;
   flex: 0 0 auto;
   display: flex;
   align-items: center;
@@ -255,7 +256,9 @@ button {
   opacity: 0.85;
 }
 .ws-tab-dot {
-  flex: 0 0 auto;
+  position: absolute;
+  top: 3px;
+  right: 3px;
   width: 7px;
   height: 7px;
   border-radius: 50%;
