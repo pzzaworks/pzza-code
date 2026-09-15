@@ -1,15 +1,16 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Check, LayoutGrid, Plus } from "lucide-react";
 import { useStore } from "../state/store";
 import { Modal } from "../ui/Modal";
 import { useExclusiveMenu } from "../ui/menuBus";
-import { ALL_WORKSPACE_ID, DEFAULT_WORKSPACE_ID, WORKSPACE_COLORS } from "../workspaces";
+import { ALL_WORKSPACE_ID, DEFAULT_WORKSPACE_ID, WORKSPACE_COLORS, wsKeyOf } from "../workspaces";
 import { altBadge, digitFromCode, NEW_WORKSPACE_SHORTCUT } from "../shortcuts";
 import { workspaceIcon, DEFAULT_WORKSPACE_ICON } from "../workspaceIcons";
 import { IconPicker } from "../ui/IconPicker";
 import { SESSION_DND, SESSION_TILE_DND, sessionDisplayName } from "../sessionMeta";
 import { WorkspaceSettings } from "../panels/WorkspaceSettings";
+import { useNotifications } from "../state/notifications";
 
 const WORKSPACE_DND = "application/x-pzza-workspace";
 
@@ -29,6 +30,24 @@ export function WorkspaceTabs({ openRequest = 0 }: { openRequest?: number }) {
   const sessionWs = useStore((s) => s.sessionWs);
   const tiles = useStore((s) => s.tiles);
   const tileTitles = useStore((s) => s.tileTitles);
+  const notificationItems = useNotifications((s) => s.items);
+  const unreadItems = useMemo(() => notificationItems.filter((item) => !item.read), [notificationItems]);
+
+  // Same green dot as the bell, but per workspace: a tab gets it when an
+  // unread notification belongs to one of its tiles. "All" gets it for any
+  // unread since it shows every workspace at once.
+  const unreadWorkspaces = useMemo(() => {
+    const byTileId = new Map(tiles.map((tile) => [tile.id, sessionWs[wsKeyOf(tile)] ?? DEFAULT_WORKSPACE_ID]));
+    const counts = new Map<string, number>();
+    for (const item of unreadItems) {
+      const tileId = item.target?.tileId;
+      if (!tileId) continue;
+      const wsId = byTileId.get(tileId) ?? sessionWs[tileId];
+      if (wsId) counts.set(wsId, (counts.get(wsId) ?? 0) + 1);
+    }
+    return counts;
+  }, [tiles, sessionWs, unreadItems]);
+  const hasAnyUnread = unreadItems.length > 0;
 
   const [settingsFor, setSettingsFor] = useState<string | null>(null);
   const [settingsRect, setSettingsRect] = useState<DOMRect | null>(null);
@@ -213,6 +232,9 @@ export function WorkspaceTabs({ openRequest = 0 }: { openRequest?: number }) {
       >
         <LayoutGrid size={13} className="ws-tab-icon" />
         <span className="ws-tab-name">All</span>
+        {hasAnyUnread ? (
+          <span className="ws-tab-dot" aria-label={`${unreadItems.length} unread notifications`} role="status" />
+        ) : null}
         <kbd className="kbd ws-kbd">{altBadge(0)}</kbd>
       </div>
 
@@ -277,6 +299,13 @@ export function WorkspaceTabs({ openRequest = 0 }: { openRequest?: number }) {
                 style={w.color ? { color: w.color } : undefined}
               />
               <span className="ws-tab-name">{w.name}</span>
+              {unreadWorkspaces.has(w.id) ? (
+                <span
+                  className="ws-tab-dot"
+                  role="status"
+                  aria-label={`${unreadWorkspaces.get(w.id)} unread notifications in ${w.name}`}
+                />
+              ) : null}
               {i < 9 ? <kbd className="kbd ws-kbd">{altBadge(i + 1)}</kbd> : null}
             </div>
           </div>
