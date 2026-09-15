@@ -47,7 +47,6 @@ export function WorkspaceTabs({ openRequest = 0 }: { openRequest?: number }) {
     }
     return counts;
   }, [tiles, sessionWs, unreadItems]);
-  const hasAnyUnread = unreadItems.length > 0;
 
   const [settingsFor, setSettingsFor] = useState<string | null>(null);
   const [settingsRect, setSettingsRect] = useState<DOMRect | null>(null);
@@ -232,9 +231,6 @@ export function WorkspaceTabs({ openRequest = 0 }: { openRequest?: number }) {
       >
         <LayoutGrid size={13} className="ws-tab-icon" />
         <span className="ws-tab-name">All</span>
-        {hasAnyUnread ? (
-          <span className="ws-tab-dot" aria-label={`${unreadItems.length} unread notifications`} role="status" />
-        ) : null}
         <kbd className="kbd ws-kbd">{altBadge(0)}</kbd>
       </div>
 
