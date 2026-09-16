@@ -267,6 +267,15 @@ export function WorkspaceTabs({ openRequest = 0 }: { openRequest?: number }) {
                   setSettingsFor(null);
                 }
               }}
+              onContextMenu={(e) => {
+                // Right-click opens this workspace's settings directly instead
+                // of the generic text menu.
+                e.preventDefault();
+                e.stopPropagation();
+                setAddOpen(false);
+                setSettingsFor(w.id);
+                setSettingsRect(e.currentTarget.getBoundingClientRect());
+              }}
               title={w.name}
               onDragOver={(e) => {
                 if (e.dataTransfer.types.includes(WORKSPACE_DND) && draggedWorkspace.current) {

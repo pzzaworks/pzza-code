@@ -5014,8 +5014,8 @@ html[data-transparency="on"] .tile-code { background: transparent; }
 .image-copy-actions { flex-shrink: 0; max-width: 100%; flex-wrap: wrap; display: flex; align-items: center; gap: 10px; padding: 8px; background: var(--opaque-bg); color: var(--text); border: 1px solid var(--border); border-radius: 8px; font-size: 12px; }
 
 .app-context-backdrop { position: fixed; inset: 0; z-index: 6000; }
-.app-context-menu { position: fixed; width: 220px; max-width: calc(100vw - 16px); max-height: calc(100vh - 16px); overflow: auto; padding: 5px; outline: none; }
-.app-context-menu .menu-item { width: 100%; }
+.app-context-menu { position: fixed; width: max-content; min-width: 150px; max-width: calc(100vw - 16px); max-height: calc(100vh - 16px); overflow: auto; padding: 5px; outline: none; }
+.app-context-menu .menu-item { width: 100%; white-space: nowrap; }
 .app-context-menu .menu-item:focus-visible { outline: 1px solid var(--muted); background: var(--surface-alt); }
 .context-error { padding: 8px; color: var(--danger-foreground, var(--danger)); font-size: 12px; overflow-wrap: anywhere; }
 

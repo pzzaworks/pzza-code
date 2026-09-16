@@ -95,6 +95,9 @@ export function ContextMenu() {
           ...(target instanceof HTMLImageElement ? [{ label: "Copy image", icon: ImageIcon, run: () => copyImageToClipboard(target) }] : []),
         ];
       }
+      // A right-click with nothing actionable (e.g. plain UI text with no
+      // selection) opens no menu at all instead of a lone disabled item.
+      if (!actions.length || actions.every((action) => action.disabled)) return;
       menuEpoch.current++; setError(null); setBusy(false); setPendingAction(null);
       const rect = target.getBoundingClientRect();
       setMenu({ x: event.clientX || rect.left, y: event.clientY || rect.top, actions, target });
