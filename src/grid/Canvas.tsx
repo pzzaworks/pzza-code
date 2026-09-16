@@ -46,6 +46,7 @@ import { ctrlBadge, digitFromCode } from "../shortcuts";
 import { useDictation } from "../state/dictation";
 import { DictationButton } from "../ui/Dictation";
 import { useExclusiveMenu } from "../ui/menuBus";
+import { useNotifications } from "../state/notifications";
 
 const HEADER_ACTIONS = [
   { id: "layout", Icon: LayoutGrid },
@@ -95,7 +96,6 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
   const workspaceColumns = useStore((s) => s.workspaceColumns);
   const defaultColumns = useStore((s) => s.defaultColumns);
   const activeId = useStore((s) => s.activeId);
-  const setActive = useStore((s) => s.setActive);
   const closeTile = useStore((s) => s.closeTile);
   const reorderTile = useStore((s) => s.reorderTile);
   const moveTileToEnd = useStore((s) => s.moveTileToEnd);
@@ -114,6 +114,24 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
   const tileCode = useStore((s) => s.tileCode);
   const toggleTileCode = useStore((s) => s.toggleTileCode);
   const recordingTileId = useDictation((state) => state.recording?.tileId);
+  // Tiles with unread terminal notifications get a solid green dot; everything
+  // else stays grey. Viewing the tile marks its notifications read, which also
+  // clears the workspace tab dot when no other unread remains there.
+  const notificationItems = useNotifications((s) => s.items);
+  const unreadTileIds = (() => {
+    const ids = new Set<string>();
+    for (const item of notificationItems) {
+      if (!item.read && item.target?.tileId) ids.add(item.target.tileId);
+    }
+    return ids;
+  })();
+  const activateTile = useCallback((id: string) => {
+    useStore.getState().setActive(id);
+    useNotifications.getState().readTile(id);
+  }, []);
+  useEffect(() => {
+    if (activeId) useNotifications.getState().readTile(activeId);
+  }, [activeId]);
   useEffect(() => {
     if (!recordingTileId) return;
     const source = tiles.find((entry) => entry.id === recordingTileId);
@@ -178,34 +196,93 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
       !hiddenTiles.includes(t.id),
   );
 
-  // Automatic widths for tiles without a saved layout: share the row evenly,
+  // Automatic spans for tiles without a saved layout: share the row evenly,
   // except the last one which stretches across whatever columns are left in
-  // its row. Simulates row wrapping (a tile wider than the remaining space
-  // starts a fresh row) so the fill matches the browser's placement.
+  // its row. Auto tiles also match the tallest explicit height in the
+  // workspace, so an auto tile next to a 2-row tile becomes 2 rows tall
+  // instead of leaving a hole. Placement is simulated against a row-span
+  // aware occupancy grid so widths match the browser's actual placement even
+  // when tall tiles occupy cells below the cursor.
   const autoSpanById = (() => {
     const spans = new Map<string, { c: number; r: number }>();
     if (columns < 1) return spans;
     const even = wsTiles.length <= 1 ? columns : Math.max(1, Math.floor(columns / wsTiles.length));
-    let cursor = 0;
-    const place = (width: number) => {
-      const w = Math.max(1, Math.min(width, columns));
-      const pos = ((cursor % columns) + columns) % columns;
-      if (pos + w > columns) cursor += columns - pos;
-      cursor += w;
+    let autoR = 1;
+    for (const entry of wsTiles) {
+      const saved = tileSpan[entry.id];
+      if (saved) autoR = Math.max(autoR, Math.min(Math.max(1, saved.r), 4));
+    }
+    const grid: boolean[][] = [];
+    const ensure = (row: number) => {
+      while (grid.length <= row) grid.push(new Array(columns).fill(false));
+    };
+    const fits = (row: number, col: number, w: number, h: number): boolean => {
+      if (col + w > columns) return false;
+      ensure(row + h - 1);
+      for (let dr = 0; dr < h; dr++) {
+        for (let dc = 0; dc < w; dc++) {
+          if (grid[row + dr][col + dc]) return false;
+        }
+      }
+      return true;
+    };
+    const occupy = (row: number, col: number, w: number, h: number) => {
+      ensure(row + h - 1);
+      for (let dr = 0; dr < h; dr++) {
+        for (let dc = 0; dc < w; dc++) grid[row + dr][col + dc] = true;
+      }
+    };
+    const maxSearchRows = wsTiles.length * 4 + 4;
+    const find = (w: number, h: number, fromR: number, fromC: number): [number, number] => {
+      for (let r = fromR; r < fromR + maxSearchRows; r++) {
+        const startC = r === fromR ? Math.min(fromC, columns - 1) : 0;
+        for (let c = startC; c + w <= columns; c++) {
+          if (fits(r, c, w, h)) return [r, c];
+        }
+      }
+      return [fromR, fromC];
+    };
+    let cursorR = 0;
+    let cursorC = 0;
+    const advance = (row: number, col: number, w: number) => {
+      cursorR = row;
+      cursorC = col + w;
+      if (cursorC >= columns) {
+        cursorR = row + 1;
+        cursorC = 0;
+      }
     };
     wsTiles.forEach((entry, index) => {
       const saved = tileSpan[entry.id];
       if (saved) {
-        place(saved.c);
+        const w = Math.max(1, Math.min(saved.c, columns));
+        const h = Math.min(Math.max(1, saved.r), 4);
+        const [pr, pc] = find(w, h, cursorR, cursorC);
+        occupy(pr, pc, w, h);
+        advance(pr, pc, w);
         return;
       }
+      const h = autoR;
       if (index < wsTiles.length - 1) {
-        spans.set(entry.id, { c: even, r: 1 });
-        place(even);
+        const w = Math.max(1, Math.min(even, columns));
+        const [pr, pc] = find(w, h, cursorR, cursorC);
+        occupy(pr, pc, w, h);
+        spans.set(entry.id, { c: w, r: h });
+        advance(pr, pc, w);
         return;
       }
-      const pos = ((cursor % columns) + columns) % columns;
-      spans.set(entry.id, { c: pos === 0 ? columns : columns - pos, r: 1 });
+      const wEven = Math.max(1, Math.min(even, columns));
+      const [pr, pc] = find(wEven, h, cursorR, cursorC);
+      const stretch = pc === 0 ? columns : columns - pc;
+      if (stretch >= wEven && fits(pr, pc, stretch, h)) {
+        occupy(pr, pc, stretch, h);
+        spans.set(entry.id, { c: stretch, r: h });
+        advance(pr, pc, stretch);
+      } else {
+        occupy(pr, pc, wEven, h);
+        spans.set(entry.id, { c: wEven, r: h });
+        advance(pr, pc, wEven);
+      }
     });
     return spans;
   })();
@@ -269,11 +346,11 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
       e.preventDefault();
       e.stopPropagation();
       pointerIntent.current = null;
-      setActive(t.id);
+      activateTile(t.id);
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, [setActive]);
+  }, [activateTile]);
 
   // Keyboard/programmatic selection still scrolls immediately. Pointer
   // selection waits for release so holding or dragging never moves the canvas.
@@ -381,6 +458,10 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
       (w) => w.id === (sessionWs[wsKeyOf(t)] ?? DEFAULT_WORKSPACE_ID),
     )?.color;
     const status = statuses[t.id] ?? "idle";
+    // Grey by default; solid green only while this tile owns unread
+    // notifications. Output activity no longer blinks the dot.
+    const hasUnread = unreadTileIds.has(t.id);
+    const displayStatus = hasUnread ? "notify" : status === "failed" ? "failed" : "idle";
     const displayName = sessionDisplayName(t, tileTitles);
     const isRenaming = renaming?.id === t.id;
     const shortcutIdx = wsTiles.findIndex((x) => x.id === t.id);
@@ -396,8 +477,9 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
     // takes the full width, so the grid stays fluid without manual sizing.
     // Explicit choices always win over the automatic share. The last visible
     // tile without a saved layout stretches across the leftover columns so
-    // the final row never leaves an empty gap (e.g. 3 sessions in 2 columns);
-    // rows already share the height through the grid, so width is all it takes.
+    // the final row never leaves an empty gap (e.g. 3 sessions in 2 columns).
+    // Auto tiles also match the tallest explicit height, so an auto tile next
+    // to a 2-row tile becomes 2 rows tall instead of leaving a hole.
     const explicit = tileSpan[t.id];
     const autoC = wsTiles.length <= 1 ? columns : Math.max(1, Math.floor(columns / wsTiles.length));
     const autoSpan = autoSpanById.get(t.id);
@@ -453,7 +535,7 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
             cancelled: event.button !== 0 || !!(event.target instanceof Element && event.target.closest("button, input, select, a")),
           };
         }}
-        onMouseDown={() => setActive(t.id)}
+        onMouseDown={() => activateTile(t.id)}
         onDragOver={(e) => {
           if (!effFull && dragId && dragId !== t.id) {
             e.preventDefault();
@@ -491,7 +573,7 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
             setDragId(null);
             setOverId(null);
           }}
-          status={status}
+          status={displayStatus}
           icon={<LiveSessionIcon session={base} window={t.window} host={t.host} />}
           title={isRenaming ? (
             <input
@@ -547,7 +629,7 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
             >
               <LayoutGrid size={13} />
             </button>),
-            mic: (<DictationButton tileId={t.id} activate={() => setActive(t.id)} />),
+            mic: (<DictationButton tileId={t.id} activate={() => activateTile(t.id)} />),
             focus: (<button
               className={`tile-btn ${isFocus ? "tile-btn-on" : ""}`}
               title={isFocus ? "Unfocus" : "Focus (dim others)"}
@@ -555,7 +637,7 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
               onMouseDown={(e) => e.stopPropagation()}
               onClick={(e) => {
                 e.stopPropagation();
-                setActive(t.id);
+                activateTile(t.id);
                 setFocusId(isFocus ? null : t.id);
               }}
             >
@@ -612,7 +694,7 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
               onMouseDown={(e) => e.stopPropagation()}
               onClick={(e) => {
                 e.stopPropagation();
-                setActive(t.id);
+                activateTile(t.id);
                 setFullId(isFull ? null : t.id);
               }}
             >
@@ -634,8 +716,8 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
             </button>),
             close: (<button
               className="tile-btn tile-btn-danger"
-              title="Close"
-              aria-label="Close"
+              title="Terminate"
+              aria-label="Terminate"
               onMouseDown={(e) => e.stopPropagation()}
               onClick={(e) => {
                 e.stopPropagation();
@@ -729,10 +811,9 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
         </div>
       ) : null}
 
-      <Modal open={!!closing} onClose={() => { if (!terminating) setClosing(null); }} title="Close session" size="sm">
+      <Modal open={!!closing} onClose={() => { if (!terminating) setClosing(null); }} title="Terminate session" size="sm">
         <p className="move-q">
-          <b>Close</b> detaches this view and keeps the session running on its device.
-          <b> Terminate</b> ends {tiles.find((tile) => tile.id === closing)?.window !== undefined ? "this window" : "the session"} and everything running in it.
+          Terminate ends {tiles.find((tile) => tile.id === closing)?.window !== undefined ? "this window" : "the session"} and everything running in it. This cannot be undone.
         </p>
         {closeError ? <p className="pj-error" role="alert">{closeError}</p> : null}
         <div className="modal-actions">
@@ -766,17 +847,6 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
           >
             {terminating ? "Terminating…" : "Terminate"}
           </button>
-          <button
-            className="btn btn-accent"
-            disabled={terminating}
-            onClick={async () => {
-              if (!closing || !await confirmEditorDiscard([closing])) return;
-              if (fullId === closing) setFullId(null);
-              if (focusId === closing) setFocusId(null);
-              closeTile(closing);
-              setClosing(null);
-            }}
-          >Close</button>
         </div>
       </Modal>
 
