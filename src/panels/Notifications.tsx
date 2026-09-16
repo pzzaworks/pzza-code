@@ -22,7 +22,9 @@ export function clearNotificationHistory(): Promise<boolean> {
 }
 
 export function openNotice(item: Notice) {
-  useNotifications.getState().read(item.id);
+  const notifications = useNotifications.getState();
+  notifications.read(item.id);
+  if (item.target?.tileId) notifications.readTile(item.target.tileId);
   if (item.target?.section) window.dispatchEvent(new CustomEvent("pzza-notification-section", { detail: item.target.section }));
   if (item.target?.tileId) {
     const state = useStore.getState();

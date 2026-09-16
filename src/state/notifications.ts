@@ -28,7 +28,7 @@ interface Preferences {
 }
 interface NotificationState {
   items: Notice[]; preferences: Preferences;
-  read(id?: string): void; clear(): void; remove(id: string): void;
+  read(id?: string): void; readTile(tileId: string): void; clear(): void; remove(id: string): void;
   configure(patch: Partial<Preferences>): void;
 }
 const storeName = "pzza.notifications.v1";
@@ -77,6 +77,10 @@ function initial(): { items: Notice[]; preferences: Preferences } {
 export const useNotifications = create<NotificationState>((set) => ({
   ...initial(),
   read: (id) => set(state => ({ items: state.items.map(item => !id || item.id === id ? { ...item, read: true } : item) })),
+  readTile: (tileId) => set(state => {
+    if (!state.items.some(item => !item.read && item.target?.tileId === tileId)) return state;
+    return { items: state.items.map(item => item.target?.tileId === tileId ? { ...item, read: true } : item) };
+  }),
   clear: () => set({ items: [] }),
   remove: (id) => set(state => ({ items: state.items.filter(item => item.id !== id) })),
   configure: (patch) => set(state => ({ preferences: { ...state.preferences, ...patch } })),

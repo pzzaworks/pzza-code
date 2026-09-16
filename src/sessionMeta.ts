@@ -49,10 +49,11 @@ export function shortPath(p?: string): string {
   return p.replace(/^\/home\/[^/]+/, "~").replace(/^\/root/, "~");
 }
 
-// idle: at a prompt / no recent output (grey)
-// active: producing output right now (blinking green)
+// idle: grey, no unread notifications
+// active: producing output right now (blinking green, legacy activity signal)
+// notify: unread terminal notification (solid green)
 // failed: the pty exited (red)
-export type TileStatus = "idle" | "active" | "failed";
+export type TileStatus = "idle" | "active" | "notify" | "failed";
 
 // Model attribution is allowed to override the launcher only when the
 // foreground probe supplied a normalized provider. Otherwise the CLI remains

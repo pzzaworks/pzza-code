@@ -94,7 +94,7 @@ const Tip = ({ children }: { children: ReactNode }) => (
 
 const TileHeadDemo = () => (
   <div className="tile-head doc-tilehead">
-    <span className="stat stat-active" />
+    <span className="stat stat-notify" />
     <span className="tile-icon" style={{ color: "#D97757" }}>
       <Sparkles size={14} />
     </span>
@@ -532,13 +532,13 @@ export function HelpContent({ section, request }: { section: HelpSection; reques
                 ui={
                   <span className="doc-dots">
                     <span className="stat stat-idle" />
-                    <span className="stat stat-active" />
+                    <span className="stat stat-notify" />
                     <span className="stat stat-failed" />
                   </span>
                 }
                 name="Status dot"
               >
-                Grey = idle, green blink = producing output, red = the process exited.
+                Grey = idle, solid green = unread notification for this tile, red = the process exited. Clicking the tile marks its notifications read.
               </Row>
               <Row
                 ui={
@@ -578,7 +578,7 @@ export function HelpContent({ section, request }: { section: HelpSection; reques
         {
           id: "controls",
           label: "Tile controls",
-          blurb: "Duplicate, focus, layout, maximize, hide, close",
+          blurb: "Duplicate, focus, layout, maximize, hide, terminate",
           icon: Boxes,
           body: (
             <>
@@ -632,14 +632,12 @@ export function HelpContent({ section, request }: { section: HelpSection; reques
                     <X size={14} />
                   </span>
                 }
-                name="Close"
+                name="Terminate"
               >
-                Opens a choice: <b>Close</b> just detaches your view (the session keeps running),
-                <b> Terminate</b> ends the session and everything in it.
+                Ends the session and everything running in it. To keep it running but out of sight, use Hide instead.
               </Row>
               <Note>
-                <b>Close vs Terminate</b> is the important one - Close is always safe and
-                reversible, Terminate is not.
+                <b>Terminate</b> cannot be undone - the session and everything in it is stopped.
               </Note>
             </>
           ),
