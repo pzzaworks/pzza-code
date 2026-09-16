@@ -202,12 +202,34 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
           if (!ok && !disposed) reportError("Clipboard access failed. Use the keyboard copy shortcut to retry.");
         });
       };
+      // True while the current selection already covers the whole buffer, so
+      // opening the menu shows Select all disabled instead of re-selecting
+      // (and re-copying) everything on a repeat click.
+      const isFullySelected = () => {
+        const selected = term.getSelection();
+        if (!selected) return false;
+        try {
+          const buffer = term.buffer.active;
+          const parts: string[] = [];
+          for (let row = 0; row < buffer.length; row++) {
+            const line = buffer.getLine(row);
+            if (!line) continue;
+            const text = line.translateToString(true);
+            if (row > 0 && line.isWrapped && parts.length) parts[parts.length - 1] += text;
+            else parts.push(text);
+          }
+          const full = parts.join("\n").replace(/\s+$/, "");
+          return full.length > 0 && selected.replace(/\s+$/, "") === full;
+        } catch {
+          return false;
+        }
+      };
       const unregisterMenu = registerContextMenu(container, () => [
         { label: "Copy text", icon: Copy, disabled: !term.hasSelection(), run: async () => {
           if (!await copyToClipboard(term.getSelection())) throw new Error("Clipboard access failed. Try the keyboard copy shortcut.");
         } },
         { label: "Paste text or image", icon: ClipboardPaste, run: () => clipboardPaste(term.textarea ?? container) },
-        { label: "Select all", icon: TextSelect, run: () => { term.selectAll(); copySelection(); term.focus(); } },
+        { label: "Select all", icon: TextSelect, disabled: isFullySelected(), run: () => { term.selectAll(); copySelection(); term.focus(); } },
         { label: "Clear selection", icon: Eraser, disabled: !term.hasSelection(), run: () => term.clearSelection() },
       ]);
       let pointerSelecting = false;

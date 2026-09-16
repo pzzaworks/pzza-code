@@ -573,6 +573,15 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
             setDragId(null);
             setOverId(null);
           }}
+          onContextMenu={(e) => {
+            // Right-click on the header background opens this tile's layout
+            // menu. Controls and the rename field keep their own behavior.
+            if (e.target instanceof Element && e.target.closest("button, input, select, textarea, a, [contenteditable='true']")) return;
+            e.preventDefault();
+            e.stopPropagation();
+            setMoveFor(null);
+            setLayoutFor({ id: t.id, x: e.clientX, y: e.clientY });
+          }}
           status={displayStatus}
           icon={<LiveSessionIcon session={base} window={t.window} host={t.host} />}
           title={isRenaming ? (
