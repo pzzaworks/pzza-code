@@ -2529,6 +2529,9 @@ button {
   animation: statBlink 1.1s ease-in-out infinite;
   will-change: opacity;
 }
+.stat-notify {
+  background: var(--success);
+}
 .stat-failed {
   background: var(--danger);
 }
