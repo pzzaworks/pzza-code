@@ -81,7 +81,7 @@ interface Rect {
   h: number;
 }
 
-function queryRect(selectors: string[]): Rect | null {
+function queryTarget(selectors: string[]): HTMLElement | null {
   for (const selector of selectors) {
     let elements: NodeListOf<Element>;
     try {
@@ -92,10 +92,20 @@ function queryRect(selectors: string[]): Rect | null {
     for (const element of elements) {
       if (!(element instanceof HTMLElement)) continue;
       const box = element.getBoundingClientRect();
-      if (box.width >= 4 && box.height >= 4) return { x: box.left, y: box.top, w: box.width, h: box.height };
+      if (box.width >= 4 && box.height >= 4) return element;
     }
   }
   return null;
+}
+
+function rectOf(element: HTMLElement): Rect {
+  const box = element.getBoundingClientRect();
+  return { x: box.left, y: box.top, w: box.width, h: box.height };
+}
+
+function queryRect(selectors: string[]): Rect | null {
+  const element = queryTarget(selectors);
+  return element ? rectOf(element) : null;
 }
 
 const TIP_WIDTH = 320;
@@ -123,9 +133,13 @@ export function OnboardingTour({ open, onClose }: { open: boolean; onClose: () =
     while (next < STEPS.length) {
       const step = STEPS[next];
       if (!step) break;
-      const rect = step.targets ? queryRect(step.targets) : null;
-      if (!step.targets || rect) {
-        setResolved({ number: next, step, rect });
+      const target = step.targets ? queryTarget(step.targets) : null;
+      if (!step.targets || target) {
+        // Bring an anchor that lives in a scroll region into view before we
+        // measure it. Without this the ring and tooltip land outside the
+        // viewport for an off-screen target and the tour looks frozen.
+        target?.scrollIntoView({ block: "center", inline: "nearest", behavior: "instant" });
+        setResolved({ number: next, step, rect: target ? rectOf(target) : null });
         return;
       }
       next++;
