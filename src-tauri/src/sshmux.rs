@@ -24,6 +24,12 @@
 pub const CONTROL_PATH: &str = "~/.ssh/pzza-mux-%C";
 const CONTROL_PERSIST: &str = "120"; // keep the master warm 2 min after last use
 
+// Bound the initial TCP/SSH handshake so a command to an unreachable device
+// fails in seconds instead of blocking on the OS default (~75s+). This only
+// caps opening a fresh connection; an established master is unaffected, and a
+// silently dropped master is still caught by the ServerAlive probes below.
+const CONNECT_TIMEOUT: &str = "8";
+
 // ssh options that put a connection on the shared master. Safe to pass to
 // `ssh -O check|forward|cancel` too: those only read ControlPath.
 pub fn control_args() -> Vec<String> {
@@ -35,8 +41,27 @@ pub fn control_args() -> Vec<String> {
         "-o".into(),
         format!("ControlPersist={CONTROL_PERSIST}"),
         "-o".into(),
+        format!("ConnectTimeout={CONNECT_TIMEOUT}"),
+        "-o".into(),
         "ServerAliveInterval=30".into(),
         "-o".into(),
         "ServerAliveCountMax=3".into(),
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // A missing ConnectTimeout is what froze the window on a dropped device:
+    // ssh to an unreachable host blocks on the OS default (~75s+). Keep the
+    // bound in place so a forward/tmux scan can never hang unboundedly again.
+    #[test]
+    fn control_args_bound_the_connect() {
+        let args = control_args();
+        assert!(
+            args.iter().any(|a| a.starts_with("ConnectTimeout=")),
+            "control_args must set a ConnectTimeout: {args:?}"
+        );
+    }
 }

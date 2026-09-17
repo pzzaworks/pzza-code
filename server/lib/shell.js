@@ -22,7 +22,9 @@ export function deviceEnv(host, environment = process.env) {
 
 // Run a command string either locally (source) or on the devbox over ssh.
 export function sh(remote, cb) {
-  if (IS_CLIENT) execFile("ssh", ["-o", "BatchMode=yes", DEVBOX, remote], { env: deviceEnv(DEVBOX) }, cb);
+  // ConnectTimeout keeps a command to an unreachable source device from hanging
+  // on the OS default (~75s+); every other server ssh helper already sets it.
+  if (IS_CLIENT) execFile("ssh", ["-o", "BatchMode=yes", "-o", "ConnectTimeout=8", DEVBOX, remote], { env: deviceEnv(DEVBOX) }, cb);
   else execFile("sh", ["-c", remote], { env: deviceEnv("") }, cb);
 }
 
