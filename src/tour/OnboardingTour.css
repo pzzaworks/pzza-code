@@ -24,9 +24,14 @@
   transition: left 0.25s ease, top 0.25s ease, width 0.25s ease, height 0.25s ease;
 }
 
-.tour-tip {
+/* The tip carries both `menu` and `tour-tip`. They share specificity, so the
+   later `.menu` block wins the box properties (padding, position, radius) unless
+   we scope our overrides to the compound selector. Match the app's modal rhythm. */
+.menu.tour-tip {
   position: fixed;
-  padding: 16px 18px 16px;
+  right: auto;
+  padding: 18px 20px;
+  border-radius: 16px;
   animation: tour-tip-in 180ms ease-out;
 }
 
@@ -122,7 +127,7 @@
   .tour-ring {
     transition: none;
   }
-  .tour-tip {
+  .menu.tour-tip {
     animation: none;
   }
 }
