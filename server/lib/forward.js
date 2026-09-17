@@ -16,7 +16,9 @@ function forwardPort(port, on) {
 function ensureMaster(cb) {
   execFile("ssh", ["-O", "check", DEVBOX], (err) => {
     if (!err) return cb(true);
-    execFile("ssh", ["-o", "BatchMode=yes", "-N", "-f", DEVBOX], () =>
+    // Bound the fresh connection so a dropped source device fails fast instead
+    // of blocking the reconcile on the OS default connect timeout (~75s+).
+    execFile("ssh", ["-o", "BatchMode=yes", "-o", "ConnectTimeout=8", "-N", "-f", DEVBOX], () =>
       execFile("ssh", ["-O", "check", DEVBOX], (e2) => cb(!e2)),
     );
   });

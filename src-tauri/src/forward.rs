@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::net::TcpStream;
 use std::process::Command;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::sshmux;
@@ -10,9 +10,12 @@ use crate::sshmux;
 // listening TCP ports and keep a matching set of -L forwards. Console tracks the
 // forwards it added itself in `active`, so it never fights over ports another
 // manager owns.
+// The set of ports console forwards itself. Held behind an Arc so the blocking
+// ssh work can run on a worker thread (spawn_blocking) without borrowing the
+// Tauri State, which keeps the window responsive while a device is unreachable.
 #[derive(Default)]
 pub struct ForwardState {
-    active: Mutex<HashSet<u16>>,
+    active: Arc<Mutex<HashSet<u16>>>,
 }
 
 #[derive(serde::Serialize)]
@@ -130,7 +133,7 @@ fn do_cancel(host: &str, port: u16) -> bool {
         .unwrap_or(false)
 }
 
-fn status(state: &ForwardState, host: &str, skip: &[u16], min_port: u16) -> ForwardStatus {
+fn status(active: &Mutex<HashSet<u16>>, host: &str, skip: &[u16], min_port: u16) -> ForwardStatus {
     let up = ensure_master(host);
     let remote = if up { remote_ports(host) } else { Vec::new() };
     let wanted = wanted_from(&remote, skip, min_port);
@@ -138,7 +141,7 @@ fn status(state: &ForwardState, host: &str, skip: &[u16], min_port: u16) -> Forw
     // whoever forwarded it - so the panel shows what the user can open, not just
     // what this process bound. Union with `active` covers the brief gap between
     // do_forward returning and the socket accepting connections.
-    let active = state.active.lock().unwrap();
+    let active = active.lock().unwrap();
     let mut forwarded: Vec<u16> = wanted
         .iter()
         .copied()
@@ -155,69 +158,87 @@ fn status(state: &ForwardState, host: &str, skip: &[u16], min_port: u16) -> Forw
 
 // Observe only: report the master state, the remote's listening ports, and what
 // console is currently forwarding. Changes nothing.
+// All three commands are async and run their blocking ssh on a worker thread.
+// A synchronous command runs on the main thread, so a scan against a dropped
+// device would freeze the whole window until ssh gave up; spawn_blocking keeps
+// the window responsive and lets the device's panel fall back to its
+// "unavailable" state and resume on its own once the connection returns.
 #[tauri::command]
-pub fn forward_scan(
+pub async fn forward_scan(
     state: tauri::State<'_, ForwardState>,
     host: String,
     skip: Vec<u16>,
     min_port: u16,
-) -> ForwardStatus {
-    status(&state, &host, &skip, min_port)
+) -> Result<ForwardStatus, String> {
+    let active = state.active.clone();
+    tauri::async_runtime::spawn_blocking(move || status(&active, &host, &skip, min_port))
+        .await
+        .map_err(|error| error.to_string())
 }
 
 // Manually forward or cancel a single port.
 #[tauri::command]
-pub fn forward_set(
+pub async fn forward_set(
     state: tauri::State<'_, ForwardState>,
     host: String,
     port: u16,
     enable: bool,
 ) -> Result<(), String> {
-    if enable {
-        // Already reachable (another tunnel owns it): nothing to do, and not
-        // ours to track for cancel. Success either way.
-        if local_listening(port) {
-            return Ok(());
-        }
-        if do_forward(&host, port) {
-            state.active.lock().unwrap().insert(port);
-            Ok(())
+    let active = state.active.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        if enable {
+            // Already reachable (another tunnel owns it): nothing to do, and not
+            // ours to track for cancel. Success either way.
+            if local_listening(port) {
+                return Ok(());
+            }
+            if do_forward(&host, port) {
+                active.lock().unwrap().insert(port);
+                Ok(())
+            } else {
+                Err(format!("could not forward {port} (already bound locally?)"))
+            }
         } else {
-            Err(format!("could not forward {port} (already bound locally?)"))
+            do_cancel(&host, port);
+            active.lock().unwrap().remove(&port);
+            Ok(())
         }
-    } else {
-        do_cancel(&host, port);
-        state.active.lock().unwrap().remove(&port);
-        Ok(())
-    }
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 // One auto-forward reconcile cycle: add every wanted port not yet forwarded,
 // cancel every forwarded port the remote no longer listens on.
 #[tauri::command]
-pub fn forward_reconcile(
+pub async fn forward_reconcile(
     state: tauri::State<'_, ForwardState>,
     host: String,
     skip: Vec<u16>,
     min_port: u16,
-) -> ForwardStatus {
-    if ensure_master(&host) {
-        let remote = remote_ports(&host);
-        let wanted = wanted_from(&remote, &skip, min_port);
-        let current: Vec<u16> = state.active.lock().unwrap().iter().copied().collect();
+) -> Result<ForwardStatus, String> {
+    let active = state.active.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        if ensure_master(&host) {
+            let remote = remote_ports(&host);
+            let wanted = wanted_from(&remote, &skip, min_port);
+            let current: Vec<u16> = active.lock().unwrap().iter().copied().collect();
 
-        for p in &wanted {
-            // Skip ports another tunnel already mirrors; only bind the missing ones.
-            if !current.contains(p) && !local_listening(*p) && do_forward(&host, *p) {
-                state.active.lock().unwrap().insert(*p);
+            for p in &wanted {
+                // Skip ports another tunnel already mirrors; only bind the missing ones.
+                if !current.contains(p) && !local_listening(*p) && do_forward(&host, *p) {
+                    active.lock().unwrap().insert(*p);
+                }
+            }
+            for p in &current {
+                if !wanted.contains(p) {
+                    do_cancel(&host, *p);
+                    active.lock().unwrap().remove(p);
+                }
             }
         }
-        for p in &current {
-            if !wanted.contains(p) {
-                do_cancel(&host, *p);
-                state.active.lock().unwrap().remove(p);
-            }
-        }
-    }
-    status(&state, &host, &skip, min_port)
+        status(&active, &host, &skip, min_port)
+    })
+    .await
+    .map_err(|error| error.to_string())
 }
