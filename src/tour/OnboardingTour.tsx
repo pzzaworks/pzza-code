@@ -98,7 +98,7 @@ function queryRect(selectors: string[]): Rect | null {
   return null;
 }
 
-const TIP_WIDTH = 300;
+const TIP_WIDTH = 320;
 const GAP = 12;
 
 export function OnboardingTour({ open, onClose }: { open: boolean; onClose: () => void }) {
