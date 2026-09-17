@@ -44,8 +44,18 @@ fn tmux_capture(host: &Option<String>, remote: &str) -> std::io::Result<std::pro
 
 // List the tmux sessions currently on the devbox. Returns an empty list (not an
 // error) when no tmux server is running yet.
+// Async so the blocking ssh runs off the main thread: a session refresh against
+// a dropped device must not freeze the window (see forward.rs for the same
+// pattern). It returns an empty list rather than an error when the server is
+// simply not up yet.
 #[tauri::command]
-pub fn tmux_list_sessions(host: Option<String>) -> Result<Vec<TmuxSession>, String> {
+pub async fn tmux_list_sessions(host: Option<String>) -> Result<Vec<TmuxSession>, String> {
+    tauri::async_runtime::spawn_blocking(move || list_sessions_blocking(host))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+fn list_sessions_blocking(host: Option<String>) -> Result<Vec<TmuxSession>, String> {
     let remote = format!("tmux list-sessions -F '{SESSION_FORMAT}'");
     let output = tmux_capture(&host, &remote).map_err(|e| e.to_string())?;
 

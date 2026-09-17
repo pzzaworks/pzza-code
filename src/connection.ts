@@ -56,6 +56,11 @@ const SSH_MUX = [
   "ControlPath=~/.ssh/pzza-mux-%C",
   "-o",
   "ControlPersist=120",
+  // Fail a cold connect to an unreachable device in seconds instead of the OS
+  // default (~75s+), so opening a tile to a dropped device reports quickly
+  // rather than hanging. Kept in sync with sshmux.rs control_args.
+  "-o",
+  "ConnectTimeout=8",
   "-o",
   "ServerAliveInterval=30",
   "-o",
