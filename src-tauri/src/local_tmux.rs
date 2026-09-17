@@ -176,6 +176,7 @@ pub fn start() -> io::Result<()> {
     let mut next_start = Instant::now();
     loop {
         if UnixStream::connect(&socket).is_ok() && set_exit_empty(&socket, false).is_ok() {
+            pin_window_indices(&socket);
             *APP_LEASE
                 .lock()
                 .map_err(|_| io::Error::other("Local terminal ownership interrupted"))? =
@@ -268,6 +269,24 @@ fn set_exit_empty(socket: &Path, enabled: bool) -> io::Result<()> {
             "Local terminal server did not accept its lifetime setting",
         ))
     }
+}
+
+// Window tiles are tracked and terminated by their tmux window index. The
+// managed server loads the user's tmux.conf, which commonly sets
+// `renumber-windows on`; that would renumber the survivors whenever a sibling
+// window closes, leaving a tile pointing at a now-different window. Pin the
+// numbering on this server we own so an index stays valid for a window's life,
+// so a terminate never kills the wrong window or leaves the session behind.
+// Best effort: a server that rejects the option must not block ownership.
+fn pin_window_indices(socket: &Path) {
+    let _ = bounded_output(
+        Command::new("tmux")
+            .args(["-N", "-S"])
+            .arg(socket)
+            .args(["set-option", "-g", "renumber-windows", "off"])
+            .env("PATH", crate::agent::login_path())
+            .env_remove("TMUX"),
+    );
 }
 
 pub fn stop() {
@@ -463,6 +482,59 @@ mod tests {
         assert_eq!(args[1], "-S");
         assert_eq!(args[2], socket_path());
         assert!(socket_path().as_os_str().len() < 100);
+    }
+
+    #[test]
+    fn pinned_window_indices_survive_a_sibling_close() {
+        let directory = directory();
+        let socket = directory.join("server.sock");
+        // First command (without -N) starts the server; later -N commands attach.
+        let tmux = |start: bool, args: &[&str]| {
+            let mut command = Command::new("tmux");
+            command.args(["-f", "/dev/null"]);
+            if !start {
+                command.arg("-N");
+            }
+            bounded_output(command.arg("-S").arg(&socket).args(args).env_remove("TMUX")).unwrap()
+        };
+        assert!(tmux(true, &["new-session", "-d", "-s", "w", "/bin/sleep 30"])
+            .status
+            .success());
+        assert!(tmux(false, &["new-window", "-t", "=w", "/bin/sleep 30"])
+            .status
+            .success());
+        assert!(tmux(false, &["new-window", "-t", "=w", "/bin/sleep 30"])
+            .status
+            .success());
+        // A user's tmux.conf commonly enables this; prove the pin overrides it.
+        assert!(tmux(false, &["set-option", "-g", "renumber-windows", "on"])
+            .status
+            .success());
+        pin_window_indices(&socket);
+        assert_eq!(
+            String::from_utf8_lossy(&tmux(false, &["show-option", "-gv", "renumber-windows"]).stdout)
+                .trim(),
+            "off"
+        );
+        // Closing the middle window must leave the last window's index untouched,
+        // so a tile still terminates exactly the window it was created for.
+        let before: Vec<String> =
+            String::from_utf8_lossy(&tmux(false, &["list-windows", "-t", "=w", "-F", "#{window_index}"]).stdout)
+                .split_whitespace()
+                .map(str::to_owned)
+                .collect();
+        let middle = &before[1];
+        assert!(tmux(false, &["kill-window", "-t", &format!("=w:{middle}")])
+            .status
+            .success());
+        let after: Vec<String> =
+            String::from_utf8_lossy(&tmux(false, &["list-windows", "-t", "=w", "-F", "#{window_index}"]).stdout)
+                .split_whitespace()
+                .map(str::to_owned)
+                .collect();
+        assert_eq!(after, vec![before[0].clone(), before[2].clone()]);
+        let _ = tmux(false, &["kill-server"]);
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
