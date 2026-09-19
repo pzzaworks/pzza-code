@@ -35,6 +35,24 @@
   animation: tour-tip-in 180ms ease-out;
 }
 
+/* Anchor-less (centered) variant: the keyframe transform would override the
+   inline translate(-50%,-50%) centering for 180ms and the popup would visibly
+   snap into place, so the offset rides along inside the animation instead. */
+.menu.tour-tip-center {
+  animation-name: tour-tip-in-center;
+}
+
+@keyframes tour-tip-in-center {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -50%) translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, -50%);
+  }
+}
+
 .tour-tip-head {
   display: flex;
   align-items: baseline;

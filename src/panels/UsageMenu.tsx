@@ -204,7 +204,11 @@ export function UsageMenu() {
                 )}
                 <span className="usage-name">{p.name}</span>
                 {acc.plan ? <span className="usage-plan">{acc.plan.replace(/_/g, " ")}</span> : null}
-                {acc.email ? <span className="usage-email">{acc.email}</span> : null}
+                {acc.email ? (
+                  <span className="usage-email">{acc.email}</span>
+                ) : acc.keyHint ? (
+                  <span className="usage-email usage-key" title="API key fingerprint">{acc.keyHint}</span>
+                ) : null}
                 {acc.sourceName ? <span className="usage-plan" title={`Usage from ${acc.sourceHost}`}>{acc.sourceName}</span> : null}
               </div>
               {acc.error ? (

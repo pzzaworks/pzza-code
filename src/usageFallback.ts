@@ -50,7 +50,7 @@ export function mergeDeviceUsage(local: AccountUsage[], remote: AccountUsage[]):
     const seen = new Set<string>();
     const replacements = remoteAccounts.filter(account => {
       if (account.provider !== provider || !usable(account)) return false;
-      const key = account.email?.toLowerCase() || account.label;
+      const key = account.email?.toLowerCase() || account.keyHint || account.label;
       if (seen.has(key)) return false;
       seen.add(key);
       return true;

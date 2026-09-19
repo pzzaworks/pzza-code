@@ -71,9 +71,18 @@ button {
   user-select: none;
 }
 /* macOS overlay title bar: the traffic-light buttons float over the top-left of
-   the bar, so inset the content clear of them. The bar itself stays draggable. */
+   the bar, so inset the content clear of them. The bar itself stays draggable.
+   Geometry (42px bar, 14px lights with 9px gaps measured on-device): Tauri
+   keeps the buttons' 9px bottom offset, so the visible top margin is y - 9.
+   x14/y23 gives equal 14px top/left/bottom insets, and the brand starts at
+   14 + 60 + 14. */
 .tauri-mac .topbar {
-  padding-left: 78px;
+  padding-left: 88px;
+}
+/* macOS fullscreen: the traffic lights move to the hover menu bar, so the
+   brand inset collapses back to the normal left padding. */
+.tauri-mac.tauri-fullscreen .topbar {
+  padding-left: 12px;
 }
 .topbar-spacer {
   flex: 1;
@@ -1555,6 +1564,11 @@ button {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+/* Masked API key fingerprint: monospace so keys are easy to tell apart. */
+.usage-key {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  letter-spacing: 0.1px;
 }
 .usage-bar-row + .usage-bar-row {
   margin-top: 8px;

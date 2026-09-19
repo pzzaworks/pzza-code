@@ -5,7 +5,7 @@ import { execFile } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
-import { discoverAccounts, readClaudeOAuth, readClaudeIdentity, readCodexCreds, readOpencodeKey } from "./accounts.js";
+import { discoverAccounts, readClaudeOAuth, readClaudeIdentity, readCodexCreds, readOpencodeKey, maskApiKey } from "./accounts.js";
 
 export const USAGE_FRESH_MS = 5 * 60 * 1000; // the endpoints 429 if polled harder
 // A failed entry (expired token, provider hiccup) is retried much sooner, so the
@@ -206,12 +206,13 @@ export async function fetchOpencodeUsage(apiKey) {
   return { five_hour: asWindow(rolling), seven_day: asWindow(weekly), scoped };
 }
 
-async function opencodeAccountUsage(acc, fresh) {
+// Exported for unit tests.
+export async function opencodeAccountUsage(acc, fresh) {
   const apiKey = readOpencodeKey();
   // No usable key on this device: hide it rather than showing a row that can
   // never load (mirrors the Claude behavior above).
   if (!apiKey) return null;
-  const entry = { provider: "opencode", label: acc.label, plan: "Go", usage: null, error: null };
+  const entry = { provider: "opencode", label: acc.label, plan: "Go", keyHint: maskApiKey(apiKey), usage: null, error: null };
   try {
     return { ...entry, usage: await limitedUsage(credentialKey("opencode", apiKey), () => fetchOpencodeUsage(apiKey), { fresh }) };
   } catch (e) {
