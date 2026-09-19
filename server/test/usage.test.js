@@ -138,11 +138,56 @@ test("opencode usage entries carry a masked key fingerprint, never the key", asy
     rolling: { status: "ok", percent: 7, resetsAt: null },
   } }), { headers: { "Content-Type": "application/json" } });
   try {
-    const entry = await opencodeAccountUsage({ label: "OpenCode" }, true);
+    // Point at a missing keys file so the real ~/.opencode-keys on a dev
+    // machine can never leak into (or hit the network from) this test.
+    const entries = await opencodeAccountUsage({ label: "OpenCode" }, true, path.join(root, "no-such-keys"));
+    assert.equal(entries.length, 1);
+    const entry = entries[0];
     assert.equal(entry.provider, "opencode");
     assert.equal(entry.keyHint, "zen-…DDDD");
     assert.equal(entry.keyHint, maskApiKey(apiKey));
-    assert.ok(!JSON.stringify(entry).includes(apiKey), "entry must not contain the full key");
+    assert.ok(!JSON.stringify(entries).includes(apiKey), "entries must not contain the full key");
+  } finally {
+    globalThis.fetch = realFetch;
+    if (previousXdg === undefined) delete process.env.XDG_DATA_HOME;
+    else process.env.XDG_DATA_HOME = previousXdg;
+  }
+});
+
+test("every local opencode key gets its own usage card", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "pzza-multikey-"));
+  const dataHome = path.join(root, "data");
+  await mkdir(path.join(dataHome, "opencode"), { recursive: true });
+  const authKey = "auth-test-key-AAAAAAAAAAAAAAAAAAAAAAAA";
+  await writeFile(path.join(dataHome, "opencode", "auth.json"), JSON.stringify({ opencode: { key: authKey } }));
+  const keysFile = path.join(root, ".opencode-keys");
+  await writeFile(keysFile, [
+    "# shell key file",
+    `export OP_KEY_A="${authKey}"`,
+    `export OP_KEY_B='file-test-key-BBBBBBBBBBBBBBBBBBBBBBBB'`,
+    'export OP_KEY_C=file-test-key-CCCCCCCCCCCCCCCCCCCCCCCC',
+    "export SHORT=abc",
+    "not an export line",
+    "",
+  ].join("\n"));
+  const realFetch = globalThis.fetch;
+  const previousXdg = process.env.XDG_DATA_HOME;
+  process.env.XDG_DATA_HOME = dataHome;
+  globalThis.fetch = async () => new Response(JSON.stringify({ usage: {
+    rolling: { status: "ok", percent: 7, resetsAt: null },
+  } }), { headers: { "Content-Type": "application/json" } });
+  try {
+    const entries = await opencodeAccountUsage({ label: "OpenCode" }, true, keysFile);
+    // Auth key first, then the two distinct file keys; the auth duplicate and
+    // the short non-key value are skipped.
+    assert.equal(entries.length, 3);
+    assert.equal(entries[0].keyHint, maskApiKey(authKey));
+    const hints = entries.map((entry) => entry.keyHint);
+    assert.equal(new Set(hints).size, 3);
+    const blob = JSON.stringify(entries);
+    for (const secret of [authKey, "file-test-key-BBBBBBBBBBBBBBBBBBBBBBBB", "file-test-key-CCCCCCCCCCCCCCCCCCCCCCCC"]) {
+      assert.ok(!blob.includes(secret), "entries must not contain full keys");
+    }
   } finally {
     globalThis.fetch = realFetch;
     if (previousXdg === undefined) delete process.env.XDG_DATA_HOME;

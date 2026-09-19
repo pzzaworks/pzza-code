@@ -5,7 +5,7 @@ import { execFile } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
-import { discoverAccounts, readClaudeOAuth, readClaudeIdentity, readCodexCreds, readOpencodeKey, maskApiKey } from "./accounts.js";
+import { discoverAccounts, readClaudeOAuth, readClaudeIdentity, readCodexCreds, readOpencodeKeys, maskApiKey } from "./accounts.js";
 
 export const USAGE_FRESH_MS = 5 * 60 * 1000; // the endpoints 429 if polled harder
 // A failed entry (expired token, provider hiccup) is retried much sooner, so the
@@ -206,20 +206,32 @@ export async function fetchOpencodeUsage(apiKey) {
   return { five_hour: asWindow(rolling), seven_day: asWindow(weekly), scoped };
 }
 
+// OpenCode Go usage for EVERY local key: the connected auth.json key plus the
+// shell key file, so each subscription gets its own card distinguished by its
+// masked fingerprint. Returns an array (possibly empty); refreshUsage flattens.
 // Exported for unit tests.
-export async function opencodeAccountUsage(acc, fresh) {
-  const apiKey = readOpencodeKey();
-  // No usable key on this device: hide it rather than showing a row that can
-  // never load (mirrors the Claude behavior above).
-  if (!apiKey) return null;
-  const entry = { provider: "opencode", label: acc.label, plan: "Go", keyHint: maskApiKey(apiKey), usage: null, error: null };
-  try {
-    return { ...entry, usage: await limitedUsage(credentialKey("opencode", apiKey), () => fetchOpencodeUsage(apiKey), { fresh }) };
-  } catch (e) {
-    if (e?.unsupported) return null;
-    if (e?.status === 401 || e?.status === 403) return { ...entry, error: `Go API key rejected - ${OPENCODE_SIGNIN_HINT}` };
-    throw e;
+export async function opencodeAccountUsage(acc, fresh, keysFile) {
+  const keys = readOpencodeKeys(keysFile);
+  if (!keys.length) return null;
+  const seen = new Set();
+  const entries = [];
+  for (const apiKey of keys) {
+    const keyHint = maskApiKey(apiKey);
+    if (seen.has(keyHint)) continue;
+    seen.add(keyHint);
+    const entry = { provider: "opencode", label: acc.label, plan: "Go", keyHint, usage: null, error: null };
+    try {
+      entries.push({ ...entry, usage: await limitedUsage(credentialKey("opencode", apiKey), () => fetchOpencodeUsage(apiKey), { fresh }) });
+    } catch (e) {
+      if (e?.unsupported) continue;
+      if (e?.status === 401 || e?.status === 403) {
+        entries.push({ ...entry, error: `Go API key rejected - ${OPENCODE_SIGNIN_HINT}` });
+        continue;
+      }
+      entries.push({ ...entry, error: String(e?.message || e) });
+    }
   }
+  return entries;
 }
 
 // Codex usage. A 401/403 from the usage endpoint means the token is expired
@@ -261,7 +273,7 @@ async function refreshUsage(fresh) {
         }
       }),
     )
-  ).filter(Boolean);
+  ).flat().filter(Boolean);
   usageCache = { at: Date.now(), data, failed: data.some((a) => a.error || a.usage?.stale) };
   return data;
 }
