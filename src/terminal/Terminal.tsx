@@ -496,7 +496,19 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
         lastRow: () => term.buffer.active.length - 1,
       });
       const bellListener = term.onBell(() => notificationSignals.bell());
-      const outputCaptureListener = term.onWriteParsed(() => notificationSignals.captureOutput());
+      // The capture behind terminal notifications scans up to 80 buffer rows
+      // with heavyweight regexes on every parsed write. While an agent streams,
+      // that fires hundreds of times per second - and a fullscreen terminal
+      // multiplies the bytes per redraw - pinning a core and heating the
+      // machine. The bell and erase paths capture on demand, so this
+      // speculative per-write refresh only needs to run at most once a second.
+      let lastCaptureAt = 0;
+      const outputCaptureListener = term.onWriteParsed(() => {
+        const now = performance.now();
+        if (now - lastCaptureAt < 1000) return;
+        lastCaptureAt = now;
+        notificationSignals.captureOutput();
+      });
       // One transport batch can contain a complete response and its replacement.
       // Observe the buffer before erasure while leaving terminal parsing unchanged.
       const eraseCaptureListeners = ["J"].map(final => term.parser.registerCsiHandler({ final }, () => {
