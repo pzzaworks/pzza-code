@@ -100,6 +100,39 @@ export function maskApiKey(key) {
   return "••••";
 }
 
+// Extra OpenCode Go keys from the user's shell key file (~/.opencode-keys):
+// one `export NAME="key"` per line. Comments, non-export lines and short
+// non-key values are ignored. Accepts an explicit path so tests never touch
+// the real file.
+export function readOpencodeKeysFile(keysPath = path.join(os.homedir(), ".opencode-keys")) {
+  let text;
+  try {
+    text = fs.readFileSync(keysPath, "utf8");
+  } catch {
+    return [];
+  }
+  const keys = [];
+  for (const line of text.split("\n")) {
+    const match = /^\s*export\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s#]+))/.exec(line);
+    if (!match) continue;
+    const value = match[2] ?? match[3] ?? match[4] ?? "";
+    if (/^[A-Za-z0-9\-_]{20,}$/.test(value) && !keys.includes(value)) keys.push(value);
+  }
+  return keys;
+}
+
+// Every OpenCode Go key on this device: the connected auth.json key first,
+// then the shell key file. Callers distinguish cards by fingerprint.
+export function readOpencodeKeys(keysFile) {
+  const keys = [];
+  const authKey = readOpencodeKey();
+  if (authKey) keys.push(authKey);
+  for (const key of readOpencodeKeysFile(keysFile)) {
+    if (!keys.includes(key)) keys.push(key);
+  }
+  return keys;
+}
+
 function hasOpencodeKey() {
   return readOpencodeKey() !== null;
 }
