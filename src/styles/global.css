@@ -3233,6 +3233,26 @@ button {
   border-radius: 1px;
   opacity: 0.9;
 }
+.usage-more-details {
+  color: var(--muted);
+  font-size: 11px;
+}
+.usage-more-details > summary {
+  cursor: pointer;
+  width: 100%;
+  padding: 2px 0;
+  font-size: 12px;
+  text-align: left;
+}
+.usage-more-details > summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.usage-more-details[open] {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
 .usage-daily-details {
   color: var(--muted);
   font-size: 11px;

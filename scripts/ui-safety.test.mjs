@@ -424,6 +424,7 @@ test('destructive app-control preflight waits for local approval and rejects pen
 
 test('usage bars reflect measured tokens and expose honest daily estimates', options, async t => {
   const page = await pageFor(t, 'usage');
+  await page.getByText('More', { exact: true }).click();
   await page.getByRole('img', { name: /Daily token usage/ }).waitFor();
   const bars = await page.locator('.usage-trend-bar').evaluateAll(elements => elements.map(element => ({ height: element.style.height, border: getComputedStyle(element).borderTopStyle, pixels: element.getBoundingClientRect().height })));
   assert.deepEqual(bars.map(bar => bar.height), ['100%', '25%', '50%', '0%']);
@@ -540,6 +541,7 @@ test('remote account cards show their own token details and retain them when loc
   });
   await page.goto(`${origin}__ui_test?mode=usage-accounts`);
   const card = page.locator('.usage-card').filter({ hasText: 'Devbox' });
+  await card.getByText('More', { exact: true }).click();
   await card.getByText('Token trend', { exact: true }).waitFor();
   assert.match(await card.textContent(), /2\.6M tokens/);
   assert.equal(await card.locator('.usage-detail').count(), 1);
