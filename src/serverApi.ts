@@ -464,6 +464,7 @@ export interface AccountUsage {
   provider: "claude" | "codex" | "opencode";
   label: string;
   email?: string;
+  keyHint?: string;
   plan?: string;
   tier?: string | null;
   usage: {

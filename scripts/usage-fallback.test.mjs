@@ -21,6 +21,13 @@ test("healthy local providers win while remote devices fill missing providers an
   assert.deepEqual(mergeDeviceUsage(local, remote), [local[0], remote[1]]);
 });
 
+test("remote opencode cards with different key fingerprints are kept side by side", () => {
+  const a = { ...account("opencode"), keyHint: "aaaa…1111" };
+  const b = { ...account("opencode"), keyHint: "bbbb…2222" };
+  assert.deepEqual(mergeDeviceUsage([], [a, b]), [a, b]);
+  assert.equal(mergeDeviceUsage([], [a, { ...b, keyHint: "aaaa…1111" }]).length, 1);
+});
+
 test("publishes a healthy remote device while another connected device is still pending", async () => {
   let release;
   const blocked = new Promise(resolve => { release = resolve; });

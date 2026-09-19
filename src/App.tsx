@@ -250,6 +250,35 @@ export default function App() {
     return () => document.documentElement.classList.remove("tauri-mac");
   }, []);
 
+  // In macOS fullscreen the traffic lights leave the window (they live in the
+  // hover menu bar), so drop the brand inset and let the logo slide left.
+  // A resize fires on every fullscreen transition, which is when we re-check.
+  useEffect(() => {
+    if (!HAS_TAURI) return;
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    const sync = async () => {
+      try {
+        const { getCurrentWindow } = await import("@tauri-apps/api/window");
+        if (disposed) return;
+        const fullscreen = await getCurrentWindow().isFullscreen();
+        if (!disposed) document.documentElement.classList.toggle("tauri-fullscreen", fullscreen);
+      } catch {
+        /* offline or shutting down - keep the last state */
+      }
+    };
+    void sync();
+    void import("@tauri-apps/api/window")
+      .then(({ getCurrentWindow }) => getCurrentWindow().onResized(() => { void sync(); }))
+      .then(stop => { if (disposed) stop(); else unlisten = stop; })
+      .catch(() => {});
+    return () => {
+      disposed = true;
+      try { unlisten?.(); } catch { /* ignore */ }
+      document.documentElement.classList.remove("tauri-fullscreen");
+    };
+  }, []);
+
   const seeded = useRef(false);
   useEffect(() => {
     if (seeded.current) return;

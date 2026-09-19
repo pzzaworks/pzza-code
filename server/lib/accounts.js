@@ -91,6 +91,15 @@ export function readOpencodeKey() {
   }
 }
 
+// Masked fingerprint of an API key for display: enough to tell keys apart,
+// never enough to reuse. The full secret stays in the backend.
+export function maskApiKey(key) {
+  const s = String(key ?? "");
+  if (s.length > 12) return `${s.slice(0, 4)}…${s.slice(-4)}`;
+  if (s.length > 4) return `${s.slice(0, 2)}…${s.slice(-2)}`;
+  return "••••";
+}
+
 function hasOpencodeKey() {
   return readOpencodeKey() !== null;
 }
