@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createUsageLimiter, fetchOpencodeUsage, fixClaudeToken, usageResponseError, USAGE_FRESH_MS } from "../lib/usage.js";
+import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { createUsageLimiter, fetchOpencodeUsage, fixClaudeToken, opencodeAccountUsage, usageResponseError, USAGE_FRESH_MS } from "../lib/usage.js";
+import { maskApiKey } from "../lib/accounts.js";
 
 test("duplicate accounts and refresh requests share calls and respect freshness", async () => {
   let now = 0;
@@ -118,6 +122,31 @@ test("opencode credits map to a quota window while unsupported accounts stay hid
     await assert.rejects(fetchOpencodeUsage("sk-test"), /unavailable for this account/);
   } finally {
     globalThis.fetch = realFetch;
+  }
+});
+
+test("opencode usage entries carry a masked key fingerprint, never the key", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "pzza-keyhint-"));
+  const dataHome = path.join(root, "data");
+  await mkdir(path.join(dataHome, "opencode"), { recursive: true });
+  const apiKey = "zen-test-key-AAAABBBBCCCCDDDD";
+  await writeFile(path.join(dataHome, "opencode", "auth.json"), JSON.stringify({ opencode: { key: apiKey } }));
+  const realFetch = globalThis.fetch;
+  const previousXdg = process.env.XDG_DATA_HOME;
+  process.env.XDG_DATA_HOME = dataHome;
+  globalThis.fetch = async () => new Response(JSON.stringify({ usage: {
+    rolling: { status: "ok", percent: 7, resetsAt: null },
+  } }), { headers: { "Content-Type": "application/json" } });
+  try {
+    const entry = await opencodeAccountUsage({ label: "OpenCode" }, true);
+    assert.equal(entry.provider, "opencode");
+    assert.equal(entry.keyHint, "zen-…DDDD");
+    assert.equal(entry.keyHint, maskApiKey(apiKey));
+    assert.ok(!JSON.stringify(entry).includes(apiKey), "entry must not contain the full key");
+  } finally {
+    globalThis.fetch = realFetch;
+    if (previousXdg === undefined) delete process.env.XDG_DATA_HOME;
+    else process.env.XDG_DATA_HOME = previousXdg;
   }
 });
 

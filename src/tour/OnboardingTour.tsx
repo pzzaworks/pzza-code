@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
 import "./OnboardingTour.css";
 
@@ -114,6 +114,14 @@ const GAP = 12;
 export function OnboardingTour({ open, onClose }: { open: boolean; onClose: () => void }) {
   const [index, setIndex] = useState(0);
   const [resolved, setResolved] = useState<{ number: number; step: Step; rect: Rect | null } | null>(null);
+  const primaryRef = useRef<HTMLButtonElement>(null);
+
+  // Keyboard focus follows the step like autoFocus, but never scrolls: the
+  // browser scrolling a newly focused button into view would move the anchor
+  // and make the tooltip jump after it first painted.
+  useEffect(() => {
+    if (open && resolved) primaryRef.current?.focus({ preventScroll: true });
+  }, [open, resolved?.number]);
 
   useEffect(() => {
     if (open) setIndex(0);
@@ -139,8 +147,24 @@ export function OnboardingTour({ open, onClose }: { open: boolean; onClose: () =
         // measure it. Without this the ring and tooltip land outside the
         // viewport for an off-screen target and the tour looks frozen.
         target?.scrollIntoView({ block: "center", inline: "nearest", behavior: "instant" });
-        setResolved({ number: next, step, rect: target ? rectOf(target) : null });
-        return;
+        if (!target) {
+          setResolved({ number: next, step, rect: null });
+          return;
+        }
+        const rect = rectOf(target);
+        setResolved({ number: next, step, rect });
+        // Same-commit unmounts (e.g. the tour replayed from Settings) can
+        // shift the anchor right after this paint; confirm the measurement on
+        // the next frame instead of letting the tooltip visibly jump later.
+        const raf = requestAnimationFrame(() => {
+          const fresh = queryTarget(step.targets ?? []);
+          if (!fresh) return;
+          const r = rectOf(fresh);
+          if (Math.abs(r.x - rect.x) > 1 || Math.abs(r.y - rect.y) > 1 || Math.abs(r.w - rect.w) > 1 || Math.abs(r.h - rect.h) > 1) {
+            setResolved({ number: next, step, rect: r });
+          }
+        });
+        return () => cancelAnimationFrame(raf);
       }
       next++;
     }
@@ -224,7 +248,7 @@ export function OnboardingTour({ open, onClose }: { open: boolean; onClose: () =
       ) : (
         <div className="tour-dim tour-dim-full" />
       )}
-      <div className="menu tour-tip" style={tipStyle} key={step.id}>
+      <div className={rect ? "menu tour-tip" : "menu tour-tip tour-tip-center"} style={tipStyle} key={step.id}>
         <div className="tour-tip-head">
           <strong>{step.title}</strong>
           <span className="tour-count" aria-label={`Step ${number + 1} of ${STEPS.length}`}>{number + 1} / {STEPS.length}</span>
@@ -237,7 +261,7 @@ export function OnboardingTour({ open, onClose }: { open: boolean; onClose: () =
           <button type="button" className="tour-skip" onClick={finish}>Skip</button>
           <span className="tour-spacer" />
           {!isFirst ? <button type="button" className="btn btn-sm" onClick={() => go(-1)}>Back</button> : null}
-          <button type="button" className="btn btn-accent btn-sm" autoFocus onClick={() => (isLast ? finish() : go(1))}>
+          <button type="button" ref={primaryRef} className="btn btn-accent btn-sm" onClick={() => (isLast ? finish() : go(1))}>
             {isFirst ? "Start tour" : isLast ? "Done" : "Next"}
           </button>
         </div>
