@@ -55,26 +55,29 @@ export function UsageSpend({ spend, color }: { spend: AccountSpend; color: strin
   const billed = spend.pricingBasis === "opencode-billed";
   return (
     <div className="usage-detail" title={billed ? "Billed spend from local OpenCode session records." : "Standard short-context API-equivalent estimates from local token counts. Long-context and service-tier adjustments are not included."}>
-      <p className="usage-estimate-note" role="note"><Info size={12} aria-hidden="true" /><span>{billed ? "Billed spend, not an estimate." : "API estimate (short context), not billed spend."}</span></p>
-      <div className="usage-detail-row">
-        <span className="usage-detail-label">Token trend</span>
-        <Trend days={spend.days} color={color} />
-      </div>
-      {spend.days.length > 0 && <details className="usage-daily-details">
-        <summary>Daily breakdown</summary>
-        <div className="usage-daily-scroll">
-          <table>
-            <caption>Daily token usage and API-equivalent estimates</caption>
-            <thead><tr><th scope="col">Day</th><th scope="col">Tokens</th><th scope="col">Estimate</th></tr></thead>
-            <tbody>{spend.days.map(day => <tr key={day.day}>
-              <th scope="row">{day.day}</th><td>{fmtTokens(day.tokens)}</td><td title={estimateDescription(day)}>{estimateLabel(day)}</td>
-            </tr>)}</tbody>
-          </table>
+      <details className="usage-more-details">
+        <summary>More</summary>
+        <p className="usage-estimate-note" role="note"><Info size={12} aria-hidden="true" /><span>{billed ? "Billed spend, not an estimate." : "API estimate (short context), not billed spend."}</span></p>
+        <div className="usage-detail-row">
+          <span className="usage-detail-label">Token trend</span>
+          <Trend days={spend.days} color={color} />
         </div>
-      </details>}
-      {row("Today", spend.today)}
-      {row("Yesterday", spend.yesterday)}
-      {row("Last 30 days", spend.window)}
+        {spend.days.length > 0 && <details className="usage-daily-details">
+          <summary>Daily breakdown</summary>
+          <div className="usage-daily-scroll">
+            <table>
+              <caption>Daily token usage and API-equivalent estimates</caption>
+              <thead><tr><th scope="col">Day</th><th scope="col">Tokens</th><th scope="col">Estimate</th></tr></thead>
+              <tbody>{spend.days.map(day => <tr key={day.day}>
+                <th scope="row">{day.day}</th><td>{fmtTokens(day.tokens)}</td><td title={estimateDescription(day)}>{estimateLabel(day)}</td>
+              </tr>)}</tbody>
+            </table>
+          </div>
+        </details>}
+        {row("Today", spend.today)}
+        {row("Yesterday", spend.yesterday)}
+        {row("Last 30 days", spend.window)}
+      </details>
     </div>
   );
 }
