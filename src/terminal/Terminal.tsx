@@ -108,6 +108,12 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
   const [findCase, setFindCase] = useState(false);
   const [findMiss, setFindMiss] = useState(false);
   const [findCount, setFindCount] = useState<{ index: number; total: number } | null>(null);
+  // Resize veil: briefly covers the stretched-content flash between an xterm
+  // resize and tmux's redraw. Strictly time-bounded, pointer-transparent.
+  const [veiled, setVeiled] = useState(false);
+  // Timestamp of the last (re)attach: a fresh attach already earned a full
+  // tmux repaint, so grid-reshape refreshes skip their extra resize nudge.
+  const lastAttachAtRef = useRef(0);
   const findOpenRef = useRef(false);
   useEffect(() => {
     findOpenRef.current = findOpen;
@@ -360,7 +366,6 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
         useStore.getState().semiTransparent ? useStore.getState().transparencyOptions.surfaceOpacity / 100 : 1,
       ));
       let webgl: WebglAddon | null = null;
-      let rendererReleaseTimer: ReturnType<typeof setTimeout> | undefined;
       const releaseRenderer = () => {
         if (!webgl) return;
         const renderer = webgl;
@@ -383,13 +388,28 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
           try { renderer.dispose(); } catch { /* DOM rendering remains available. */ }
         }
       };
+      // The renderer follows visibility directly: acquire the moment the tile
+      // is seen, release exactly at suspend time. No separate timer, so a
+      // stale timeout can never strip a visible tile's renderer mid-paint.
       const updateRendererVisibility = () => {
-        clearTimeout(rendererReleaseTimer);
         if (tileVisible && document.visibilityState === "visible") acquireRenderer();
-        else rendererReleaseTimer = setTimeout(releaseRenderer, 5000);
       };
 
+      // Resize veil helpers: cover the stretched-content flash only when a
+      // real resize lands on an already-painted tile. Never on first paint,
+      // never sticky (the timer always lifts it).
+      let veilTimer: ReturnType<typeof setTimeout> | undefined;
+      let fittedOnce = false;
+      const veilForResize = () => {
+        if (!fittedOnce) return;
+        setVeiled(true);
+        clearTimeout(veilTimer);
+        veilTimer = setTimeout(() => setVeiled(false), 220);
+      };
       const safeFit = () => {
+        // Frozen during animated transitions: the freeze-end nonce bump fits
+        // once at the settled size instead.
+        if (useStore.getState().freezeFit) return;
         if (!container.getClientRects().length || container.clientWidth === 0 || container.clientHeight === 0) return;
         // Compute the target size WITHOUT resizing first (fit.fit() would resize to
         // its own row count, then our correction would resize again - that R -> R-1
@@ -429,12 +449,14 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
           }
         }
         if (dims.cols !== term.cols || rows !== term.rows) {
+          veilForResize();
           term.resize(dims.cols, rows);
         } else {
           // Same size but we just became measurable again (e.g. shown after a
           // workspace switch): repaint so a kept-alive tile is never left blank.
           term.refresh(0, term.rows - 1);
         }
+        fittedOnce = true;
       };
       safeFitRef.current = safeFit;
       safeFit();
@@ -450,6 +472,7 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
       let fitRaf = 0;
       const scheduleFit = () => {
         if (fitRaf || disposed) return;
+        if (useStore.getState().freezeFit) return;
         fitRaf = requestAnimationFrame(() => {
           fitRaf = 0;
           if (!disposed) safeFit();
@@ -565,79 +588,67 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
         },
       });
       flushOutputRef.current = output.flush;
-      // Visible-only streaming: while the tile is off-screen we hold transport
-      // credit instead of parsing. Both backends pause on unacked credit
-      // (node-pty flow high-water mark / Rust OUTPUT_CREDIT), so a hidden tile
-      // costs zero parse + render CPU and zero ack traffic. Input uses a
-      // separate path so it keeps working, tmux keeps the session alive, and
-      // resume replays everything in order - no reconnect, no epoch churn.
-      const pausedQueue: Array<{ bytes: Uint8Array; consumed: () => void }> = [];
-      let pausedBytes = 0;
-      let transportPaused = false;
-      let needsRedrawOnResume = false;
-      const PAUSED_QUEUE_MAX = 4 * 1024 * 1024;
-      const drainPaused = () => {
-        if (!pausedQueue.length) return;
-        const queued = pausedQueue.splice(0, pausedQueue.length);
-        pausedBytes = 0;
-        for (const chunk of queued) {
-          if (disposed) { chunk.consumed(); continue; }
-          markActive();
-          output.push(chunk.bytes, chunk.consumed);
-        }
-        output.flush();
+      // Visible-only transport: while the tile is off-screen we DETACH the
+      // tmux client instead of merely holding backpressure. A connected client
+      // that stops consuming blocks the shared tmux server's event loop and
+      // freezes every session on that box, including the fullscreen tile -
+      // holding credit is what wedged v0.2.57. Detaching removes the client so
+      // the server never waits on us; tmux keeps the session (and its
+      // scrollback) alive and repaints fully on re-attach. Input only flows on
+      // a live attachment; control calls on a suspended tile fail fast with a
+      // reveal-first message instead of hanging.
+      let suspendTimer: ReturnType<typeof setTimeout> | undefined;
+      let transportSuspended = false;
+      // Managed-chat tiles own an attachment-recovery loop; leave them alone.
+      const canSuspend = !managedChat;
+      // Stable per-tile resume offset: when a workspace returns, its tiles
+      // re-attach spread over ~60-240ms instead of stampeding tmux with N
+      // simultaneous full redraws. The active tile always resumes instantly.
+      const resumeDelayFor = (id: string, isActive: boolean) => {
+        if (isActive) return 0;
+        let hash = 0;
+        for (let index = 0; index < id.length; index++) hash = (hash * 31 + id.charCodeAt(index)) >>> 0;
+        return 60 + (hash % 180);
       };
-      const setTransportPaused = (paused: boolean) => {
-        if (transportPaused === paused || disposed) return;
-        transportPaused = paused;
-        if (!paused) {
-          drainPaused();
-          // A dropped-while-paused range (safety valve below) is repainted by
-          // forcing tmux into a full redraw via a real size change; otherwise
-          // a plain fit + repaint is enough.
-          if (needsRedrawOnResume && term.rows > 1) {
-            const cols = term.cols;
-            const rows = term.rows;
-            try {
-              term.resize(cols, rows - 1);
-              term.resize(cols, rows);
-            } catch { /* not attached */ }
-          }
-          scheduleFit();
-          try { term.refresh(0, term.rows - 1); } catch { /* renderer not ready */ }
-          needsRedrawOnResume = false;
-        }
-      };
-      let pauseTimer: ReturnType<typeof setTimeout> | undefined;
-      const schedulePauseCheck = () => {
-        clearTimeout(pauseTimer);
+      let resumeTimer: ReturnType<typeof setTimeout> | undefined;
+      const scheduleSuspendCheck = () => {
+        clearTimeout(suspendTimer);
+        clearTimeout(resumeTimer);
+        if (disposed) return;
         if (tileVisible && document.visibilityState === "visible") {
-          // Visible again: resume immediately so coming back never shows stale.
-          setTransportPaused(false);
+          if (transportSuspended && canSuspend) {
+            // Resume is async: keep the suspended flag until the attach
+            // actually starts, so a hide during the stagger window can't leave
+            // the tile unattached and un-suspended.
+            resumeTimer = setTimeout(() => {
+              if (disposed || !transportSuspended) return;
+              if (!tileVisible || document.visibilityState !== "visible") return;
+              transportSuspended = false;
+              acquireRenderer();
+              // Re-attach: tmux repaints the whole pane, then fit + repaint.
+              void attachTransport().catch((error: unknown) => transportFailed(error instanceof Error ? error.message : "Terminal attachment failed."));
+            }, resumeDelayFor(tileId, activeRef.current === true));
+          }
           output.flush();
           scheduleFit();
-        } else {
-          // Hidden: wait out scroll/workspace flicker before pausing, so rapid
-          // gidip-gelme never churns the stream.
-          pauseTimer = setTimeout(() => setTransportPaused(true), 1500);
+        } else if (canSuspend && !transportSuspended) {
+          // Wait out scroll/workspace flicker so rapid gidip-gelme never
+          // churns tmux attachments.
+          suspendTimer = setTimeout(() => {
+            if (disposed || transportSuspended) return;
+            if (tileVisible && document.visibilityState === "visible") return;
+            transportSuspended = true;
+            clearTimeout(idleTimer);
+            onStatus?.("idle");
+            detachTransport();
+            // Renderer leaves with the transport: one aligned teardown instead
+            // of a second repaint from a release timer.
+            releaseRenderer();
+          }, 1500);
         }
       };
       const writeOutput = (bytes: Uint8Array, consumed: () => void) => {
-        if (disposed) { consumed(); return; }
-        if (transportPaused) {
-          // Hold credit: the backend stops sending past its high-water mark,
-          // so the held queue stays bounded (~256KB + one message).
-          if (pausedBytes + bytes.byteLength > PAUSED_QUEUE_MAX) {
-            // Safety valve, should not happen in practice: ack-and-drop the
-            // oldest chunk and force a repaint on resume so tmux repaints it.
-            const dropped = pausedQueue.shift();
-            if (dropped) { pausedBytes -= dropped.bytes.byteLength; dropped.consumed(); }
-            needsRedrawOnResume = true;
-          }
-          pausedQueue.push({ bytes, consumed });
-          pausedBytes += bytes.byteLength;
-          return;
-        }
+        if (disposed) return;
         markActive();
         output.push(bytes, consumed);
       };
@@ -648,20 +659,21 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
       };
       const visibilityObserver = new IntersectionObserver(([entry]) => {
         tileVisible = entry.isIntersecting;
+        if (entry.isIntersecting) acquireRenderer();
         updateRendererVisibility();
         reportObserved(entry.isIntersecting);
-        schedulePauseCheck();
+        scheduleSuspendCheck();
       });
       visibilityObserver.observe(container);
       const onVisibilityChange = () => {
         updateRendererVisibility();
-        schedulePauseCheck();
+        scheduleSuspendCheck();
       };
       document.addEventListener("visibilitychange", onVisibilityChange);
-      // Mounting already hidden (background workspace, hidden tile): pause
-      // right away instead of streaming one cadence first.
+      // Mounting already hidden (background workspace, hidden tile): arm the
+      // suspend timer right away instead of streaming first.
       reportObserved(tileVisible);
-      schedulePauseCheck();
+      scheduleSuspendCheck();
 
       let exited = false;
       let connectionEpoch = 0;
@@ -712,6 +724,7 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
           });
           if (!current() || exited) { await killPty(id); return; }
           tauriId = id;
+          lastAttachAtRef.current = Date.now();
           unregisterDictation = registerDictationTarget(tileId, {
             focus: () => { if (current() && tauriId !== null) term.focus(); },
             preview: text => { composition.suspend(!activeRef.current || !document.hasFocus()); composition.preview(text); },
@@ -732,6 +745,7 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
             transportFailed(message);
             if (!managedChat && !gotData && !previewDispose) previewDispose = runBrowserPreview(term);
           }, () => { if (current()) transportFailed("The terminal attachment closed."); }, win, host, managedChat);
+          lastAttachAtRef.current = Date.now();
         }
       };
       const inputListener = term.onData(text => {
@@ -770,6 +784,7 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
       let pasteQueue = Promise.resolve();
       const connected = () => !disposed && !exited && attachmentReady && (HAS_TAURI ? tauriId !== null : !!ws?.ready());
       const insert = async (text: string, guarded: boolean, epoch = connectionEpoch) => {
+        if (transportSuspended) throw new Error("Terminal is paused while hidden. Reveal the tile before pasting.");
         if (!connected() || epoch !== connectionEpoch) throw new Error("Terminal is not connected to the same attachment. Retry after it connects.");
         if (guarded) validateTerminalPaste(text, term.modes.bracketedPasteMode);
         if (!text) return;
@@ -851,9 +866,8 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
       const unregisterControl = registerTerminalAppControl(tileId, createTerminalAppController({
         state: () => ({ connected: connected(), cols: term.cols, rows: term.rows, bufferLines: term.buffer.active.length, viewportY: term.buffer.active.viewportY, hasSelection: term.hasSelection(), bracketedPasteMode: term.modes.bracketedPasteMode }),
         lines: async () => {
-          // A hidden tile holds unparsed output; catch up first so MCP reads
-          // never see a stale buffer.
-          drainPaused();
+          // A suspended (hidden-detached) tile reads from its last-known
+          // buffer; it catches up from tmux on resume.
           output.flush();
           await new Promise<void>(resolve => term.write("", resolve));
           const lines: string[] = [];
@@ -870,6 +884,7 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
         paste: text => enqueuePaste(() => insert(text, true)),
         pasteClipboard: async () => { const data = await readClipboardData(); await enqueuePaste(() => performPaste(data, true)); },
         sendControl: value => enqueuePaste(async () => {
+          if (transportSuspended) throw new Error("Terminal is paused while hidden. Reveal the tile before sending input.");
           if (!connected()) throw new Error("The terminal is disconnected.");
           notificationSignals.input(value);
           cancelDictationInput();
@@ -941,16 +956,15 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
         clearTimeout(t2);
         clearTimeout(ptyResizeTimer);
         clearTimeout(idleTimer);
-        clearTimeout(pauseTimer);
-        pausedQueue.length = 0;
-        pausedBytes = 0;
+        clearTimeout(suspendTimer);
+        clearTimeout(resumeTimer);
+        clearTimeout(veilTimer);
         try {
           useStore.getState().clearTileObserved(tileId);
         } catch { /* store unavailable in preview */ }
         output.dispose();
         visibilityObserver.disconnect();
         document.removeEventListener("visibilitychange", onVisibilityChange);
-        clearTimeout(rendererReleaseTimer);
         releaseRenderer();
         flushOutputRef.current = null;
         resizeObserver.disconnect();
@@ -1015,13 +1029,18 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
   // Re-fit, then nudge the row count so tmux does a full redraw that overwrites
   // every cell, and finally repaint xterm. Runs twice to catch any transition.
   useEffect(() => {
-    if (refreshNonce === 0) return;
+    // Frozen during animated transitions: the freeze-end nonce bump re-fires
+    // this effect after motion settles, so mid-animation passes are skipped.
+    if (refreshNonce === 0 || useStore.getState().freezeFit) return;
     const hardRefresh = () => {
       const term = termRef.current;
       if (!term || !containerRef.current?.getClientRects().length) return;
       safeFitRef.current?.();
       const { cols, rows } = term;
-      if (rows > 1) {
+      // A fresh attach already earned a full tmux repaint on its own; the
+      // extra nudge would only flash twice.
+      const freshAttach = Date.now() - lastAttachAtRef.current < 2000;
+      if (!freshAttach && rows > 1) {
         try {
           // A real size change makes the tmux server repaint the whole pane.
           term.resize(cols, rows - 1);
@@ -1090,5 +1109,6 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
         </button>
       </div>
     ) : null}
+    {veiled ? <div className="term-veil" aria-hidden="true" /> : null}
   </div>;
 }
