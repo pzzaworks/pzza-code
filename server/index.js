@@ -28,7 +28,7 @@ import {
   tokenOk,
 } from "./lib/http.js";
 import { listPorts, listPortDetails, terminateListener, stopPortContainer } from "./lib/ports.js";
-import { listSessions, listWindows, scanSessions, sessionActivity, terminateSession, duplicateSession } from "./lib/tmux.js";
+import { listSessions, listWindows, scanSessions, sessionActivity, paneOutputActivity, terminateSession, duplicateSession } from "./lib/tmux.js";
 import { forwardStatus, setForwardEnabled, startForwardLoop } from "./lib/forward.js";
 import { listAccounts } from "./lib/accounts.js";
 import { USAGE_FRESH_MS, collectUsage, fixClaudeToken } from "./lib/usage.js";
@@ -136,6 +136,14 @@ const server = http.createServer(async (req, res) => {
     const host = url.searchParams.has("host") ? url.searchParams.get("host") : undefined;
     if (host && !SSH_TOKEN.test(host)) return json(res, 400, { error: "invalid host" });
     return json(res, 200, await sessionActivity(host));
+  }
+  // Last-output epoch per tmux pane, so hidden tiles can show a live dot
+  // without streaming any pty output.
+  if (url.pathname === "/sessions/output-activity" && req.method === "GET") {
+    const host = url.searchParams.has("host") ? url.searchParams.get("host") : undefined;
+    if (host && !SSH_TOKEN.test(host)) return json(res, 400, { error: "invalid host" });
+    try { return json(res, 200, await paneOutputActivity(host)); }
+    catch { return json(res, 503, { error: "Could not read output activity on this device" }); }
   }
   if (url.pathname === "/device/info" && req.method === "GET") {
     const host = url.searchParams.get("host") || "";

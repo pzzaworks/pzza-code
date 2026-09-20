@@ -132,6 +132,20 @@ export async function fetchSessionActivity(host?: string, signal?: AbortSignal):
   return response.json();
 }
 
+// Last-output epoch per tmux pane (tmux window_activity). Tiny JSON poll so
+// hidden tiles can show a live dot without streaming pty output.
+export interface PaneOutputActivity {
+  session: string;
+  window: number;
+  activity: number;
+  command: string;
+}
+export async function fetchPaneOutputActivity(host?: string, signal?: AbortSignal): Promise<PaneOutputActivity[]> {
+  const response = await agentFetch(`${SERVER_HTTP}/sessions/output-activity${host !== undefined ? `?host=${encodeURIComponent(host)}` : ""}`, { signal });
+  if (!response.ok) throw new Error("Output activity unavailable");
+  return response.json();
+}
+
 export async function fetchSessions(): Promise<RemoteSession[]> {
   const res = await agentFetch(`${SERVER_HTTP}/sessions`);
   if (!res.ok) throw new Error(`sessions ${res.status}`);

@@ -35,6 +35,7 @@ import { Modal } from "./ui/Modal";
 import { ConfirmationHost } from "./ui/ConfirmDialog";
 import { confirmUnsavedWork, hasUnsavedWork, protectUnsavedUnload } from "./state/unsavedWork";
 import { installTerminalDrops } from "./terminal/fileDrop";
+import { startBackgroundActivityPoll } from "./terminal/backgroundActivity";
 import { registerAppControlHandler, registerAppControlState } from "./appControlRuntime";
 import { useAppControl } from "./appControl";
 import { initializeDictation } from "./state/dictation";
@@ -44,6 +45,7 @@ import { announceMenu } from "./ui/menuBus";
 export default function App() {
   useEffect(() => startUpdateChecks(), []);
   useEffect(() => installTerminalDrops(), []);
+  useEffect(() => startBackgroundActivityPoll(), []);
   useEffect(() => {
     window.addEventListener("beforeunload", protectUnsavedUnload);
     return () => window.removeEventListener("beforeunload", protectUnsavedUnload);
