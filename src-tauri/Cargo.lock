@@ -3067,7 +3067,7 @@ dependencies = [
 
 [[package]]
 name = "pzzacode"
-version = "0.2.57"
+version = "0.2.58"
 dependencies = [
  "coreaudio-rs",
  "libc",
