@@ -182,7 +182,7 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
   useEffect(() => {
     // Programmatic tile focus must reveal the target even if another tile was
     // maximized or isolated locally in the canvas.
-    if (activeId && fullId && activeId !== fullId) setFullId(null);
+    if (activeId && fullId && activeId !== fullId) { useStore.getState().beginLayoutFreeze(); setFullId(null); }
     if (activeId && focusId && activeId !== focusId) setFocusId(null);
   }, [activeId, fullId, focusId]);
   const [renaming, setRenaming] = useState<{ id: string; val: string } | null>(null);
@@ -425,7 +425,10 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
       }),
       registerAppControlHandler("set_fullscreen", args => {
         const target = args.enabled ? reveal(args.tileId) : requireTile(args.tileId);
-        if (args.enabled || canvasControl.current.fullId === target.id) setFullId(args.enabled ? target.id : null);
+        if (args.enabled || canvasControl.current.fullId === target.id) {
+          useStore.getState().beginLayoutFreeze();
+          setFullId(args.enabled ? target.id : null);
+        }
         return { tileId: target.id, enabled: args.enabled };
       }),
       registerAppControlHandler("duplicate_tile", async args => ({ tileId: await canvasControl.current.duplicate(requireTile(args.tileId)) })),
@@ -704,6 +707,7 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
               onClick={(e) => {
                 e.stopPropagation();
                 activateTile(t.id);
+                useStore.getState().beginLayoutFreeze();
                 setFullId(isFull ? null : t.id);
               }}
             >
