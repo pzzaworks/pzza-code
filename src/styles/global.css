@@ -2875,22 +2875,38 @@ button {
   width: 7px;
 }
 
-/* Resize veil: covers the stretched-content flash between an xterm resize and
- * tmux's redraw (ssh RTT + parse). Theme-aware via the Canvas system color,
- * pointer-transparent so the live tile stays interactive, and strictly
- * time-bounded so it can never stick. */
+/* Resize veil: blurs the live content instead of hiding it, so a transition
+ * reads as a soft blur-up rather than a grey flash. Theme-aware tint via the
+ * Canvas system color, pointer-transparent, strictly time-bounded. */
 .term-veil {
   position: absolute;
   inset: 0;
   z-index: 4;
   pointer-events: none;
-  background: Canvas;
+  background: rgba(128, 128, 128, 0.28);
+  background: color-mix(in srgb, Canvas 32%, transparent);
+  backdrop-filter: blur(7px);
+  -webkit-backdrop-filter: blur(7px);
   opacity: 0;
   animation: term-veil-cover 220ms ease-out;
 }
 @keyframes term-veil-cover {
-  from { opacity: 0.85; }
+  from { opacity: 1; }
   to { opacity: 0; }
+}
+/* Snap cover while a fullscreen/workspace redraw streams in: steady blur
+ * until the first parsed bytes (or a bounded fallback), then swapped to the
+ * fade above. Same blur rules. */
+.term-veil-hold {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  pointer-events: none;
+  background: rgba(128, 128, 128, 0.28);
+  background: color-mix(in srgb, Canvas 32%, transparent);
+  backdrop-filter: blur(7px);
+  -webkit-backdrop-filter: blur(7px);
+  opacity: 1;
 }
 
 /* In-terminal find bar (Cmd/Ctrl+F). All matches highlight; Enter jumps. */
