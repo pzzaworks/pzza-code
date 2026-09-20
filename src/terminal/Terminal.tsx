@@ -108,9 +108,9 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
   const [findCase, setFindCase] = useState(false);
   const [findMiss, setFindMiss] = useState(false);
   const [findCount, setFindCount] = useState<{ index: number; total: number } | null>(null);
-  // Resize veil: briefly covers the stretched-content flash between an xterm
-  // resize and tmux's redraw. Strictly time-bounded, pointer-transparent.
-  const [veiled, setVeiled] = useState(false);
+  // Resize veil mode: "hold" covers a snap transition until its redraw is
+  // parsed, "fade" covers the short redraw RTT of an ordinary resize.
+  const [veilMode, setVeilMode] = useState<"off" | "hold" | "fade">("off");
   // Timestamp of the last (re)attach: a fresh attach already earned a full
   // tmux repaint, so grid-reshape refreshes skip their extra resize nudge.
   const lastAttachAtRef = useRef(0);
@@ -395,21 +395,25 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
         if (tileVisible && document.visibilityState === "visible") acquireRenderer();
       };
 
-      // Resize veil helpers: cover the stretched-content flash only when a
-      // real resize lands on an already-painted tile. Never on first paint,
-      // never sticky (the timer always lifts it).
+      // Resize veil helpers: "fade" covers the short redraw RTT of an
+      // ordinary resize; snap fits use "hold" until their redraw is parsed.
+      // Never on first paint, never sticky (a timer always lifts it).
       let veilTimer: ReturnType<typeof setTimeout> | undefined;
       let fittedOnce = false;
+      // Last fitted box size (snap detection) and pending snap cover. Declared
+      // up here because safeFit runs synchronously at mount, before the code
+      // below is reached - a later `let` would throw a TDZ error and kill init.
+      let lastFitPx: { w: number; h: number } | null = null;
+      let coverPending = false;
+      let coverShown = false;
+      let coverSafetyTimer: ReturnType<typeof setTimeout> | undefined;
       const veilForResize = () => {
         if (!fittedOnce) return;
-        setVeiled(true);
+        setVeilMode("fade");
         clearTimeout(veilTimer);
-        veilTimer = setTimeout(() => setVeiled(false), 220);
+        veilTimer = setTimeout(() => setVeilMode("off"), 220);
       };
       const safeFit = () => {
-        // Frozen during animated transitions: the freeze-end nonce bump fits
-        // once at the settled size instead.
-        if (useStore.getState().freezeFit) return;
         if (!container.getClientRects().length || container.clientWidth === 0 || container.clientHeight === 0) return;
         // Compute the target size WITHOUT resizing first (fit.fit() would resize to
         // its own row count, then our correction would resize again - that R -> R-1
@@ -449,8 +453,28 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
           }
         }
         if (dims.cols !== term.cols || rows !== term.rows) {
-          veilForResize();
+          // Snap detection: the box jumped far past its last fitted size
+          // (fullscreen, workspace return). Fit immediately, hold the cover
+          // until this exact size's redraw is parsed, with a bounded fallback
+          // so it can never stick. Ordinary resizes just get the short veil.
+          const boxW = container.clientWidth;
+          const boxH = container.clientHeight;
+          const snap = lastFitPx !== null && boxW > 0 && boxH > 0 &&
+            (boxW * boxH > lastFitPx.w * lastFitPx.h * 1.35 ||
+              boxW * boxH * 1.35 < lastFitPx.w * lastFitPx.h);
+          if (snap) {
+            // Always cover a snap with the terminal-tinted blur: consistent
+            // look on every transition, lifted by the first parsed bytes.
+            coverPending = true;
+            coverShown = true;
+            clearTimeout(coverSafetyTimer);
+            coverSafetyTimer = setTimeout(() => dropCover(true), 3000);
+            setVeilMode("hold");
+          } else {
+            veilForResize();
+          }
           term.resize(dims.cols, rows);
+          lastFitPx = { w: boxW, h: boxH };
         } else {
           // Same size but we just became measurable again (e.g. shown after a
           // workspace switch): repaint so a kept-alive tile is never left blank.
@@ -470,9 +494,30 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
       // whole scrollback buffer, so running it more than once per frame is
       // pure CPU burn across every mounted tile.
       let fitRaf = 0;
+      // Snap cover: the box snaps instantly on fullscreen/workspace changes
+      // (no gradual animation to track), so the only honest transition is:
+      // fit immediately, hold a steady veil until the settled-size redraw is
+      // parsed, then fade to crisp. No frozen-small phase, no garbage phase.
+      // (coverPending/coverSafetyTimer/lastFitPx live with the veil helpers
+      // above: safeFit runs synchronously at mount, before this point.)
+      // Drop a pending snap cover: fade the hold veil when it is showing,
+      // vanish silently when the redraw beat it. Never sticks: every arm has
+      // a bounded fallback.
+      const dropCover = (announce: boolean) => {
+        if (!coverPending) return;
+        coverPending = false;
+        clearTimeout(coverSafetyTimer);
+        if (announce && coverShown) {
+          coverShown = false;
+          setVeilMode("fade");
+          clearTimeout(veilTimer);
+          veilTimer = setTimeout(() => setVeilMode("off"), 230);
+        } else {
+          coverShown = false;
+        }
+      };
       const scheduleFit = () => {
         if (fitRaf || disposed) return;
-        if (useStore.getState().freezeFit) return;
         fitRaf = requestAnimationFrame(() => {
           fitRaf = 0;
           if (!disposed) safeFit();
@@ -580,7 +625,12 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
 
       let tileVisible = container.getClientRects().length > 0;
       const output = createOutputScheduler({
-        write: (bytes, consumed) => term.write(bytes, consumed),
+        write: (bytes, consumed) => term.write(bytes, () => {
+          // First parsed bytes after a snap fit: fade the cover if it ever
+          // showed, otherwise vanish silently (fast path: no effect at all).
+          dropCover(true);
+          consumed();
+        }),
         delay: () => {
           if (!tileVisible || document.visibilityState !== "visible") return 250;
           if (!document.hasFocus()) return 100;
@@ -644,6 +694,12 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
             // Renderer leaves with the transport: one aligned teardown instead
             // of a second repaint from a release timer.
             releaseRenderer();
+            // A hidden tile needs no cover: drop any pending one silently.
+            coverPending = false;
+            coverShown = false;
+            clearTimeout(coverSafetyTimer);
+            clearTimeout(veilTimer);
+            setVeilMode("off");
           }, 1500);
         }
       };
@@ -959,6 +1015,7 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
         clearTimeout(suspendTimer);
         clearTimeout(resumeTimer);
         clearTimeout(veilTimer);
+        clearTimeout(coverSafetyTimer);
         try {
           useStore.getState().clearTileObserved(tileId);
         } catch { /* store unavailable in preview */ }
@@ -1029,9 +1086,7 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
   // Re-fit, then nudge the row count so tmux does a full redraw that overwrites
   // every cell, and finally repaint xterm. Runs twice to catch any transition.
   useEffect(() => {
-    // Frozen during animated transitions: the freeze-end nonce bump re-fires
-    // this effect after motion settles, so mid-animation passes are skipped.
-    if (refreshNonce === 0 || useStore.getState().freezeFit) return;
+    if (refreshNonce === 0) return;
     const hardRefresh = () => {
       const term = termRef.current;
       if (!term || !containerRef.current?.getClientRects().length) return;
@@ -1062,6 +1117,15 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
       clearTimeout(t2);
     };
   }, [refreshNonce]);
+
+  // Veil tint: the terminal's own background at ~55% alpha, so the blur cover
+  // matches opaque and semi-transparent terms alike. Falls back to the CSS
+  // tint when the palette value is unexpected.
+  let veilTint: string | undefined;
+  try {
+    const base = terminalPalette(themeId, semiTransparent).background.replace("#", "").slice(0, 6);
+    veilTint = /^[0-9a-fA-F]{6}$/.test(base) ? `#${base}8c` : undefined;
+  } catch { veilTint = undefined; }
 
   return <div ref={containerRef} className="term-surface">
     {findOpen ? (
@@ -1109,6 +1173,12 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
         </button>
       </div>
     ) : null}
-    {veiled ? <div className="term-veil" aria-hidden="true" /> : null}
+    {veilMode !== "off" ? (
+      <div
+        className={veilMode === "hold" ? "term-veil-hold" : "term-veil"}
+        style={veilTint ? { background: veilTint } : undefined}
+        aria-hidden="true"
+      />
+    ) : null}
   </div>;
 }

@@ -96,9 +96,6 @@ async function listSessions(conn: Connection): Promise<RemoteSession[]> {
   return HAS_TAURI ? listRemoteSessions(conn) : fetchSessions();
 }
 
-// Pending end of a layout-fit freeze (workspace switch, fullscreen).
-let layoutFreezeTimer: ReturnType<typeof setTimeout> | undefined;
-
 interface ConsoleState {
   semiTransparent: boolean;
   setSemiTransparent: (enabled: boolean) => void;
@@ -131,13 +128,6 @@ interface ConsoleState {
   hiddenTiles: string[];
   hideTile: (name: string) => void;
   unhideTile: (name: string) => void;
-
-  // Fit freeze around animated layout transitions (workspace switch,
-  // fullscreen). While frozen, terminals skip per-frame fits; when the freeze
-  // ends a refreshNonce bump fits everything once at the settled size, so the
-  // animation never shows reflow garbage.
-  freezeFit: boolean;
-  beginLayoutFreeze: () => void;
 
   // Exact on-screen visibility per tile, reported by the terminal's own
   // IntersectionObserver (display:none from workspace/hide/maximize, or
@@ -278,7 +268,6 @@ export const useStore = create<ConsoleState>((set, get) => ({
   ),
   activeWorkspaceId: DEFAULT_WORKSPACE_ID,
   setWorkspace: (id) => {
-    get().beginLayoutFreeze();
     set((state) => {
       // Switching workspaces with nothing focused there feels dead: when the
       // active tile is not visible in the target workspace, focus its first
@@ -372,17 +361,6 @@ export const useStore = create<ConsoleState>((set, get) => ({
     const hiddenTiles = get().hiddenTiles.filter((n) => n !== name);
     persist(HIDDEN_KEY, hiddenTiles);
     set({ hiddenTiles });
-  },
-  freezeFit: false,
-  beginLayoutFreeze: () => {
-    clearTimeout(layoutFreezeTimer);
-    if (!get().freezeFit) set({ freezeFit: true });
-    // Longer than the tile spring (~300ms): fits resume after motion settles,
-    // and the nonce bump re-fits everything once at the final size.
-    layoutFreezeTimer = setTimeout(() => {
-      layoutFreezeTimer = undefined;
-      set((state) => ({ freezeFit: false, refreshNonce: state.refreshNonce + 1 }));
-    }, 350);
   },
   tileObserved: {},
   setTileObserved: (id, visible) => {
