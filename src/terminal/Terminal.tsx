@@ -565,22 +565,103 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
         },
       });
       flushOutputRef.current = output.flush;
+      // Visible-only streaming: while the tile is off-screen we hold transport
+      // credit instead of parsing. Both backends pause on unacked credit
+      // (node-pty flow high-water mark / Rust OUTPUT_CREDIT), so a hidden tile
+      // costs zero parse + render CPU and zero ack traffic. Input uses a
+      // separate path so it keeps working, tmux keeps the session alive, and
+      // resume replays everything in order - no reconnect, no epoch churn.
+      const pausedQueue: Array<{ bytes: Uint8Array; consumed: () => void }> = [];
+      let pausedBytes = 0;
+      let transportPaused = false;
+      let needsRedrawOnResume = false;
+      const PAUSED_QUEUE_MAX = 4 * 1024 * 1024;
+      const drainPaused = () => {
+        if (!pausedQueue.length) return;
+        const queued = pausedQueue.splice(0, pausedQueue.length);
+        pausedBytes = 0;
+        for (const chunk of queued) {
+          if (disposed) { chunk.consumed(); continue; }
+          markActive();
+          output.push(chunk.bytes, chunk.consumed);
+        }
+        output.flush();
+      };
+      const setTransportPaused = (paused: boolean) => {
+        if (transportPaused === paused || disposed) return;
+        transportPaused = paused;
+        if (!paused) {
+          drainPaused();
+          // A dropped-while-paused range (safety valve below) is repainted by
+          // forcing tmux into a full redraw via a real size change; otherwise
+          // a plain fit + repaint is enough.
+          if (needsRedrawOnResume && term.rows > 1) {
+            const cols = term.cols;
+            const rows = term.rows;
+            try {
+              term.resize(cols, rows - 1);
+              term.resize(cols, rows);
+            } catch { /* not attached */ }
+          }
+          scheduleFit();
+          try { term.refresh(0, term.rows - 1); } catch { /* renderer not ready */ }
+          needsRedrawOnResume = false;
+        }
+      };
+      let pauseTimer: ReturnType<typeof setTimeout> | undefined;
+      const schedulePauseCheck = () => {
+        clearTimeout(pauseTimer);
+        if (tileVisible && document.visibilityState === "visible") {
+          // Visible again: resume immediately so coming back never shows stale.
+          setTransportPaused(false);
+          output.flush();
+          scheduleFit();
+        } else {
+          // Hidden: wait out scroll/workspace flicker before pausing, so rapid
+          // gidip-gelme never churns the stream.
+          pauseTimer = setTimeout(() => setTransportPaused(true), 1500);
+        }
+      };
       const writeOutput = (bytes: Uint8Array, consumed: () => void) => {
-        if (disposed) return;
+        if (disposed) { consumed(); return; }
+        if (transportPaused) {
+          // Hold credit: the backend stops sending past its high-water mark,
+          // so the held queue stays bounded (~256KB + one message).
+          if (pausedBytes + bytes.byteLength > PAUSED_QUEUE_MAX) {
+            // Safety valve, should not happen in practice: ack-and-drop the
+            // oldest chunk and force a repaint on resume so tmux repaints it.
+            const dropped = pausedQueue.shift();
+            if (dropped) { pausedBytes -= dropped.bytes.byteLength; dropped.consumed(); }
+            needsRedrawOnResume = true;
+          }
+          pausedQueue.push({ bytes, consumed });
+          pausedBytes += bytes.byteLength;
+          return;
+        }
         markActive();
         output.push(bytes, consumed);
+      };
+      const reportObserved = (visible: boolean) => {
+        try {
+          useStore.getState().setTileObserved(tileId, visible);
+        } catch { /* store unavailable in preview */ }
       };
       const visibilityObserver = new IntersectionObserver(([entry]) => {
         tileVisible = entry.isIntersecting;
         updateRendererVisibility();
-        if (tileVisible) {
-          output.flush();
-          scheduleFit();
-        }
+        reportObserved(entry.isIntersecting);
+        schedulePauseCheck();
       });
       visibilityObserver.observe(container);
-      const onVisibilityChange = () => updateRendererVisibility();
+      const onVisibilityChange = () => {
+        updateRendererVisibility();
+        schedulePauseCheck();
+      };
       document.addEventListener("visibilitychange", onVisibilityChange);
+      // Mounting already hidden (background workspace, hidden tile): pause
+      // right away instead of streaming one cadence first.
+      reportObserved(tileVisible);
+      schedulePauseCheck();
 
       let exited = false;
       let connectionEpoch = 0;
@@ -770,6 +851,9 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
       const unregisterControl = registerTerminalAppControl(tileId, createTerminalAppController({
         state: () => ({ connected: connected(), cols: term.cols, rows: term.rows, bufferLines: term.buffer.active.length, viewportY: term.buffer.active.viewportY, hasSelection: term.hasSelection(), bracketedPasteMode: term.modes.bracketedPasteMode }),
         lines: async () => {
+          // A hidden tile holds unparsed output; catch up first so MCP reads
+          // never see a stale buffer.
+          drainPaused();
           output.flush();
           await new Promise<void>(resolve => term.write("", resolve));
           const lines: string[] = [];
@@ -857,6 +941,12 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
         clearTimeout(t2);
         clearTimeout(ptyResizeTimer);
         clearTimeout(idleTimer);
+        clearTimeout(pauseTimer);
+        pausedQueue.length = 0;
+        pausedBytes = 0;
+        try {
+          useStore.getState().clearTileObserved(tileId);
+        } catch { /* store unavailable in preview */ }
         output.dispose();
         visibilityObserver.disconnect();
         document.removeEventListener("visibilitychange", onVisibilityChange);

@@ -129,6 +129,15 @@ interface ConsoleState {
   hideTile: (name: string) => void;
   unhideTile: (name: string) => void;
 
+  // Exact on-screen visibility per tile, reported by the terminal's own
+  // IntersectionObserver (display:none from workspace/hide/maximize, or
+  // scrolled out of view). Runtime-only, never persisted. Missing entry =
+  // not measured yet, treated as visible so background polling never fires
+  // on a tile that simply hasn't mounted.
+  tileObserved: Record<string, boolean>;
+  setTileObserved: (id: string, visible: boolean) => void;
+  clearTileObserved: (id: string) => void;
+
   // Managed ssh devices (for RDP + forwarding server/client).
   devices: Device[];
   addDevice: (name: string, host: string, user?: string) => void;
@@ -353,6 +362,19 @@ export const useStore = create<ConsoleState>((set, get) => ({
     persist(HIDDEN_KEY, hiddenTiles);
     set({ hiddenTiles });
   },
+  tileObserved: {},
+  setTileObserved: (id, visible) => {
+    if (get().tileObserved[id] === visible) return;
+    set((state) => ({ tileObserved: { ...state.tileObserved, [id]: visible } }));
+  },
+  clearTileObserved: (id) => {
+    if (!(id in get().tileObserved)) return;
+    set((state) => {
+      const tileObserved = { ...state.tileObserved };
+      delete tileObserved[id];
+      return { tileObserved };
+    });
+  },
 
   // Always keep a "This Mac" local device (the machine running the app), and
   // make it the first entry so it is the default current device. Drop any stale
@@ -575,7 +597,9 @@ export const useStore = create<ConsoleState>((set, get) => ({
       const activeId =
         state.activeId === id ? (tiles.at(-1)?.id ?? null) : state.activeId;
       persist(TILES_KEY, tiles);
-      return { tiles, activeId, refreshNonce: state.refreshNonce + 1 };
+      const tileObserved = { ...state.tileObserved };
+      delete tileObserved[id];
+      return { tiles, activeId, tileObserved, refreshNonce: state.refreshNonce + 1 };
     }),
 
   // Move one tile to another tile's position (drag-to-reorder in the grid).
