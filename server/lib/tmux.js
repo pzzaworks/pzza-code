@@ -79,6 +79,7 @@ export function duplicateSession(name, window, host) {
 }
 
 export function parseSessions(out) {
+
   const sessions = [];
   for (const line of String(out || "").split("\n")) {
     if (!line) continue;
@@ -189,4 +190,49 @@ export function sessionActivity(host) {
   }).finally(() => pendingActivity.delete(target));
   pendingActivity.set(target, request);
   return request;
+}
+
+// Output-activity probe for hidden tiles: per-pane last-activity epoch so the
+// UI can light a notification dot without streaming any pty output.
+// monitor-activity only records the timestamp; visual-activity stays off so no
+// activity messages are injected into attached terminals.
+const outputActivityScript = (host) => {
+  const tmux = tmuxCommand(host);
+  return (
+    `${tmux} set-window-option -g monitor-activity on 2>/dev/null; ` +
+    `${tmux} list-windows -a -F '#{session_name}:#{window_index}' 2>/dev/null | ` +
+    `while IFS= read -r target; do case "$target" in *:*[0-9]*) ${tmux} set-window-option -t "$target" monitor-activity on 2>/dev/null;; esac; done; ` +
+    `${tmux} list-panes -a -F '#{session_name}\t#{window_index}\t#{window_activity}\t#{pane_current_command}' 2>/dev/null`
+  );
+};
+
+export function parsePaneOutputActivity(out) {
+  const rows = [];
+  for (const line of String(out || "").split("\n")) {
+    if (!line) continue;
+    const [session, window, activity, command] = line.split("\t");
+    if (!session || /[\x00-\x1f\x7f]/.test(session)) continue;
+    const windowIndex = Number(window);
+    const lastActivity = Number(activity);
+    if (!Number.isInteger(windowIndex) || windowIndex < 0) continue;
+    if (!Number.isInteger(lastActivity) || lastActivity < 0) continue;
+    rows.push({ session, window: windowIndex, activity: lastActivity, command: typeof command === "string" ? command : "" });
+  }
+  return rows;
+}
+
+// Last-output epoch per tmux pane on a device (including sessions the app
+// never opened). Never rejects on a missing server: no tmux = no activity.
+export function paneOutputActivity(host) {
+  if (host !== undefined && (typeof host !== "string" || (host && !SSH_TOKEN.test(host)))) return Promise.reject(new Error("invalid host"));
+  const targetHost = host === undefined ? (IS_CLIENT ? DEVBOX : "") : host;
+  const command = outputActivityScript(targetHost);
+  return new Promise((resolve, reject) => {
+    execFile(targetHost ? "ssh" : "sh", targetHost
+      ? ["-o", "BatchMode=yes", "-o", "ConnectTimeout=8", "-o", "StrictHostKeyChecking=accept-new", targetHost, command]
+      : ["-c", command], { timeout: 15000, env: deviceEnv(targetHost) }, (error, output, stderr) => {
+      if (error && !/no server running|no sessions|error connecting.*No such file/.test(stderr || "")) return reject(new Error("Could not read output activity on this device"));
+      resolve(error ? [] : parsePaneOutputActivity(output));
+    });
+  });
 }
