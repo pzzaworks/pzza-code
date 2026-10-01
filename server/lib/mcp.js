@@ -46,42 +46,90 @@ export function mcpConfigs(mcpPath, { agentHost = "" } = {}) {
   };
 }
 
-async function resolveOpencode() {
-  const direct = await run("opencode", ["--version"]);
-  if (direct.ok) return "opencode";
-  const home = os.homedir();
-  for (const candidate of [
-    path.join(home, ".opencode", "bin", "opencode"),
-    "/opt/homebrew/bin/opencode",
-    "/usr/local/bin/opencode",
-  ]) {
+// Agent CLIs install outside the PATH a Finder-launched app inherits (the
+// native Claude installer uses ~/.local/bin, OpenCode ~/.opencode/bin), so
+// look in PATH first and then in each CLI's well-known install locations.
+// Returns null when the CLI is not installed, so callers can say so plainly
+// instead of surfacing a raw `spawn ENOENT`.
+const CLI_LOCATIONS = {
+  claude: (home) => [path.join(home, ".local", "bin"), path.join(home, ".claude", "local")],
+  codex: () => [],
+  opencode: (home) => [path.join(home, ".opencode", "bin")],
+};
+
+const SYSTEM_BIN_DIRS = ["/opt/homebrew/bin", "/usr/local/bin"];
+
+export function resolveCli(name, { home = os.homedir(), env = process.env, systemDirs = SYSTEM_BIN_DIRS } = {}) {
+  const extra = CLI_LOCATIONS[name]?.(home) ?? [];
+  const pathDirs = String(env.PATH || "").split(path.delimiter).filter((dir) => path.isAbsolute(dir));
+  for (const dir of [...pathDirs, ...extra, ...systemDirs]) {
+    const candidate = path.join(dir, name);
     try {
       fs.accessSync(candidate, fs.constants.X_OK);
-      return candidate;
+      if (fs.statSync(candidate).isFile()) return candidate;
     } catch {
       /* try the next location */
     }
   }
-  return "opencode";
+  return null;
 }
 
-export async function mcpInstall(framework, mcpPath) {
-  if (framework === "claude") {
-    const r = await run("claude", ["mcp", "add", "-s", "user", "pzzacode-mcp", "--", "node", mcpPath]);
-    return { framework, ...r, via: "claude mcp add" };
+const CLI_LABELS = { claude: "Claude Code", codex: "Codex", opencode: "OpenCode" };
+
+// The user-scope entry `claude mcp add -s user` writes: top-level mcpServers
+// in ~/.claude.json, or in $CLAUDE_CONFIG_DIR/.claude.json when that is set.
+// Read-only and best effort - an unreadable file just means "not known", and
+// the add below still settles the real state through the CLI.
+function claudeUserEntry(home, env) {
+  const file = path.join(env.CLAUDE_CONFIG_DIR || home, ".claude.json");
+  try {
+    const servers = JSON.parse(fs.readFileSync(file, "utf8"))?.mcpServers;
+    return servers && typeof servers === "object" ? servers["pzzacode-mcp"] ?? null : null;
+  } catch {
+    return null;
   }
-  if (framework === "codex") {
-    const r = await run("codex", ["mcp", "add", "pzzacode-mcp", "--", "node", mcpPath]);
-    return { framework, ...r, via: "codex mcp add" };
-  }
-  if (framework === "opencode") {
-    // The installer puts opencode outside PATH (~/.opencode/bin), so fall back
-    // to its well-known locations when the bare command does not resolve.
-    const r = await run(await resolveOpencode(), ["mcp", "add", "pzzacode-mcp", "--", "node", mcpPath]);
-    return { framework, ...r, via: "opencode mcp add" };
+}
+
+function sameStdioEntry(entry, mcpPath) {
+  return Boolean(entry) && (entry.type === undefined || entry.type === "stdio") && entry.command === "node"
+    && Array.isArray(entry.args) && entry.args.length === 1 && entry.args[0] === mcpPath
+    && (!entry.env || Object.keys(entry.env).length === 0);
+}
+
+// Prefer the CLI's own explanation (stderr) over execFile's "Command failed:
+// <argv>" wrapper, which only repeats the command line.
+function cliResult(framework, via, result) {
+  if (result.ok) return { framework, ok: true, output: result.output, via };
+  return { framework, ok: false, output: result.output, error: result.output || result.error || `${via} failed`, via };
+}
+
+export async function mcpInstall(framework, mcpPath, { exec = run, home = os.homedir(), env = process.env, systemDirs } = {}) {
+  if (framework === "claude" || framework === "codex" || framework === "opencode") {
+    const via = `${framework} mcp add`;
+    const cli = resolveCli(framework, { home, env, systemDirs });
+    if (!cli) return { framework, ok: false, missing: true, via, error: `${CLI_LABELS[framework]} is not installed on this device (\`${framework}\` was not found).` };
+    const add = () => exec(cli, framework === "claude"
+      ? ["mcp", "add", "-s", "user", "pzzacode-mcp", "--", "node", mcpPath]
+      : ["mcp", "add", "pzzacode-mcp", "--", "node", mcpPath]);
+    if (framework !== "claude") {
+      // `codex mcp add` and `opencode mcp add` overwrite an existing entry of
+      // the same name, so a repeat or moved-app install is already idempotent.
+      return cliResult(framework, via, await add());
+    }
+    // `claude mcp add` refuses to overwrite ("already exists in user config")
+    // and has no force flag: keep a matching entry, and replace a stale one
+    // (app moved, older install path) with remove + add in the user scope.
+    if (sameStdioEntry(claudeUserEntry(home, env), mcpPath)) return { framework, ok: true, via, unchanged: true };
+    let result = await add();
+    if (!result.ok && /already exists/i.test(result.output)) {
+      const removed = await exec(cli, ["mcp", "remove", "-s", "user", "pzzacode-mcp"]);
+      if (!removed.ok) return cliResult(framework, via, removed);
+      result = await add();
+    }
+    return cliResult(framework, via, result);
   }
   if (framework === "cursor" || framework === "windsurf" || framework === "zed") {
-    return installFileEntry(framework, mcpPath);
+    return installFileEntry(framework, mcpPath, home);
   }
   return { framework, ok: false, manual: true, error: "no installer - copy the config into your settings" };
 }

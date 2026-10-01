@@ -59,6 +59,17 @@ test("native installations and exact wrapper entrypoints work without exposing a
   }
 });
 
+test("a retitled interpreter on Linux resolves by its process title, an untitled one does not", () => {
+  // /proc/<pid>/exe names node while process.title replaced the wiped argv.
+  const retitled = processRow({ pid: 20, ppid: 10, pgid: 20, command: "claude", executable: "/usr/bin/node", title: "claude" });
+  assert.equal(detectSessionActivity([pane()], [processRow(), retitled])[0].command, "claude");
+  retitled.title = "my-server";
+  assert.equal(detectSessionActivity([pane()], [processRow(), retitled])[0].command, "bash");
+  // Titles never promote a non-interpreter executable.
+  const binary = processRow({ pid: 20, ppid: 10, pgid: 20, executable: "/usr/bin/python3", title: "codex" });
+  assert.equal(detectSessionActivity([pane()], [processRow(), binary])[0].command, "bash");
+});
+
 test("effective model metadata uses exact foreground selectors and selected-account settings", async () => {
   const direct = processRow({
     pid: 20,
@@ -162,6 +173,8 @@ test("activity requests deduplicate in flight, cache briefly, refresh after expi
     calls++;
     assert.equal(command, "ssh");
     assert.ok(args.includes("ControlPath=~/.ssh/pzza-mux-%C"));
+    // The node-less fallback must keep tabs intact and know every agent label.
+    assert.match(args.at(-1), /else tmux -u list-panes .*\bin claude\|codex\|opencode\|/);
     assert.ok(options.timeout <= 10_000);
     callbacks.push(callback);
   });

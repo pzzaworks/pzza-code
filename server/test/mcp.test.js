@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { syncBuiltinESMExports } from "node:module";
 import test from "node:test";
-import { installFileEntry, mcpConfigs } from "../lib/mcp.js";
+import { installFileEntry, mcpConfigs, mcpInstall, resolveCli } from "../lib/mcp.js";
 import { sshApi } from "../../mcp/lib/agent.js";
 
 test("MCP configurations preserve local setup and support authenticated SSH routing", () => {
@@ -68,6 +68,70 @@ test("file-based installs merge JSON configs with backups and stay idempotent", 
 
   assert.equal(installFileEntry("unknown", "/opt/mcp/server.js", home).ok, false);
   assert.equal(installFileEntry("cursor", "", home).ok, false);
+});
+
+// A fake agent CLI on a private PATH plus a scripted `run` that mimics the real
+// CLIs: claude refuses duplicate names, codex/opencode overwrite in place.
+async function cliFixture(t, names) {
+  const home = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pzza-mcp-cli-"));
+  t.after(() => fs.promises.rm(home, { recursive: true, force: true }));
+  const bin = path.join(home, "bin");
+  fs.mkdirSync(bin);
+  for (const name of names) fs.writeFileSync(path.join(bin, name), "#!/bin/sh\n", { mode: 0o755 });
+  const calls = [];
+  const servers = new Map();
+  const exec = async (cmd, args) => {
+    calls.push([path.basename(cmd), ...args]);
+    const name = args.includes("-s") ? args[4] : args[2];
+    if (args[1] === "remove") return servers.delete(name) ? { ok: true, output: "Removed", error: null } : { ok: false, output: `No MCP server named "${name}"`, error: "Command failed" };
+    if (path.basename(cmd) === "claude" && servers.has(name)) return { ok: false, output: `MCP server ${name} already exists in user config`, error: `Command failed: claude ${args.join(" ")}` };
+    servers.set(name, args.slice(args.indexOf("--") + 1));
+    return { ok: true, output: "Added", error: null };
+  };
+  return { home, env: { PATH: bin }, exec, calls, servers };
+}
+
+test("CLI installs are idempotent, replace stale paths, and report a missing CLI plainly", async (t) => {
+  const fx = await cliFixture(t, ["claude", "codex", "opencode"]);
+  const options = { exec: fx.exec, home: fx.home, env: fx.env, systemDirs: [] };
+
+  assert.equal((await mcpInstall("claude", "/old/mcp/server.js", options)).ok, true);
+  // Claude already has a stale entry from a moved app: remove, then add again.
+  const moved = await mcpInstall("claude", "/Applications/PzzaCode.app/mcp/server.js", options);
+  assert.equal(moved.ok, true);
+  assert.deepEqual(fx.servers.get("pzzacode-mcp"), ["node", "/Applications/PzzaCode.app/mcp/server.js"]);
+  assert.deepEqual(fx.calls.slice(-2).map((call) => call[2]), ["remove", "add"]);
+  assert.deepEqual(fx.calls.at(-2), ["claude", "mcp", "remove", "-s", "user", "pzzacode-mcp"]);
+
+  // A matching user-scope entry is kept without touching the CLI at all.
+  fs.writeFileSync(path.join(fx.home, ".claude.json"), JSON.stringify({ mcpServers: { "pzzacode-mcp": { type: "stdio", command: "node", args: ["/same/server.js"], env: {} } } }));
+  const before = fx.calls.length;
+  assert.deepEqual(await mcpInstall("claude", "/same/server.js", options), { framework: "claude", ok: true, via: "claude mcp add", unchanged: true });
+  assert.equal(fx.calls.length, before);
+
+  // Codex and OpenCode overwrite natively, so a repeat add simply succeeds.
+  for (const framework of ["codex", "opencode"]) {
+    assert.equal((await mcpInstall(framework, "/a/server.js", options)).ok, true);
+    assert.equal((await mcpInstall(framework, "/b/server.js", options)).ok, true);
+    assert.deepEqual(fx.calls.at(-1), [framework, "mcp", "add", "pzzacode-mcp", "--", "node", "/b/server.js"]);
+  }
+
+  const missing = await mcpInstall("codex", "/a/server.js", { ...options, env: { PATH: path.join(fx.home, "nowhere") } });
+  assert.equal(missing.ok, false);
+  assert.equal(missing.missing, true);
+  assert.match(missing.error, /Codex is not installed/);
+  assert.doesNotMatch(missing.error, /ENOENT/);
+});
+
+test("CLI resolution finds installs outside the inherited PATH", async (t) => {
+  const home = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pzza-mcp-resolve-"));
+  t.after(() => fs.promises.rm(home, { recursive: true, force: true }));
+  const local = path.join(home, ".local", "bin");
+  fs.mkdirSync(local, { recursive: true });
+  fs.writeFileSync(path.join(local, "claude"), "#!/bin/sh\n", { mode: 0o755 });
+  fs.writeFileSync(path.join(local, "codex"), "not executable", { mode: 0o644 });
+  assert.equal(resolveCli("claude", { home, env: { PATH: "/usr/bin" }, systemDirs: [] }), path.join(local, "claude"));
+  assert.equal(resolveCli("codex", { home, env: { PATH: local }, systemDirs: [] }), null);
 });
 
 test("SSH transport uses trusted host keys and sends request body only through stdin", async (t) => {
