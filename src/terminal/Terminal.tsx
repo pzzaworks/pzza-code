@@ -14,6 +14,7 @@ import { runBrowserPreview } from "./browserPreview";
 import { installMouseSelection } from "./mouseSelection";
 import { createOutputScheduler } from "./outputScheduler";
 import { HAS_TAURI } from "../tauriEnv";
+import { openUrl } from "../forward";
 import { discardTerminalDrop, uploadPasteImage, uploadTerminalDrop, verifyQuickChat } from "../serverApi";
 import { createAttachmentRecovery, type AttachmentStatus } from "../state/quickChatSession";
 import { readNativeDrop, registerTerminalDropTarget, releaseNativeDrop, shellQuotePaths, validateDroppedFiles, type TerminalDrop } from "./fileDrop";
@@ -26,6 +27,16 @@ import { createTerminalSignals } from "./notificationSignals";
 import { createTerminalAppController, registerTerminalAppControl, validateTerminalPaste } from "../appControlTerminal";
 import { IS_MAC } from "../shortcuts";
 import { ChevronDown, ChevronUp, ClipboardPaste, Copy, Eraser, TextSelect, X } from "lucide-react";
+
+// Cmd-click (Ctrl-click off macOS) opens a link in this machine's default browser, whichever
+// device the session runs on: the native opener runs on the app host and only
+// accepts http(s) without credentials. A plain click stays a terminal click.
+function openTerminalLink(event: MouseEvent, uri: string): void {
+  if (!(IS_MAC ? event.metaKey : event.ctrlKey)) return;
+  event.preventDefault();
+  if (HAS_TAURI) void openUrl(uri).catch(() => { /* Rejected or unsupported addresses are simply not opened. */ });
+  else window.open(uri, "_blank", "noopener,noreferrer");
+}
 
 // Find-all highlight colors (#RRGGBB as the addon requires). Amber reads on
 // both dark and light terminal themes.
@@ -194,6 +205,8 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
         // only multiplies memory per tile (each line is a typed-array row).
         scrollback: 3000,
         theme: terminalPalette(useStore.getState().themeId, useStore.getState().semiTransparent),
+        // OSC 8 hyperlinks (agents print these) follow the same rule as plain URLs.
+        linkHandler: { activate: openTerminalLink },
       });
       termRef.current = term;
 
@@ -337,7 +350,7 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
       const searchResults = search.onDidChangeResults(({ resultIndex, resultCount }) => {
         if (!disposed) setFindCount(resultIndex < 0 ? null : { index: resultIndex, total: resultCount });
       });
-      term.loadAddon(new WebLinksAddon());
+      term.loadAddon(new WebLinksAddon(openTerminalLink));
       term.loadAddon(new Unicode11Addon());
       term.unicode.activeVersion = "11";
 
