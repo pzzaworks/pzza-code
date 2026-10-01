@@ -90,6 +90,13 @@ function persistNotifications({ items, preferences }: Pick<NotificationState, "i
 }
 useNotifications.subscribe(persistNotifications);
 persistNotifications(useNotifications.getState());
+// History keeps the full body; cards and desktop alerts show a bounded preview
+// so a long terminal response does not take over the panel.
+export const NOTICE_PREVIEW_CHARS = 280;
+export function noticePreview(text: string, max = NOTICE_PREVIEW_CHARS): string {
+  const chars = Array.from(text.trim());
+  return chars.length > max ? `${chars.slice(0, max - 1).join("").trimEnd()}…` : chars.join("");
+}
 export function notify(input: Omit<Notice, "id" | "createdAt" | "read">): void {
   const { items, preferences } = useNotifications.getState();
   if (!preferences.enabled || !preferences.categories[input.category] || (input.event && preferences.events[input.event] === false)) return;
@@ -102,5 +109,5 @@ export function notify(input: Omit<Notice, "id" | "createdAt" | "read">): void {
     const current = useNotifications.getState().preferences;
     return current.enabled && current.desktop && current.categories[input.category] && (!input.event || current.events[input.event] !== false) && current.mutedUntil <= Date.now() && !document.hasFocus();
   };
-  if (canDeliver()) void deliverDesktopAlert({ ...notice, title: notice.source ? `${notice.source} - ${notice.title}` : notice.title }, canDeliver).catch(() => { /* Activity history remains available when the OS rejects an alert. */ });
+  if (canDeliver()) void deliverDesktopAlert({ ...notice, title: notice.source ? `${notice.source} - ${notice.title}` : notice.title, body: noticePreview(notice.body) }, canDeliver).catch(() => { /* Activity history remains available when the OS rejects an alert. */ });
 }

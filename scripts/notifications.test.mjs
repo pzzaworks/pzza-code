@@ -26,7 +26,7 @@ const result = await build({
     ` }));
   } }],
 });
-const { useNotifications, notify, requestDesktopAlerts, NOTIFICATION_EVENTS, NOTIFICATION_EVENT_CATEGORIES, createTerminalSignals } = await import(`data:text/javascript;base64,${Buffer.from(result.outputFiles[0].text).toString("base64")}`);
+const { useNotifications, notify, noticePreview, NOTICE_PREVIEW_CHARS, requestDesktopAlerts, NOTIFICATION_EVENTS, NOTIFICATION_EVENT_CATEGORIES, createTerminalSignals } = await import(`data:text/javascript;base64,${Buffer.from(result.outputFiles[0].text).toString("base64")}`);
 const initialPreferences = structuredClone(useNotifications.getState().preferences);
 const reset = () => {
   useNotifications.setState({ items: [], preferences: structuredClone(initialPreferences) });
@@ -126,4 +126,16 @@ test("browser delivery keeps permission prompts explicit and uses private text",
   assert.equal(delivered[0].title, "Private project");
   assert.equal(delivered[0].body, "/private/project/file");
   await browser.deliverDesktopAlert({ category: "app", title: "Private project", body: "/private/project/file" }, () => false); assert.equal(delivered.length, 1);
+});
+test("long bodies stay complete in history but preview with an ellipsis", async () => {
+  reset(); useNotifications.getState().configure({ desktop: true, mutedUntil: 0 });
+  const long = `${"word ".repeat(200)}tail`;
+  notify({ ...notice, body: long }); await settle();
+  assert.equal(useNotifications.getState().items[0].body, long);
+  const preview = noticePreview(long);
+  assert.equal(Array.from(preview).length <= NOTICE_PREVIEW_CHARS, true);
+  assert.ok(preview.endsWith("…"));
+  assert.equal(native.deliveries.at(-1).body, preview);
+  assert.equal(noticePreview("  short  "), "short");
+  assert.equal(noticePreview("😀".repeat(5), 3), "😀😀…");
 });

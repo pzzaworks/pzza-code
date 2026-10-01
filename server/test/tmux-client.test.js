@@ -52,7 +52,7 @@ test("standalone clients retain default routing and remote commands discard loca
   const terminate = terminationCommand("work", undefined, "remote");
   const duplicate = duplicationCommand("work", undefined, "copy", "remote");
   process.env.PZZA_TMUX_SOCKET = "/tmp/local socket";
-  assert.equal(tmuxCommand("remote"), "tmux");
+  assert.equal(tmuxCommand("remote"), "tmux -u");
   assert.equal(terminationCommand("work", undefined, "remote"), terminate);
   assert.equal(duplicationCommand("work", undefined, "copy", "remote"), duplicate);
   const env = deviceEnv("remote", { PZZA_TMUX_SOCKET: "/tmp/local socket", TMUX: "/tmp/unrelated,1,0", PATH: "/bin" });
@@ -100,7 +100,7 @@ test("serialized remote activity uses plain tmux even if a remote environment co
     env: { ...process.env, PATH: `${root}:${process.env.PATH}`, PZZA_TMUX_SOCKET: "/tmp/must-not-be-used" },
   });
   const args = (await readFile(log, "utf8")).split("\n");
-  assert.equal(args[0], "list-panes");
+  assert.deepEqual(args.slice(0, 2), ["-u", "list-panes"]);
   assert.ok(!args.includes("-S"));
 });
 

@@ -123,37 +123,54 @@ const OPENCODE_SIGNIN_HINT = "reconnect OpenCode Go with /connect in opencode";
 // are noise next to paid usage, matching the hidden treatment above.
 const isFreePlan = (plan) => String(plan ?? "").trim().toLowerCase() === "free";
 
+// Last successful usage per Claude account, so an account whose CLI token has
+// lapsed (the CLI only refreshes it while it runs) keeps its card with the
+// last sample marked stale instead of vanishing until the CLI runs again.
+const lastClaudeUsage = new Map();
+
 // Usage for one Claude account. Claude Code refreshes the OAuth token itself
 // whenever it runs and the agent never refreshes on its behalf (a refresh
 // rotates the token and could sign the CLI out), so an expired or rejected
-// token hides the card instead of showing an error row.
-async function claudeAccountUsage(acc, fresh) {
+// token falls back to the last known sample, or hides the card without one.
+// Exported for unit tests.
+export async function claudeAccountUsage(acc, fresh) {
   const oauth = await readClaudeOAuth(acc.dir);
+  const identity = readClaudeIdentity(acc.dir);
+  const cacheKey = identity.email?.toLowerCase() || acc.dir;
   // No usable creds on this device (e.g. a devbox-only account seen from the
   // Mac): hide it rather than showing a "not signed in" row.
-  if (!oauth?.accessToken) return null;
-  if (isFreePlan(readClaudeIdentity(acc.dir).plan)) return null;
-  if (oauth.expiresAt && Number(oauth.expiresAt) <= Date.now()) {
+  if (!oauth?.accessToken) {
+    lastClaudeUsage.delete(cacheKey);
     return null;
   }
+  if (isFreePlan(identity.plan)) return null;
+  const entry = { provider: "claude", label: acc.label, ...identity, usage: null, error: null };
+  const lastKnown = () => {
+    const last = lastClaudeUsage.get(cacheKey);
+    return last ? { ...entry, usage: { ...last, stale: true, retryAt: null } } : null;
+  };
+  const withUsage = async (token) => {
+    const usage = await limitedUsage(credentialKey("claude", token), () => fetchClaudeUsage(token), { fresh });
+    if (!usage.stale) lastClaudeUsage.set(cacheKey, usage);
+    return { ...entry, usage };
+  };
+  if (oauth.expiresAt && Number(oauth.expiresAt) <= Date.now()) return lastKnown();
+  const rejected = (e) => e?.status === 401 || e?.status === 403 || /\b401\b/.test(String(e?.message));
   try {
-    const entry = { provider: "claude", label: acc.label, ...readClaudeIdentity(acc.dir), usage: null, error: null };
-    return { ...entry, usage: await limitedUsage(credentialKey("claude", oauth.accessToken), () => fetchClaudeUsage(oauth.accessToken), { fresh }) };
+    return await withUsage(oauth.accessToken);
   } catch (e) {
-    if (!/\b401\b/.test(String(e.message)) && e?.status !== 401 && e?.status !== 403) throw e;
+    if (!rejected(e)) throw e;
     // The CLI may have rotated the token between our read and the call: re-read
     // once and retry with the new one before giving up.
     const again = await readClaudeOAuth(acc.dir);
     if (again?.accessToken && again.accessToken !== oauth.accessToken) {
       try {
-        const entry = { provider: "claude", label: acc.label, ...readClaudeIdentity(acc.dir), usage: null, error: null };
-        return { ...entry, usage: await limitedUsage(credentialKey("claude", again.accessToken), () => fetchClaudeUsage(again.accessToken), { fresh }) };
+        return await withUsage(again.accessToken);
       } catch (retryErr) {
-        if (retryErr?.status === 401 || retryErr?.status === 403 || /\b401\b/.test(String(retryErr.message))) return null;
-        throw retryErr;
+        if (!rejected(retryErr)) throw retryErr;
       }
     }
-    return null;
+    return lastKnown();
   }
 }
 
