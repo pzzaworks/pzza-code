@@ -92,7 +92,11 @@ function loadMode(): Mode {
   }
 }
 
-// Agent usage for the connected device's Claude / Codex accounts.
+// The last published cards outlive the dropdown, so reopening it shows every
+// account immediately while the devices are queried again.
+let lastAccounts: AccountUsage[] = [];
+
+// Agent usage for every connected device's Claude / Codex / OpenCode accounts.
 export function UsageMenu() {
   const devices = useStore(store => store.devices);
   const request = useRef(0);
@@ -101,7 +105,7 @@ export function UsageMenu() {
   const [spinning, setSpinning] = useState(false);
   const showSpinner = useDelayedLoading(loading);
   useEffect(() => { if (showSpinner) setSpinning(true); }, [showSpinner]);
-  const [accounts, setAccounts] = useState<AccountUsage[]>([]);
+  const [accounts, setAccounts] = useState<AccountUsage[]>(lastAccounts);
   const [failed, setFailed] = useState(false);
   const [mode, setMode] = useState<Mode>(loadMode);
   const [spend, setSpend] = useState<Record<string, AccountSpend>>({});
@@ -122,9 +126,9 @@ export function UsageMenu() {
     const sources = devices.filter(device => deviceHost(device)).map(device => ({ host: deviceHost(device), name: device.name }));
     const usageRequest = loadDeviceUsage(sources, host => fetchUsage(fresh, host), (a) => {
         if (request.current !== current) return;
-        setAccounts(a); setFailed(false);
+        lastAccounts = a; setAccounts(a); setFailed(false);
         if (a.some(account => account.usage && !account.error)) setLoading(false);
-      })
+      }, lastAccounts)
       .catch(() => { if (request.current === current) setFailed(true); });
     // Device transcript scans resolve separately so they never hold up usage.
     void loadDeviceSpend(sources, host => fetchSpend(fresh, host), (values) => {

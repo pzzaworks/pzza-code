@@ -3,7 +3,7 @@ import test from "node:test";
 import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { createUsageLimiter, fetchOpencodeUsage, fixClaudeToken, opencodeAccountUsage, usageResponseError, USAGE_FRESH_MS } from "../lib/usage.js";
+import { claudeAccountUsage, createUsageLimiter, fetchOpencodeUsage, fixClaudeToken, opencodeAccountUsage, usageResponseError, USAGE_FRESH_MS } from "../lib/usage.js";
 import { maskApiKey } from "../lib/accounts.js";
 
 test("duplicate accounts and refresh requests share calls and respect freshness", async () => {
@@ -230,4 +230,33 @@ test("claude token repair runs the CLI once and reports the outcome", async () =
   const result = await fixClaudeToken({ run: failing });
   assert.equal(result.ok, false);
   assert.match(result.error, /Run claude once in a terminal/);
+});
+
+test("a lapsed claude token keeps the account's last usage as a stale card", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "pzza-claude-usage-"));
+  const dir = path.join(root, ".claude-work");
+  await mkdir(dir);
+  await writeFile(`${dir}.json`, JSON.stringify({ oauthAccount: { emailAddress: "work@example.test", organizationType: "claude_max" } }));
+  const writeCreds = (accessToken, expiresAt) =>
+    writeFile(path.join(dir, ".credentials.json"), JSON.stringify({ claudeAiOauth: { accessToken, expiresAt } }));
+  const original = globalThis.fetch;
+  globalThis.fetch = async () => Response.json({ five_hour: { utilization: 6, resets_at: null }, seven_day: null, limits: [] });
+  try {
+    const acc = { provider: "claude", dir, label: "claude-work" };
+    await writeCreds("lapsed-token-test", Date.now() + 60_000);
+    const live = await claudeAccountUsage(acc, true);
+    assert.equal(live.usage.five_hour.utilization, 6);
+    assert.ok(!live.usage.stale);
+
+    await writeCreds("lapsed-token-test", Date.now() - 1);
+    const lapsed = await claudeAccountUsage(acc, false);
+    assert.equal(lapsed.email, "work@example.test");
+    assert.equal(lapsed.usage.five_hour.utilization, 6);
+    assert.equal(lapsed.usage.stale, true);
+
+    await writeFile(path.join(dir, ".credentials.json"), "{}");
+    assert.equal(await claudeAccountUsage(acc, false), null);
+  } finally {
+    globalThis.fetch = original;
+  }
 });

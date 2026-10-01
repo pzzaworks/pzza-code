@@ -137,6 +137,9 @@ export function processAgentCommand(process) {
   if (/\/node_modules\/@anthropic-ai\/claude-code\/cli\.js$/.test(entry)) return "claude";
   if (/\/node_modules\/@openai\/codex\/bin\/codex\.js$/.test(entry)) return "codex";
   if (["claude", "codex", "opencode"].includes(basename(entry))) return basename(entry);
+  // A retitled interpreter (`process.title = "claude"`) wiped its argv, so the
+  // entrypoint is gone; its own title is what ps reports on macOS as well.
+  if (["claude", "codex", "opencode"].includes(process.title)) return process.title;
   return "";
 }
 
@@ -336,7 +339,9 @@ export async function probeSessionActivity(tmuxOptions = tmuxArgs([])) {
   });
   const format = "#{session_name}\t#{window_index}\t#{window_active}\t#{pane_active}\t#{pane_pid}\t#{pane_tty}\t#{pane_current_command}";
   const [paneText, processText] = await Promise.all([
-    execute("tmux", [...tmuxOptions, "list-panes", "-a", "-F", format]),
+    // A client without a UTF-8 locale (typical for a non-interactive SSH
+    // command) prints every tab and non-ASCII byte as `_`; -u keeps both.
+    execute("tmux", ["-u", ...tmuxOptions, "list-panes", "-a", "-F", format]),
     execute("ps", ["-ax", "-o", "pid=,ppid=,pgid=,tpgid=,tty=,comm="]),
   ]);
   const panes = paneText.split("\n").filter(Boolean).map((line) => {
@@ -368,6 +373,10 @@ export async function probeSessionActivity(tmuxOptions = tmuxArgs([])) {
           if (entry) {
             const cwd = await fs.readlink(`/proc/${process.pid}/cwd`);
             process.entrypoint = await fs.realpath(path.resolve(cwd, entry)).catch(() => "");
+          } else if (argv.length > 1 && argv.slice(1).every((argument) => argument === "")) {
+            // Setting process.title overwrites the whole argv area with the title
+            // and NUL padding, while /proc/<pid>/exe still names the interpreter.
+            process.title = path.basename(argv[0]);
           }
         }
         if (processAgentCommand(process)) {

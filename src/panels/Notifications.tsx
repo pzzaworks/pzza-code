@@ -4,7 +4,7 @@ import { requestDesktopAlerts } from "../desktopNotifications";
 import { Select } from "../ui/Select";
 import { ScrollMore } from "../ui/ScrollMore";
 import { useEffect, useRef, useState } from "react";
-import { useNotifications, NOTIFICATION_EVENTS, NOTIFICATION_EVENT_CATEGORIES, type NotificationEvent, type Notice, type NotificationCategory } from "../state/notifications";
+import { useNotifications, NOTIFICATION_EVENTS, NOTIFICATION_EVENT_CATEGORIES, type NotificationEvent, type Notice, type NotificationCategory, noticePreview } from "../state/notifications";
 import { useStore } from "../state/store";
 import { DEFAULT_WORKSPACE_ID } from "../workspaces";
 import { confirmAction } from "../ui/ConfirmDialog";
@@ -40,7 +40,7 @@ function Rows({ items, readOnly = false }: { items: Notice[]; readOnly?: boolean
   const remove = useNotifications(state => state.remove);
   return <div className="notification-list">{items.length ? items.map(item => <article key={item.id} className={`notification-row ${item.read ? "" : "unread"}`}>
     <button className="notification-content" onClick={() => readOnly ? useNotifications.getState().read(item.id) : openNotice(item)}>
-      <span className="notification-title"><strong>{item.source ? <><span className="notification-source">{item.source}</span> - </> : null}{item.title}</strong>{!item.read ? <span className="notification-new">New</span> : null}</span><span className="notification-body">{item.body}</span>
+      <span className="notification-title"><strong>{item.source ? <><span className="notification-source">{item.source}</span> - </> : null}{item.title}</strong>{!item.read ? <span className="notification-new">New</span> : null}</span><span className="notification-body">{noticePreview(item.body)}</span>
       <small>{item.category} · <time dateTime={new Date(item.createdAt).toISOString()}>{new Date(item.createdAt).toLocaleString()}</time></small>
     </button>
     <div className="notification-row-actions">
