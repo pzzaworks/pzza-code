@@ -98,7 +98,7 @@ let lastAccounts: AccountUsage[] = [];
 
 // Agent usage for every connected device's Claude / Codex / OpenCode accounts.
 export function UsageMenu() {
-  const devices = useStore(store => store.devices);
+  const devices = useStore(store => store.activeDevices);
   const request = useRef(0);
   useEffect(() => () => { request.current++; }, []);
   const [loading, setLoading] = useState(true);

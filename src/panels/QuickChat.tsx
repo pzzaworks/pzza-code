@@ -2,7 +2,7 @@ import { AsyncButton } from "../ui/AsyncButton";
 import { useCallback, useEffect, useRef } from "react";
 import { MessageSquare, RotateCw, X } from "lucide-react";
 import { create } from "zustand";
-import { deviceHost, THIS_MAC } from "../devices";
+import { deviceHost, THIS_MAC, type Device } from "../devices";
 import { attachCommand } from "../connection";
 import { openQuickChat, closeQuickChat } from "../serverApi";
 import { createQuickChatPreparation, type AttachmentStatus } from "../state/quickChatSession";
@@ -68,8 +68,15 @@ export const useQuickChatPreferences = create<QuickChatPreferences>((set, get) =
   },
 }));
 
+// When the chosen device is disabled, Quick Chat moves back to this device
+// (closing the chat on the disabled one) instead of pointing at a hidden device.
+export function releaseDisabledQuickChatDevice(devices: Device[]): void {
+  const { defaults, update } = useQuickChatPreferences.getState();
+  if (devices.some(device => device.id === defaults.deviceId && device.disabled)) update({ deviceId: THIS_MAC.id });
+}
+
 export function QuickChatSettings() {
-  const devices = useStore(state => state.devices);
+  const devices = useStore(state => state.activeDevices);
   const { defaults, notice, update } = useQuickChatPreferences();
   const deviceAvailable = devices.some(device => device.id === defaults.deviceId);
   return <div className="quick-chat-settings">
@@ -103,7 +110,7 @@ export const useQuickChatView = create<{
 }>(() => ({ open: false, busy: false, chat: null, error: "", attachment: null, retryToken: 0 }));
 
 export function QuickChat({ onOpenSettings }: { onOpenSettings?: () => void }) {
-  const devices = useStore(state => state.devices);
+  const devices = useStore(state => state.activeDevices);
   const { chat, busy, error: message, open: panelOpen, attachment, retryToken } = useQuickChatView();
   const setChat = (value: Chat) => useQuickChatView.setState({ chat: value });
   const setBusy = (value: boolean) => useQuickChatView.setState({ busy: value });

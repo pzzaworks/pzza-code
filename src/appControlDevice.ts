@@ -20,7 +20,7 @@ function startTask(name: string, work: () => Promise<unknown>) {
 }
 
 function device(id: string) {
-  const found = useStore.getState().devices.find(value => value.id === id);
+  const found = useStore.getState().activeDevices.find(value => value.id === id);
   if (!found) throw new Error("The selected device is not configured in this window.");
   return found;
 }
@@ -31,7 +31,7 @@ function syncPreferences() {
 function configureSync(args: Readonly<Record<string, unknown>>) {
   const current = useProjectSyncPreferences.getState();
   const devicesOff = args.devicesOff === undefined ? current.devicesOff : args.devicesOff as string[];
-  for (const id of devicesOff) device(id);
+  for (const id of devicesOff) if (!useStore.getState().devices.some(value => value.id === id)) throw new Error("The selected device is not configured in this window.");
   const raw = args.options as (Partial<Omit<SyncOptions, "repos">> & { repos?: { id: string; enabled: boolean; env: boolean }[] }) | undefined;
   const options: SyncOptions = { ...current.options, ...raw, repos: raw?.repos ? Object.fromEntries(raw.repos.map(({ id, ...value }) => [id, value])) : current.options.repos };
   const activity = projectSyncSnapshot();
@@ -41,7 +41,7 @@ function configureSync(args: Readonly<Record<string, unknown>>) {
 }
 function forwardingConfig() {
   const config = useForwardConfig.getState();
-  const serverId = config.serverId || useStore.getState().devices.find(value => value.id !== THIS_MAC.id)?.id || THIS_MAC.id;
+  const serverId = config.serverId || useStore.getState().activeDevices.find(value => value.id !== THIS_MAC.id)?.id || THIS_MAC.id;
   return { ...config, serverId };
 }
 async function forwarding(reconcile = false) {

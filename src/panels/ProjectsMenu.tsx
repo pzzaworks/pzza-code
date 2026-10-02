@@ -1,3 +1,4 @@
+import { Switch } from "../ui/Switch";
 import { registerAppControlHandler, registerAppControlState } from "../appControlRuntime";
 import { AsyncButton } from "../ui/AsyncButton";
 import { notify } from "../state/notifications";
@@ -49,25 +50,6 @@ function ScanProgress({ progress }: { progress: ProjectScanProgress | null }) {
 // every repo to remote development when it exists, otherwise remote main, and
 // copies the newest env files around. Preserved work remains recoverable from
 // the detailed Sync outcome on the same lines.
-
-
-function Switch({ on, onToggle, title, small }: { on: boolean; onToggle: () => void; title: string; small?: boolean }) {
-  return (
-    <button
-      type="button"
-      className={`switch ${on ? "switch-on" : ""} ${small ? "switch-sm" : ""}`}
-      role="switch"
-      aria-checked={on}
-      title={title}
-      onClick={(e) => {
-        e.stopPropagation();
-        onToggle();
-      }}
-    >
-      <span className="switch-knob" />
-    </button>
-  );
-}
 
 const toRef = (d: Device): ProjectDeviceRef => ({
   id: d.id,
@@ -580,7 +562,7 @@ interface ProjectsMenuProps {
 }
 
 export function ProjectsMenu({ active = true, page = "repositories", syncRequest = 0, onSyncingChange }: ProjectsMenuProps) {
-  const devices = useStore((s) => s.devices);
+  const devices = useStore((s) => s.activeDevices);
   const refs = useMemo(() => devices.map(toRef), [devices]);
 
   const root = useProjectSyncPreferences(state => state.root);

@@ -4,7 +4,7 @@ import { useStore } from "./state/store";
 import { useIntegrationHealth } from "./state/integrationHealth";
 
 export function IntegrationMaintenance() {
-  const devices = useStore(state => state.devices);
+  const devices = useStore(state => state.activeDevices);
   useEffect(() => {
     let cancelled = false;
     const check = async () => {

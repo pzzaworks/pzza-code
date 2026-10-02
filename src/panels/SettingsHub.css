@@ -236,6 +236,8 @@
 .managed-device-toggle .device-name { font-size: 12px; font-weight: 550; }
 .managed-device-toggle .device-sub { color: var(--muted); font: 11px/1.4 ui-monospace, monospace; overflow-wrap: anywhere; }
 .managed-device-kind { color: var(--muted); font-size: 10px; border: 1px solid var(--border); padding: 3px 6px; border-radius: 4px; }
+.managed-device-header > .switch { margin: 0 4px; flex-shrink: 0; }
+.managed-device.disabled .managed-device-toggle .device-main, .managed-device.disabled .managed-device-toggle > svg:not(:first-child) { opacity: 0.55; }
 .managed-device-details { padding: 6px 10px 14px 28px; }
 .managed-device-details .scan-head { padding: 0 0 10px; }
 .managed-session { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; padding: 11px 8px; border-top: 1px solid var(--border); }

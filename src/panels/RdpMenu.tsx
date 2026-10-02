@@ -5,7 +5,7 @@ import { create } from "zustand";
 import { Monitor } from "lucide-react";
 import { useStore } from "../state/store";
 import { notify } from "../state/notifications";
-import { THIS_MAC, deviceHost } from "../devices";
+import { THIS_MAC, deviceHost, type Device } from "../devices";
 import { rdpErrorMessage, rdpIsOpen, rdpLaunch } from "../rdp";
 import { HAS_TAURI } from "../tauriEnv";
 import { Select } from "../ui/Select";
@@ -17,9 +17,16 @@ function savedServer() {
 }
 export const useRdpConnection = create<{ serverId: string; busy: boolean }>(() => ({ serverId: savedServer(), busy: false }));
 
+// A disabled server is forgotten so remote desktop never opens a hidden device.
+export function releaseDisabledRdpServer(devices: Device[]): void {
+  if (!devices.some(device => device.id === useRdpConnection.getState().serverId && device.disabled)) return;
+  try { localStorage.removeItem(SERVER_KEY); } catch { /* Storage can be unavailable in private browsing. */ }
+  useRdpConnection.setState({ serverId: "" });
+}
+
 export async function openSaved(): Promise<boolean> {
   if (useRdpConnection.getState().busy) return false;
-  const { devices, deviceRdp, setDeviceRdp } = useStore.getState();
+  const { activeDevices: devices, deviceRdp, setDeviceRdp } = useStore.getState();
   const server = devices.find(device => device.id === useRdpConnection.getState().serverId);
   if (!HAS_TAURI || !server || server.id === THIS_MAC.id || !server.host.trim()) {
     notify({ category: "app", title: "Remote desktop unavailable", body: !HAS_TAURI ? "Open the desktop app to launch remote desktop." : "Choose a remote server in Settings → Connections → Remote desktop, then click Remote desktop again." });
@@ -44,7 +51,7 @@ export async function openSaved(): Promise<boolean> {
 }
 
 export function configureRemoteDesktop(serverId: string, user?: string): void {
-  const { devices, deviceRdp, setDeviceRdp } = useStore.getState();
+  const { activeDevices: devices, deviceRdp, setDeviceRdp } = useStore.getState();
   const server = devices.find(device => device.id === serverId && device.id !== THIS_MAC.id);
   if (!server) throw new Error("Choose a configured remote device.");
   if (user !== undefined) {
@@ -62,7 +69,7 @@ export function useRemoteDesktop() {
 }
 
 export function RdpMenu({ close }: { close: () => void }) {
-  const devices = useStore(state => state.devices);
+  const devices = useStore(state => state.activeDevices);
   const deviceRdp = useStore(state => state.deviceRdp);
   const serverId = useRdpConnection(state => state.serverId);
   const { busy, openSaved: launch } = useRemoteDesktop();
