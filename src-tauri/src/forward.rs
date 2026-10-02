@@ -208,6 +208,26 @@ pub async fn forward_set(
     .map_err(|error| error.to_string())?
 }
 
+// Cancel every forward console added on `host` without reopening its master.
+// Used when the source device is disabled: it must not get a fresh connection
+// only to be cleaned up, and `-O cancel` against a master that is already gone
+// fails fast because its forwards died with it.
+#[tauri::command]
+pub async fn forward_release(
+    state: tauri::State<'_, ForwardState>,
+    host: String,
+) -> Result<(), String> {
+    let active = state.active.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let ports: Vec<u16> = active.lock().unwrap().drain().collect();
+        for port in ports {
+            do_cancel(&host, port);
+        }
+    })
+    .await
+    .map_err(|error| error.to_string())
+}
+
 // One auto-forward reconcile cycle: add every wanted port not yet forwarded,
 // cancel every forwarded port the remote no longer listens on.
 #[tauri::command]
