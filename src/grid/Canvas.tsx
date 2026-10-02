@@ -32,6 +32,7 @@ import { TileCodePanel } from "./TileCodePanel";
 import { duplicateSession, fetchSessionPath, killSession } from "../serverApi";
 import { registerAppControlHandler, registerAppControlState } from "../appControlRuntime";
 import { confirmEditorDiscard, hasUnsavedEditors } from "../editorChanges";
+import { confirmAction } from "../ui/ConfirmDialog";
 import { attachCommand, sessionConnection } from "../connection";
 import {
   sessionDisplayName,
@@ -844,12 +845,28 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
                   (tile.session ?? tile.name) === (current.session ?? current.name) &&
                   (current.window === undefined || tile.window === current.window));
                 if (!await confirmEditorDiscard(affected.map((tile) => tile.id))) return;
-                await killSession(current.session ?? current.name, current.window, sessionConnection(current.host, connection).host ?? "");
-                for (const tile of affected) {
-                  if (fullId === tile.id) setFullId(null);
-                  if (focusId === tile.id) setFocusId(null);
-                  closeTile(tile.id);
+                const close = () => {
+                  for (const tile of affected) {
+                    if (fullId === tile.id) setFullId(null);
+                    if (focusId === tile.id) setFocusId(null);
+                    closeTile(tile.id);
+                  }
+                };
+                try {
+                  await killSession(current.session ?? current.name, current.window, sessionConnection(current.host, connection).host ?? "");
+                } catch (error) {
+                  // An unreachable device cannot terminate anything. Offer to
+                  // close the windows here instead, leaving the session as is.
+                  setClosing(null);
+                  if (await confirmAction({
+                    title: "Close without terminating?",
+                    message: `Terminating on ${tileDevice(current.host)} failed: ${error instanceof Error ? error.message : String(error)}. Close ${affected.length > 1 ? "these windows" : "this window"} in the app anyway? Anything still running on the device keeps running.`,
+                    confirmLabel: "Close anyway",
+                    danger: true,
+                  })) close();
+                  return;
                 }
+                close();
                 setClosing(null);
               } catch (error) {
                 setCloseError(error instanceof Error ? error.message : String(error));
