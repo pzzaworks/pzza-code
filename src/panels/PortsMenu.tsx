@@ -6,7 +6,7 @@ import { AsyncButton } from "../ui/AsyncButton";
 import { useDelayedLoading } from "../ui/useDelayedLoading";
 import { confirmAction } from "../ui/ConfirmDialog";
 import { useStore } from "../state/store";
-import { THIS_MAC, hasRemoteDevice, type Device } from "../devices";
+import { THIS_MAC, deviceHost, hasRemoteDevice, type Device } from "../devices";
 import { Select } from "../ui/Select";
 import { HAS_TAURI } from "../tauriEnv";
 import {
@@ -24,6 +24,7 @@ import {
   DEFAULT_MIN_PORT,
   DEFAULT_SKIP,
   forwardScan,
+  forwardRelease,
   forwardSet,
   openUrl,
   type ForwardStatus,
@@ -67,25 +68,39 @@ export function updateForwardConfig(patch: Partial<ReturnType<typeof useForwardC
   useForwardConfig.setState(next);
 }
 // A disabled source falls back to the next enabled remote (the empty default),
-// and a disabled receiver falls back to this device.
+// and a disabled receiver falls back to this device. Forwards already open from
+// a disabled source are cancelled too, whether it was chosen explicitly or was
+// the implicit default, so disabling a device really stops its tunnels.
 export function releaseDisabledForwardDevices(devices: Device[]): void {
   const off = (id: string) => devices.some(device => device.id === id && device.disabled);
   const { serverId, clientId } = useForwardConfig.getState();
   if (off(serverId) || off(clientId)) updateForwardConfig({ serverId: off(serverId) ? "" : serverId, clientId: off(clientId) ? THIS_MAC.id : clientId });
+  const host = forwardingHost;
+  if (host && devices.some(device => device.disabled && deviceHost(device) === host)) {
+    forwardingHost = "";
+    queueForwarding(() => forwardRelease(host)).catch(() => undefined);
+  }
 }
 let forwardingQueue: Promise<unknown> = Promise.resolve();
+// The host whose ports this app is currently forwarding, if any.
+let forwardingHost = "";
+function queueForwarding<T>(task: () => Promise<T>): Promise<T> {
+  const operation = forwardingQueue.catch(() => undefined).then(task);
+  forwardingQueue = operation;
+  return operation;
+}
 export function reconcileSelectedForwarding(host: string, enabled: boolean, isActive: () => boolean = () => true): Promise<ForwardStatus> {
-  const operation = forwardingQueue.catch(() => undefined).then(async () => {
+  return queueForwarding(async () => {
     const check = () => { if (!isActive()) throw new Error("Forwarding view changed."); };
     check();
+    if (enabled) forwardingHost = host;
+    else if (forwardingHost === host) forwardingHost = "";
     const scan = await forwardScan(host, DEFAULT_SKIP, DEFAULT_MIN_PORT);
     const ports = enabled ? scan.wanted.filter(port => !scan.forwarded.includes(port)) : scan.forwarded;
     for (const port of ports) { check(); await forwardSet(host, port, enabled); }
     check();
     return ports.length ? forwardScan(host, DEFAULT_SKIP, DEFAULT_MIN_PORT) : scan;
   });
-  forwardingQueue = operation;
-  return operation;
 }
 
 function ForwardConfig({
