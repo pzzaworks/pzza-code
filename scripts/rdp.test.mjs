@@ -38,7 +38,7 @@ const device = { id: "remote", name: "Remote server", host: "server" };
 globalThis.rdpFixture = {
   invoke: async () => false,
   notify: notice => notices.push(notice),
-  state: { devices: [device], deviceRdp: {}, setDeviceRdp: (id, config) => saved.push({ id, config }) },
+  state: { devices: [device], activeDevices: [device], deviceRdp: {}, setDeviceRdp: (id, config) => saved.push({ id, config }) },
 };
 const bundle = await build({
   stdin: { contents: 'export { rdpErrorMessage } from "./src/rdp"; export { openSaved, useRdpConnection } from "./src/panels/RdpMenu";', resolveDir: process.cwd() },

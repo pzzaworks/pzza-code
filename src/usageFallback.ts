@@ -34,7 +34,10 @@ export async function loadDeviceSpend(
 const rank = (account: AccountUsage) => account.error || !account.usage ? 0 : account.usage.stale ? 1 : 2;
 // Free-plan cards stay out of the panel no matter which device reported them:
 // older agents still send them, so the panel filters as well as the server.
-const shown = (account: AccountUsage) => (account.plan ?? "").trim().toLowerCase() !== "free";
+// A bare network failure ("fetch failed") says nothing actionable about the
+// account, so that card is dropped too instead of showing a red error.
+const networkFailure = (account: AccountUsage) => !account.usage && /^(fetch failed|failed to fetch)$/i.test((account.error ?? "").trim());
+const shown = (account: AccountUsage) => (account.plan ?? "").trim().toLowerCase() !== "free" && !networkFailure(account);
 const identity = (account: AccountUsage) =>
   JSON.stringify([account.provider, account.email?.toLowerCase() || account.keyHint || account.label]);
 

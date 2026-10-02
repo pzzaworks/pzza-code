@@ -15,6 +15,12 @@ test("free-plan cards are hidden no matter which device reported them", () => {
   assert.deepEqual(mergeDeviceUsage([{ ...free, plan: "free" }], []), []);
 });
 
+test("network failure cards are hidden while actionable errors stay visible", () => {
+  const offline = { ...account("claude", undefined, false), error: "fetch failed", sourceName: "Devbox" };
+  const expired = { ...account("codex", "expired@example.test", false), error: "token expired" };
+  assert.deepEqual(mergeDeviceUsage([], [offline, expired]), [expired]);
+});
+
 test("every device's accounts are merged and the freshest sample of a shared account wins", () => {
   const stamp = (value, updatedAt, stale = false) => ({ ...value, usage: { scoped: [], updatedAt, stale } });
   const local = [account("claude", "local@example.test"), stamp(account("claude", "shared@example.test"), 5, true), account("codex", "other@example.test", false)];

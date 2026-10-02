@@ -21,20 +21,22 @@ export function SessionMenu({ close }: { close: () => void }) {
   const openWindow = useStore((s) => s.openWindow);
   const workspaces = useStore((s) => s.workspaces);
   const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
-  const devices = useStore((s) => s.devices);
+  const devices = useStore((s) => s.activeDevices);
 
   const [name, setName] = useState("");
   const nameLimitId = useId();
   const creating = useSessionCreation(state => state.operation?.status === "running");
   const [creationError, setCreationError] = useState<string | null>(null);
   const [wsId, setWsId] = useState(activeWorkspaceId);
-  const [deviceId, setDeviceId] = useState(() => {
+  const [savedDeviceId, setDeviceId] = useState(() => {
     try {
       return localStorage.getItem(DEVICE_KEY) ?? devices[0]?.id ?? "";
     } catch {
       return devices[0]?.id ?? "";
     }
   });
+  // A saved device that was disabled or removed falls back to this device.
+  const deviceId = devices.some((d) => d.id === savedDeviceId) ? savedDeviceId : (devices[0]?.id ?? "");
 
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [accDir, setAccDir] = useState("");

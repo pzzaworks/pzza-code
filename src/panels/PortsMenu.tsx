@@ -6,6 +6,7 @@ import { AsyncButton } from "../ui/AsyncButton";
 import { useDelayedLoading } from "../ui/useDelayedLoading";
 import { confirmAction } from "../ui/ConfirmDialog";
 import { useStore } from "../state/store";
+import { THIS_MAC, hasRemoteDevice, type Device } from "../devices";
 import { Select } from "../ui/Select";
 import { HAS_TAURI } from "../tauriEnv";
 import {
@@ -65,6 +66,13 @@ export function updateForwardConfig(patch: Partial<ReturnType<typeof useForwardC
   fwdSave("pzza.fwd.serverDev", next.serverId); fwdSave("pzza.fwd.clientDev", next.clientId); fwdSave("pzza.fwd.enabled", next.enabled ? "1" : "0");
   useForwardConfig.setState(next);
 }
+// A disabled source falls back to the next enabled remote (the empty default),
+// and a disabled receiver falls back to this device.
+export function releaseDisabledForwardDevices(devices: Device[]): void {
+  const off = (id: string) => devices.some(device => device.id === id && device.disabled);
+  const { serverId, clientId } = useForwardConfig.getState();
+  if (off(serverId) || off(clientId)) updateForwardConfig({ serverId: off(serverId) ? "" : serverId, clientId: off(clientId) ? THIS_MAC.id : clientId });
+}
 let forwardingQueue: Promise<unknown> = Promise.resolve();
 export function reconcileSelectedForwarding(host: string, enabled: boolean, isActive: () => boolean = () => true): Promise<ForwardStatus> {
   const operation = forwardingQueue.catch(() => undefined).then(async () => {
@@ -91,7 +99,7 @@ function ForwardConfig({
   onServer: (id: string) => void;
   onClient: (id: string) => void;
 }) {
-  const devices = useStore((s) => s.devices);
+  const devices = useStore((s) => s.activeDevices);
 
   const server = devices.find((d) => d.id === serverId);
 
@@ -111,7 +119,7 @@ export function PortsMenu({ active = true, onLoadingChange, onOpenSettings }: {
   onLoadingChange?: (loading: boolean) => void;
   onOpenSettings?: () => void;
 }) {
-  const devices = useStore((s) => s.devices);
+  const devices = useStore((s) => s.activeDevices);
   const configuredServer = useForwardConfig((state) => state.serverId);
   const serverId = configuredServer || devices.find((device) => device.id !== "this-mac")?.id || devices[0]?.id || "";
   const clientId = useForwardConfig((state) => state.clientId);
@@ -134,21 +142,24 @@ export function PortsMenu({ active = true, onLoadingChange, onOpenSettings }: {
   const clientIsLocal = clientId === "this-mac";
   const showControls = !onOpenSettings;
   const routeLabel = `${server?.name ?? "Source device"} → ${devices.find(device => device.id === clientId)?.name ?? "Receiver"}`;
-  const [view, setView] = useState<PortView>("forwarded");
+  const [selectedView, setView] = useState<PortView>("forwarded");
+  // Forwarding needs an enabled remote source; without one only local ports remain.
+  const canForward = hasRemoteDevice(devices);
+  const view: PortView = canForward ? selectedView : "local";
   const [refreshToken, setRefreshToken] = useState(0);
   const refresh = () => setRefreshToken(value => value + 1);
 
   return (
     <div className={showControls ? "settings-page ports-settings" : "menu-body"}>
-      {showControls ? <ForwardConfig serverId={serverId} clientId={clientId} onServer={onServer} onClient={onClient} /> : <>
+      {showControls ? (canForward ? <ForwardConfig serverId={serverId} clientId={clientId} onServer={onServer} onClient={onClient} /> : null) : <>
         <div className="menu-head-title">Port manager</div>
       </>}
-      <div className="ports-tabs" role="tablist" aria-label="Port views">
+      {canForward ? <div className="ports-tabs" role="tablist" aria-label="Port views">
         <div className="usage-seg" role="group">
           <button type="button" role="tab" aria-selected={view === "forwarded"} className={view === "forwarded" ? "on" : ""} onClick={() => setView("forwarded")}>Forwarded</button>
           <button type="button" role="tab" aria-selected={view === "local"} className={view === "local" ? "on" : ""} onClick={() => setView("local")}>This device</button>
         </div>
-      </div>
+      </div> : null}
       {view === "forwarded" ? <>
         <section className={showControls ? "settings-section" : "ports-menu-services"} aria-label="Forwarded services">
         {HAS_TAURI ? (

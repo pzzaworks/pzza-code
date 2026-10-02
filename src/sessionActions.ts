@@ -21,7 +21,7 @@ export const useSessionCreation = create<{ operation: Creation | null; error: st
 export function createSessionInApp(input: SessionCreationInput): Promise<string> {
   const state = useStore.getState();
   const name = normalizeSessionName(input.name);
-  const device = state.devices.find(item => item.id === input.deviceId);
+  const device = state.activeDevices.find(item => item.id === input.deviceId);
   if (!device) throw new Error("Choose a configured device.");
   const host = deviceHost(device);
   if (host && !/^[A-Za-z0-9._][A-Za-z0-9._@-]{0,127}$/.test(host)) throw new Error("This device has an unsupported SSH host.");

@@ -21,6 +21,8 @@ import { LayoutMenu } from "./grid/LayoutMenu";
 import { HELP_SECTIONS, type HelpRequest } from "./panels/HelpModal";
 import { SettingsHub, type SettingsSection } from "./panels/SettingsHub";
 import { useRemoteDesktop } from "./panels/RdpMenu";
+import { hasRemoteDevice } from "./devices";
+import { watchDisabledDevices } from "./deviceFallbacks";
 import { PortsMenu } from "./panels/PortsMenu";
 import { SessionMenu } from "./panels/SessionMenu";
 import { Dropdown } from "./ui/Dropdown";
@@ -64,6 +66,9 @@ export default function App() {
   const [sessionDialogOpen, setSessionDialogOpen] = useState(false);
   const [newWorkspaceRequest, setNewWorkspaceRequest] = useState(0);
   const remoteDesktop = useRemoteDesktop();
+  // Sync and remote desktop only make sense with an enabled remote device.
+  const hasRemote = useStore((state) => hasRemoteDevice(state.devices));
+  useEffect(() => watchDisabledDevices(), []);
   const [portsLoading, setPortsLoading] = useState(false);
   const [menuError, setMenuError] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -343,14 +348,14 @@ export default function App() {
               <div className={`topbar-tools ${toolsOpen ? "open" : ""}`}>
                 <LayoutMenu />
                 <QuickChat onOpenSettings={() => openSettings("quick-chat")} />
-                <div className="toolbar-action-status">
+                {hasRemote || syncing ? <div className="toolbar-action-status">
                   <IconButton icon={FolderSync} title={syncing ? "Sync in progress" : "Sync projects"} onClick={() => {
                     setToolsOpen(false);
                     setSyncRequest(value => value + 1);
                   }} />
                   {syncing ? <span className="toolbar-sync-indicator" role="status" aria-label="Sync in progress" /> : null}
-                </div>
-                <Dropdown icon={Monitor} title="Remote desktop" controlId="remote_desktop" loading={remoteDesktop.busy} width={180} align="end" compact tourId="remote">
+                </div> : null}
+                {hasRemote ? <Dropdown icon={Monitor} title="Remote desktop" controlId="remote_desktop" loading={remoteDesktop.busy} width={180} align="end" compact tourId="remote">
                   {(close) => <>
                     <button type="button" className="menu-item" disabled={remoteDesktop.busy} onClick={() => { close(); void remoteDesktop.openSaved(); }}>
                       <Monitor size={16} strokeWidth={1.9} />
@@ -361,7 +366,7 @@ export default function App() {
                       Settings
                     </button>
                   </>}
-                </Dropdown>
+                </Dropdown> : null}
                 <Dropdown icon={EthernetPort} title="Port manager" controlId="port_forwarding" width={320} loading={portsLoading} align="end" compact tourId="ports">
                   {(close, open) => <PortsMenu active={open && !settingsOpen} onLoadingChange={setPortsLoading} onOpenSettings={() => { close(); openSettings("ports"); }} />}
                 </Dropdown>

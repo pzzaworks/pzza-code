@@ -86,7 +86,10 @@ function Attention() {
   return <><div style={{ position:'relative', height:320, width:Number(new URLSearchParams(location.search).get('terminalWidth') ?? 700) }}><Terminal tileId="attention" name="attention" active /></div><button id="outside-terminal">Other panel</button><div style={{ width:560 }}><LatestNotifications viewAll={() => {}} /></div></>;
 }
 const mode = new URLSearchParams(location.search).get('mode');
-if (mode === 'usage-accounts') useStore.setState({ devices: [{ id:'remote', host:'devbox', name:'Devbox' }] });
+// Remote-only tools (forwarding, remote desktop, remote usage) need an enabled remote device.
+const remoteDevice = { id:'remote', host:'devbox', name:'Devbox' };
+if (mode === 'usage-accounts') useStore.setState({ devices: [remoteDevice], activeDevices: [remoteDevice] });
+else if (mode === 'ports' || mode === 'settings') useStore.setState(state => ({ devices: [...state.devices, remoteDevice], activeDevices: [...state.activeDevices, remoteDevice] }));
 app.render(<ThemeProvider>{mode === 'dialogs' ? <Dialogs /> : mode === 'pending' ? <Pending /> : mode === 'picker' ? <Picker /> : mode === 'path' ? <Path /> : mode === 'appearance' ? <Appearance /> : mode === 'creation' ? <Creation /> : mode === 'usage' ? <Usage /> : mode === 'usage-accounts' ? <UsageMenu /> : mode === 'ports' ? <div className="menu menu-panel" style={{ position:'relative', width:320 }}><PortsMenu onOpenSettings={() => {}} /></div> : mode === 'mcp' ? <><ConfirmationHost /><McpMenu /></> : mode === 'settings' ? <Settings /> : mode === 'attention' ? <Attention /> : <ConfirmationHost />}</ThemeProvider>);
 `;
 let server, browser, origin, scratch;

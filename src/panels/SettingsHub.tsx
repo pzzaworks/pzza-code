@@ -10,6 +10,8 @@ import { QuickChatSettings } from "./QuickChat";
 import { PortsMenu } from "./PortsMenu";
 import { RdpMenu } from "./RdpMenu";
 import { McpMenu } from "./McpMenu";
+import { useStore } from "../state/store";
+import { hasRemoteDevice } from "../devices";
 import { HelpContent, HELP_SECTIONS, type HelpSection, type HelpRequest } from "./HelpModal";
 import { About } from "./About";
 import { NotificationsSettings } from "./Notifications";
@@ -39,6 +41,7 @@ interface Props {
 }
 
 export function SettingsHub({ open, section, onSectionChange, onOpen, onClose, syncRequest = 0, onSyncingChange, helpRequest }: Props) {
+  const hasRemote = useStore((state) => hasRemoteDevice(state.devices));
   const [generalSection, setGeneralSection] = useState<GeneralSection>("appearance");
   const [notificationPage, setNotificationPage] = useState<"activity" | "preferences">("activity");
   const [helpSection, setHelpSection] = useState<HelpSection>("getting-started");
@@ -110,7 +113,7 @@ export function SettingsHub({ open, section, onSectionChange, onOpen, onClose, s
                 {active && id === "general" ? <SettingsSubnav label="General settings" items={generalSections} value={generalSection} onChange={setGeneralSection} /> : null}
                 {active && id === "notifications" ? <SettingsSubnav label="Notification pages" items={[{ id: "activity", label: "Activity" }, { id: "preferences", label: "Preferences" }]} value={notificationPage} onChange={setNotificationPage} /> : null}
                 {active && id === "sync" ? <SettingsSubnav label="Sync pages" items={[{ id: "repositories", label: "Repositories" }, { id: "preferences", label: "Preferences" }]} value={syncPage} onChange={setSyncPage} /> : null}
-                {active && id === "mcp" ? <SettingsSubnav label="Connection settings" items={[{ id: "mcp", label: "MCP integrations" }, { id: "remote", label: "Remote desktop" }, { id: "ports", label: "Port forwarding" }]} value={section === "remote" || section === "ports" ? section : "mcp"} onChange={(value: "mcp" | "remote" | "ports") => onSectionChange(value)} /> : null}
+                {active && id === "mcp" ? <SettingsSubnav label="Connection settings" items={[{ id: "mcp" as const, label: "MCP integrations" }, ...(hasRemote ? [{ id: "remote" as const, label: "Remote desktop" }] : []), { id: "ports" as const, label: "Port forwarding" }]} value={section === "remote" || section === "ports" ? section : "mcp"} onChange={(value: "mcp" | "remote" | "ports") => onSectionChange(value)} /> : null}
                 {active && id === "help" ? <SettingsSubnav label="Help topics" items={HELP_SECTIONS} value={helpSection} onChange={setHelpSection} /> : null}
               </div>;
             })}

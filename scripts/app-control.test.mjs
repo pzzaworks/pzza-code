@@ -145,6 +145,7 @@ test("workspace mutation validates every target before writing and preserves rem
 test("SSH device boundaries reject unsupported hosts before creating or selecting devices", () => {
   const f = fixture();
   f.state.devices = [{ id: "this-mac", name: "This Device", host: "localhost" }, { id: "invalid", name: "Invalid", host: "ssh://host" }];
+  f.state.activeDevices = f.state.devices;
   f.state.addDevice = (...args) => f.writes.push(args);
   f.state.setHost = host => { f.state.connection.host = host; };
   for (const host of ["-oProxyCommand=x", "ssh://host", "host:22", "host/path", "x".repeat(129), "a b"]) assert.throws(() => f.run("add_device", { name: "Remote", host }));

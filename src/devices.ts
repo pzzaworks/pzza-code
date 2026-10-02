@@ -4,6 +4,9 @@ export interface Device {
   name: string;
   host: string; // ssh Host alias or IP
   user?: string;
+  // A disabled device stays configured but is left out everywhere else in the
+  // app: pickers, usage, sync, forwarding, remote desktop and its tiles.
+  disabled?: boolean;
 }
 
 // The only device that always exists is the local machine running the app - it
@@ -24,6 +27,12 @@ export type DeviceOs = "macos" | "linux" | "windows" | "freebsd" | "unknown";
 
 export function deviceHost(device: Device): string {
   return device.id === THIS_MAC.id ? "" : device.user ? `${device.user}@${device.host}` : device.host;
+}
+
+// True when an enabled device other than this one exists, which is what the
+// remote-only tools (sync, remote desktop, forwarding) need to be useful.
+export function hasRemoteDevice(devices: Device[]): boolean {
+  return devices.some((device) => device.id !== THIS_MAC.id && !device.disabled);
 }
 
 export function deviceForHost(devices: Device[], host?: string): Device | undefined {

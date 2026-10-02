@@ -4,6 +4,7 @@ import { DeviceInfo } from "./DeviceInfo";
 import { LiveSessionIcon } from "../ui/LiveSessionIcon";
 import { confirmEditorDiscard } from "../editorChanges";
 import { DeviceIcon } from "../ui/DeviceIcon";
+import { Switch } from "../ui/Switch";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ChevronDown,
@@ -34,6 +35,7 @@ export function DevicesMenu() {
   const connectionHost = useStore((s) => s.connection.host);
   const addDevice = useStore((s) => s.addDevice);
   const removeDevice = useStore((s) => s.removeDevice);
+  const setDeviceDisabled = useStore((s) => s.setDeviceDisabled);
   const workspaces = useStore((s) => s.workspaces);
   const tiles = useStore((s) => s.tiles);
   const tileTitles = useStore((s) => s.tileTitles);
@@ -184,7 +186,7 @@ export function DevicesMenu() {
           const expanded = openDev === d.id;
           const scan = scans[d.id];
           return (
-            <div key={d.id} className={`managed-device ${expanded ? "expanded" : ""}`}>
+            <div key={d.id} className={`managed-device ${expanded ? "expanded" : ""} ${d.disabled ? "disabled" : ""}`}>
               <div className="managed-device-header">
               <button type="button" className="managed-device-toggle" aria-expanded={expanded} onClick={() => toggleDevice(d)}>
                 {expanded ? (
@@ -203,8 +205,11 @@ export function DevicesMenu() {
                     {d.host}
                   </span>
                 </span>
-                <span className="managed-device-kind">{isLocal ? "Local" : "SSH"}</span>
+                <span className="managed-device-kind">{isLocal ? "Local" : d.disabled ? "Disabled" : "SSH"}</span>
               </button>
+                {!isLocal ? (
+                  <Switch on={!d.disabled} small title={d.disabled ? `Enable ${d.name}` : `Disable ${d.name}`} onToggle={() => setDeviceDisabled(d.id, !d.disabled)} />
+                ) : null}
                 {!isCurrent && !isLocal && devices.length > 1 ? (
                   <button
                     className="icon-btn icon-btn-danger"

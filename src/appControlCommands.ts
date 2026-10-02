@@ -5,7 +5,7 @@ export type AppControlStore = Pick<ReturnType<typeof useStore.getState>,
   | "tiles" | "activeId" | "activeWorkspaceId" | "connection" | "sessionWs" | "hiddenTiles" | "tileTitles" | "tileCode" | "workspaceColumns" | "defaultColumns"
   | "setActive" | "setWorkspace" | "unhideTile" | "toggleTileCode" | "setTileCodeRoot" | "setTileCodePath" | "setTileCodeLayout" | "setColumns" | "openSession" | "openWindow"
   | "workspaces" | "addWorkspace" | "removeWorkspace" | "renameWorkspace" | "setWorkspaceIcon" | "setWorkspaceColor" | "reorderWorkspace" | "assignSession"
-  | "hideTile" | "closeTile" | "renameTile" | "reorderTile" | "setTileSpan" | "tileSpan" | "devices" | "addDevice" | "removeDevice" | "setHost" | "loadSessions"
+  | "hideTile" | "closeTile" | "renameTile" | "reorderTile" | "setTileSpan" | "tileSpan" | "devices" | "activeDevices" | "addDevice" | "removeDevice" | "setHost" | "loadSessions"
   | "refreshing"
   | "themeId" | "setTheme" | "fontSize" | "setFontSize" | "cursorBlink" | "setCursorBlink" | "osc52Clipboard" | "setOsc52Clipboard"
   | "semiTransparent" | "setSemiTransparent" | "transparencyOptions" | "setTransparencyOptions"
@@ -41,7 +41,7 @@ export function appControlSnapshot(context: AppControlContext) {
     actions: Object.keys(APP_COMMANDS),
     runtime: context.readRuntime?.() ?? {},
     workspaces: state.workspaces ?? [],
-    devices: state.devices?.map(({ id, name, host, user }) => ({ id, name, host, user })) ?? [],
+    devices: state.devices?.map(({ id, name, host, user, disabled }) => ({ id, name, host, user, disabled: !!disabled })) ?? [],
     appearance: { theme: state.themeId, fontSize: state.fontSize, cursorBlink: state.cursorBlink, osc52Clipboard: state.osc52Clipboard, semiTransparent: state.semiTransparent, ...state.transparencyOptions },
     sessionsRefreshing: state.refreshing ?? false,
     activeId: state.activeId,
@@ -141,7 +141,7 @@ export function executeAppControl(action: string, args: Record<string, unknown>,
     }
     case "remove_device":
     case "set_connection": {
-      const device = state.devices.find(item => item.id === args.deviceId);
+      const device = (action === "remove_device" ? state.devices : state.activeDevices).find(item => item.id === args.deviceId);
       if (!device) throw new Error("Unknown device.");
       if (action === "remove_device") {
         if (device.id === "this-mac") throw new Error("The local device cannot be removed.");
