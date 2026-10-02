@@ -38,6 +38,11 @@ export function forwardSet(
   return invoke("forward_set", { host, port, enable });
 }
 
+// Cancel every forward this app added on `host` without reconnecting to it.
+export function forwardRelease(host: string): Promise<void> {
+  return invoke("forward_release", { host });
+}
+
 export function openUrl(url: string): Promise<void> {
   return invoke("open_url", { url });
 }

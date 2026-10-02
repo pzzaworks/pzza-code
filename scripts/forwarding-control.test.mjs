@@ -10,6 +10,7 @@ globalThis.window = Object.assign(new EventTarget(), { location: { protocol: 'ht
   calls.push({ command, args });
   if (command === 'forward_scan') return { masterUp: true, remote: [8080, 8081], wanted: [8080, 8081], forwarded: [...forwarded] };
   if (command === 'forward_set') { if (args.enable) forwarded.add(args.port); else forwarded.delete(args.port); return; }
+  if (command === 'forward_release') { forwarded.clear(); return; }
   throw new Error('Unexpected native operation');
 } } });
 const output = await build({ entryPoints: [new URL('../src/panels/PortsMenu.tsx', import.meta.url).pathname], bundle: true, platform: 'browser', format: 'esm', write: false, loader: { '.css': 'empty' }, define: { __APP_VERSION__: '"test"' } });
@@ -30,4 +31,20 @@ test('inactive forwarding views stop before touching native tunnels and saved ch
   control.updateForwardConfig({ serverId: 'remote', clientId: 'this-mac', enabled: false });
   assert.deepEqual(control.useForwardConfig.getState(), { serverId: 'remote', clientId: 'this-mac', enabled: false });
   assert.equal(memory.get('pzza.fwd.enabled'), '0');
+});
+
+test('disabling the forwarding source cancels its open forwards without rescanning it', async () => {
+  await control.reconcileSelectedForwarding('trusted', true);
+  assert.equal(forwarded.size, 2);
+  control.releaseDisabledForwardDevices([{ id: 'other', name: 'Other', host: 'other', disabled: true }]);
+  control.releaseDisabledForwardDevices([{ id: 'remote', name: 'Remote', host: 'trusted' }]);
+  assert.equal(forwarded.size, 2);
+  const count = calls.length;
+  control.releaseDisabledForwardDevices([{ id: 'remote', name: 'Remote', host: 'trusted', disabled: true }]);
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.deepEqual(calls.slice(count), [{ command: 'forward_release', args: { host: 'trusted' } }]);
+  assert.equal(forwarded.size, 0);
+  control.releaseDisabledForwardDevices([{ id: 'remote', name: 'Remote', host: 'trusted', disabled: true }]);
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(calls.length, count + 1);
 });

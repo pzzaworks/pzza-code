@@ -73,6 +73,7 @@ pub fn run() {
             forward::forward_scan,
             forward::forward_set,
             forward::forward_reconcile,
+            forward::forward_release,
             rdp::rdp_launch,
             rdp::rdp_is_open,
             agent::agent_token,
