@@ -14,7 +14,7 @@ export function initIntegrationAppControlHandlers(): () => void {
   const handlers: Record<string, (args: Readonly<Record<string, unknown>>) => unknown | Promise<unknown>> = {
     get_integrations: async () => { const settings = useMcpSettings.getState(); if (!settings.config && !settings.loading) await settings.load(); return snapshot(); },
     check_integrations: args => {
-      const devices = useStore.getState().devices;
+      const devices = useStore.getState().activeDevices;
       const ids = args.deviceIds as string[] | undefined;
       if (ids?.some(id => !devices.some(device => device.id === id))) throw new Error("Select configured devices for integration checks.");
       const targets = devices.filter(device => !ids || ids.includes(device.id)).map(device => ({ host: deviceHost(device), name: device.name }));

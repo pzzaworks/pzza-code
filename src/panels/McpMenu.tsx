@@ -15,7 +15,7 @@ const ENABLED_KEY = "pzza.mcp.enabled";
 // merges the entry into the client's config file (keeping a private backup);
 // Copy is for remote setups where the local machine cannot write the file.
 export function McpMenu() {
-  const devices = useStore(state => state.devices);
+  const devices = useStore(state => state.activeDevices);
   const health = useIntegrationHealth(state => state.devices);
   const checkAll = useIntegrationHealth(state => state.checkAll);
   const checking = useIntegrationHealth(state => state.batch?.status === "running");

@@ -140,8 +140,12 @@ interface ConsoleState {
 
   // Managed ssh devices (for RDP + forwarding server/client).
   devices: Device[];
+  // `devices` without the disabled ones; everything except device management
+  // reads this list.
+  activeDevices: Device[];
   addDevice: (name: string, host: string, user?: string) => void;
   removeDevice: (id: string) => void;
+  setDeviceDisabled: (id: string, disabled: boolean) => void;
 
   // Per-device RDP config, provisioned by the wizard (user + cert fingerprint +
   // the Keychain service holding the password). Absent = not set up yet.
@@ -228,6 +232,22 @@ export interface TileCode {
   layout?: TileCodeLayout;
   root?: string;
   path?: string;
+}
+
+// Always keep a "This Mac" local device (the machine running the app), and
+// make it the first entry so it is the default current device. Drop any stale
+// pre-seeded "devbox" placeholder that was never actually added by the user.
+const initialDevices = ((): Device[] => {
+  const loaded = load<Device[]>(DEVICES_KEY, DEFAULT_DEVICES).filter(
+    (d) => d.id !== "devbox",
+  );
+  const withoutMac = loaded.filter((d) => d.id !== THIS_MAC.id);
+  return [THIS_MAC, ...withoutMac];
+})();
+
+// Both lists are stored together so selectors return stable references.
+function deviceLists(devices: Device[]): Pick<ConsoleState, "devices" | "activeDevices"> {
+  return { devices, activeDevices: devices.filter((device) => !device.disabled) };
 }
 
 export const useStore = create<ConsoleState>((set, get) => ({
@@ -376,16 +396,7 @@ export const useStore = create<ConsoleState>((set, get) => ({
     });
   },
 
-  // Always keep a "This Mac" local device (the machine running the app), and
-  // make it the first entry so it is the default current device. Drop any stale
-  // pre-seeded "devbox" placeholder that was never actually added by the user.
-  devices: ((): Device[] => {
-    const loaded = load<Device[]>(DEVICES_KEY, DEFAULT_DEVICES).filter(
-      (d) => d.id !== "devbox",
-    );
-    const withoutMac = loaded.filter((d) => d.id !== "this-mac");
-    return [THIS_MAC, ...withoutMac];
-  })(),
+  ...deviceLists(initialDevices),
   addDevice: (name, host, user) => {
     const trimmed = name.trim();
     const h = host.trim();
@@ -398,7 +409,7 @@ export const useStore = create<ConsoleState>((set, get) => ({
     };
     const devices = [...get().devices, device];
     persist(DEVICES_KEY, devices);
-    set({ devices });
+    set(deviceLists(devices));
     notify({ category: "devices", event: "device-added", title: "Device added", body: `${trimmed} was added to your devices.`, target: { section: "devices" } });
   },
   removeDevice: (id) => {
@@ -407,8 +418,16 @@ export const useStore = create<ConsoleState>((set, get) => ({
     if (!removed) return;
     const devices = get().devices.filter((d) => d.id !== id);
     persist(DEVICES_KEY, devices);
-    set({ devices });
+    set(deviceLists(devices));
     notify({ category: "devices", event: "device-removed", title: "Device removed", body: `${removed.name} was removed from this app.`, target: { section: "devices" } });
+  },
+  setDeviceDisabled: (id, disabled) => {
+    if (id === THIS_MAC.id) return; // the local machine always stays enabled
+    const current = get().devices.find(device => device.id === id);
+    if (!current || !!current.disabled === disabled) return;
+    const devices = get().devices.map((d) => d.id !== id ? d : disabled ? { ...d, disabled: true } : { id: d.id, name: d.name, host: d.host, user: d.user });
+    persist(DEVICES_KEY, devices);
+    set(deviceLists(devices));
   },
 
   deviceRdp: load<Record<string, DeviceRdp>>(DEVICE_RDP_KEY, {}),

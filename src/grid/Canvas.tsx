@@ -25,7 +25,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { useStore } from "../state/store";
-import { deviceNameFor } from "../devices";
+import { deviceForHost, deviceNameFor } from "../devices";
 import { Modal } from "../ui/Modal";
 import { Terminal } from "../terminal/Terminal";
 import { TileCodePanel } from "./TileCodePanel";
@@ -193,7 +193,9 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
     (t) =>
       (activeWorkspaceId === ALL_WORKSPACE_ID ||
         (sessionWs[wsKeyOf(t)] ?? DEFAULT_WORKSPACE_ID) === activeWorkspaceId) &&
-      !hiddenTiles.includes(t.id),
+      !hiddenTiles.includes(t.id) &&
+      // Sessions on a disabled device stay running there but leave the grid.
+      !(t.host && deviceForHost(devices, t.host)?.disabled),
   );
 
   // Automatic spans for tiles without a saved layout: share the row evenly,
