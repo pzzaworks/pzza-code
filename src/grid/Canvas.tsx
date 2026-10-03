@@ -29,6 +29,7 @@ import { deviceForHost, deviceNameFor } from "../devices";
 import { Modal } from "../ui/Modal";
 import { Terminal } from "../terminal/Terminal";
 import { TileCodePanel } from "./TileCodePanel";
+import { CodeSplitHandle } from "./CodeSplitHandle";
 import { duplicateSession, fetchSessionPath, killSession } from "../serverApi";
 import { registerAppControlHandler, registerAppControlState } from "../appControlRuntime";
 import { confirmEditorDiscard, hasUnsavedEditors } from "../editorChanges";
@@ -114,6 +115,7 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
   const devices = useStore((s) => s.devices);
   const tileCode = useStore((s) => s.tileCode);
   const toggleTileCode = useStore((s) => s.toggleTileCode);
+  const setTileCodeRoot = useStore((s) => s.setTileCodeRoot);
   const recordingTileId = useDictation((state) => state.recording?.tileId);
   // Tiles with unread terminal notifications get a solid green dot; everything
   // else stays grey. Viewing the tile marks its notifications read, which also
@@ -668,11 +670,19 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
                   void confirmEditorDiscard([t.id]).then((confirmed) => { if (confirmed) toggleTileCode(t.id); });
                   return;
                 }
-                // Root the editor at the terminal's live cwd (a fresh session
-                // has no scanned path yet); fall back to any known path.
-                fetchSessionPath(base, t.host, t.window)
-                  .then((live) => toggleTileCode(t.id, live || fullPath))
-                  .catch(() => toggleTileCode(t.id, fullPath));
+                // Open immediately at the best known path; a remote tile's live
+                // cwd lookup is an ssh round trip and must not delay the panel.
+                const hadRoot = !!tileCode[t.id]?.root;
+                toggleTileCode(t.id, fullPath);
+                if (hadRoot) return;
+                // Then re-root at the terminal's live cwd (a fresh session has
+                // no scanned path yet), unless a folder or file was picked meanwhile.
+                void fetchSessionPath(base, t.host, t.window).then((live) => {
+                  const current = useStore.getState().tileCode[t.id];
+                  if (live && live !== fullPath && current?.open && !current.path && current.root === fullPath) {
+                    setTileCodeRoot(t.id, live);
+                  }
+                });
               }}
             >
               <FileCode size={13} />
@@ -757,6 +767,7 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
             onStatus={(s) => setStatus(t.id, s)}
           />
           {codeOpen ? <TileCodePanel tileId={t.id} /> : null}
+          {codeOpen ? <CodeSplitHandle tileId={t.id} /> : null}
         </div>
         {dimmed ? (
           <div
