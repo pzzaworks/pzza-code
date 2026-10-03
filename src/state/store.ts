@@ -211,6 +211,7 @@ interface ConsoleState {
   tileCode: Record<string, TileCode>;
   toggleTileCode: (id: string, defaultRoot?: string) => void;
   setTileCodeLayout: (id: string, layout: TileCodeLayout) => void;
+  setTileCodeSizes: (id: string, sizes: Pick<TileCode, "split" | "treeWidth">) => void;
   setTileCodeRoot: (id: string, root: string) => void;
   setTileCodePath: (id: string, path: string) => void;
   closeTileFile: (id: string) => void;
@@ -230,6 +231,8 @@ export type TileCodeLayout = "full" | "side-by-side" | "stacked";
 export interface TileCode {
   open: boolean;
   layout?: TileCodeLayout;
+  split?: number; // terminal share of the tile body when split, 0-1
+  treeWidth?: number; // file tree width in px
   root?: string;
   path?: string;
 }
@@ -662,8 +665,8 @@ export const useStore = create<ConsoleState>((set, get) => ({
       // Closing the editor also closes the file that was open in it; reopening
       // starts back at the folder tree with nothing selected.
       const next: TileCode = opening
-        ? { open: true, layout: cur?.layout ?? "side-by-side", root: cur?.root ?? defaultRoot, path: undefined }
-        : { open: false, layout: cur?.layout ?? "side-by-side", root: cur?.root, path: undefined };
+        ? { ...cur, open: true, layout: cur?.layout ?? "side-by-side", root: cur?.root ?? defaultRoot, path: undefined }
+        : { ...cur, open: false, layout: cur?.layout ?? "side-by-side", root: cur?.root, path: undefined };
       const tileCode = { ...state.tileCode, [id]: next };
       persist(TILECODE_KEY, tileCode);
       return { tileCode, activeId: id };
@@ -673,6 +676,14 @@ export const useStore = create<ConsoleState>((set, get) => ({
       const cur = state.tileCode[id];
       if (!cur || cur.layout === layout) return {};
       const tileCode = { ...state.tileCode, [id]: { ...cur, layout } };
+      persist(TILECODE_KEY, tileCode);
+      return { tileCode };
+    }),
+  setTileCodeSizes: (id, sizes) =>
+    set((state) => {
+      const cur = state.tileCode[id];
+      if (!cur) return {};
+      const tileCode = { ...state.tileCode, [id]: { ...cur, ...sizes } };
       persist(TILECODE_KEY, tileCode);
       return { tileCode };
     }),
