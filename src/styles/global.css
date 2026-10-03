@@ -1076,22 +1076,53 @@ button {
   margin-left: auto;
 }
 .tile-body-code-side-by-side > .term-surface {
-  right: 50%;
+  right: calc(100% - var(--code-split, 50%));
 }
 .tile-body-code-side-by-side > .tile-code {
-  left: 50%;
+  left: var(--code-split, 50%);
   border-left: 1px solid var(--border);
 }
 .tile-body-code-stacked > .term-surface {
-  bottom: 50%;
+  bottom: calc(100% - var(--code-split, 50%));
 }
 .tile-body-code-stacked > .tile-code {
-  top: 50%;
+  top: var(--code-split, 50%);
   border-top: 1px solid var(--border);
 }
 .tile-body-code-side-by-side .code-tile-tree {
   width: min(244px, 35%);
 }
+
+/* Draggable dividers: a wide invisible hit area centred on the pane border,
+   with an accent line while hovered, focused or dragged. */
+.split-handle {
+  position: relative;
+  z-index: 6;
+  touch-action: none;
+  outline: none;
+}
+.split-handle-x { cursor: col-resize; }
+.split-handle-y { cursor: row-resize; }
+.split-handle::after {
+  content: "";
+  position: absolute;
+  background: var(--accent);
+  opacity: 0;
+  transition: opacity 120ms ease;
+  pointer-events: none;
+}
+.split-handle-x::after { top: 0; bottom: 0; left: 50%; width: 2px; transform: translateX(-50%); }
+.split-handle-y::after { left: 0; right: 0; top: 50%; height: 2px; transform: translateY(-50%); }
+.split-handle:hover::after,
+.split-handle:focus-visible::after,
+html.is-resizing-x .split-handle-x::after,
+html.is-resizing-y .split-handle-y::after { opacity: 1; }
+html.is-resizing-x, html.is-resizing-x * { cursor: col-resize !important; user-select: none; }
+html.is-resizing-y, html.is-resizing-y * { cursor: row-resize !important; user-select: none; }
+.code-split-handle { position: absolute; }
+.code-split-handle.split-handle-x { top: 0; bottom: 0; left: var(--code-split, 50%); width: 8px; transform: translateX(-50%); }
+.code-split-handle.split-handle-y { left: 0; right: 0; top: var(--code-split, 50%); height: 8px; transform: translateY(-50%); }
+.code-tree-handle { flex: 0 0 8px; margin: 0 -4px; }
 
 .code-editor-pane {
   flex: 1;
@@ -1178,6 +1209,7 @@ button {
 .code-tile-tree {
   flex: 0 0 auto;
   width: 244px;
+  max-width: calc(100% - 160px);
   overflow-y: auto;
   padding: 6px;
   border-right: 1px solid var(--border);

@@ -19,6 +19,7 @@ import { beginFileMutation, fileMutationPending, notifyFileMutation, onFileMutat
 import { copyImageToClipboard } from "../imageClipboard";
 import { CodeLayoutMenu } from "./CodeLayoutMenu";
 import { createEditorAppController, registerEditorAppControl } from "../appControlEditor";
+import { SplitHandle } from "../ui/SplitHandle";
 
 // file extension -> the key codemirror-extensions-langs' loadLanguage expects.
 // Those keys are extension-style ("ts", "rs", "sh"), not full language names, so
@@ -55,6 +56,14 @@ function extOf(p: string): string {
   const b = baseName(p);
   const i = b.lastIndexOf(".");
   return i > 0 ? b.slice(i + 1).toLowerCase() : "";
+}
+
+// File tree width bounds; the editor always keeps at least MIN_EDITOR_WIDTH px.
+const MIN_TREE_WIDTH = 120;
+const MIN_EDITOR_WIDTH = 160;
+function clampTreeWidth(width: number, split: HTMLElement | null): number {
+  const max = Math.max(MIN_TREE_WIDTH, (split?.clientWidth ?? Infinity) - MIN_EDITOR_WIDTH);
+  return Math.round(Math.min(max, Math.max(MIN_TREE_WIDTH, width)));
 }
 
 // ---- Cmd/Ctrl/Alt+click go-to-definition ----
@@ -239,6 +248,8 @@ export function TileCodePanel({ tileId }: { tileId: string }) {
   const setTileCodeRoot = useStore((s) => s.setTileCodeRoot);
   const setTileCodePath = useStore((s) => s.setTileCodePath);
   const closeTileFile = useStore((s) => s.closeTileFile);
+  const setTileCodeSizes = useStore((s) => s.setTileCodeSizes);
+  const treeRef = useRef<HTMLDivElement>(null);
 
   const [treeOpen, setTreeOpen] = useState(true);
   const [treeControl, setTreeControl] = useState<{ revision: number; path?: string; expanded?: boolean }>({ revision: 0 });
@@ -736,7 +747,7 @@ export function TileCodePanel({ tileId }: { tileId: string }) {
       {jumpStatus ? <div className="code-status muted" role="status">{jumpStatus}</div> : null}
       <div className="code-split">
         {treeOpen ? (
-          <div className="code-tile-tree">
+          <div className="code-tile-tree" ref={treeRef} style={code?.treeWidth ? { width: code.treeWidth } : undefined}>
             <FolderTree
               root={root}
               control={treeControl}
@@ -745,6 +756,19 @@ export function TileCodePanel({ tileId }: { tileId: string }) {
               onOpenFile={(p) => { if (p !== path) void navigate(() => setTileCodePath(tileId, p)); }}
             />
           </div>
+        ) : null}
+        {treeOpen ? (
+          <SplitHandle
+            axis="x"
+            className="code-tree-handle"
+            label="Resize file tree"
+            step={24}
+            read={() => treeRef.current?.getBoundingClientRect().width ?? 0}
+            fromPointer={(x, _y, handle) => clampTreeWidth(x - (treeRef.current?.getBoundingClientRect().left ?? 0), handle.parentElement)}
+            clamp={(width, handle) => clampTreeWidth(width, handle.parentElement)}
+            preview={(width) => { if (treeRef.current) treeRef.current.style.width = `${width}px`; }}
+            commit={(width) => setTileCodeSizes(tileId, { treeWidth: width })}
+          />
         ) : null}
         <div
           className="code-editor-pane"

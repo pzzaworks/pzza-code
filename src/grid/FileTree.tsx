@@ -66,6 +66,13 @@ import {
 } from "simple-icons";
 import { deleteFile, moveFile, listDir, type DirEntry } from "../serverApi";
 
+// Keep the server's reason (missing folder, connection not ready) visible
+// instead of collapsing every failure into one generic line.
+function listingErrorMessage(cause: unknown): string {
+  const reason = cause instanceof Error ? cause.message.trim() : "";
+  return reason ? `Could not read this folder: ${reason}` : "Could not read this folder.";
+}
+
 const join = (dir: string, name: string) => (dir.endsWith("/") ? dir + name : `${dir}/${name}`);
 
 // A brand (language) logo from simple-icons, or a lucide fallback for files that
@@ -250,7 +257,7 @@ function TreeNode({ path, name, isDir, depth, activePath, onOpenFile, host }: {
     let alive = true;
     setError("");
     listDir(path, host).then((result) => { if (alive) setChildren(result.entries); })
-      .catch(() => { if (alive) { setError("Could not read this folder."); setChildren([]); } });
+      .catch((cause: unknown) => { if (alive) { setError(listingErrorMessage(cause)); setChildren([]); } });
     return () => { alive = false; };
   }, [path, host, isDir, expanded, actions?.revision]);
   const item = { path, name, isDir };
@@ -345,7 +352,7 @@ export function FolderTree({ root, activePath, onOpenFile, host, control }: {
     setListingError("");
     listDir(root, host).then((result) => {
       if (alive) { setResolvedRoot(result.path); setChildren(result.entries); }
-    }).catch(() => { if (alive) { setChildren([]); setListingError("Could not read this folder."); } });
+    }).catch((cause: unknown) => { if (alive) { setChildren([]); setListingError(listingErrorMessage(cause)); } });
     return () => { alive = false; };
   }, [root, host, revision]);
   useEffect(() => {
