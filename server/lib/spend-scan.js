@@ -8,18 +8,25 @@ import path from "node:path";
 import { STATE_DIR } from "./config.js";
 import { discoverAccounts } from "./accounts.js";
 
-// USD per million (input, output) tokens.
+// USD per million (input, output[, cache read]) tokens. The optional third
+// rate overrides the default 10%-of-input cache-read price for models that
+// publish their own cache-read rate.
 const PRICING = {
+  "claude-fable-5-1": [10.0, 50.0, 0.25],
+  "claude-mythos-5-1": [10.0, 50.0, 0.25],
   "claude-fable-5": [10.0, 50.0],
   "claude-mythos-5": [10.0, 50.0],
+  "claude-opus-5-5": [4.0, 20.0, 0.2],
   "claude-opus-5": [5.0, 25.0],
   "claude-opus-4-8": [5.0, 25.0],
   "claude-opus-4-7": [5.0, 25.0],
   "claude-opus-4-6": [5.0, 25.0],
   "claude-opus-4-5": [5.0, 25.0],
+  "claude-sonnet-5-5": [2.0, 10.0, 0.2],
   "claude-sonnet-5": [3.0, 15.0],
   "claude-sonnet-4-6": [3.0, 15.0],
   "claude-sonnet-4-5": [3.0, 15.0],
+  "claude-haiku-5-5": [0.1, 0.5],
   "claude-haiku-4-5": [1.0, 5.0],
   // Standard short-context API rates, verified 2026-09-10:
   // https://developers.openai.com/api/docs/pricing
@@ -68,11 +75,11 @@ function modelRates(model, day) {
 function bucketCost(b, model, day) {
   const rates = modelRates(model, day);
   if (!rates) return null;
-  const [ri, wo] = rates;
+  const [ri, wo, cacheRead = ri * CACHE_READ_RATE] = rates;
   return (
     (b[0] * ri +
       b[1] * wo +
-      b[2] * ri * CACHE_READ_RATE +
+      b[2] * cacheRead +
       b[3] * ri * CACHE_WRITE_5M_RATE +
       b[4] * ri * CACHE_WRITE_1H_RATE) /
     1_000_000
