@@ -125,6 +125,48 @@ test("existing parse caches are repriced without discarding their token buckets 
   `);
 });
 
+test("current Claude model ids are priced with their published cache-read rates", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "pzza-spend-claude-pricing-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const dir = path.join(root, ".claude", "projects", "fixture");
+  await mkdir(dir, { recursive: true });
+  const script = path.join(root, "check.mjs");
+  await writeFile(script, `
+    import assert from 'node:assert/strict';
+    import fs from 'node:fs/promises';
+    import { scanSpend } from ${JSON.stringify(new URL("../lib/spend-scan.js", import.meta.url).href)};
+    const now = new Date('2026-10-26T12:00:00Z').getTime();
+    const record = (id, model, usage) => JSON.stringify({ timestamp: '2026-10-26T10:00:00Z', requestId: id,
+      message: { id, model, usage } });
+    await fs.writeFile(${JSON.stringify(path.join(dir, "session.jsonl"))}, [
+      record('fable', 'claude-fable-5-1', { input_tokens: 1000000, output_tokens: 100000, cache_read_input_tokens: 2000000,
+        cache_creation: { ephemeral_5m_input_tokens: 100000 } }),
+      record('opus', 'claude-opus-5-5', { input_tokens: 1000000, output_tokens: 100000, cache_read_input_tokens: 2000000 }),
+      record('sonnet', 'claude-sonnet-5-5', { input_tokens: 1000000, output_tokens: 100000, cache_read_input_tokens: 1000000 }),
+      record('haiku', 'claude-haiku-5-5', { input_tokens: 1000000, output_tokens: 1000000, cache_read_input_tokens: 1000000 }),
+      record('legacy', 'claude-opus-5', { input_tokens: 1000000, cache_read_input_tokens: 1000000 }),
+    ].join('\\n') + '\\n');
+    const accounts = await scanSpend(now);
+    assert.equal(accounts.length, 1);
+    const result = accounts[0];
+    assert.deepEqual(result.today.unpricedModels, []);
+    assert.equal(result.today.unpricedTokens, 0);
+    assert.equal(result.today.tokens, 13400000);
+    // Fable 5.1: 10 + 5 + 2M * $0.25 + 100K * $10 * 1.25 = 16.75
+    // Opus 5.5: 4 + 2 + 2M * $0.20 = 6.4
+    // Sonnet 5.5: 2 + 1 + 1M * $0.20 = 3.2
+    // Haiku 5.5: 0.1 + 0.5 + 1M * $0.01 = 0.61
+    // Opus 5 (no published override): 5 + 1M * $0.50 = 5.5
+    assert.ok(Math.abs(result.today.cost - 32.46) < 1e-9, String(result.today.cost));
+    assert.equal(result.today.pricedCost, result.today.cost);
+    process.stdout.write('ok');
+  `);
+  const { stdout } = await execute(process.execPath, [script], {
+    env: { ...process.env, HOME: root, XDG_CONFIG_HOME: root, TZ: "UTC" }, timeout: 10_000,
+  });
+  assert.equal(stdout, "ok");
+});
+
 test("worker scans preserve fresh requests, incremental totals, large UTF-8 records and event-loop responsiveness", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "pzza-spend-"));
   t.after(() => rm(root, { recursive: true, force: true }));
