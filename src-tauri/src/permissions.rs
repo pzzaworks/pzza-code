@@ -1,7 +1,8 @@
-// macOS privacy permissions for PzzaCode and everything it runs. Local shells
-// live under the tmux helper, which is the PzzaCode executable itself started
-// by launchd (local_tmux.rs), so macOS attributes their access to PzzaCode:
-// granting the app is what covers tmux and the tools started inside it.
+// macOS privacy permissions for PzzaCode and tmux. Local shells live under the
+// tmux helper, which is the PzzaCode executable started by launchd
+// (local_tmux.rs), so most access is attributed to PzzaCode. tmux itself is
+// also granted where macOS lists command-line tools, so tools that check the
+// binary directly get the same access.
 
 use serde::Serialize;
 
@@ -23,12 +24,17 @@ pub struct PermissionState {
     status: PermissionStatus,
 }
 
-const PERMISSIONS: [&str; 5] = [
+const PERMISSIONS: [&str; 8] = [
     "fullDiskAccess",
     "microphone",
     "screenRecording",
     "accessibility",
     "automation",
+    // tmux, for tools that check the binary itself. Only these three privacy
+    // lists accept a command-line tool; the rest go to the launching app.
+    "tmuxFullDiskAccess",
+    "tmuxAccessibility",
+    "tmuxScreenRecording",
 ];
 
 fn known(id: &str) -> Result<&'static str, String> {
@@ -145,6 +151,9 @@ mod imp {
             "screenRecording" => granted(unsafe { CGPreflightScreenCaptureAccess() }),
             "accessibility" => granted(unsafe { AXIsProcessTrusted() }),
             "automation" => automation(false),
+            "tmuxFullDiskAccess" => tmux_grant("kTCCServiceSystemPolicyAllFiles"),
+            "tmuxAccessibility" => tmux_grant("kTCCServiceAccessibility"),
+            "tmuxScreenRecording" => tmux_grant("kTCCServiceScreenCapture"),
             _ => PermissionStatus::Unknown,
         }
     }
@@ -164,6 +173,10 @@ mod imp {
                 unsafe { CGRequestScreenCaptureAccess() };
                 open_settings(id)?;
             }
+            ("tmuxFullDiskAccess" | "tmuxAccessibility" | "tmuxScreenRecording", _) => {
+                open_settings(id)?;
+                reveal_tmux()?;
+            }
             ("fullDiskAccess", _) => {
                 open_settings(id)?;
                 reveal_app()?;
@@ -175,10 +188,10 @@ mod imp {
 
     pub fn open_settings(id: &str) -> Result<(), String> {
         let pane = match id {
-            "fullDiskAccess" => "Privacy_AllFiles",
+            "fullDiskAccess" | "tmuxFullDiskAccess" => "Privacy_AllFiles",
             "microphone" => "Privacy_Microphone",
-            "screenRecording" => "Privacy_ScreenCapture",
-            "accessibility" => "Privacy_Accessibility",
+            "screenRecording" | "tmuxScreenRecording" => "Privacy_ScreenCapture",
+            "accessibility" | "tmuxAccessibility" => "Privacy_Accessibility",
             "automation" => "Privacy_Automation",
             _ => return Err("Unknown permission".into()),
         };
@@ -233,6 +246,56 @@ mod imp {
             .ok_or("PzzaCode is not running from an app bundle")?;
         let bundle = bundle.to_str().ok_or("PzzaCode's location is not valid text")?;
         run_open(&["-R", bundle]).map_err(|_| "Finder could not show PzzaCode".into())
+    }
+
+    // The real tmux binary on the user's PATH. macOS records grants for
+    // command-line tools by their resolved path (e.g. Homebrew's Cellar path),
+    // so symlinks are followed; an upgrade moves it and needs a new grant.
+    fn tmux_path() -> Option<std::path::PathBuf> {
+        crate::agent::login_path()
+            .split(':')
+            .map(|directory| std::path::Path::new(directory).join("tmux"))
+            .find(|candidate| candidate.is_file())
+            .and_then(|candidate| std::fs::canonicalize(candidate).ok())
+    }
+
+    // Grants live in the system privacy database, which only Full Disk Access
+    // can read; without it the answer is honestly "unknown".
+    fn tmux_grant(service: &str) -> PermissionStatus {
+        let Some(path) = tmux_path() else {
+            return PermissionStatus::Unknown;
+        };
+        let Some(path) = path.to_str() else {
+            return PermissionStatus::Unknown;
+        };
+        // SQL string literal: the only special character is the quote itself.
+        let query = format!(
+            "select auth_value from access where service = '{service}' and client_type = 1 and client = '{}'",
+            path.replace('\'', "''")
+        );
+        let Ok(output) = std::process::Command::new("/usr/bin/sqlite3")
+            .args(["-readonly", "/Library/Application Support/com.apple.TCC/TCC.db", &query])
+            .stdin(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .output()
+        else {
+            return PermissionStatus::Unknown;
+        };
+        if !output.status.success() {
+            return PermissionStatus::Unknown;
+        }
+        match String::from_utf8_lossy(&output.stdout).trim() {
+            "" => PermissionStatus::NotGranted,
+            "2" | "3" => PermissionStatus::Granted,
+            "0" => PermissionStatus::Denied,
+            _ => PermissionStatus::Unknown,
+        }
+    }
+
+    fn reveal_tmux() -> Result<(), String> {
+        let path = tmux_path().ok_or("tmux is not installed. Install it from the setup wizard first.")?;
+        let path = path.to_str().ok_or("tmux's location is not valid text")?;
+        run_open(&["-R", path]).map_err(|_| "Finder could not show tmux".into())
     }
 
     fn audio_media_type() -> Retained<AnyObject> {
