@@ -164,6 +164,10 @@ mod imp {
                 unsafe { CGRequestScreenCaptureAccess() };
                 open_settings(id)?;
             }
+            ("fullDiskAccess", _) => {
+                open_settings(id)?;
+                reveal_app()?;
+            }
             _ => open_settings(id)?,
         }
         Ok(status(id))
@@ -190,18 +194,45 @@ mod imp {
         }
     }
 
-    // There is no API for Full Disk Access; the user's TCC database is only
-    // readable with it, so opening (never reading) it is the standard probe.
+    // There is no API for Full Disk Access. Locations only it unlocks are
+    // probed by opening them (never reading contents): access answers
+    // "granted", EPERM answers "not granted". Paths differ across macOS
+    // versions (the per-user TCC database is gone on newer releases), so the
+    // first location that exists decides.
     fn full_disk_access() -> PermissionStatus {
-        let Some(home) = std::env::var_os("HOME") else {
-            return PermissionStatus::Unknown;
-        };
-        let probe = std::path::Path::new(&home).join("Library/Application Support/com.apple.TCC/TCC.db");
-        match std::fs::File::open(probe) {
-            Ok(_) => PermissionStatus::Granted,
-            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => PermissionStatus::NotGranted,
-            Err(_) => PermissionStatus::Unknown,
+        let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+        let mut probes = vec![std::path::PathBuf::from("/Library/Application Support/com.apple.TCC/TCC.db")];
+        if let Some(home) = home {
+            probes.push(home.join("Library/Safari"));
+            probes.push(home.join("Library/Mail"));
+            probes.push(home.join("Library/Messages"));
         }
+        for probe in probes {
+            let opened = if probe.is_dir() {
+                std::fs::read_dir(&probe).map(drop)
+            } else {
+                std::fs::File::open(&probe).map(drop)
+            };
+            match opened {
+                Ok(()) => return PermissionStatus::Granted,
+                Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => return PermissionStatus::NotGranted,
+                Err(_) => continue,
+            }
+        }
+        PermissionStatus::Unknown
+    }
+
+    // Full Disk Access has no system prompt; apps join its list by being
+    // dropped in. Showing PzzaCode in Finder next to the pane makes that a
+    // single drag instead of a hunt through the "+" file picker.
+    fn reveal_app() -> Result<(), String> {
+        let exe = std::env::current_exe().map_err(|_| "PzzaCode could not locate itself".to_string())?;
+        let bundle = exe
+            .ancestors()
+            .find(|path| path.extension().is_some_and(|extension| extension == "app"))
+            .ok_or("PzzaCode is not running from an app bundle")?;
+        let bundle = bundle.to_str().ok_or("PzzaCode's location is not valid text")?;
+        run_open(&["-R", bundle]).map_err(|_| "Finder could not show PzzaCode".into())
     }
 
     fn audio_media_type() -> Retained<AnyObject> {

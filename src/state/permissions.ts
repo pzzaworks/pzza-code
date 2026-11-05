@@ -36,3 +36,8 @@ export function requestPermission(id: PermissionId): Promise<PermissionStatus> {
 export function openPermissionSettings(id: PermissionId): Promise<void> {
   return invoke("permission_open_settings", { id });
 }
+
+/** Installs tmux with Homebrew on this Mac when missing, then starts local terminals. */
+export function installTmux(): Promise<void> {
+  return invoke("tmux_install");
+}

@@ -1,11 +1,11 @@
 import { AsyncButton } from "../ui/AsyncButton";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { AlertTriangle, Check, Loader2, RefreshCw, ServerCog, X } from "lucide-react";
 import { Modal } from "../ui/Modal";
 import { WizardIcon } from "../ui/WizardIcon";
 import { PathField } from "../ui/PathField";
 import { PermissionsPanel } from "./Permissions";
-import { PERMISSIONS_SUPPORTED } from "../state/permissions";
+import { PERMISSIONS_SUPPORTED, installTmux } from "../state/permissions";
 import { useStore } from "../state/store";
 import {
   fetchDoctor,
@@ -21,6 +21,7 @@ type Status = "ok" | "warn" | "fail" | "pending";
 type Mode = "this" | "add";
 
 interface CheckRow {
+  action?: ReactNode;
   label: string;
   status: Status;
   detail: string;
@@ -55,6 +56,19 @@ export function SetupWizard({ open, onClose }: { open: boolean; onClose: () => v
   useEffect(() => {
     if (open && mode === "this") check();
   }, [open, mode, check]);
+
+  // Local terminals need tmux; on this Mac it installs itself through
+  // Homebrew as soon as the check finds it missing, once per wizard session.
+  const [tmuxInstall, setTmuxInstall] = useState<{ state: "idle" | "installing" | "done" | "failed"; error?: string }>({ state: "idle" });
+  const runTmuxInstall = useCallback(() => {
+    setTmuxInstall({ state: "installing" });
+    installTmux()
+      .then(() => { setTmuxInstall({ state: "done" }); check(); })
+      .catch((error: unknown) => setTmuxInstall({ state: "failed", error: String(error instanceof Error ? error.message : error) }));
+  }, [check]);
+  useEffect(() => {
+    if (open && PERMISSIONS_SUPPORTED && doctor && !doctor.tmux && tmuxInstall.state === "idle") runTmuxInstall();
+  }, [open, doctor, tmuxInstall.state, runTmuxInstall]);
 
   // --- add a device ---
   const [name, setName] = useState("");
@@ -144,9 +158,12 @@ export function SetupWizard({ open, onClose }: { open: boolean; onClose: () => v
         },
         {
           label: "tmux (persistent sessions)",
-          status: doctor.tmux ? "ok" : "warn",
-          detail: doctor.tmux ?? "not found",
-          hint: doctor.tmux ? undefined : "Install tmux: `sudo apt install tmux` / `brew install tmux`",
+          ...(doctor.tmux ? { status: "ok" as const, detail: doctor.tmux }
+            : !PERMISSIONS_SUPPORTED ? { status: "warn" as const, detail: "not found", hint: "Install tmux: `sudo apt install tmux` / `brew install tmux`" }
+            : tmuxInstall.state === "installing" ? { status: "pending" as const, detail: "Installing with Homebrew..." }
+            : tmuxInstall.state === "failed" ? { status: "fail" as const, detail: "not installed", hint: tmuxInstall.error,
+              action: <button type="button" className="btn btn-sm" onClick={runTmuxInstall}>Retry</button> }
+            : { status: "warn" as const, detail: "not found" }),
         },
         {
           label: "Terminal backend (node-pty)",
@@ -206,6 +223,7 @@ export function SetupWizard({ open, onClose }: { open: boolean; onClose: () => v
                     <div className="sw-row-label">{r.label}</div>
                     <div className="sw-row-detail">{r.detail}</div>
                     {r.hint ? <div className="sw-row-hint">{r.hint}</div> : null}
+                    {r.action ? <div className="sw-row-action">{r.action}</div> : null}
                   </div>
                 </div>
               ))}

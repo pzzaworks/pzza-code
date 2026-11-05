@@ -2486,6 +2486,9 @@ html.is-resizing-y, html.is-resizing-y * { cursor: row-resize !important; user-s
 .permissions-row .sw-row-body {
   flex: 1 1 auto;
 }
+.sw-row-action {
+  margin-top: 6px;
+}
 .permissions-action {
   flex: 0 0 auto;
 }
