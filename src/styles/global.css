@@ -5277,6 +5277,7 @@ input[type="checkbox"]:disabled { opacity: .45; cursor: not-allowed; }
 :root[data-appearance="light"] .btn:hover:not(:disabled) { background: var(--hover); border-color: #b6bec8; }
 :root[data-appearance="light"] .btn-accent { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
 :root[data-appearance="light"] .btn-accent:hover:not(:disabled) { background: #0550ae; border-color: #0550ae; }
+:root[data-grayscale="on"][data-appearance="light"] .btn-accent:hover:not(:disabled) { background: #545454; border-color: #545454; }
 :root[data-appearance="light"] .btn-on { background: var(--selected); border-color: var(--focus-ring); color: var(--selected-text); }
 :root[data-appearance="light"] .btn-danger { background: var(--surface); border-color: var(--border); color: var(--danger-foreground, var(--danger)); }
 :root[data-appearance="light"] .btn-danger:hover:not(:disabled) { background: #fff1f1; border-color: var(--danger); }

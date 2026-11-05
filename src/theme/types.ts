@@ -89,6 +89,27 @@ export function luminance(hex: string): number {
   return 0.2126 * r + 0.7152 * g + 0.0722 * b;
 }
 
+// Neutral gray with the same relative luminance, so every contrast ratio the
+// theme was tuned for survives. Accepts #rgb/#rrggbb and rgb(r g b / a).
+export function grayscale(color: string): string {
+  const rgb = /^rgb\((\d+) (\d+) (\d+)( \/ [^)]+)?\)$/.exec(color);
+  const hex = rgb ? toHex(Number(rgb[1]), Number(rgb[2]), Number(rgb[3])) : color;
+  if (!/^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(hex)) return color;
+  const y = luminance(hex);
+  const channel = 255 * (y <= 0.0031308 ? y * 12.92 : 1.055 * y ** (1 / 2.4) - 0.055);
+  const gray = clamp(channel);
+  return rgb ? `rgb(${gray} ${gray} ${gray}${rgb[4] ?? ""})` : toHex(gray, gray, gray);
+}
+
+// Grayscale mode: the tinted interface turns neutral; status colors keep
+// their meaning and are left alone.
+export function grayscaleChrome(c: ChromePalette): ChromePalette {
+  const keep = new Set<keyof ChromePalette>(["success", "warning", "danger"]);
+  const next = { ...c };
+  for (const key of Object.keys(c) as (keyof ChromePalette)[]) if (!keep.has(key)) next[key] = grayscale(c[key]);
+  return next;
+}
+
 export function contrastRatio(foreground: string, background: string): number {
   const values = [luminance(foreground), luminance(background)];
   return (Math.max(...values) + 0.05) / (Math.min(...values) + 0.05);

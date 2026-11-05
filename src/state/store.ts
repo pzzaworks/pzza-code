@@ -45,6 +45,7 @@ const TILESPAN_KEY = "pzza.tileSpan";
 const TILETITLES_KEY = "pzza.tileTitles";
 const TILECODE_KEY = "pzza.tileCode";
 const TRANSPARENCY_KEY = "pzza.semiTransparent";
+const GRAYSCALE_KEY = "pzza.grayscale";
 const TRANSPARENCY_OPTIONS_KEY = "pzza.transparencyOptions";
 export interface TransparencyOptions { opacity: number; blur: number; saturation: number; surfaceOpacity: number; textVisibility: number; desktopBlur: boolean; desktopBlurRadius: number }
 export const DEFAULT_TRANSPARENCY_OPTIONS: Readonly<TransparencyOptions> = {
@@ -98,6 +99,8 @@ async function listSessions(conn: Connection): Promise<RemoteSession[]> {
 
 interface ConsoleState {
   semiTransparent: boolean;
+  grayscale: boolean;
+  setGrayscale: (enabled: boolean) => void;
   setSemiTransparent: (enabled: boolean) => void;
   transparencyOptions: TransparencyOptions;
   setTransparencyOptions: (options: Partial<TransparencyOptions>) => void;
@@ -260,6 +263,11 @@ export const useStore = create<ConsoleState>((set, get) => ({
     set({ semiTransparent: enabled, transparencyNotice: null });
   },
   transparencyNotice: null,
+  grayscale: load<unknown>(GRAYSCALE_KEY, false) === true,
+  setGrayscale: (enabled) => {
+    persist(GRAYSCALE_KEY, enabled);
+    set({ grayscale: enabled });
+  },
   transparencyOptions: transparencyOptions(load<Partial<TransparencyOptions>>(TRANSPARENCY_OPTIONS_KEY, {})),
   setTransparencyOptions: (options) => {
     const next = transparencyOptions({ ...get().transparencyOptions, ...options });

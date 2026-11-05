@@ -89,6 +89,7 @@ export const APP_COMMANDS = {
     cursorBlink: {"type":"boolean"},
     osc52Clipboard: {"type":"boolean"},
     semiTransparent: {"type":"boolean"},
+    grayscale: {"type":"boolean"},
     opacity: {"type":"integer","minimum":5,"maximum":95},
     blur: {"type":"integer","minimum":0,"maximum":40},
     saturation: {"type":"integer","minimum":50,"maximum":180},
