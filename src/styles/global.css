@@ -2464,6 +2464,52 @@ html.is-resizing-y, html.is-resizing-y * { cursor: row-resize !important; user-s
 .sw-fail {
   color: var(--danger-foreground, var(--danger));
 }
+.sw-permissions {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+.sw-section-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+.permissions-panel .sw-lead {
+  margin-bottom: 12px;
+}
+.permissions-lead-icon {
+  vertical-align: -2px;
+}
+.permissions-row .sw-row-body {
+  flex: 1 1 auto;
+}
+.permissions-action {
+  flex: 0 0 auto;
+}
+.permissions-status {
+  margin-top: 2px;
+  font-weight: 600;
+}
+.permissions-granted {
+  color: #5fb37f;
+}
+.permissions-denied {
+  color: var(--danger-foreground, var(--danger));
+}
+.permissions-restart {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 12px;
+  font-size: 12px;
+  color: var(--text);
+}
+.permissions-restart span {
+  flex: 1 1 auto;
+}
 .sw-spin {
   animation: sw-rot 0.9s linear infinite;
 }

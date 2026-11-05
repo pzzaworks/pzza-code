@@ -4,6 +4,7 @@ mod shutdown;
 mod menu;
 mod appearance;
 mod forward;
+mod permissions;
 mod pty;
 mod rdp;
 mod speech;
@@ -81,6 +82,9 @@ pub fn run() {
             terminal_drop::read_dropped_file,
             terminal_drop::release_drop,
             sys::open_url,
+            permissions::permissions_status,
+            permissions::permission_request,
+            permissions::permission_open_settings,
             appearance::set_desktop_blur,
         ])
         .build(tauri::generate_context!())

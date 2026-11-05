@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useModalFocus } from "../ui/Modal";
 import { registerAppControlHandler, registerAppControlState } from "../appControlRuntime";
 import { createPortal } from "react-dom";
-import { Info, ChevronDown, Bell, Blocks, CircleQuestionMark, FolderSync, HardDrive, MessageSquare, Settings, X } from "lucide-react";
+import { Info, ChevronDown, Bell, Blocks, CircleQuestionMark, FolderSync, HardDrive, MessageSquare, Settings, ShieldCheck, X } from "lucide-react";
 import { SettingsMenu, generalSections, type GeneralSection } from "./SettingsMenu";
 import { DevicesMenu } from "./DevicesMenu";
 import { ProjectsMenu } from "./ProjectsMenu";
@@ -15,11 +15,14 @@ import { hasRemoteDevice } from "../devices";
 import { HelpContent, HELP_SECTIONS, type HelpSection, type HelpRequest } from "./HelpModal";
 import { About } from "./About";
 import { NotificationsSettings } from "./Notifications";
+import { PermissionsPanel } from "./Permissions";
+import { PERMISSIONS_SUPPORTED } from "../state/permissions";
 import "./SettingsHub.css";
 
 const sections = [
   { id: "general", label: "General", icon: Settings },
   { id: "notifications", label: "Notifications", icon: Bell },
+  { id: "permissions", label: "Permissions", icon: ShieldCheck },
   { id: "quick-chat", label: "Quick Chat", icon: MessageSquare },
   { id: "devices", label: "Devices", icon: HardDrive },
   { id: "sync", label: "Sync", icon: FolderSync },
@@ -59,7 +62,7 @@ export function SettingsHub({ open, section, onSectionChange, onOpen, onClose, s
   useEffect(() => {
     const pages: Record<SettingsSection, readonly string[]> = {
       general: generalSections.map(item => item.id), notifications: ["activity", "preferences"],
-      "quick-chat": [], devices: [], sync: ["repositories", "preferences"],
+      permissions: [], "quick-chat": [], devices: [], sync: ["repositories", "preferences"],
       mcp: ["mcp"], help: HELP_SECTIONS.map(item => item.id), about: [], remote: [], ports: [],
     };
     const cleanups = [
@@ -105,7 +108,7 @@ export function SettingsHub({ open, section, onSectionChange, onOpen, onClose, s
         </div>
         <div className="settings-hub-layout">
           <nav className="settings-hub-nav" aria-label="Settings sections">
-            {sections.map(({ id, label, icon: Icon }) => {
+            {sections.filter(({ id }) => id !== "permissions" || PERMISSIONS_SUPPORTED).map(({ id, label, icon: Icon }) => {
               const active = parentSection === id;
               const hasChildren = ["general", "notifications", "sync", "mcp", "help"].includes(id);
               return <div className="settings-nav-group" key={id}>
@@ -122,6 +125,7 @@ export function SettingsHub({ open, section, onSectionChange, onOpen, onClose, s
             <div className="settings-hub-content">
               {open && section === "general" ? <SettingsMenu section={generalSection} /> : null}
               {open && section === "notifications" ? <NotificationsSettings page={notificationPage} /> : null}
+              {open && section === "permissions" && PERMISSIONS_SUPPORTED ? <div className="settings-page"><PermissionsPanel /></div> : null}
               {open && section === "quick-chat" ? <QuickChatSettings /> : null}
               {open && section === "devices" ? <DevicesMenu /> : null}
               {/* The same sync instance owns the scan across navigation and closing. */}

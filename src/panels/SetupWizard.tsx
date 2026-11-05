@@ -4,6 +4,8 @@ import { AlertTriangle, Check, Loader2, RefreshCw, ServerCog, X } from "lucide-r
 import { Modal } from "../ui/Modal";
 import { WizardIcon } from "../ui/WizardIcon";
 import { PathField } from "../ui/PathField";
+import { PermissionsPanel } from "./Permissions";
+import { PERMISSIONS_SUPPORTED } from "../state/permissions";
 import { useStore } from "../state/store";
 import {
   fetchDoctor,
@@ -209,6 +211,13 @@ export function SetupWizard({ open, onClose }: { open: boolean; onClose: () => v
               ))}
             </div>
           )}
+          {PERMISSIONS_SUPPORTED ? (
+            <section className="sw-permissions" aria-label="macOS permissions">
+              <div className="sw-section-title">Permissions</div>
+              <PermissionsPanel />
+              <div className="sw-row-detail">Skip any of these for now - Settings &gt; Permissions has the same list.</div>
+            </section>
+          ) : null}
           <div className="modal-actions">
             <AsyncButton className="btn" onClick={check} loading={loading} icon={RefreshCw}>
               Re-check
