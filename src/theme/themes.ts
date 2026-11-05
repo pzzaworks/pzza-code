@@ -1,5 +1,5 @@
 import type { Theme, TerminalPalette } from "./types";
-import { mix } from "./types";
+import { grayscale, mix } from "./types";
 
 // The terminal and app share the same dark or light appearance.
 interface Spec {
@@ -63,8 +63,18 @@ export function themeById(id: string): Theme {
   return id === "light" ? LIGHT : DARK;
 }
 
-export function terminalPalette(id: string, transparent: boolean): TerminalPalette {
-  const palette = themeById(id).terminal;
+// Grayscale mode neutralizes the terminal's own surface (background, text,
+// cursor, selection) and keeps the 16 ANSI colors programs print with.
+export function terminalPalette(id: string, transparent: boolean, gray: boolean): TerminalPalette {
+  const base = themeById(id).terminal;
+  const palette = gray ? {
+    ...base,
+    background: grayscale(base.background),
+    foreground: grayscale(base.foreground),
+    cursor: grayscale(base.cursor),
+    cursorAccent: grayscale(base.cursorAccent),
+    selectionBackground: grayscale(base.selectionBackground),
+  } : base;
   // Retain the background RGB channels for terminal contrast and color queries.
   return transparent ? { ...palette, background: `${palette.background}00` } : palette;
 }

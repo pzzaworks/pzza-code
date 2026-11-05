@@ -174,6 +174,7 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
   const compositionRef = useRef<ReturnType<typeof createDictationComposition> | null>(null);
   const themeId = useStore((s) => s.themeId);
   const semiTransparent = useStore((s) => s.semiTransparent);
+  const grayscale = useStore((s) => s.grayscale);
   const surfaceOpacity = useStore((s) => s.transparencyOptions.surfaceOpacity);
   const fontSize = useStore((s) => s.fontSize);
   const cursorBlink = useStore((s) => s.cursorBlink);
@@ -204,7 +205,7 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
         // tmux keeps the real history on the remote side; a deep local buffer
         // only multiplies memory per tile (each line is a typed-array row).
         scrollback: 3000,
-        theme: terminalPalette(useStore.getState().themeId, useStore.getState().semiTransparent),
+        theme: terminalPalette(useStore.getState().themeId, useStore.getState().semiTransparent, useStore.getState().grayscale),
         // OSC 8 hyperlinks (agents print these) follow the same rule as plain URLs.
         linkHandler: { activate: openTerminalLink },
       });
@@ -1070,9 +1071,9 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
       // Theme assignment invalidates the WebGL background model as well as
       // glyph colors, so an opacity change repaints existing cells immediately.
       term.options.minimumContrastRatio = themeById(themeId).appearance === "light" ? 4.5 : 1;
-      term.options.theme = terminalPalette(themeId, semiTransparent);
+      term.options.theme = terminalPalette(themeId, semiTransparent, grayscale);
     }
-  }, [themeId, semiTransparent, surfaceOpacity]);
+  }, [themeId, semiTransparent, grayscale, surfaceOpacity]);
 
   // Track active state for the wheel guard, and focus the terminal when it
   // becomes active (so keyboard tile shortcuts land input in the right pane).
@@ -1145,7 +1146,7 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
   // tint when the palette value is unexpected.
   let veilTint: string | undefined;
   try {
-    const base = terminalPalette(themeId, semiTransparent).background.replace("#", "").slice(0, 6);
+    const base = terminalPalette(themeId, semiTransparent, grayscale).background.replace("#", "").slice(0, 6);
     veilTint = /^[0-9a-fA-F]{6}$/.test(base) ? `#${base}8c` : undefined;
   } catch { veilTint = undefined; }
 

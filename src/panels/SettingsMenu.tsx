@@ -172,8 +172,17 @@ function AppearanceSection() {
   const setOptions = useStore((state) => state.setTransparencyOptions);
   const setEnabled = useStore((state) => state.setSemiTransparent);
   const notice = useStore((state) => state.transparencyNotice);
+  const gray = useStore((state) => state.grayscale);
+  const setGray = useStore((state) => state.setGrayscale);
   return <Section title="Appearance">
     <div className="appearance-choice"><ThemeSettings /></div>
+    <Row label="Grayscale mode" hint="Neutral gray interface; status and terminal colors stay">
+      <button className={`switch ${gray ? "switch-on" : ""}`} type="button"
+        role="switch" aria-label="Grayscale mode" aria-checked={gray}
+        onClick={() => setGray(!gray)}>
+        <span className="switch-knob" />
+      </button>
+    </Row>
     <Row label="Semi-transparent mode" hint="Translucent surfaces and a blurred background">
       <button className={`switch ${enabled ? "switch-on" : ""}`} type="button"
         role="switch" aria-label="Semi-transparent mode" aria-checked={enabled}

@@ -3,11 +3,12 @@ import { useStore } from "../state/store";
 import { HAS_TAURI } from "../tauriEnv";
 import { setNativeTransparency } from "../nativeAppearance";
 import { themeById } from "./themes";
-import { chromeToCssVars, deriveChrome, textVisibilityVars } from "./types";
+import { chromeToCssVars, deriveChrome, grayscale, grayscaleChrome, textVisibilityVars } from "./types";
 
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
   const themeId = useStore((s) => s.themeId);
   const transparent = useStore((s) => s.semiTransparent);
+  const gray = useStore((s) => s.grayscale);
   const options = useStore((s) => s.transparencyOptions);
   const nativeBlurRadius = transparent && options.desktopBlur ? options.desktopBlurRadius : 0;
 
@@ -42,13 +43,15 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
   useLayoutEffect(() => {
     const theme = themeById(themeId);
     const root = document.documentElement;
-    const chrome = deriveChrome(theme.terminal, theme.appearance);
+    const derived = deriveChrome(theme.terminal, theme.appearance);
+    const chrome = gray ? grayscaleChrome(derived) : derived;
+    const terminalBackground = gray ? grayscale(theme.terminal.background) : theme.terminal.background;
     const visibility = transparent ? options.textVisibility : 0;
     const vars = { ...chromeToCssVars(chrome), ...textVisibilityVars(chrome, theme.appearance, visibility) };
     root.style.setProperty("--opaque-bg", chrome.bg);
     root.style.setProperty("--opaque-surface", chrome.surface);
     root.style.setProperty("--opaque-surface-alt", chrome.surfaceAlt);
-    root.style.setProperty("--terminal-bg", transparent ? "transparent" : theme.terminal.background);
+    root.style.setProperty("--terminal-bg", transparent ? "transparent" : terminalBackground);
     root.style.setProperty("--surface-blur", `${options.blur}px`);
     root.style.setProperty("--surface-saturation", `${options.saturation}%`);
     root.style.setProperty("--app-bg", transparent ? `color-mix(in srgb, ${chrome.bg} ${options.opacity}%, transparent)` : chrome.bg);
@@ -60,9 +63,10 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
     root.style.colorScheme = theme.appearance;
     root.dataset.appearance = theme.appearance;
     root.dataset.transparency = transparent ? "on" : "off";
+    root.dataset.grayscale = gray ? "on" : "off";
     root.dataset.textVisibility = visibility > 0 ? "on" : "off";
     root.dataset.native = String(HAS_TAURI);
-  }, [themeId, transparent, options]);
+  }, [themeId, transparent, gray, options]);
 
   return <>{children}</>;
 }
