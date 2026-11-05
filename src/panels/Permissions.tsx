@@ -68,12 +68,8 @@ export function PermissionsPanel() {
   };
   const restartNeeded = restartFor.filter(id => statuses[id] === "granted");
 
-  return <div className="permissions-panel">
-    <p className="sw-lead">
-      <ShieldCheck size={14} className="permissions-lead-icon" aria-hidden="true" /> Your terminals and their tmux server run as <b>PzzaCode</b>, so these grants cover every shell, agent and tool you start here.
-    </p>
-    <div className="sw-checks">
-      {PERMISSIONS.map(({ id, label, reason }) => {
+  const group = (subject: "app" | "tmux") => <div className="sw-checks">
+      {PERMISSIONS.filter(item => item.subject === subject).map(({ id, label, reason }) => {
         const status = statuses[id];
         return <div className="sw-row permissions-row" key={id}>
           <StatusIcon status={status} />
@@ -93,7 +89,17 @@ export function PermissionsPanel() {
           )}
         </div>;
       })}
-    </div>
+    </div>;
+
+  return <div className="permissions-panel">
+    <p className="sw-lead">
+      <ShieldCheck size={14} className="permissions-lead-icon" aria-hidden="true" /> Grant these to both <b>PzzaCode</b> and <b>tmux</b> so every shell, agent and tool you start here has the access it needs.
+    </p>
+    <div className="sw-section-title permissions-group-title">PzzaCode</div>
+    {group("app")}
+    <div className="sw-section-title permissions-group-title">tmux</div>
+    <p className="sw-row-detail permissions-group-note">macOS lists command-line tools only for these three. Microphone and Automation always go to PzzaCode, which starts tmux. A Homebrew upgrade moves tmux, so allow it again afterwards.</p>
+    {group("tmux")}
     {error ? <p className="sw-row-hint" role="alert">{error}</p> : null}
     {restartNeeded.length ? <div className="permissions-restart" role="status">
       <span>Restart PzzaCode so {restartNeeded.map(id => PERMISSIONS.find(item => item.id === id)?.label).join(" and ")} applies. Terminals opened before the grant may need to be reopened.</span>

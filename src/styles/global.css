@@ -2480,6 +2480,12 @@ html.is-resizing-y, html.is-resizing-y * { cursor: row-resize !important; user-s
 .permissions-panel .sw-lead {
   margin-bottom: 12px;
 }
+.permissions-group-title {
+  margin: 14px 0 8px;
+}
+.permissions-group-note {
+  margin: -4px 0 10px;
+}
 .permissions-lead-icon {
   vertical-align: -2px;
 }
