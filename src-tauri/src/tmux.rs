@@ -2,6 +2,17 @@ use std::process::Command;
 
 use crate::sshmux;
 
+// Installs tmux on this Mac when it is missing and starts local terminals.
+#[tauri::command]
+pub async fn tmux_install() -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    return tauri::async_runtime::spawn_blocking(crate::local_tmux::install)
+        .await
+        .map_err(|error| error.to_string())?;
+    #[cfg(not(target_os = "macos"))]
+    Err("Automatic tmux install is only available on macOS. Install tmux with your package manager.".into())
+}
+
 const SESSION_FORMAT: &str = "#{session_name}\t#{session_windows}\t#{session_attached}\t#{pane_current_command}\t#{session_created}";
 
 // A tmux session on the device. One session maps to one grid tile, and a

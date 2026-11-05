@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { AlertTriangle, Check, ExternalLink, Loader2, RotateCcw, ShieldCheck, X } from "lucide-react";
+import { AlertTriangle, Check, ExternalLink, Loader2, LockOpen, RotateCcw, ShieldCheck, X } from "lucide-react";
 import { AsyncButton } from "../ui/AsyncButton";
 import { relaunchApp } from "../updater";
 import { hasUnsavedWork } from "../state/unsavedWork";
@@ -87,7 +87,7 @@ export function PermissionsPanel() {
               {status === "granted" ? "Manage" : "Open Settings"}
             </AsyncButton>
           ) : (
-            <AsyncButton className="btn btn-sm btn-accent permissions-action" loading={busy === id} disabled={!status || (busy !== null && busy !== id)} onClick={() => run(id, () => requestPermission(id))}>
+            <AsyncButton className="btn btn-sm btn-accent permissions-action" icon={LockOpen} loading={busy === id} disabled={!status || (busy !== null && busy !== id)} onClick={() => run(id, () => requestPermission(id))}>
               Allow
             </AsyncButton>
           )}

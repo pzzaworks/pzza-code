@@ -71,6 +71,7 @@ pub fn run() {
             pty::pty_resize,
             pty::pty_kill,
             tmux::tmux_list_sessions,
+            tmux::tmux_install,
             forward::forward_scan,
             forward::forward_set,
             forward::forward_reconcile,
