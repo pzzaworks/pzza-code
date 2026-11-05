@@ -22,7 +22,7 @@ export const RUNTIME_APP_COMMANDS = {
   close_app: command("Close the desktop app after acknowledging this request. Refuses any unsaved or saving editor."),
   relaunch_app: command("Relaunch the desktop app after acknowledging this request. Refuses any unsaved or saving editor."),
   navigate: command("Open the existing session/workspace form, setup wizard, or return to the terminal canvas.", { target: enumeration("terminal", "new_session", "new_workspace", "setup") }, ["target"]),
-  open_settings: command("Open an app settings section, optionally selecting its subpage.", { section: enumeration("general", "notifications", "quick-chat", "devices", "sync", "mcp", "remote", "ports", "help", "about"), page: string(80) }, ["section"]),
+  open_settings: command("Open an app settings section, optionally selecting its subpage.", { section: enumeration("general", "notifications", "permissions", "quick-chat", "devices", "sync", "mcp", "remote", "ports", "help", "about"), page: string(80) }, ["section"]),
   open_help: command("Open a specific existing help topic.", { topic: string(80) }, ["topic"]),
   open_menu: command("Open or close a named toolbar dropdown using its actual control.", { menu: enumeration("layout", "remote_desktop", "port_forwarding", "usage", "notifications", "new_session", "quick_chat"), open: boolean }, ["menu", "open"]),
   set_focus_mode: command("Enable or disable the tile focus mode that dims other sessions.", { tileId, enabled: boolean }, ["tileId", "enabled"]),

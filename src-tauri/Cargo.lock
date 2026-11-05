@@ -3069,6 +3069,7 @@ dependencies = [
 name = "pzzacode"
 version = "0.2.66"
 dependencies = [
+ "block2",
  "coreaudio-rs",
  "libc",
  "objc2",
