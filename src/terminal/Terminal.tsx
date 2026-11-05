@@ -3,7 +3,7 @@ import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
 import { WebglAddon } from "@xterm/addon-webgl";
-import { WebLinksAddon } from "@xterm/addon-web-links";
+import { registerTerminalLinks } from "./links";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import "@xterm/xterm/css/xterm.css";
 import { useStore } from "../state/store";
@@ -214,8 +214,16 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
         category: "terminal", title: "Terminal needs attention", body: message,
         dedupeKey: `terminal-error:${tileId}:${message}`, target: { tileId },
       });
+      // A double-clicked URL that wraps onto later rows would copy with the
+      // line breaks and indents between its rows; while that exact selection
+      // stands, copies use the joined URL instead.
+      let selectedLink: { raw: string; text: string } | undefined;
+      const selectionText = () => {
+        const raw = term.getSelection();
+        return selectedLink && raw === selectedLink.raw ? selectedLink.text : raw;
+      };
       const copySelection = () => {
-        const selected = term.getSelection();
+        const selected = selectionText();
         if (!selected) return;
         void copyToClipboard(selected).then((ok) => {
           if (!ok && !disposed) reportError("Clipboard access failed. Use the keyboard copy shortcut to retry.");
@@ -245,7 +253,7 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
       };
       const unregisterMenu = registerContextMenu(container, () => [
         { label: "Copy text", icon: Copy, disabled: !term.hasSelection(), run: async () => {
-          if (!await copyToClipboard(term.getSelection())) throw new Error("Clipboard access failed. Try the keyboard copy shortcut.");
+          if (!await copyToClipboard(selectionText())) throw new Error("Clipboard access failed. Try the keyboard copy shortcut.");
         } },
         { label: "Paste text or image", icon: ClipboardPaste, run: () => clipboardPaste(term.textarea ?? container) },
         { label: "Select all", icon: TextSelect, disabled: isFullySelected(), run: () => { term.selectAll(); copySelection(); term.focus(); } },
@@ -259,7 +267,7 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
       // Native copy events write to the local clipboard even for SSH terminals.
       const onCopy = (event: ClipboardEvent) => {
         if (!term.hasSelection() || !event.clipboardData) return;
-        event.clipboardData.setData("text/plain", term.getSelection());
+        event.clipboardData.setData("text/plain", selectionText());
         event.preventDefault();
         event.stopPropagation();
       };
@@ -277,7 +285,7 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
       container.addEventListener("mousedown", selectDown, true);
       // Bubble after the terminal finalizes its selection on document mouseup.
       window.addEventListener("mouseup", selectUp);
-      const disposeMouseSelection = installMouseSelection(container, term);
+      const disposeMouseSelection = installMouseSelection(container, term, (link) => { selectedLink = { raw: term.getSelection(), text: link.text }; });
 
       term.attachCustomKeyEventHandler((event) => {
         if (event.type !== "keydown") return true;
@@ -288,7 +296,7 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
           event.preventDefault();
           if (findOpenRef.current) findInputRef.current?.focus();
           else {
-            const seed = term.getSelection().split("\n")[0]?.slice(0, 200) ?? "";
+            const seed = selectionText().split("\n")[0]?.slice(0, 200) ?? "";
             setFindQuery(seed);
             setFindMiss(false);
             setFindOpen(true);
@@ -350,7 +358,7 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
       const searchResults = search.onDidChangeResults(({ resultIndex, resultCount }) => {
         if (!disposed) setFindCount(resultIndex < 0 ? null : { index: resultIndex, total: resultCount });
       });
-      term.loadAddon(new WebLinksAddon(openTerminalLink));
+      const linkProvider = registerTerminalLinks(term, openTerminalLink);
       term.loadAddon(new Unicode11Addon());
       term.unicode.activeVersion = "11";
 
@@ -949,7 +957,7 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
           }
           return lines;
         },
-        selection: () => term.getSelection(),
+        selection: () => selectionText(),
         paste: text => enqueuePaste(() => insert(text, true)),
         pasteClipboard: async () => { const data = await readClipboardData(); await enqueuePaste(() => performPaste(data, true)); },
         sendControl: value => enqueuePaste(async () => {
@@ -960,7 +968,7 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
           if (HAS_TAURI && tauriId !== null) await writePty(tauriId, value);
           else if (!ws?.write(value)) throw new Error("Terminal input could not be sent.");
         }),
-        copy: async () => { if (!await copyToClipboard(term.getSelection())) throw new Error("Select terminal text and allow clipboard access before copying."); },
+        copy: async () => { if (!await copyToClipboard(selectionText())) throw new Error("Select terminal text and allow clipboard access before copying."); },
         selectAll: () => term.selectAll(), clearSelection: () => term.clearSelection(), clear: () => term.clear(),
         scroll: (target, lines) => { if (target === "top") term.scrollToTop(); else if (target === "bottom") term.scrollToBottom(); else term.scrollLines(lines); },
       }));
@@ -1007,6 +1015,7 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
         window.removeEventListener("mouseup", selectUp);
         selectionListener.dispose();
         disposeMouseSelection();
+        linkProvider.dispose();
         unregisterMenu();
         container.removeEventListener("mousedown", onMouseDown, true);
         container.removeEventListener("wheel", onWheel, { capture: true });
