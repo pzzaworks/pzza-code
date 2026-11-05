@@ -1,28 +1,40 @@
 import type { Terminal } from "@xterm/xterm";
+import { terminalLinkAt, type TerminalLink } from "./links";
 
 // Mouse-aware remote programs consume normal drags. Keep local text selection
 // available while forwarding simple clicks and modified drags to the program.
-export function installMouseSelection(container: HTMLElement, term: Terminal): () => void {
+// Double-clicking a URL selects all of it, even across hard-wrapped rows, in
+// every mouse mode; `onLinkSelected` receives it so copies use the joined URL.
+export function installMouseSelection(container: HTMLElement, term: Terminal, onLinkSelected: (link: TerminalLink) => void): () => void {
   let gesture: { index: number; lastIndex: number; down: MouseEvent; moved: boolean } | undefined;
   let forwarding = false;
-  const position = (event: MouseEvent): number | undefined => {
+  // Rounded column for drag boundaries; `cell` floors it to hit-test a cell.
+  const position = (event: MouseEvent, cell = false): number | undefined => {
     const screen = container.querySelector<HTMLElement>(".xterm-screen");
     if (!screen) return;
     const bounds = screen.getBoundingClientRect();
     if (!bounds.width || !bounds.height) return;
-    const column = Math.max(0, Math.min(term.cols, Math.round((event.clientX - bounds.left) * term.cols / bounds.width)));
+    const exact = (event.clientX - bounds.left) * term.cols / bounds.width;
+    const column = Math.max(0, Math.min(cell ? term.cols - 1 : term.cols, cell ? Math.floor(exact) : Math.round(exact)));
     const row = Math.max(0, Math.min(term.rows - 1, Math.floor((event.clientY - bounds.top) * term.rows / bounds.height)));
     return (term.buffer.active.viewportY + row) * term.cols + column;
   };
   const down = (event: MouseEvent) => {
-    if (forwarding || event.button !== 0 || event.ctrlKey || event.metaKey || event.altKey || event.shiftKey || term.modes.mouseTrackingMode === "none") return;
+    if (forwarding || event.button !== 0 || event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return;
     const screen = container.querySelector<HTMLElement>(".xterm-screen");
     if (!screen || !(event.target instanceof Node) || !screen.contains(event.target)) return;
+    const hit = event.detail === 2 ? position(event, true) : undefined;
+    const link = hit === undefined ? undefined : terminalLinkAt(term, hit % term.cols, Math.floor(hit / term.cols));
+    if (!link && term.modes.mouseTrackingMode === "none") return;
     const index = position(event);
     if (index === undefined) return;
     gesture = { index, lastIndex: index, down: event, moved: false };
     term.clearSelection();
-    if (event.detail >= 3) {
+    if (link) {
+      term.select(link.start.x, link.start.y, (link.end.y - link.start.y) * term.cols + link.end.x - link.start.x + 1);
+      onLinkSelected(link);
+      gesture.moved = true;
+    } else if (event.detail >= 3) {
       term.selectLines(Math.floor(index / term.cols), Math.floor(index / term.cols));
       gesture.moved = true;
     } else if (event.detail === 2) {
