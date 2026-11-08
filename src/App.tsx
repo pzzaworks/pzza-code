@@ -34,6 +34,7 @@ import { startSetupAutoInstall } from "./state/setup";
 import { UsageTool } from "./panels/UsageMenu";
 import { HAS_TAURI } from "./tauriEnv";
 import { startUpdateChecks } from "./state/updates";
+import { UpdateButton } from "./ui/UpdateButton";
 import { Modal } from "./ui/Modal";
 import { ConfirmationHost } from "./ui/ConfirmDialog";
 import { confirmUnsavedWork, hasUnsavedWork, protectUnsavedUnload } from "./state/unsavedWork";
@@ -400,6 +401,7 @@ export default function App() {
             </span>
             <span className="brand-name">PzzaCode</span>
             <span className="brand-version">v{__APP_VERSION__}</span>
+            <UpdateButton />
           </div>
 
             <WorkspaceTabs openRequest={newWorkspaceRequest} />
@@ -465,7 +467,8 @@ export default function App() {
         </div>
       </div>
       <SetupWizard open={wizardOpen} onClose={() => setWizardOpen(false)} />
-      <SetupScreen open={setupOpen} onDone={() => { setSetupOpen(false); if (onboardingPending()) setTourOpen(true); }} />
+      {/* The tour always follows setup, also when setup runs again from Settings. */}
+      <SetupScreen open={setupOpen} onDone={() => { setSetupOpen(false); setTourOpen(true); }} />
       <OnboardingTour open={tourOpen} onClose={() => setTourOpen(false)} />
       <SettingsHub onOpen={openSettings} helpRequest={helpRequest} open={settingsOpen} section={settingsSection} onSectionChange={setSettingsSection} onClose={() => setSettingsOpen(false)} syncRequest={syncRequest} onSyncingChange={setSyncing} />
     </ThemeProvider>

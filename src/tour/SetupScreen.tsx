@@ -1,10 +1,9 @@
 import { useEffect, useRef, useState, type ComponentType } from "react";
 import { createPortal } from "react-dom";
-import { motion, useReducedMotion } from "framer-motion";
-import { ArrowRight, Loader2, Package, ShieldCheck, Sparkles, type LucideIcon } from "lucide-react";
+import { ArrowRight, Loader2, Package, ShieldCheck, type LucideIcon } from "lucide-react";
 import { PERMISSIONS_SUPPORTED } from "../state/permissions";
+import { useStore } from "../state/store";
 import { SetupHealth, SetupPermissions, SetupRequirements, useRequirementsReady } from "./SetupSteps";
-import { useSmoothHeight } from "../ui/useSmoothHeight";
 import "./OnboardingTour.css";
 import "./SetupScreen.css";
 
@@ -72,7 +71,6 @@ const STEPS: SetupStep[] = [
 
 function Welcome() {
   return <div className="setup-welcome">
-    <img src="/pzzacode.svg" alt="" className="setup-logo" />
     <p className="setup-lead">
       Every terminal and every coding agent, on one grid. Setup allows what your tools need on this Mac and
       installs what PzzaCode runs on; it takes about a minute.
@@ -90,26 +88,24 @@ function Welcome() {
 }
 
 const PAGES: SetupStep[] = [
-  { id: "welcome", icon: Sparkles, title: "Welcome to PzzaCode", body: "A minute of setup before the first session.", content: Welcome },
+  { id: "welcome", icon: ShieldCheck, title: "Welcome to PzzaCode", body: "A minute of setup before the first session.", content: Welcome },
   ...STEPS,
 ];
 
-// Setup fills the window with one column, held at a fixed distance from the
-// top so it grows downward and never re-centers: where you are in the
+// Setup fills the window with one centered column: where you are in the
 // steps, the current step, and its Back / Continue right below it.
 // It cannot be skipped: Finish setup waits until the requirements are ready.
 export function SetupScreen({ open, onDone }: { open: boolean; onDone: () => void }) {
   const [index, setIndex] = useState(0);
-  const [direction, setDirection] = useState<1 | -1>(1);
-  const reduceMotion = useReducedMotion();
   const primaryRef = useRef<HTMLButtonElement>(null);
-  const stageRef = useRef<HTMLDivElement>(null);
-  const stageBodyRef = useRef<HTMLDivElement>(null);
-  useSmoothHeight(stageRef, stageBodyRef, open);
   const ready = useRequirementsReady();
 
   useEffect(() => {
     if (open) setIndex(0);
+  }, [open]);
+  useEffect(() => {
+    useStore.getState().setSetupVisible(open);
+    return () => useStore.getState().setSetupVisible(false);
   }, [open]);
   useEffect(() => {
     if (open) primaryRef.current?.focus({ preventScroll: true });
@@ -125,13 +121,9 @@ export function SetupScreen({ open, onDone }: { open: boolean; onDone: () => voi
       onDone();
       return;
     }
-    setDirection(step);
     setIndex(Math.min(PAGES.length - 1, Math.max(0, index + step)));
   };
-  const Icon = page.icon;
   const Content = page.content;
-  const transition = { duration: reduceMotion ? 0.12 : 0.22, ease: [0.2, 0.8, 0.2, 1] as const };
-  const slide = { initial: { opacity: 0, x: reduceMotion ? 0 : 14 * direction }, animate: { opacity: 1, x: 0 }, transition };
 
   return createPortal(
     <div className="setup-screen pzza-portal" role="dialog" aria-modal="true" aria-label="Set up PzzaCode">
@@ -139,11 +131,8 @@ export function SetupScreen({ open, onDone }: { open: boolean; onDone: () => voi
       <div className="setup-drag" data-tauri-drag-region />
       <main className="setup-main">
         <div className="setup-page">
-          {/* The step changes height as checks finish and steps switch; the
-              stage animates that so the actions below glide instead of jumping. */}
-          <div className="setup-stage" ref={stageRef}>
-            <div ref={stageBodyRef}>
-              <motion.div key={page.id} {...slide}>
+          <div className="setup-stage">
+            <div key={page.id}>
                 <div className="setup-count" role="group" aria-label={`Step ${index + 1} of ${PAGES.length}`}>
                   <span className="setup-dots" aria-hidden="true">
                     {PAGES.map((entry, position) => <span key={entry.id} className={position === index ? "on" : position < index ? "done" : ""} />)}
@@ -151,14 +140,13 @@ export function SetupScreen({ open, onDone }: { open: boolean; onDone: () => voi
                   Step {index + 1} of {PAGES.length}
                 </div>
                 <header className="setup-page-head">
-                  <span className="setup-step-icon" aria-hidden="true"><Icon size={16} /></span>
+                  {page.id === "welcome" ? <img src="/pzzacode.svg" alt="" className="setup-logo" /> : null}
                   <div className="setup-head-copy">
                     <h1 className="setup-step-title">{page.title}</h1>
                     <p className="setup-step-body">{page.body}</p>
                   </div>
                 </header>
                 <div className="setup-step-content"><Content /></div>
-              </motion.div>
             </div>
           </div>
           <div className="setup-actions">

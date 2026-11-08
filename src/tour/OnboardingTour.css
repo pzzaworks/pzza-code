@@ -654,3 +654,14 @@
   background: transparent;
   color: var(--text);
 }
+
+/* Semi-transparent mode: the tour's cards are the same liquid glass as dialogs
+   and menus, and every tone mixed from the card color follows. */
+:root[data-transparency="on"] .tour-root {
+  --tour-card: var(--glass-bg);
+  --tour-line: var(--glass-border);
+}
+:root[data-transparency="on"] .tour-card {
+  -webkit-backdrop-filter: var(--glass-filter);
+  backdrop-filter: var(--glass-filter);
+}

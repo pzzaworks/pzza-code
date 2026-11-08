@@ -206,6 +206,9 @@ interface ConsoleState {
   // anywhere (first-run boot, the Settings menu, an empty-state prompt).
   wizardOpen: boolean;
   setWizardOpen: (v: boolean) => void;
+  // The full-window setup is showing: the window blurs the desktop more under it.
+  setupVisible: boolean;
+  setSetupVisible: (v: boolean) => void;
 
   showPorts: boolean;
   togglePorts: () => void;
@@ -566,6 +569,8 @@ export const useStore = create<ConsoleState>((set, get) => ({
 
   wizardOpen: false,
   setWizardOpen: (v) => set({ wizardOpen: v }),
+  setupVisible: false,
+  setSetupVisible: (v) => set({ setupVisible: v }),
 
   showPorts: false,
   togglePorts: () => set((s) => ({ showPorts: !s.showPorts })),

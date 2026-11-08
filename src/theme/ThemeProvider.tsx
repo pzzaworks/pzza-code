@@ -5,12 +5,17 @@ import { setNativeTransparency } from "../nativeAppearance";
 import { themeById } from "./themes";
 import { chromeToCssVars, deriveChrome, grayscale, grayscaleChrome, textVisibilityVars } from "./types";
 
+const SETUP_BLUR_RADIUS = 40;
+
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
   const themeId = useStore((s) => s.themeId);
   const transparent = useStore((s) => s.semiTransparent);
   const gray = useStore((s) => s.grayscale);
   const options = useStore((s) => s.transparencyOptions);
-  const nativeBlurRadius = transparent && options.desktopBlur ? options.desktopBlurRadius : 0;
+  // Setup sits straight on the desktop (the app behind it is hidden), so it
+  // always blurs it, and more than the panels' own setting.
+  const setupVisible = useStore((s) => s.setupVisible);
+  const nativeBlurRadius = !transparent ? 0 : setupVisible ? Math.max(SETUP_BLUR_RADIUS, options.desktopBlurRadius) : options.desktopBlur ? options.desktopBlurRadius : 0;
 
   useEffect(() => {
     let alive = true;

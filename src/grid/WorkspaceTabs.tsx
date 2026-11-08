@@ -8,7 +8,6 @@ import { ALL_WORKSPACE_ID, DEFAULT_WORKSPACE_ID, WORKSPACE_COLORS, wsKeyOf } fro
 import { altBadge, digitFromCode, NEW_WORKSPACE_SHORTCUT } from "../shortcuts";
 import { workspaceIcon, DEFAULT_WORKSPACE_ICON } from "../workspaceIcons";
 import { IconPicker } from "../ui/IconPicker";
-import { useSmoothHeight } from "../ui/useSmoothHeight";
 import { SESSION_DND, SESSION_TILE_DND, sessionDisplayName } from "../sessionMeta";
 import { WorkspaceSettings } from "../panels/WorkspaceSettings";
 import { useNotifications } from "../state/notifications";
@@ -71,13 +70,6 @@ export function WorkspaceTabs({ openRequest = 0 }: { openRequest?: number }) {
   const [settingsRect, setSettingsRect] = useState<DOMRect | null>(null);
   const [addOpen, setAddOpen] = useState(false);
   const [addRect, setAddRect] = useState<DOMRect | null>(null);
-  // Both panels resize smoothly when their content expands or collapses.
-  const settingsPanelRef = useRef<HTMLDivElement>(null);
-  const settingsBodyRef = useRef<HTMLDivElement>(null);
-  const addPanelRef = useRef<HTMLDivElement>(null);
-  const addBodyRef = useRef<HTMLDivElement>(null);
-  useSmoothHeight(settingsPanelRef, settingsBodyRef, settingsFor !== null);
-  useSmoothHeight(addPanelRef, addBodyRef, addOpen);
   const [name, setName] = useState("");
   const [icon, setIcon] = useState(DEFAULT_WORKSPACE_ICON);
   const [color, setColor] = useState(WORKSPACE_COLORS[0]);
@@ -378,8 +370,8 @@ export function WorkspaceTabs({ openRequest = 0 }: { openRequest?: number }) {
 
       {settingsFor
         ? createPortal(
-            <div ref={settingsPanelRef} className="menu menu-panel pzza-portal" style={dropStyle(settingsRect)}>
-              <div ref={settingsBodyRef}><WorkspaceSettings id={settingsFor} close={() => setSettingsFor(null)} /></div>
+            <div className="menu menu-panel pzza-portal" style={dropStyle(settingsRect)}>
+              <WorkspaceSettings id={settingsFor} close={() => setSettingsFor(null)} />
             </div>,
             document.body,
           )
@@ -387,8 +379,8 @@ export function WorkspaceTabs({ openRequest = 0 }: { openRequest?: number }) {
 
       {addOpen
         ? createPortal(
-            <div ref={addPanelRef} className="menu menu-panel pzza-portal creation-panel new-workspace-panel" style={dropStyle(addRect, 420)}>
-              <div ref={addBodyRef} className="menu-body">
+            <div className="menu menu-panel pzza-portal creation-panel new-workspace-panel" style={dropStyle(addRect, 420)}>
+              <div className="menu-body">
                 <div className="menu-title">New workspace <kbd className="kbd" aria-hidden="true">{NEW_WORKSPACE_SHORTCUT.label}</kbd></div>
                 <div className="ws-chip">
                   <button

@@ -67,6 +67,10 @@
 
 /* General preferences include live previews; advanced values stay on the page. */
 .general-settings > .set-section > .set-title { display: none; }
+/* The page starts at its first visible element: with the title hidden, the
+   row or note after it would otherwise keep the gap meant for below a title. */
+.settings-hub-content .general-settings > .set-section > .set-title:first-child + * { margin-top: 0; }
+.settings-hub-content .general-settings > .set-section > .set-title:first-child + :is(.settings-row, .set-row) { padding-top: 0; }
 .appearance-choice { padding-bottom: 16px; margin-bottom: 2px; border-bottom: 1px solid var(--divider); }
 .settings-hub-content .appearance-modes { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; padding: 0; border: 0; background: none; }
 .appearance-option { display: flex; flex-direction: column; gap: 8px; padding: 7px; border: 1px solid var(--hairline); border-radius: var(--r-sm); background: transparent; color: var(--muted); cursor: pointer; text-align: left; transition: border-color 140ms; }
@@ -231,7 +235,7 @@
 .settings-hub-content .doc-keys td { padding: 10px 0; }
 
 .settings-hub-content .about-page { padding: 0; text-align: left; }
-.settings-hub-content .about-identity { display: flex; align-items: center; gap: 16px; padding: 4px 0; }
+.settings-hub-content .about-identity { display: flex; align-items: center; gap: 16px; padding: 0 0 4px; }
 .settings-hub-content .about-logo { width: 48px; height: 48px; margin: 0; }
 .settings-hub-content .about-page h2 { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; font-size: var(--fs-display); font-weight: 600; margin: 0 0 3px; }
 .settings-hub-content .about-version { border: 0; padding: 0; font-size: var(--fs-sm); color: var(--muted); font-weight: 400; }

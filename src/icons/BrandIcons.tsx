@@ -22,20 +22,14 @@ export function CodexIcon({ size = 16, className }: IconProps) {
 }
 
 // OpenCode mark - official geometry from the opencode.ai brand kit
-// (packages/console/app/src/asset/lander/opencode-logo-*.svg). Two-tone, so
-// the visible variant flips with the app theme via CSS (see .opencode-mark-*
-// rules); currentColor cannot express the two fills.
+// (packages/console/app/src/asset/lander/opencode-logo-*.svg), drawn in the
+// text color like the other agent marks: the frame solid, its inner block a
+// lighter tone of the same color.
 export function OpenCodeIcon({ size = 16, className }: IconProps) {
   return (
     <svg width={size} height={size} viewBox="0 0 32 40" fill="none" xmlns="http://www.w3.org/2000/svg" className={className} role="img" aria-label="OpenCode">
-      <g className="opencode-mark-dark">
-        <path d="M24 32H8V16H24V32Z" fill="#4B4646" />
-        <path d="M24 8H8V32H24V8ZM32 40H0V0H32V40Z" fill="#F1ECEC" />
-      </g>
-      <g className="opencode-mark-light">
-        <path d="M24 32H8V16H24V32Z" fill="#BCBBBB" />
-        <path d="M24 8H8V32H24V8ZM32 40H0V0H32V40Z" fill="#211E1E" />
-      </g>
+      <path d="M24 32H8V16H24V32Z" fill="currentColor" opacity="0.4" />
+      <path d="M24 8H8V32H24V8ZM32 40H0V0H32V40Z" fill="currentColor" />
     </svg>
   );
 }
