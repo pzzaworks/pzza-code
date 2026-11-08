@@ -1,36 +1,43 @@
-import { LiveSessionIcon } from "../ui/LiveSessionIcon";
+import { activityAgent, LiveSessionIcon, useSessionActivity } from "../ui/LiveSessionIcon";
 import { useDelayedLoading } from "../ui/useDelayedLoading";
 import { DeviceIcon } from "../ui/DeviceIcon";
-import { Fragment, useCallback, useEffect, useRef, useState, type HTMLAttributes, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type CSSProperties, type HTMLAttributes, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { motion } from "framer-motion";
+import { MotionConfig, motion } from "framer-motion";
 import {
-  Columns2,
   Copy,
   EyeOff,
   FileCode,
   FolderInput,
-  Focus,
-  LayoutGrid,
-  LayoutTemplate,
+  FolderPlus,
+  ArrowDown,
+  ArrowUp,
+  CircleCheck,
+  CircleDashed,
+  CircleX,
+  GitBranch,
+  GitMerge,
+  GitPullRequest,
+  GitPullRequestCreateArrow,
+  GitPullRequestDraft,
   Loader2,
   Maximize2,
   Minimize2,
   Mic,
   Plus,
-  Rows2,
-  Square,
-  StretchHorizontal,
+  Send,
+  TriangleAlert,
   X,
   type LucideIcon,
 } from "lucide-react";
 import { useStore } from "../state/store";
 import { deviceForHost, deviceNameFor } from "../devices";
 import { Modal } from "../ui/Modal";
-import { Terminal } from "../terminal/Terminal";
+import { copyToClipboard, Terminal } from "../terminal/Terminal";
 import { TileCodePanel } from "./TileCodePanel";
 import { CodeSplitHandle } from "./CodeSplitHandle";
-import { duplicateSession, fetchSessionPath, killSession } from "../serverApi";
+import { duplicateSession, fetchSessionPath, killSession, type GitFolderStatus, type GitRemoteInfo } from "../serverApi";
+import { openWebPage } from "../tileGit";
 import { registerAppControlHandler, registerAppControlState } from "../appControlRuntime";
 import { confirmEditorDiscard, hasUnsavedEditors } from "../editorChanges";
 import { confirmAction } from "../ui/ConfirmDialog";
@@ -38,22 +45,33 @@ import { attachCommand, sessionConnection } from "../connection";
 import {
   sessionDisplayName,
   sessionIcon,
-  shortPath,
   SESSION_DND,
   SESSION_TILE_DND,
   type TileStatus,
 } from "../sessionMeta";
 import { ALL_WORKSPACE_ID, DEFAULT_WORKSPACE_ID, wsKeyOf } from "../workspaces";
-import { ctrlBadge, digitFromCode } from "../shortcuts";
+import { ctrlBadge, digitFromCode, IS_MAC } from "../shortcuts";
 import { useDictation } from "../state/dictation";
 import { DictationButton } from "../ui/Dictation";
 import { useExclusiveMenu } from "../ui/menuBus";
 import { useNotifications } from "../state/notifications";
+import { sessionAgentLabel, useSessionAgents } from "../state/sessionAgents";
+import { MAX_TILE_ROWS, TileResizeHandles } from "./TileResizeHandles";
+import { useGitStatus } from "./gitStatus";
+import { sendFailingChecks, useGitRemote, useSharedBranch } from "./gitRemote";
+import { useTileEdges } from "./tileEdges";
+import { arrangeTiles, useCanvasSize } from "./autoLayout";
+import { setLayoutPreview } from "./layoutPreview";
+import { compactPath } from "./compactPath";
+import { BroadcastBar } from "./BroadcastBar";
+import { formatCost, formatDuration, formatTokens, useSessionCost, type CostProvider } from "./sessionCost";
+import type { SessionCost } from "../serverApi";
+import { moveAgentToWorktree } from "../sessionActions";
+import { mergeWorktree, openWorktreePr, useWorktreeInfo, type LandResult } from "../worktreeLand";
+import { installFolderDrops, useFolderDrag } from "../terminal/folderDrop";
 
 const HEADER_ACTIONS = [
-  { id: "layout", Icon: LayoutGrid },
   { id: "mic", Icon: Mic },
-  { id: "focus", Icon: Focus },
   { id: "code", Icon: FileCode },
   { id: "move", Icon: FolderInput },
   { id: "duplicate", Icon: Copy },
@@ -64,13 +82,14 @@ const HEADER_ACTIONS = [
 type HeaderAction = typeof HEADER_ACTIONS[number]["id"];
 const PreviewSessionIcon = sessionIcon();
 
-function SessionHeader({ status, icon, title, shortcut, device, path, actions, ...events }: Omit<HTMLAttributes<HTMLDivElement>, "title"> & {
+// Every header button stays visible: narrow tiles make them compact, group
+// them, and move the whole row under the title (container queries on .tile).
+function SessionHeader({ status, icon, title, shortcut, device, actions, ...events }: Omit<HTMLAttributes<HTMLDivElement>, "title"> & {
   status: TileStatus;
   icon: ReactNode;
   title: ReactNode;
   shortcut?: number;
-  device: ReactNode;
-  path?: ReactNode;
+  device: { host?: string; name: string };
   actions?: Record<HeaderAction, ReactNode>;
 }) {
   return <div className="tile-head" {...events}>
@@ -78,15 +97,294 @@ function SessionHeader({ status, icon, title, shortcut, device, path, actions, .
     <span className="tile-icon">{icon}</span>
     {title}
     {shortcut ? <kbd className="kbd tile-kbd" title="Activate">{ctrlBadge(shortcut)}</kbd> : null}
-    <span className="tile-device" title="Running on">{device}</span>
-    {path}
+    <span className="tile-device" title={`Running on ${device.name}`}>
+      <DeviceIcon host={device.host} size={11} /><span className="tile-device-name">{device.name}</span>
+    </span>
     <div className="tile-head-spacer" />
     <div className="tile-actions">
-      {HEADER_ACTIONS.map(({ id, Icon }) => <Fragment key={id}>
+      {HEADER_ACTIONS.map(({ id, Icon }) => <span key={id} className={`tile-action tile-action-${id}`}>
         {actions ? actions[id] : <span className={`tile-btn ${id === "close" ? "tile-btn-danger" : ""}`}><Icon size={id === "close" ? 14 : 13} /></span>}
-      </Fragment>)}
+      </span>)}
     </div>
   </div>;
+}
+
+// "16:33" for a session started today, "16:33 06 Nov" otherwise.
+function startedLabel(createdAt: number): string {
+  const date = new Date(createdAt);
+  const pad = (value: number) => String(value).padStart(2, "0");
+  const time = `${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  return date.toDateString() === new Date().toDateString()
+    ? time
+    : `${time} ${pad(date.getDate())} ${date.toLocaleString(undefined, { month: "short" })}`;
+}
+
+function gitTitle(git: GitFolderStatus): string {
+  const parts = [git.detached ? `Detached at ${git.branch}` : `Branch ${git.branch}`, git.dirty ? "uncommitted changes" : "clean"];
+  if (git.ahead !== null && git.behind !== null) parts.push(`${git.ahead} to push, ${git.behind} to pull`);
+  return parts.join(" · ");
+}
+
+const CHECKS: Record<"passing" | "failing" | "pending", { icon: LucideIcon; label: string }> = {
+  passing: { icon: CircleCheck, label: "checks passing" },
+  failing: { icon: CircleX, label: "checks failing" },
+  pending: { icon: CircleDashed, label: "checks running" },
+};
+
+// The footer's Git item: the branch with commits to push (↑) and pull (↓),
+// its pull request and checks when gh knows them, and a warning when another
+// tile's agent works on the same branch of the same checkout (a click on it
+// offers to start this tile's agent in its own worktree). The dirty dot
+// opens the changed files in the tile's editor; the branch opens its pull
+// request, or the branch page, in the browser. Failing checks get a button
+// that sends their logs to the tile's agent (disabled without one).
+function FooterGit({ git, remote, shared, onReview, onIsolate, isolating, onSendChecks, sendingChecks }: {
+  git: GitFolderStatus; remote: GitRemoteInfo | null | undefined; shared: string[]; onReview: () => void;
+  onIsolate?: () => void; isolating: boolean; onSendChecks?: () => void; sendingChecks: boolean;
+}) {
+  const pr = remote?.pr && remote.pr.state !== "CLOSED" ? remote.pr : null;
+  const target = pr?.url ?? remote?.web ?? null;
+  const check = pr && pr.state === "OPEN" && pr.checks !== "none" ? CHECKS[pr.checks] : null;
+  const PrIcon = pr?.state === "MERGED" ? GitMerge : pr?.draft ? GitPullRequestDraft : GitPullRequest;
+  const prLabel = pr ? `Pull request #${pr.number}${pr.state === "MERGED" ? " · merged" : pr.draft ? " · draft" : ""}${check ? ` · ${check.label}` : ""}` : "";
+  const title = [gitTitle(git), prLabel, target ? (pr ? "Click to open the pull request" : "Click to open the branch in the browser") : ""].filter(Boolean).join("\n");
+  const stop = (event: { stopPropagation(): void }) => event.stopPropagation();
+  return <span className="tile-strip-git">
+    {git.dirty
+      ? <button type="button" className="tile-strip-git-icon tile-strip-review" title="Uncommitted changes · click to review them" aria-label="Review uncommitted changes" onMouseDown={stop} onClick={onReview}>
+        <GitBranch size={11} aria-hidden="true" /><span className="tile-strip-dirty" />
+      </button>
+      : <span className="tile-strip-git-icon"><GitBranch size={11} aria-hidden="true" /></span>}
+    <button type="button" className="tile-strip-branch-btn" title={title} disabled={!target} onMouseDown={stop} onClick={() => { if (target) openWebPage(target); }}>
+      <code className="tile-strip-branch">{git.branch}</code>
+      {git.ahead ? <span className="tile-strip-ab" aria-label={`${git.ahead} to push`}><ArrowUp size={9} strokeWidth={2.4} aria-hidden="true" />{git.ahead}</span> : null}
+      {git.behind ? <span className="tile-strip-ab" aria-label={`${git.behind} to pull`}><ArrowDown size={9} strokeWidth={2.4} aria-hidden="true" />{git.behind}</span> : null}
+      {pr ? <span className={`tile-strip-pr ${pr.state === "MERGED" ? "is-merged" : ""}`} aria-label={prLabel}>
+        <PrIcon size={10} aria-hidden="true" />{pr.number}
+        {check ? <check.icon size={10} className={`tile-strip-check is-${pr.checks}`} aria-hidden="true" /> : null}
+      </span> : null}
+    </button>
+    {pr && check && pr.checks === "failing" ? <button type="button" className="tile-strip-ci-send" aria-label="Send failing checks to agent"
+      title={onSendChecks ? "Send failing checks to agent\nSaves the failed CI logs to a file and asks this tile's agent to fix them" : "Send failing checks to agent\nNo agent running in this tile"}
+      disabled={!onSendChecks || sendingChecks} aria-busy={sendingChecks || undefined} onMouseDown={stop} onClick={onSendChecks}>
+      {sendingChecks ? <Loader2 size={11} className="async-spinner" aria-hidden="true" /> : <Send size={10} aria-hidden="true" />}
+    </button> : null}
+    {shared.length ? <button type="button" className="tile-strip-shared" aria-label="Another agent is on this branch. Move this session to its own worktree"
+      title={`Also on ${git.branch}: ${shared.join(", ")}.\nTwo agents on one branch can overwrite each other's work. Click to start this tile's agent in its own worktree; this session keeps running.`}
+      disabled={!onIsolate || isolating} aria-busy={isolating || undefined} onMouseDown={stop} onClick={onIsolate}>
+      {isolating ? <Loader2 size={11} className="async-spinner" aria-hidden="true" /> : <TriangleAlert size={11} aria-hidden="true" />}
+    </button> : null}
+  </span>;
+}
+
+// Footer actions for a tile working in a linked worktree (not the main
+// checkout): push its branch and open a pull request while it has none, and
+// merge it into the base in the main checkout, refused while the worktree has
+// uncommitted changes. The outcome, with the pull request link, shows in a
+// small dialog; the new pull request then appears in the branch chip.
+function FooterWorktree({ host, path, git, hasPullRequest }: { host: string; path: string; git: GitFolderStatus; hasPullRequest: boolean }) {
+  const info = useWorktreeInfo(host, path, git.detached ? undefined : git.branch);
+  const [busy, setBusy] = useState<"pr" | "merge" | null>(null);
+  const [result, setResult] = useState<{ kind: "pr" | "merge"; outcome: LandResult } | null>(null);
+  if (!info?.linked || !info.branch || info.branch !== git.branch) return null;
+  const { branch, base } = info;
+  const start = (kind: "pr" | "merge", action: () => Promise<LandResult | null>) => {
+    if (busy) return;
+    setBusy(kind);
+    void action().then((outcome) => { if (outcome) setResult({ kind, outcome }); }).finally(() => setBusy(null));
+  };
+  const stop = (event: { stopPropagation(): void }) => event.stopPropagation();
+  const url = result?.outcome.url;
+  return <span className="tile-strip-wt">
+    {hasPullRequest ? null : <button type="button" className="tile-strip-wt-action" aria-label="Open pull request" disabled={busy !== null} aria-busy={busy === "pr" || undefined}
+      title={`Open pull request\nPushes ${branch} and runs gh pr create --fill`} onMouseDown={stop} onClick={() => start("pr", () => openWorktreePr(host, path))}>
+      {busy === "pr" ? <Loader2 size={11} className="async-spinner" aria-hidden="true" /> : <GitPullRequestCreateArrow size={11} aria-hidden="true" />}
+    </button>}
+    {base ? <button type="button" className="tile-strip-wt-action" aria-label={`Merge into ${base}`} disabled={git.dirty || busy !== null} aria-busy={busy === "merge" || undefined}
+      title={git.dirty ? `Merge into ${base}\nCommit or discard this worktree's changes first` : `Merge into ${base}\nMerges ${branch} in the main checkout after a confirmation`}
+      onMouseDown={stop} onClick={() => start("merge", () => mergeWorktree(host, path, branch, base))}>
+      {busy === "merge" ? <Loader2 size={11} className="async-spinner" aria-hidden="true" /> : <GitMerge size={11} aria-hidden="true" />}
+    </button> : null}
+    <Modal open={result !== null} onClose={() => setResult(null)} title={result?.kind === "merge" ? "Merge worktree" : "Pull request"} size="sm">
+      <p role={result?.outcome.failed ? "alert" : "status"} className="tile-strip-wt-result">
+        {result?.outcome.text}
+        {url ? <>{" "}<button type="button" className="wt-link" onClick={() => openWebPage(url)}>{url}</button></> : null}
+      </p>
+    </Modal>
+  </span>;
+}
+
+// The footer folder: shortened ("~/…/parent/folder"), full path on hover, and
+// a click (or Enter/Space) copies the full path, confirmed in place.
+function FooterPath({ path }: { path: string }) {
+  const [copied, setCopied] = useState<"done" | "failed" | null>(null);
+  useEffect(() => {
+    if (!copied) return;
+    const timer = setTimeout(() => setCopied(null), 1400);
+    return () => clearTimeout(timer);
+  }, [copied]);
+  return <button
+    type="button"
+    className={`tile-strip-path ${copied ? "is-copied" : ""}`}
+    title={`${path}\nClick to copy`}
+    aria-label={`Copy folder path ${path}`}
+    onMouseDown={(event) => event.stopPropagation()}
+    onClick={() => void copyToClipboard(path).then((ok) => setCopied(ok ? "done" : "failed"))}
+  >
+    <span aria-live="polite">{copied === "done" ? "Copied" : copied === "failed" ? "Copy failed" : compactPath(path)}</span>
+  </button>;
+}
+
+// The agent session's estimated cost and run time ("$1.24 · 38m"), with the
+// token breakdown on hover. While the agent runs the time counts up to now;
+// after it exits it is the span from its first to its last priced reply.
+function FooterCost({ cost, running }: { cost: SessionCost; running: boolean }) {
+  if (cost.startedAt === undefined || cost.lastAt === undefined) return null;
+  const until = running ? Date.now() : cost.lastAt;
+  const duration = formatDuration(until - cost.startedAt);
+  const priced = cost.pricedCost ?? 0;
+  const money = cost.cost != null ? formatCost(cost.cost) : priced > 0 ? `${formatCost(priced)}+` : null;
+  const tokens = cost.tokens;
+  const clock = (at: number) => new Date(at).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+  const title = [
+    `${cost.provider === "codex" ? "Codex" : "Claude Code"} session, matched by folder and start time (best effort)`,
+    running ? `Running ${duration} since ${clock(cost.startedAt)}` : `Ran ${duration}, last reply ${clock(cost.lastAt)}`,
+    cost.cost != null ? `Estimated ${formatCost(cost.cost)} at standard API prices`
+      : `${formatCost(priced)} priced; no price for ${(cost.unpricedModels ?? []).join(", ")}`,
+    tokens ? `Input ${formatTokens(tokens.input)} · Output ${formatTokens(tokens.output)} · Cache read ${formatTokens(tokens.cacheRead)} · Cache write ${formatTokens(tokens.cacheWrite)}` : "",
+    [cost.models?.join(", "), cost.subagents ? `${cost.subagents} subagent${cost.subagents === 1 ? "" : "s"}` : ""].filter(Boolean).join(" · "),
+  ].filter(Boolean).join("\n");
+  return <span className="tile-strip-cost" title={title} aria-label={`Agent session ${money ? `${money}, ` : ""}${duration}`}>
+    {money ? `${money} · ${duration}` : duration}
+  </span>;
+}
+
+// One-line footer carrying what tmux's status line used to show. Left: what is
+// running now (command, agent and mode), the tmux session and its Git branch;
+// right: the folder and when the session started. Every value comes from live
+// data; missing ones are omitted. Git is polled while the tile is visible, and
+// at a slow background rate while a hidden tile runs an agent, so its branch
+// claim still reaches the shared-branch warning of tiles in other workspaces.
+function TileStatusStrip({ tileId, session, window: windowIndex, host, gitHost, visible, path, createdAt, workspaceId, workspace }: {
+  tileId: string; session: string; window?: number; host?: string; gitHost: string; visible: boolean; path?: string; createdAt?: number | null;
+  workspaceId: string; workspace: string;
+}) {
+  const agent = sessionAgentLabel(useSessionAgents((s) => s.agents[tileId]));
+  const activity = useSessionActivity(session, windowIndex, host);
+  const command = activity?.command;
+  // Only tiles running a coding agent claim their branch; a plain shell in
+  // the same folder is not a conflict.
+  const runningAgent = activityAgent(activity);
+  const git = useGitStatus(gitHost, path, visible ? "visible" : runningAgent ? "background" : "off");
+  const branch = git && !git.detached ? git.branch : undefined;
+  const remote = useGitRemote(gitHost, path, branch, visible);
+  const label = windowIndex === undefined ? session : `${session}:${windowIndex}`;
+  const shared = useSharedBranch(tileId, runningAgent && branch && path ? { host: gitHost, path, branch, label, workspaceId, workspace } : null);
+  const [isolating, setIsolating] = useState(false);
+  const [isolateError, setIsolateError] = useState<string | null>(null);
+  const isolate = runningAgent && path ? () => {
+    if (isolating) return;
+    setIsolating(true);
+    setIsolateError(null);
+    moveAgentToWorktree({ tileId, session, host, cwd: path, provider: runningAgent })
+      .catch((error: unknown) => setIsolateError(error instanceof Error ? error.message : "Could not start the worktree session."))
+      .finally(() => setIsolating(false));
+  } : undefined;
+  const [sendingChecks, setSendingChecks] = useState(false);
+  const [checksError, setChecksError] = useState<string | null>(null);
+  const sendChecks = runningAgent && path ? () => {
+    if (sendingChecks) return;
+    setSendingChecks(true);
+    setChecksError(null);
+    sendFailingChecks(tileId, gitHost, path)
+      .catch((error: unknown) => setChecksError(error instanceof Error ? error.message : "Could not send the failing checks."))
+      .finally(() => setSendingChecks(false));
+  } : undefined;
+  // Cost reads this device's transcripts, so only local tiles ask. The agent
+  // the tile was started with still names the provider after the agent exits.
+  const recordedAgent = useSessionAgents((s) => s.agents[tileId]?.id);
+  const costProvider = [runningAgent, recordedAgent].find((id): id is CostProvider => id === "claude" || id === "codex");
+  const sessionCost = useSessionCost(costProvider, path, createdAt, visible && !host);
+  const RunningIcon = sessionIcon(command, activity?.effectiveProvider);
+  return <div className="tile-strip">
+    <span className="tile-strip-target" title="tmux session">{windowIndex === undefined ? session : `${session}:${windowIndex}`}</span>
+    {git ? <FooterGit git={git} remote={remote} shared={shared} onReview={() => { if (path) useStore.getState().openTileChanges(tileId, path); }} onIsolate={isolate} isolating={isolating}
+      onSendChecks={sendChecks} sendingChecks={sendingChecks} /> : null}
+    {git && path ? <FooterWorktree host={gitHost} path={path} git={git} hasPullRequest={!!remote?.pr && remote.pr.state !== "CLOSED"} /> : null}
+    {command || agent ? <span className="tile-strip-running" title="Running now">
+      {/* The running program's logo (Claude, Codex, OpenCode, a shell...) leads the item. */}
+      {command ? <RunningIcon size={11} className="tile-strip-logo" /> : null}
+      {command ? <code className="tile-strip-command">{command}</code> : null}
+      {agent ? <span className="tile-strip-agent" title="Started with">{agent.agent} · {agent.mode}</span> : null}
+    </span> : null}
+    {sessionCost ? <FooterCost cost={sessionCost} running={!!runningAgent} /> : null}
+    {path ? <FooterPath path={path} /> : null}
+    {createdAt ? <time className="tile-strip-time" dateTime={new Date(createdAt).toISOString()} title={`Session started ${new Date(createdAt).toLocaleString()}`}>
+      started {startedLabel(createdAt)}
+    </time> : null}
+    <Modal open={isolateError !== null} onClose={() => setIsolateError(null)} title="Move to a worktree" size="sm">
+      <p role="alert">{isolateError}</p>
+    </Modal>
+    <Modal open={checksError !== null} onClose={() => setChecksError(null)} title="Send failing checks" size="sm">
+      <p role="alert">{checksError}</p>
+    </Modal>
+  </div>;
+}
+
+// A tile dragged by its header from slot `from` of the visible order, shown at slot `to`.
+interface TileDrag { id: string; from: number; to: number }
+// Layout boxes of the visible tiles when the drag started, relative to the
+// grid; the pointer picks a slot from these, so the reflowing preview never
+// moves the target out from under it.
+type Slot = { left: number; top: number; right: number; bottom: number };
+
+function moveItem<T>(items: readonly T[], from: number, to: number): T[] {
+  const next = [...items];
+  const [moved] = next.splice(from, 1);
+  next.splice(to, 0, moved);
+  return next;
+}
+
+function tileSlots(grid: HTMLElement, ids: readonly string[]): Slot[] {
+  return ids.map((id) => {
+    const tile = grid.querySelector<HTMLElement>(`:scope > [data-tile-id="${CSS.escape(id)}"]`);
+    if (!tile) return { left: 0, top: 0, right: 0, bottom: 0 };
+    const left = tile.offsetLeft - (tile.offsetParent === grid ? 0 : grid.offsetLeft);
+    const top = tile.offsetTop - (tile.offsetParent === grid ? 0 : grid.offsetTop);
+    return { left, top, right: left + tile.offsetWidth, bottom: top + tile.offsetHeight };
+  });
+}
+
+// The slot under a grid point; past the last tile counts as the last slot,
+// and the gaps between tiles keep the current choice (null).
+function slotAt(slots: readonly Slot[], x: number, y: number): number | null {
+  const hit = slots.findIndex((slot) => x >= slot.left && x < slot.right && y >= slot.top && y < slot.bottom);
+  if (hit >= 0) return hit;
+  const last = slots.at(-1);
+  if (last && (y >= last.bottom || (y >= last.top && x >= last.right))) return slots.length - 1;
+  return null;
+}
+
+const ARROW_STEPS: Record<string, readonly [number, number]> = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] };
+// Pixels from the canvas edge where a drag starts scrolling, and the top speed.
+const AUTO_SCROLL_EDGE = 56;
+const AUTO_SCROLL_SPEED = 18;
+// Tiles glide to new places on one spring (transform only, never their size).
+const TILE_SPRING = { type: "spring", stiffness: 420, damping: 38, mass: 0.9 } as const;
+
+function canvasBox(): CSSProperties {
+  const rect = document.querySelector(".canvas")?.getBoundingClientRect();
+  return rect ? { left: rect.left, top: rect.top, width: rect.width, height: rect.height } : { inset: 0 };
+}
+
+// Esc restores a maximized tile only when nothing else owns the key: a
+// terminal, an editor, a text field, an open dialog or an open menu.
+function escapeIsFree(event: KeyboardEvent): boolean {
+  if (event.key !== "Escape" || event.defaultPrevented || event.isComposing || event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return false;
+  const target = event.target instanceof Element ? event.target : null;
+  if (target?.closest(".xterm, .cm-editor, input, textarea, select, [contenteditable='true'], [role='dialog'], [role='alertdialog'], [role='menu']")) return false;
+  // Dropdown panels stay mounted while closed, so only a rendered menu counts.
+  return !document.querySelector(".pzza-portal, .modal") && ![...document.querySelectorAll(".menu")].some((menu) => menu.getClientRects().length > 0);
 }
 
 // Uniform N-column grid, filtered to the active workspace. One tile can be
@@ -99,8 +397,6 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
   const defaultColumns = useStore((s) => s.defaultColumns);
   const activeId = useStore((s) => s.activeId);
   const closeTile = useStore((s) => s.closeTile);
-  const reorderTile = useStore((s) => s.reorderTile);
-  const moveTileToEnd = useStore((s) => s.moveTileToEnd);
   const connection = useStore((s) => s.connection);
   const sessionWs = useStore((s) => s.sessionWs);
   const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
@@ -121,13 +417,10 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
   // else stays grey. Viewing the tile marks its notifications read, which also
   // clears the workspace tab dot when no other unread remains there.
   const notificationItems = useNotifications((s) => s.items);
-  const unreadTileIds = (() => {
-    const ids = new Set<string>();
-    for (const item of notificationItems) {
-      if (!item.read && item.target?.tileId) ids.add(item.target.tileId);
-    }
-    return ids;
-  })();
+  const unreadTileIds = new Set<string>();
+  for (const item of notificationItems) {
+    if (!item.read && item.target?.tileId) unreadTileIds.add(item.target.tileId);
+  }
   const activateTile = useCallback((id: string) => {
     useStore.getState().setActive(id);
     useNotifications.getState().readTile(id);
@@ -156,15 +449,16 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
   const [duplicating, setDuplicating] = useState<string | null>(null);
   const showDuplicateSpinner = useDelayedLoading(duplicating !== null);
   const duplicationPending = useRef(false);
+  // Spacing 0: tiles drop their borders where they meet the window edges.
+  const gridRef = useRef<HTMLDivElement>(null);
+  const tight = useStore((s) => s.spacing === 0);
+  useTileEdges(gridRef, tight);
   const [duplicateError, setDuplicateError] = useState<string | null>(null);
-  const [layoutFor, setLayoutFor] = useState<{ id: string; x: number; y: number } | null>(
-    null,
-  );
   // "Move to workspace" popup, opened from a tile's toolbar button.
   const assignSession = useStore((s) => s.assignSession);
   const [moveFor, setMoveFor] = useState<{ id: string; x: number; y: number } | null>(null);
-  const closeTileMenus = useCallback(() => { setLayoutFor(null); setMoveFor(null); }, []);
-  const tileMenuOpen = layoutFor !== null || moveFor !== null;
+  const closeTileMenus = useCallback(() => setMoveFor(null), []);
+  const tileMenuOpen = moveFor !== null;
   useExclusiveMenu("tile-menu", tileMenuOpen, closeTileMenus);
   useEffect(() => {
     if (!tileMenuOpen) return;
@@ -180,17 +474,23 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
     [],
   );
 
+  // One maximized tile fills the canvas; the rest stay mounted but hidden.
   const [fullId, setFullId] = useState<string | null>(null);
-  const [focusId, setFocusId] = useState<string | null>(null);
   useEffect(() => {
     // Programmatic tile focus must reveal the target even if another tile was
-    // maximized or isolated locally in the canvas.
+    // maximized locally in the canvas.
     if (activeId && fullId && activeId !== fullId) setFullId(null);
-    if (activeId && focusId && activeId !== focusId) setFocusId(null);
-  }, [activeId, fullId, focusId]);
+  }, [activeId, fullId]);
   const [renaming, setRenaming] = useState<{ id: string; val: string } | null>(null);
-  const [dragId, setDragId] = useState<string | null>(null);
-  const [overId, setOverId] = useState<string | null>(null);
+  // A header drag previews the drop: the dragged tile moves to slot `to` of
+  // the visible order and the rest reflow around it until the drop commits.
+  const [drag, setDrag] = useState<TileDrag | null>(null);
+  const dragRef = useRef<TileDrag | null>(null);
+  const updateDrag = useCallback((next: TileDrag | null) => {
+    dragRef.current = next;
+    setDrag((current) => (current?.id === next?.id && current?.to === next?.to ? current : next));
+  }, []);
+  const dragId = drag?.id ?? null;
 
   const wsTiles = tiles.filter(
     (t) =>
@@ -201,96 +501,18 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
       !(t.host && deviceForHost(devices, t.host)?.disabled),
   );
 
-  // Automatic spans for tiles without a saved layout: share the row evenly,
-  // except the last one which stretches across whatever columns are left in
-  // its row. Auto tiles also match the tallest explicit height in the
-  // workspace, so an auto tile next to a 2-row tile becomes 2 rows tall
-  // instead of leaving a hole. Placement is simulated against a row-span
-  // aware occupancy grid so widths match the browser's actual placement even
-  // when tall tiles occupy cells below the cursor.
-  const autoSpanById = (() => {
-    const spans = new Map<string, { c: number; r: number }>();
-    if (columns < 1) return spans;
-    const even = wsTiles.length <= 1 ? columns : Math.max(1, Math.floor(columns / wsTiles.length));
-    let autoR = 1;
-    for (const entry of wsTiles) {
-      const saved = tileSpan[entry.id];
-      if (saved) autoR = Math.max(autoR, Math.min(Math.max(1, saved.r), 4));
-    }
-    const grid: boolean[][] = [];
-    const ensure = (row: number) => {
-      while (grid.length <= row) grid.push(new Array(columns).fill(false));
-    };
-    const fits = (row: number, col: number, w: number, h: number): boolean => {
-      if (col + w > columns) return false;
-      ensure(row + h - 1);
-      for (let dr = 0; dr < h; dr++) {
-        for (let dc = 0; dc < w; dc++) {
-          if (grid[row + dr][col + dc]) return false;
-        }
-      }
-      return true;
-    };
-    const occupy = (row: number, col: number, w: number, h: number) => {
-      ensure(row + h - 1);
-      for (let dr = 0; dr < h; dr++) {
-        for (let dc = 0; dc < w; dc++) grid[row + dr][col + dc] = true;
-      }
-    };
-    const maxSearchRows = wsTiles.length * 4 + 4;
-    const find = (w: number, h: number, fromR: number, fromC: number): [number, number] => {
-      for (let r = fromR; r < fromR + maxSearchRows; r++) {
-        const startC = r === fromR ? Math.min(fromC, columns - 1) : 0;
-        for (let c = startC; c + w <= columns; c++) {
-          if (fits(r, c, w, h)) return [r, c];
-        }
-      }
-      return [fromR, fromC];
-    };
-    let cursorR = 0;
-    let cursorC = 0;
-    const advance = (row: number, col: number, w: number) => {
-      cursorR = row;
-      cursorC = col + w;
-      if (cursorC >= columns) {
-        cursorR = row + 1;
-        cursorC = 0;
-      }
-    };
-    wsTiles.forEach((entry, index) => {
-      const saved = tileSpan[entry.id];
-      if (saved) {
-        const w = Math.max(1, Math.min(saved.c, columns));
-        const h = Math.min(Math.max(1, saved.r), 4);
-        const [pr, pc] = find(w, h, cursorR, cursorC);
-        occupy(pr, pc, w, h);
-        advance(pr, pc, w);
-        return;
-      }
-      const h = autoR;
-      if (index < wsTiles.length - 1) {
-        const w = Math.max(1, Math.min(even, columns));
-        const [pr, pc] = find(w, h, cursorR, cursorC);
-        occupy(pr, pc, w, h);
-        spans.set(entry.id, { c: w, r: h });
-        advance(pr, pc, w);
-        return;
-      }
-      const wEven = Math.max(1, Math.min(even, columns));
-      const [pr, pc] = find(wEven, h, cursorR, cursorC);
-      const stretch = pc === 0 ? columns : columns - pc;
-      if (stretch >= wEven && fits(pr, pc, stretch, h)) {
-        occupy(pr, pc, stretch, h);
-        spans.set(entry.id, { c: stretch, r: h });
-        advance(pr, pc, stretch);
-      } else {
-        occupy(pr, pc, wEven, h);
-        spans.set(entry.id, { c: wEven, r: h });
-        advance(pr, pc, wEven);
-      }
-    });
-    return spans;
-  })();
+  // The grid runs at half resolution: every column unit is at least two CSS
+  // grid tracks and every row unit two row tracks, so a tile can span half a
+  // column or half a row. Saved spans stay in column/row units (0.5 steps).
+  // Without saved spans the arrangement picks the columns (Auto) and shares
+  // each row evenly; see autoLayout. A drag preview arranges the previewed
+  // order, so the tiles show where the dragged one will land.
+  const spacing = useStore((s) => s.spacing);
+  const canvasSize = useCanvasSize(gridRef, wsTiles.length, Math.max(0, spacing), true);
+  const previewTiles = drag && drag.to !== drag.from && wsTiles[drag.from]?.id === drag.id && drag.to < wsTiles.length ? moveItem(wsTiles, drag.from, drag.to) : wsTiles;
+  const arrangement = arrangeTiles({ ids: previewTiles.map((entry) => entry.id), saved: tileSpan, setting: columns, size: canvasSize, maxRows: MAX_TILE_ROWS });
+  const { tracks } = arrangement;
+  const columnTracks = tracks / arrangement.columns;
 
   const pointerIntent = useRef<{ id: string; pointer: number; x: number; y: number; started: number; cancelled: boolean } | null>(null);
   const scrollToTile = useCallback((id: string) => {
@@ -357,6 +579,172 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
     return () => window.removeEventListener("keydown", onKey, true);
   }, [activateTile]);
 
+  // Cmd+J (Ctrl+J elsewhere) jumps to the next tile waiting on you: one with
+  // an unread terminal notification, after the active tile in tile order and
+  // wrapping around, across workspaces. With nothing waiting the key passes
+  // through untouched (Ctrl+J is a newline in a terminal).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const modifier = IS_MAC ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey;
+      if (!modifier || e.altKey || e.shiftKey || e.code !== "KeyJ" || e.isComposing) return;
+      const state = useStore.getState();
+      const waiting = new Set<string>();
+      for (const item of useNotifications.getState().items) {
+        if (!item.read && item.category === "terminal" && item.target?.tileId) waiting.add(item.target.tileId);
+      }
+      const candidates = state.tiles.filter((tile) => waiting.has(tile.id) && !(tile.host && deviceForHost(state.devices, tile.host)?.disabled));
+      if (!candidates.length) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const from = state.tiles.findIndex((tile) => tile.id === state.activeId);
+      const next = candidates.find((tile) => state.tiles.indexOf(tile) > from) ?? candidates[0];
+      if (state.activeWorkspaceId !== ALL_WORKSPACE_ID) state.setWorkspace(state.sessionWs[wsKeyOf(next)] ?? DEFAULT_WORKSPACE_ID);
+      state.unhideTile(next.id);
+      pointerIntent.current = null;
+      activateTile(next.id);
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [activateTile]);
+
+  // Header drags: the pointer picks a slot of the layout as it was when the
+  // drag started, the grid previews the move, and a drop on the canvas
+  // commits it. Near the canvas top or bottom the canvas scrolls. Esc or a
+  // drop anywhere else ends the drag without moving (onDragEnd).
+  const dragSlots = useRef<Slot[]>([]);
+  const endDrag = useCallback(() => {
+    updateDrag(null);
+    setLayoutPreview(false);
+  }, [updateDrag]);
+  const dragging = drag !== null;
+  useEffect(() => {
+    const grid = gridRef.current;
+    const canvas = grid?.parentElement;
+    if (!dragging || !grid || !canvas) return;
+    let pointer: { x: number; y: number } | null = null;
+    let frame = 0;
+    const over = (event: DragEvent) => {
+      const current = dragRef.current;
+      if (!current) return;
+      pointer = { x: event.clientX, y: event.clientY };
+      if (!(event.target instanceof Node) || !canvas.contains(event.target)) {
+        // Over a workspace tab or the top bar: the grid shows its real order.
+        updateDrag({ ...current, to: current.from });
+        return;
+      }
+      event.preventDefault();
+      if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+      const box = grid.getBoundingClientRect();
+      const slot = slotAt(dragSlots.current, event.clientX - box.left, event.clientY - box.top);
+      if (slot !== null) updateDrag({ ...current, to: slot });
+    };
+    const drop = (event: DragEvent) => {
+      const current = dragRef.current;
+      if (!current) return;
+      event.preventDefault();
+      const target = wsTilesRef.current[current.to];
+      if (target && current.to !== current.from) useStore.getState().reorderTile(current.id, target.id);
+      endDrag();
+    };
+    const speed = (depth: number) => Math.ceil(AUTO_SCROLL_SPEED * Math.min(1, depth / AUTO_SCROLL_EDGE));
+    const scroll = () => {
+      frame = requestAnimationFrame(scroll);
+      if (!pointer) return;
+      const box = canvas.getBoundingClientRect();
+      if (pointer.x < box.left || pointer.x > box.right || pointer.y < box.top || pointer.y > box.bottom) return;
+      const up = box.top + AUTO_SCROLL_EDGE - pointer.y;
+      const down = pointer.y - (box.bottom - AUTO_SCROLL_EDGE);
+      if (up > 0) canvas.scrollTop -= speed(up);
+      else if (down > 0) canvas.scrollTop += speed(down);
+    };
+    frame = requestAnimationFrame(scroll);
+    document.addEventListener("dragover", over);
+    canvas.addEventListener("drop", drop);
+    return () => {
+      cancelAnimationFrame(frame);
+      document.removeEventListener("dragover", over);
+      canvas.removeEventListener("drop", drop);
+    };
+  }, [dragging, updateDrag, endDrag]);
+  // The preview pauses terminal fits; never leave it paused.
+  useEffect(() => () => setLayoutPreview(false), []);
+
+  // Ctrl+Option (Ctrl+Alt) + arrows move the active tile: left and right
+  // through the tile order, up and down to the tile above or below it. With
+  // Shift they resize it by half a column or row. Off macOS a focused code
+  // editor keeps the keys (Ctrl+Alt+Up/Down add cursors there).
+  const layoutRef = useRef({ arrangement, full: false });
+  useEffect(() => {
+    layoutRef.current = { arrangement, full: !!effFull };
+  });
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      const step = ARROW_STEPS[event.key];
+      if (!step || !event.ctrlKey || !event.altKey || event.metaKey || event.isComposing) return;
+      if (!IS_MAC && event.target instanceof Element && event.target.closest(".cm-editor")) return;
+      const state = useStore.getState();
+      const order = wsTilesRef.current;
+      const index = order.findIndex((entry) => entry.id === state.activeId);
+      const { arrangement: current, full } = layoutRef.current;
+      const grid = gridRef.current;
+      if (index < 0 || full || !grid) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const id = order[index].id;
+      if (event.shiftKey) {
+        const span = current.spans.get(id);
+        if (!span) return;
+        const half = (value: number) => Math.round(value * 2) / 2;
+        const c = Math.max(0.5, Math.min(current.columns, half(span.c / (current.tracks / current.columns) + step[0] / 2)));
+        const r = Math.max(0.5, Math.min(MAX_TILE_ROWS, half(span.r / 2 + step[1] / 2)));
+        state.setTileSpan(id, c, r);
+        return;
+      }
+      let target = -1;
+      if (step[0]) target = index + step[0];
+      else {
+        const slots = tileSlots(grid, order.map((entry) => entry.id));
+        const from = slots[index];
+        const middle = (from.left + from.right) / 2;
+        let best = Infinity;
+        slots.forEach((slot, candidate) => {
+          if (candidate === index || middle < slot.left || middle >= slot.right) return;
+          const distance = step[1] < 0 ? from.top - slot.bottom : slot.top - from.bottom;
+          if (distance >= -1 && distance < best) {
+            best = distance;
+            target = candidate;
+          }
+        });
+      }
+      if (target >= 0 && target < order.length) state.reorderTile(id, order[target].id);
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, []);
+
+  // Folder drops from Finder open the new-session form for that folder.
+  useEffect(() => installFolderDrops(), []);
+  const folderDrag = useFolderDrag();
+
+  // Shift+click headers to select tiles for broadcast; Esc or a click on the
+  // empty canvas clears the selection.
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const toggleSelected = useCallback((id: string) => {
+    setSelectedIds((current) => current.includes(id) ? current.filter((item) => item !== id) : [...current, id]);
+  }, []);
+  const clearSelection = useCallback(() => setSelectedIds([]), []);
+  // The command palette selects every visible tile for a broadcast.
+  useEffect(() => {
+    const selectVisible = () => setSelectedIds(wsTilesRef.current.map((tile) => tile.id));
+    window.addEventListener("pzza:broadcast-visible", selectVisible);
+    return () => window.removeEventListener("pzza:broadcast-visible", selectVisible);
+  }, []);
+  useEffect(() => {
+    if (!selectedIds.length) return;
+    const onKey = (event: KeyboardEvent) => { if (escapeIsFree(event)) clearSelection(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [selectedIds.length, clearSelection]);
   // Keyboard/programmatic selection still scrolls immediately. Pointer
   // selection waits for release so holding or dragging never moves the canvas.
   useEffect(() => {
@@ -379,6 +767,8 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
     (activeWorkspaceId === ALL_WORKSPACE_ID ||
       (sessionWs[wsKeyOf(fullTile)] ?? DEFAULT_WORKSPACE_ID) === activeWorkspaceId);
   const effFull = fullInActiveWs ? fullId : null;
+  // Only tiles currently on screen take part in a broadcast.
+  const selectedTiles = wsTiles.filter((tile) => selectedIds.includes(tile.id) && (!effFull || tile.id === effFull));
 
   const duplicate = async (source: (typeof tiles)[number]) => {
     if (duplicationPending.current) throw new Error("A session duplication is already running.");
@@ -405,8 +795,20 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
     }
   };
 
-  const canvasControl = useRef({ fullId, focusId, duplicate });
-  canvasControl.current = { fullId, focusId, duplicate };
+  // Esc restores the maximized tile when nothing focused consumes the key.
+  useEffect(() => {
+    if (!effFull) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (!escapeIsFree(event)) return;
+      event.preventDefault();
+      setFullId(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [effFull]);
+
+  const canvasControl = useRef({ fullId, duplicate });
+  canvasControl.current = { fullId, duplicate };
   useEffect(() => {
     const requireTile = (id: unknown) => {
       const state = useStore.getState();
@@ -421,18 +823,16 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
       state.unhideTile(target.id); state.setActive(target.id);
       return target;
     };
+    const maximize = (args: { tileId?: unknown; enabled?: unknown }) => {
+      const target = args.enabled ? reveal(args.tileId) : requireTile(args.tileId);
+      if (args.enabled || canvasControl.current.fullId === target.id) setFullId(args.enabled ? target.id : null);
+      return { tileId: target.id, enabled: args.enabled };
+    };
     const cleanups = [
-      registerAppControlState("canvas", () => ({ fullTileId: canvasControl.current.fullId, focusTileId: canvasControl.current.focusId, duplicating: duplicationPending.current })),
-      registerAppControlHandler("set_focus_mode", args => {
-        const target = args.enabled ? reveal(args.tileId) : requireTile(args.tileId);
-        if (args.enabled || canvasControl.current.focusId === target.id) setFocusId(args.enabled ? target.id : null);
-        return { tileId: target.id, enabled: args.enabled };
-      }),
-      registerAppControlHandler("set_fullscreen", args => {
-        const target = args.enabled ? reveal(args.tileId) : requireTile(args.tileId);
-        if (args.enabled || canvasControl.current.fullId === target.id) setFullId(args.enabled ? target.id : null);
-        return { tileId: target.id, enabled: args.enabled };
-      }),
+      registerAppControlState("canvas", () => ({ fullTileId: canvasControl.current.fullId, focusTileId: canvasControl.current.fullId, duplicating: duplicationPending.current })),
+      // Focus mode is the maximize: the focused tile fills the canvas.
+      registerAppControlHandler("set_focus_mode", maximize),
+      registerAppControlHandler("set_fullscreen", maximize),
       registerAppControlHandler("duplicate_tile", async args => ({ tileId: await canvasControl.current.duplicate(requireTile(args.tileId)) })),
       registerAppControlHandler("terminate_tile", async args => {
         const current = requireTile(args.tileId);
@@ -443,7 +843,6 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
         await killSession(current.session ?? current.name, current.window, sessionConnection(current.host, state.connection).host ?? "");
         for (const item of affected) {
           if (canvasControl.current.fullId === item.id) setFullId(null);
-          if (canvasControl.current.focusId === item.id) setFocusId(null);
           useStore.getState().closeTile(item.id);
         }
         return { terminated: affected.map(item => item.id) };
@@ -457,7 +856,6 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
     const { cmd, args } = attachCommand(sessionConnection(t.host, connection), base, t.cwd, t.window);
     const rs = allSessions.find((s) => s.name === base);
     const fullPath = t.path ?? rs?.path;
-    const path = shortPath(fullPath);
     const codeOpen = tileCode[t.id]?.open ?? false;
     const wsColor = workspaces.find(
       (w) => w.id === (sessionWs[wsKeyOf(t)] ?? DEFAULT_WORKSPACE_ID),
@@ -471,29 +869,51 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
     const isRenaming = renaming?.id === t.id;
     const shortcutIdx = wsTiles.findIndex((x) => x.id === t.id);
     const isFull = fullId === t.id;
-    const isFocus = focusId === t.id;
-    // The focused/maximized tile stays visible while focus dims the others.
-    const dimmed = !isFull && !isFocus && !!focusId;
-    // Keep workspace hues intact; focus softens their opacity through CSS.
+    const toggleFull = () => {
+      activateTile(t.id);
+      setFullId(isFull ? null : t.id);
+    };
+    // Header actions, shared by the inline buttons and the narrow-tile More menu.
+    const toggleCode = () => {
+      if (codeOpen) {
+        void confirmEditorDiscard([t.id]).then((confirmed) => { if (confirmed) toggleTileCode(t.id); });
+        return;
+      }
+      // Open immediately at the best known path; a remote tile's live
+      // cwd lookup is an ssh round trip and must not delay the panel.
+      const hadRoot = !!tileCode[t.id]?.root;
+      toggleTileCode(t.id, fullPath);
+      if (hadRoot) return;
+      // Then re-root at the terminal's live cwd (a fresh session has
+      // no scanned path yet), unless a folder or file was picked meanwhile.
+      void fetchSessionPath(base, t.host, t.window).then((live) => {
+        const current = useStore.getState().tileCode[t.id];
+        if (live && live !== fullPath && current?.open && !current.path && current.root === fullPath) {
+          setTileCodeRoot(t.id, live);
+        }
+      });
+    };
+    const toggleMove = (anchor: DOMRect) => setMoveFor(moveFor?.id === t.id ? null : { id: t.id, x: anchor.right, y: anchor.bottom });
+    const hide = () => {
+      if (fullId === t.id) setFullId(null);
+      hideTile(t.id);
+    };
+    const codeLabel = codeOpen ? "Back to terminal" : "Code editor";
     const borderBg = wsColor
       ? `linear-gradient(140deg, ${wsColor} 0%, var(--border) 22%)`
       : undefined;
-    // Tiles without a saved layout share the row evenly and a lone tile
-    // takes the full width, so the grid stays fluid without manual sizing.
-    // Explicit choices always win over the automatic share. The last visible
-    // tile without a saved layout stretches across the leftover columns so
-    // the final row never leaves an empty gap (e.g. 3 sessions in 2 columns).
-    // Auto tiles also match the tallest explicit height, so an auto tile next
-    // to a 2-row tile becomes 2 rows tall instead of leaving a hole.
-    const explicit = tileSpan[t.id];
-    const autoC = wsTiles.length <= 1 ? columns : Math.max(1, Math.floor(columns / wsTiles.length));
-    const autoSpan = autoSpanById.get(t.id);
-    const span = explicit ?? autoSpan ?? { c: autoC, r: 1 };
+    // Spans in grid tracks from the arrangement: saved sizes win, the other
+    // tiles share their rows (see arrangeTiles). Tiles outside the grid
+    // (hidden, other workspaces) keep a placeholder span.
+    const trackSpan = arrangement.spans.get(t.id) ?? { c: columnTracks, r: 2 };
+    const previewOrder = drag ? previewTiles.indexOf(t) : -1;
     const spanStyle = effFull
       ? undefined
       : {
-          gridColumn: `span ${Math.min(span.c, columns)}`,
-          gridRow: `span ${span.r}`,
+          gridColumn: `span ${trackSpan.c}`,
+          gridRow: `span ${trackSpan.r}`,
+          // The drag preview reorders with CSS order, so no terminal is moved in the DOM.
+          ...(previewOrder >= 0 ? { order: previewOrder } : {}),
         };
     const isActive = activeId === t.id;
     // Visible only when in the active workspace, not hidden, and (if a tile is
@@ -503,18 +923,16 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
     const inWorkspace =
       activeWorkspaceId === ALL_WORKSPACE_ID || tileWs === activeWorkspaceId;
     const visible = inWorkspace && !hiddenTiles.includes(t.id) && (!effFull || isFull);
+    const isSelected = visible && selectedIds.includes(t.id);
     const cls = [
       "tile",
       visible ? "" : "tile-off",
       isActive ? "tile-active" : "",
-      overId === t.id && dragId !== t.id ? "tile-over" : "",
       dragId === t.id ? "tile-dragging" : "",
-      dimmed ? "tile-dimmed" : "",
-      isFocus ? "tile-focused" : "",
       // The tile you haven't clicked gets a very light grey wash so the active
-      // one stands out. Skipped while dimmed/focused/maximized (those own the
-      // overlay) so the effects don't stack.
-      !isActive && !isFocus && !dimmed && !isFull ? "tile-inactive" : "",
+      // one stands out. Skipped while maximized.
+      !isActive && !isFull ? "tile-inactive" : "",
+      isSelected ? "tile-selected" : "",
     ]
       .filter(Boolean)
       .join(" ");
@@ -534,7 +952,7 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
         // terminal text and always reads as broken. Opacity alone is smooth.
         initial={isFull ? { opacity: 0 } : false}
         animate={isFull ? { opacity: 1 } : {}}
-        transition={{ type: "spring", stiffness: 320, damping: 30 }}
+        transition={TILE_SPRING}
         onPointerDownCapture={(event) => {
           pointerIntent.current = {
             id: t.id, pointer: event.pointerId, x: event.clientX, y: event.clientY,
@@ -543,27 +961,19 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
           };
         }}
         onMouseDown={() => activateTile(t.id)}
-        onDragOver={(e) => {
-          if (!effFull && dragId && dragId !== t.id) {
-            e.preventDefault();
-            e.dataTransfer.dropEffect = "move";
-            setOverId(t.id);
-          }
-        }}
-        onDrop={(e) => {
-          if (dragId && dragId !== t.id) {
-            e.preventDefault();
-            e.stopPropagation();
-            reorderTile(dragId, t.id);
-          }
-          setDragId(null);
-          setOverId(null);
-        }}
       >
         <SessionHeader
           draggable={!effFull && !isRenaming}
           onDragStart={(e) => {
-            setDragId(t.id);
+            const from = wsTiles.indexOf(t);
+            const grid = gridRef.current;
+            if (from < 0 || !grid) return;
+            dragSlots.current = tileSlots(grid, wsTiles.map((entry) => entry.id));
+            // The placeholder look waits a frame so the drag image is the tile as it was.
+            const next = { id: t.id, from, to: from };
+            dragRef.current = next;
+            requestAnimationFrame(() => { if (dragRef.current === next) setDrag(next); });
+            setLayoutPreview(true);
             e.dataTransfer.effectAllowed = "move";
             // Carry the workspace key (host-namespaced), so dropping on a tab
             // assigns exactly the key the grid filters by.
@@ -576,18 +986,26 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
               e.dataTransfer.setDragImage(tileEl, e.clientX - r.left, e.clientY - r.top);
             }
           }}
-          onDragEnd={() => {
-            setDragId(null);
-            setOverId(null);
+          // Esc, a drop outside the canvas or on a workspace tab: the preview goes away.
+          onDragEnd={endDrag}
+          onMouseDownCapture={(e) => {
+            // Shift+click selects; keep the browser from extending a text selection.
+            if (e.shiftKey && !(e.target instanceof Element && e.target.closest("button, input"))) e.preventDefault();
           }}
-          onContextMenu={(e) => {
-            // Right-click on the header background opens this tile's layout
-            // menu. Controls and the rename field keep their own behavior.
-            if (e.target instanceof Element && e.target.closest("button, input, select, textarea, a, [contenteditable='true']")) return;
+          onClickCapture={(e) => {
+            // Shift+click anywhere on the header (title included, buttons
+            // excluded) toggles this tile in the broadcast selection.
+            if (!e.shiftKey || (e.target instanceof Element && e.target.closest("button, input"))) return;
             e.preventDefault();
             e.stopPropagation();
-            setMoveFor(null);
-            setLayoutFor({ id: t.id, x: e.clientX, y: e.clientY });
+            toggleSelected(t.id);
+          }}
+          onDoubleClick={(e) => {
+            // Double-clicking the header background maximizes or restores.
+            // Controls and the title (click to rename) keep their own behavior.
+            if (e.target instanceof Element && e.target.closest("button, input, select, textarea, a, [contenteditable='true'], .tile-title")) return;
+            e.preventDefault();
+            toggleFull();
           }}
           status={displayStatus}
           icon={<LiveSessionIcon session={base} window={t.window} host={t.host} />}
@@ -616,7 +1034,7 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
           ) : (
             <span
               className="tile-title"
-              title="Click to rename"
+              title={`${displayName}\nClick to rename`}
               onMouseDown={(e) => e.stopPropagation()}
               onClick={(e) => {
                 e.stopPropagation();
@@ -627,62 +1045,17 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
             </span>
           )}
           shortcut={shortcutIdx >= 0 && shortcutIdx < 9 ? shortcutIdx + 1 : undefined}
-          device={<><DeviceIcon host={t.host} size={11} />{tileDevice(t.host)}</>}
-          path={path ? <span className="tile-path" title={rs?.path}>{path}</span> : null}
+          device={{ host: t.host, name: tileDevice(t.host) }}
           actions={{
-            layout: (<button
-              className="tile-btn"
-              title="Tile layout"
-              aria-label="Tile layout"
-              onMouseDown={(e) => e.stopPropagation()}
-              onClick={(e) => {
-                e.stopPropagation();
-                const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
-                setLayoutFor(
-                  layoutFor?.id === t.id ? null : { id: t.id, x: r.right, y: r.bottom },
-                );
-              }}
-            >
-              <LayoutGrid size={13} />
-            </button>),
             mic: (<DictationButton tileId={t.id} activate={() => activateTile(t.id)} />),
-            focus: (<button
-              className={`tile-btn ${isFocus ? "tile-btn-on" : ""}`}
-              title={isFocus ? "Unfocus" : "Focus (dim others)"}
-              aria-label={isFocus ? "Unfocus" : "Focus (dim others)"}
-              onMouseDown={(e) => e.stopPropagation()}
-              onClick={(e) => {
-                e.stopPropagation();
-                activateTile(t.id);
-                setFocusId(isFocus ? null : t.id);
-              }}
-            >
-              <Focus size={13} />
-            </button>),
             code: (<button
               className={`tile-btn ${codeOpen ? "tile-btn-on" : ""}`}
-              title={codeOpen ? "Back to terminal" : "Code editor"}
-              aria-label={codeOpen ? "Back to terminal" : "Code editor"}
+              title={codeLabel}
+              aria-label={codeLabel}
               onMouseDown={(e) => e.stopPropagation()}
               onClick={(e) => {
                 e.stopPropagation();
-                if (codeOpen) {
-                  void confirmEditorDiscard([t.id]).then((confirmed) => { if (confirmed) toggleTileCode(t.id); });
-                  return;
-                }
-                // Open immediately at the best known path; a remote tile's live
-                // cwd lookup is an ssh round trip and must not delay the panel.
-                const hadRoot = !!tileCode[t.id]?.root;
-                toggleTileCode(t.id, fullPath);
-                if (hadRoot) return;
-                // Then re-root at the terminal's live cwd (a fresh session has
-                // no scanned path yet), unless a folder or file was picked meanwhile.
-                void fetchSessionPath(base, t.host, t.window).then((live) => {
-                  const current = useStore.getState().tileCode[t.id];
-                  if (live && live !== fullPath && current?.open && !current.path && current.root === fullPath) {
-                    setTileCodeRoot(t.id, live);
-                  }
-                });
+                toggleCode();
               }}
             >
               <FileCode size={13} />
@@ -694,8 +1067,7 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
               onMouseDown={(e) => e.stopPropagation()}
               onClick={(e) => {
                 e.stopPropagation();
-                const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
-                setMoveFor(moveFor?.id === t.id ? null : { id: t.id, x: r.right, y: r.bottom });
+                toggleMove((e.currentTarget as HTMLElement).getBoundingClientRect());
               }}
             >
               <FolderInput size={13} />
@@ -712,14 +1084,14 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
               {showDuplicateSpinner && duplicating === t.id ? <Loader2 size={13} className="async-spinner" /> : <Copy size={13} />}
             </button>),
             fullscreen: (<button
-              className="tile-btn"
-              title={isFull ? "Restore" : "Maximize"}
+              className={`tile-btn ${isFull ? "tile-btn-on" : ""}`}
+              title={isFull ? "Restore (Esc)" : "Maximize (double-click the header)"}
               aria-label={isFull ? "Restore" : "Maximize"}
+              aria-pressed={isFull}
               onMouseDown={(e) => e.stopPropagation()}
               onClick={(e) => {
                 e.stopPropagation();
-                activateTile(t.id);
-                setFullId(isFull ? null : t.id);
+                toggleFull();
               }}
             >
               {isFull ? <Minimize2 size={13} /> : <Maximize2 size={13} />}
@@ -731,9 +1103,7 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
               onMouseDown={(e) => e.stopPropagation()}
               onClick={(e) => {
                 e.stopPropagation();
-                if (fullId === t.id) setFullId(null);
-                if (focusId === t.id) setFocusId(null);
-                hideTile(t.id);
+                hide();
               }}
             >
               <EyeOff size={13} />
@@ -769,14 +1139,14 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
           {codeOpen ? <TileCodePanel tileId={t.id} /> : null}
           {codeOpen ? <CodeSplitHandle tileId={t.id} /> : null}
         </div>
-        {dimmed ? (
-          <div
-            className="tile-dim-overlay"
-            title="Click to exit focus"
-            onMouseDown={(e) => {
-              e.stopPropagation();
-              setFocusId(null);
-            }}
+        <TileStatusStrip tileId={t.id} session={base} window={t.window} host={t.host} gitHost={t.host ?? connection.host ?? ""} visible={visible} path={fullPath ?? (t.cwd?.startsWith("/") ? t.cwd : undefined)} createdAt={rs?.createdAt}
+          workspaceId={tileWs} workspace={workspaces.find((w) => w.id === tileWs)?.name ?? tileWs} />
+        {visible && !effFull ? (
+          <TileResizeHandles
+            span={{ c: trackSpan.c / columnTracks, r: trackSpan.r / 2 }}
+            columns={arrangement.columns}
+            onCommit={(c, r) => setTileSpan(t.id, c, r)}
+            onReset={() => clearTileSpan(t.id)}
           />
         ) : null}
       </motion.div>
@@ -790,29 +1160,31 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
         <div className="modal-actions"><button className="btn" onClick={() => setDuplicateError(null)}>Dismiss</button></div>
       </Modal>
       <div
-        className={`grid ${effFull ? "grid-full" : ""}`}
+        ref={gridRef}
+        className={`grid ${effFull ? "grid-full" : ""} ${selectedTiles.length >= 2 ? "grid-with-broadcast" : ""}`}
         style={{
           gridTemplateColumns: effFull
             ? "minmax(0, 1fr)"
-            : `repeat(${columns}, minmax(0, 1fr))`,
+            : `repeat(${tracks}, minmax(0, 1fr))`,
         }}
-        onDragOver={(e) => {
-          if (dragId) {
-            e.preventDefault();
-            e.dataTransfer.dropEffect = "move";
-          }
-        }}
-        onDrop={(e) => {
-          if (dragId) {
-            e.preventDefault();
-            moveTileToEnd(dragId);
-          }
-          setDragId(null);
-          setOverId(null);
-        }}
+        onMouseDown={(e) => { if (e.target === e.currentTarget && selectedIds.length) clearSelection(); }}
       >
-        {tiles.map(tile)}
+        {/* Reduced motion: tiles jump to their new places instead of gliding. */}
+        <MotionConfig reducedMotion="user">{tiles.map(tile)}</MotionConfig>
       </div>
+      {selectedTiles.length >= 2 ? (
+        <BroadcastBar tiles={selectedTiles.map((entry) => ({ id: entry.id, name: sessionDisplayName(entry, tileTitles) }))} onClear={clearSelection} />
+      ) : null}
+      {folderDrag.folder ? (
+        // Fixed to the canvas's visible box so a scrolled canvas is still fully covered.
+        <div className={`canvas-drop-overlay ${folderDrag.over ? "canvas-drop-overlay-on" : ""}`} aria-hidden="true" style={canvasBox()}>
+          <div className="canvas-drop-label">
+            <FolderPlus size={18} />
+            <span>{folderDrag.over ? "Drop to start a session in" : "Drop on the canvas to start a session in"}</span>
+            <code>{folderDrag.folder.split("/").pop() || folderDrag.folder}</code>
+          </div>
+        </div>
+      ) : null}
       {noneVisible ? (
         <div className="grid-empty grid-empty-overlay">
           <section className="tile empty-session-window" aria-label="Empty workspace session preview">
@@ -822,7 +1194,7 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
               icon={<PreviewSessionIcon size={14} />}
               title={<span className="tile-title">Session</span>}
               shortcut={1}
-              device={<><DeviceIcon size={11} />{tileDevice(undefined)}</>}
+              device={{ name: tileDevice(undefined) }}
             />
             <div className="empty-session-body">
               <div className="empty-session-prompt" aria-hidden="true"><span>›</span><span className="empty-session-cursor" /></div>
@@ -859,7 +1231,6 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
                 const close = () => {
                   for (const tile of affected) {
                     if (fullId === tile.id) setFullId(null);
-                    if (focusId === tile.id) setFocusId(null);
                     closeTile(tile.id);
                   }
                 };
@@ -916,54 +1287,6 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
                     </button>
                   ));
                 })()}
-              </div>
-            </div>,
-            document.body,
-          )
-        : null}
-
-      {layoutFor
-        ? createPortal(
-            <div className="layout-pop-backdrop pzza-portal" onMouseDown={() => setLayoutFor(null)}>
-              <div
-                className="menu layout-pop"
-                style={{ right: window.innerWidth - layoutFor.x, top: layoutFor.y + 6 }}
-                onMouseDown={(e) => e.stopPropagation()}
-              >
-                {[
-                  { label: "Auto", Icon: LayoutTemplate, c: 0, r: 0, auto: true },
-                  { label: "Normal", Icon: Square, c: 1, r: 1, auto: false },
-                  { label: "Wide (2 cols)", Icon: Columns2, c: 2, r: 1, auto: false },
-                  { label: "Full width", Icon: StretchHorizontal, c: columns, r: 1, auto: false },
-                  { label: "Tall (2 rows)", Icon: Rows2, c: 1, r: 2, auto: false },
-                  { label: "Big (2×2)", Icon: LayoutGrid, c: 2, r: 2, auto: false },
-                ]
-                  .filter((o, i, arr) => {
-                    // Drop duplicates (e.g. at 2 columns "Wide" == "Full width").
-                    const key = (x: { c: number; r: number }) =>
-                      `${Math.min(x.c, columns)}-${x.r}`;
-                    return arr.findIndex((y) => key(y) === key(o)) === i;
-                  })
-                  .map((o) => {
-                    const saved = tileSpan[layoutFor.id];
-                    const on = o.auto
-                      ? saved === undefined
-                      : saved !== undefined && Math.min(saved.c, columns) === Math.min(o.c, columns) && saved.r === o.r;
-                    return (
-                    <button
-                      key={o.label}
-                      className={`menu-item ${on ? "menu-item-on" : ""}`}
-                      onClick={() => {
-                        if (o.auto) clearTileSpan(layoutFor.id);
-                        else setTileSpan(layoutFor.id, o.c, o.r);
-                        setLayoutFor(null);
-                      }}
-                    >
-                      <o.Icon size={16} strokeWidth={1.9} />
-                      {o.label}
-                    </button>
-                  );
-                })}
               </div>
             </div>,
             document.body,

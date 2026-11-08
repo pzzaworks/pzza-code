@@ -2,180 +2,33 @@ import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Check, ChevronDown, Globe } from "lucide-react";
 import { DICTATION_LANGUAGES, type DictationLanguage } from "../dictationLanguages";
-import AF from "country-flag-icons/react/3x2/AF";
-import AL from "country-flag-icons/react/3x2/AL";
-import AM from "country-flag-icons/react/3x2/AM";
-import AZ from "country-flag-icons/react/3x2/AZ";
-import BA from "country-flag-icons/react/3x2/BA";
-import BD from "country-flag-icons/react/3x2/BD";
-import BG from "country-flag-icons/react/3x2/BG";
-import BY from "country-flag-icons/react/3x2/BY";
-import CD from "country-flag-icons/react/3x2/CD";
-import CN from "country-flag-icons/react/3x2/CN";
-import CZ from "country-flag-icons/react/3x2/CZ";
-import DE from "country-flag-icons/react/3x2/DE";
-import DK from "country-flag-icons/react/3x2/DK";
-import EE from "country-flag-icons/react/3x2/EE";
-import ES from "country-flag-icons/react/3x2/ES";
-import ET from "country-flag-icons/react/3x2/ET";
-import FI from "country-flag-icons/react/3x2/FI";
-import FO from "country-flag-icons/react/3x2/FO";
-import FR from "country-flag-icons/react/3x2/FR";
-import GB_WLS from "country-flag-icons/react/3x2/GB-WLS";
-import GE from "country-flag-icons/react/3x2/GE";
-import GR from "country-flag-icons/react/3x2/GR";
-import HK from "country-flag-icons/react/3x2/HK";
-import HR from "country-flag-icons/react/3x2/HR";
-import HT from "country-flag-icons/react/3x2/HT";
-import HU from "country-flag-icons/react/3x2/HU";
-import ID from "country-flag-icons/react/3x2/ID";
-import IL from "country-flag-icons/react/3x2/IL";
-import IN from "country-flag-icons/react/3x2/IN";
-import IR from "country-flag-icons/react/3x2/IR";
-import IS from "country-flag-icons/react/3x2/IS";
-import IT from "country-flag-icons/react/3x2/IT";
-import JP from "country-flag-icons/react/3x2/JP";
-import KH from "country-flag-icons/react/3x2/KH";
-import KR from "country-flag-icons/react/3x2/KR";
-import KZ from "country-flag-icons/react/3x2/KZ";
-import LA from "country-flag-icons/react/3x2/LA";
-import LK from "country-flag-icons/react/3x2/LK";
-import LT from "country-flag-icons/react/3x2/LT";
-import LU from "country-flag-icons/react/3x2/LU";
-import LV from "country-flag-icons/react/3x2/LV";
-import MG from "country-flag-icons/react/3x2/MG";
-import MK from "country-flag-icons/react/3x2/MK";
-import MM from "country-flag-icons/react/3x2/MM";
-import MN from "country-flag-icons/react/3x2/MN";
-import MT from "country-flag-icons/react/3x2/MT";
-import MY from "country-flag-icons/react/3x2/MY";
-import NG from "country-flag-icons/react/3x2/NG";
-import NL from "country-flag-icons/react/3x2/NL";
-import NO from "country-flag-icons/react/3x2/NO";
-import NP from "country-flag-icons/react/3x2/NP";
-import NZ from "country-flag-icons/react/3x2/NZ";
-import PH from "country-flag-icons/react/3x2/PH";
-import PK from "country-flag-icons/react/3x2/PK";
-import PL from "country-flag-icons/react/3x2/PL";
-import PT from "country-flag-icons/react/3x2/PT";
-import RO from "country-flag-icons/react/3x2/RO";
-import RS from "country-flag-icons/react/3x2/RS";
-import RU from "country-flag-icons/react/3x2/RU";
-import SA from "country-flag-icons/react/3x2/SA";
-import SE from "country-flag-icons/react/3x2/SE";
-import SI from "country-flag-icons/react/3x2/SI";
-import SK from "country-flag-icons/react/3x2/SK";
-import SO from "country-flag-icons/react/3x2/SO";
-import TH from "country-flag-icons/react/3x2/TH";
-import TJ from "country-flag-icons/react/3x2/TJ";
-import TM from "country-flag-icons/react/3x2/TM";
-import TR from "country-flag-icons/react/3x2/TR";
-import TZ from "country-flag-icons/react/3x2/TZ";
-import UA from "country-flag-icons/react/3x2/UA";
-import US from "country-flag-icons/react/3x2/US";
-import UZ from "country-flag-icons/react/3x2/UZ";
-import VA from "country-flag-icons/react/3x2/VA";
-import VN from "country-flag-icons/react/3x2/VN";
-import ZA from "country-flag-icons/react/3x2/ZA";
-import ZW from "country-flag-icons/react/3x2/ZW";
-
-const FLAGS = {
-  "AF": AF,
-  "AL": AL,
-  "AM": AM,
-  "AZ": AZ,
-  "BA": BA,
-  "BD": BD,
-  "BG": BG,
-  "BY": BY,
-  "CD": CD,
-  "CN": CN,
-  "CZ": CZ,
-  "DE": DE,
-  "DK": DK,
-  "EE": EE,
-  "ES": ES,
-  "ET": ET,
-  "FI": FI,
-  "FO": FO,
-  "FR": FR,
-  "GB-WLS": GB_WLS,
-  "GE": GE,
-  "GR": GR,
-  "HK": HK,
-  "HR": HR,
-  "HT": HT,
-  "HU": HU,
-  "ID": ID,
-  "IL": IL,
-  "IN": IN,
-  "IR": IR,
-  "IS": IS,
-  "IT": IT,
-  "JP": JP,
-  "KH": KH,
-  "KR": KR,
-  "KZ": KZ,
-  "LA": LA,
-  "LK": LK,
-  "LT": LT,
-  "LU": LU,
-  "LV": LV,
-  "MG": MG,
-  "MK": MK,
-  "MM": MM,
-  "MN": MN,
-  "MT": MT,
-  "MY": MY,
-  "NG": NG,
-  "NL": NL,
-  "NO": NO,
-  "NP": NP,
-  "NZ": NZ,
-  "PH": PH,
-  "PK": PK,
-  "PL": PL,
-  "PT": PT,
-  "RO": RO,
-  "RS": RS,
-  "RU": RU,
-  "SA": SA,
-  "SE": SE,
-  "SI": SI,
-  "SK": SK,
-  "SO": SO,
-  "TH": TH,
-  "TJ": TJ,
-  "TM": TM,
-  "TR": TR,
-  "TZ": TZ,
-  "UA": UA,
-  "US": US,
-  "UZ": UZ,
-  "VA": VA,
-  "VN": VN,
-  "ZA": ZA,
-  "ZW": ZW,
-};
-
-interface Props {
-  value: DictationLanguage;
-  onChange: (value: DictationLanguage) => void;
-  disabled?: boolean;
-}
+import type { SupportedLanguage } from "../supportedLanguages";
+import { LanguageFlag } from "./LanguageFlag";
 
 const OPTIONS = [
   { code: "auto", label: "Auto-detect language", country: null },
   ...DICTATION_LANGUAGES,
 ] as const;
+type Option = (typeof OPTIONS)[number];
 
-function LanguageIcon({ country }: { country: (typeof OPTIONS)[number]["country"] }) {
+function LanguageIcon({ country }: { country: Option["country"] }) {
   if (country === null) return <Globe size={18} aria-hidden="true" />;
-  const Flag = FLAGS[country];
-  return <Flag aria-hidden="true" style={{ width: 21, height: 14, borderRadius: 2, flexShrink: 0 }} />;
+  return <LanguageFlag country={country} />;
 }
 
-export function DictationLanguageSelect({ value, onChange, disabled = false }: Props) {
+interface MenuProps {
+  options: readonly Option[];
+  label: string;
+  buttonLabel: string;
+  icon: Option["country"];
+  selected: (code: DictationLanguage) => boolean;
+  // Returns whether the menu stays open, so several languages can be picked.
+  onPick: (code: DictationLanguage) => boolean;
+  disabled: boolean;
+}
+
+// A searchable language list in a portal, anchored to its trigger button.
+function LanguageMenu({ options, label, buttonLabel, icon, selected, onPick, disabled }: MenuProps) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
@@ -184,10 +37,14 @@ export function DictationLanguageSelect({ value, onChange, disabled = false }: P
   const search = useRef<HTMLInputElement>(null);
   const list = useRef<HTMLDivElement>(null);
   const id = useId();
-  const selected = OPTIONS.find((option) => option.code === value) ?? OPTIONS[0];
-  const filtered = OPTIONS.filter((option) => `${option.label} ${option.code}`.toLowerCase().includes(query.trim().toLowerCase()));
+  // Every language, the picked ones first (after Auto); the search narrows it.
+  // The order is fixed when the menu opens, so picking one does not move rows.
+  const [order, setOrder] = useState<string[]>([]);
+  const rank = (code: string) => { const index = order.indexOf(code); return index < 0 ? order.length : index; };
+  const listed = [...options].sort((a, b) => rank(a.code) - rank(b.code));
+  const filtered = listed.filter((option) => `${option.label} ${option.code}`.toLowerCase().includes(query.trim().toLowerCase()));
   const close = () => { setOpen(false); button.current?.focus(); };
-  const choose = (code: DictationLanguage) => { onChange(code); close(); };
+  const choose = (code: DictationLanguage) => { if (!onPick(code)) close(); };
 
   useEffect(() => { if (disabled) setOpen(false); }, [disabled]);
   useLayoutEffect(() => {
@@ -213,18 +70,22 @@ export function DictationLanguageSelect({ value, onChange, disabled = false }: P
 
   return <>
     <button ref={button} type="button" className={`cselect ${open ? "cselect-open" : ""}`} disabled={disabled}
-      aria-label={`Dictation language: ${selected.label}`} aria-haspopup="listbox" aria-expanded={open} aria-controls={open ? id : undefined}
-      onClick={() => { setQuery(""); setActive(0); setOpen(!open); }}>
-      <LanguageIcon country={selected.country} />
-      <span className="cselect-value">{selected.label}</span><ChevronDown size={14} aria-hidden="true" />
+      aria-label={`${label}: ${buttonLabel}`} aria-haspopup="listbox" aria-expanded={open} aria-controls={open ? id : undefined}
+      onClick={() => {
+        setQuery(""); setActive(0);
+        setOrder([...options.filter((option) => option.code === "auto"), ...options.filter((option) => option.code !== "auto" && selected(option.code)), ...options.filter((option) => option.code !== "auto" && !selected(option.code))].map((option) => option.code));
+        setOpen(!open);
+      }}>
+      <LanguageIcon country={icon} />
+      <span className="cselect-value">{buttonLabel}</span><ChevronDown size={14} aria-hidden="true" />
     </button>
     {open && createPortal(<div className="cselect-backdrop pzza-portal" onMouseDown={close}>
       <div className="cselect-menu dictation-language-menu" style={{ left: position.left, top: position.top, width: position.width, height: position.height, maxHeight: position.height, overflow: "hidden", display: "flex", flexDirection: "column", boxSizing: "border-box" }}
         onMouseDown={(event) => event.stopPropagation()}>
-        <input ref={search} type="search" role="combobox" aria-label="Search dictation languages" aria-autocomplete="list" aria-expanded="true" aria-controls={id}
+        <input ref={search} type="search" role="combobox" aria-label={`Search ${label.toLowerCase()}`} aria-autocomplete="list" aria-expanded="true" aria-controls={id}
           aria-activedescendant={filtered[active] ? `${id}-${filtered[active].code}` : undefined}
           placeholder="Search languages..." value={query}
-          style={{ width: "100%", boxSizing: "border-box", padding: "9px 10px", marginBottom: 5, background: "var(--surface-alt)", color: "var(--text)", border: "1px solid var(--border)", borderRadius: 7 }}
+          style={{ width: "100%", boxSizing: "border-box", padding: "9px 10px", marginBottom: 5, background: "var(--surface-alt)", color: "var(--text)", border: "1px solid var(--hairline-strong)", borderRadius: "var(--r-sm)" }}
           onChange={(event) => { setQuery(event.target.value); setActive(0); }}
           onKeyDown={(event) => {
             if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); close(); }
@@ -235,16 +96,49 @@ export function DictationLanguageSelect({ value, onChange, disabled = false }: P
             }
             if (event.key === "Enter" && filtered[active]) { event.preventDefault(); choose(filtered[active].code); }
           }} />
-        <div ref={list} id={id} role="listbox" aria-label="Dictation languages" style={{ overflowY: "auto", minHeight: 0 }}>
-          {filtered.map((option, index) => <button key={option.code} id={`${id}-${option.code}`} data-index={index} role="option" aria-selected={option.code === value}
+        <div ref={list} id={id} role="listbox" aria-label={label} aria-multiselectable={options[0]?.code !== "auto" || undefined} style={{ overflowY: "auto", minHeight: 0 }}>
+          {filtered.map((option, index) => <button key={option.code} id={`${id}-${option.code}`} data-index={index} role="option" aria-selected={selected(option.code)}
             type="button" tabIndex={-1} className={`cselect-item ${index === active ? "cselect-item-on" : ""}`}
             onMouseDown={(event) => event.preventDefault()} onMouseMove={() => setActive(index)} onClick={() => choose(option.code)}>
             <LanguageIcon country={option.country} /><span className="cselect-item-main">{option.label}</span>
-            <span className="cselect-item-check">{option.code === value && <Check size={14} aria-hidden="true" />}</span>
+            <span className="cselect-item-check">{selected(option.code) && <Check size={14} aria-hidden="true" />}</span>
           </button>)}
           {filtered.length === 0 && <div role="status" style={{ padding: 10, color: "var(--muted)" }}>No languages found</div>}
         </div>
       </div>
     </div>, document.body)}
   </>;
+}
+
+interface Props {
+  value: DictationLanguage;
+  onChange: (value: DictationLanguage) => void;
+  disabled?: boolean;
+}
+
+export function DictationLanguageSelect({ value, onChange, disabled = false }: Props) {
+  const selected = OPTIONS.find((option) => option.code === value) ?? OPTIONS[0];
+  return <LanguageMenu options={OPTIONS} label="Dictation language" buttonLabel={selected.label} icon={selected.country} disabled={disabled}
+    selected={(code) => code === value} onPick={(code) => { onChange(code); return false; }} />;
+}
+
+interface MultiProps {
+  values: readonly SupportedLanguage[];
+  onChange: (values: SupportedLanguage[]) => void;
+  max: number;
+  disabled?: boolean;
+}
+
+/** Picks several languages; the first picked is the main one. At least one stays selected. */
+export function SpeechLanguagesSelect({ values, onChange, max, disabled = false }: MultiProps) {
+  const main = DICTATION_LANGUAGES.find((option) => option.code === values[0]);
+  const names = values.map((code) => DICTATION_LANGUAGES.find((option) => option.code === code)?.label ?? code);
+  return <LanguageMenu options={DICTATION_LANGUAGES} label="My languages" buttonLabel={names.join(", ") || "Choose languages"} icon={main?.country ?? null} disabled={disabled}
+    selected={(code) => values.some((value) => value === code)}
+    onPick={(code) => {
+      if (code === "auto") return true;
+      if (values.includes(code)) { if (values.length > 1) onChange(values.filter((value) => value !== code)); }
+      else if (values.length < max) onChange([...values, code]);
+      return true;
+    }} />;
 }

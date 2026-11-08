@@ -1,0 +1,111 @@
+/* First-launch setup fills the window with one column: the step
+   dots, the current step and its Back / Continue right under it. No sidebar,
+   no bars; built from the app's surfaces, type sizes and .btn buttons. */
+.setup-screen {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  display: flex;
+  flex-direction: column;
+  /* Solid in a normal window. With a transparent one the app behind is
+     hidden (.app-behind-setup), so setup lets the desktop blur through. */
+  background: var(--opaque-bg, var(--bg));
+  color: var(--text);
+  /* The tour's rows and pills, reused in the steps. */
+  --tour-strong: var(--text);
+  --tour-on-strong: var(--opaque-surface, var(--surface));
+  --tour-card: var(--opaque-surface, var(--surface));
+}
+
+/* An invisible strip along the top keeps the window draggable. */
+.setup-drag { flex: 0 0 auto; height: var(--topbar-h); }
+
+.setup-main {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+/* Held a fixed distance from the top rather than centered: a step that grows
+   (checks finishing, details expanding) extends downward and nothing above
+   it moves. Scrolls from the top once it no longer fits. */
+.setup-page {
+  width: min(600px, 100%);
+  align-self: flex-start;
+  margin: 0 auto;
+  padding: clamp(16px, 11vh, 112px) 28px 8px;
+  box-sizing: border-box;
+}
+
+.setup-count {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 18px;
+  color: var(--muted);
+  font-size: var(--fs-sm);
+  font-variant-numeric: tabular-nums;
+}
+.setup-dots { display: inline-flex; gap: 4px; }
+.setup-dots span { width: 5px; height: 5px; border-radius: var(--r-pill); background: color-mix(in srgb, var(--text) 18%, transparent); transition: width 0.2s ease, background 0.2s ease; }
+.setup-dots span.done { background: color-mix(in srgb, var(--text) 45%, transparent); }
+.setup-dots span.on { width: 14px; background: var(--text); }
+
+.setup-page-head { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 18px; }
+.setup-step-icon {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  box-sizing: border-box;
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-md);
+  color: var(--text);
+}
+.setup-head-copy { display: flex; flex: 1; flex-direction: column; gap: 3px; min-width: 0; }
+.setup-step-title { margin: 0; font-size: var(--fs-xl); font-weight: 650; }
+.setup-step-body { margin: 0; color: var(--muted); font-size: var(--fs-md); line-height: 1.5; }
+.setup-step-content { display: flex; flex-direction: column; gap: 12px; }
+
+/* Back / Continue sit right under the step, not in a bar. On a step taller
+   than the window they stay in view at the bottom, on the page background. */
+.setup-actions {
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 12px 0 16px;
+  background: var(--opaque-bg, var(--bg));
+}
+.setup-spacer { flex: 1; }
+.setup-wait { display: inline-flex; align-items: center; gap: 6px; min-width: 0; color: var(--muted); font-size: var(--fs-sm); }
+
+/* Welcome: logo, one line, and the steps ahead. */
+.setup-welcome { display: flex; flex-direction: column; align-items: flex-start; gap: 14px; }
+.setup-logo { width: 48px; height: 48px; }
+.setup-lead { margin: 0; color: var(--muted); font-size: var(--fs-md); line-height: 1.6; }
+.setup-plan { display: flex; flex-direction: column; gap: 12px; width: 100%; margin: 6px 0 0; padding: 14px 0 0; border-top: 1px solid var(--divider); list-style: none; }
+.setup-plan-item { display: flex; align-items: flex-start; gap: 10px; }
+.setup-plan-icon {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  box-sizing: border-box;
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-pill);
+}
+.setup-plan-copy { display: flex; flex-direction: column; gap: 2px; min-width: 0; font-size: var(--fs-md); }
+.setup-plan-copy span { color: var(--muted); line-height: 1.5; }
+
+@media (prefers-reduced-motion: reduce) {
+  .setup-dots span { transition: none; }
+}
+:root[data-transparency="on"] .setup-screen { background: transparent; }

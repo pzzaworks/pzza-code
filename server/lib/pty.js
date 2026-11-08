@@ -134,6 +134,10 @@ export async function startPtyBridge(server) {
 
           const hasWin = msg.window !== undefined && msg.window !== null;
           const tmux = tmuxCommand(attachedHost);
+          // The tile footer shows what tmux's status line would, so the attached
+          // session hides it. Chained after the attach so a session that
+          // new-session -A is about to create gets it too.
+          const statusOff = (target) => ` \\; set-option -t ${shQuote(target)} status off`;
           let attach;
           if (msg.managedChat !== undefined) {
             if (name !== "pzza-quick-chat" || hasWin || !msg.managedChat || typeof msg.managedChat !== "object") {
@@ -141,7 +145,7 @@ export async function startPtyBridge(server) {
               return;
             }
             attach = quickChatAttachmentGuard(msg.managedChat.agent, msg.managedChat.identity, tmux) +
-              `exec ${tmux} -u attach -t ${shQuote(msg.managedChat.identity.split(":")[0])}`;
+              `exec ${tmux} -u attach -t ${shQuote(msg.managedChat.identity.split(":")[0])}${statusOff(msg.managedChat.identity.split(":")[0])}`;
           } else if (hasWin) {
             // A specific window: view it through a grouped session so it can show a
             // different window than other clients. Cleaned up explicitly on close
@@ -152,7 +156,7 @@ export async function startPtyBridge(server) {
               `${tmux} new-session -d -t ${shQuote(name)} -s ${shQuote(view)} 2>/dev/null; ` +
               `${tmux} set-option -t ${shQuote(view)} window-size latest 2>/dev/null; ` +
               `${tmux} select-window -t ${shQuote(view + ":" + msg.window)} 2>/dev/null; ` +
-              `exec ${tmux} -u attach -t ${shQuote(view)}`;
+              `exec ${tmux} -u attach -t ${shQuote(view)}${statusOff(view)}`;
           } else {
             // Never shrink a session another client (cmux) is viewing.
             // Also heal a server started without a locale so new panes get a UTF-8 LANG.
@@ -161,7 +165,7 @@ export async function startPtyBridge(server) {
               `${tmux} set-option -t ${shQuote(name)} window-size latest 2>/dev/null; ${tmux} set-option -t ${shQuote(name)} aggressive-resize on 2>/dev/null`;
             attach = `${prep}; exec ${tmux} -u new-session -A -s ${shQuote(name)}${
               msg.cwd ? ` -c ${shQuote(msg.cwd)}` : ""
-            }`;
+            }${statusOff(`=${name}:`)}`;
           }
 
           // Advertise truecolor so apps inside tmux (yazi, ratatui TUIs) emit 24-bit

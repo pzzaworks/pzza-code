@@ -18,12 +18,16 @@ interface Props {
   disabled?: boolean;
   ariaLabel?: string;
   onOpen?: () => void;
+  // "end" anchors the list to the trigger's right edge, for controls near the panel edge.
+  align?: "start" | "end";
+  className?: string;
+  title?: string;
 }
 
 // Custom select (never a native <select>). The list renders in a portal at the
 // document root, so it is never clipped by a scrolling panel and always stacks
 // above everything.
-export function Select({ value, options, onChange, placeholder, disabled = false, ariaLabel, onOpen }: Props) {
+export function Select({ value, options, onChange, placeholder, disabled = false, ariaLabel, onOpen, align = "start", className = "", title }: Props) {
   const [open, setOpen] = useState(false);
   const btnRef = useRef<HTMLButtonElement>(null);
   const [rect, setRect] = useState<DOMRect | null>(null);
@@ -48,9 +52,10 @@ export function Select({ value, options, onChange, placeholder, disabled = false
       <button
         ref={btnRef}
         type="button"
-        className={`cselect ${open ? "cselect-open" : ""}`}
+        className={`cselect ${open ? "cselect-open" : ""} ${className}`}
         disabled={disabled}
         aria-label={ariaLabel}
+        title={title}
         onClick={() => { if (!open) onOpen?.(); setOpen((v) => !v); }}
       >
         {current?.icon}
@@ -64,7 +69,7 @@ export function Select({ value, options, onChange, placeholder, disabled = false
               <AnimatePresence>
                 <motion.div
                   className="cselect-menu"
-                  style={{ left: rect.left, top: rect.bottom + 5, minWidth: rect.width }}
+                  style={align === "end" ? { right: window.innerWidth - rect.right, top: rect.bottom + 5, minWidth: rect.width } : { left: rect.left, top: rect.bottom + 5, minWidth: rect.width }}
                   onMouseDown={(e) => e.stopPropagation()}
                   initial={{ opacity: 0, y: -6, scale: 0.98 }}
                   animate={{ opacity: 1, y: 0, scale: 1 }}

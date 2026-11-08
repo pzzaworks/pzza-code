@@ -47,6 +47,11 @@ test("local attach routes every command through the managed socket with literal 
     for (const args of calls) assert.deepEqual(args.slice(0, 3), ["-N", "-S", socket]);
     assert.equal(calls.at(-1)[3], "-u");
     assert.equal(calls.at(-1)[4], window === undefined ? "new-session" : "attach");
+    // The attached session (or the window's own view) hides tmux's status line;
+    // the footer shows that information instead.
+    const target = window === undefined ? "=session ' $(touch injected):" : calls.at(-1)[6];
+    if (window !== undefined) assert.match(target, /^pzza-v-/);
+    assert.deepEqual(calls.at(-1).slice(-6), [";", "set-option", "-t", target, "status", "off"]);
   }
   await assert.rejects(stat(path.join(root, "injected")), { code: "ENOENT" });
   for (const window of [undefined, 2]) {
@@ -65,6 +70,7 @@ test("managed chat attachment verifies identity and only attaches to the existin
     assert.match(shell, /PZZA_QUICK_CHAT_AGENT/);
     assert.match(shell, /session_created/);
     assert.match(shell, /exec .* -u attach -t/);
+    assert.match(shell, /set-option -t \S*\$12\S* status off/);
     assert.match(shell, /\$12/);
   }
   assert.throws(() => attachCommand({ host: null }, "other-session", undefined, undefined, { agent: "codex", identity: "$1:1:1" }));

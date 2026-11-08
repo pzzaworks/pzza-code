@@ -1,17 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  Bell,
   Monitor,
   EthernetPort,
   Plus,
   Settings as SettingsIcon,
   FolderSync,
-  Gauge,
   Menu,
 } from "lucide-react";
 import { QuickChat } from "./panels/QuickChat";
-import { LatestNotifications } from "./panels/Notifications";
-import { useNotifications } from "./state/notifications";
+import { NotificationsTool, countLabel } from "./panels/Notifications";
 import { ContextMenu } from "./ui/ContextMenu";
 import { ThemeProvider } from "./theme/ThemeProvider";
 import { useStore } from "./state/store";
@@ -23,14 +20,18 @@ import { SettingsHub, type SettingsSection } from "./panels/SettingsHub";
 import { useRemoteDesktop } from "./panels/RdpMenu";
 import { hasRemoteDevice } from "./devices";
 import { watchDisabledDevices } from "./deviceFallbacks";
-import { PortsMenu } from "./panels/PortsMenu";
+import { PortsMenu, useForwardedCount } from "./panels/PortsMenu";
 import { SessionMenu } from "./panels/SessionMenu";
+import { useNewSessionRequest } from "./state/newSession";
 import { Dropdown } from "./ui/Dropdown";
 import { IconButton } from "./ui/IconButton";
 import { Tooltip } from "./ui/Tooltip";
 import { SetupWizard } from "./panels/SetupWizard";
-import { OnboardingTour } from "./tour/OnboardingTour";
-import { UsageMenu } from "./panels/UsageMenu";
+import { OnboardingTour, onboardingPending } from "./tour/OnboardingTour";
+import { SetupScreen, setupPending } from "./tour/SetupScreen";
+import { startSnapshotAutosave } from "./state/workspaceSnapshots";
+import { startSetupAutoInstall } from "./state/setup";
+import { UsageTool } from "./panels/UsageMenu";
 import { HAS_TAURI } from "./tauriEnv";
 import { startUpdateChecks } from "./state/updates";
 import { Modal } from "./ui/Modal";
@@ -41,7 +42,11 @@ import { startBackgroundActivityPoll } from "./terminal/backgroundActivity";
 import { registerAppControlHandler, registerAppControlState } from "./appControlRuntime";
 import { useAppControl } from "./appControl";
 import { initializeDictation } from "./state/dictation";
-import { NEW_SESSION_SHORTCUT, newItemShortcut } from "./shortcuts";
+import { initializePushToTalk } from "./state/pushToTalk";
+import { commandPaletteShortcut, NEW_SESSION_SHORTCUT, newItemShortcut } from "./shortcuts";
+import { CommandPalette } from "./panels/CommandPalette";
+import { OPEN_TERMINAL_SEARCH_EVENT, TerminalSearch } from "./panels/TerminalSearch";
+import { searchTerminalsShortcut } from "./shortcuts";
 import { announceMenu } from "./ui/menuBus";
 
 export default function App() {
@@ -53,8 +58,8 @@ export default function App() {
     return () => window.removeEventListener("beforeunload", protectUnsavedUnload);
   }, []);
   useAppControl();
-  const unreadNotifications = useNotifications(state => state.items.filter(item => !item.read).length);
   useEffect(() => { void initializeDictation().catch(() => {}); }, []);
+  useEffect(() => initializePushToTalk(), []);
   const loadSessions = useStore((s) => s.loadSessions);
   const seedPreview = useStore((s) => s.seedPreview);
 
@@ -68,23 +73,42 @@ export default function App() {
   const remoteDesktop = useRemoteDesktop();
   // Sync and remote desktop only make sense with an enabled remote device.
   const hasRemote = useStore((state) => hasRemoteDevice(state.devices));
+  // Forwarding needs an enabled remote source, the same gate the port panel uses.
+  const forwardedPorts = useForwardedCount(hasRemote);
   useEffect(() => watchDisabledDevices(), []);
   const [portsLoading, setPortsLoading] = useState(false);
   const [menuError, setMenuError] = useState<string | null>(null);
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [terminalSearchOpen, setTerminalSearchOpen] = useState(false);
+  const [terminalSearchError, setTerminalSearchError] = useState<string | null>(null);
+  const [paletteError, setPaletteError] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // The canvas scrollbar's width while it scrolls vertically, so the bar takes
+  // the place of the right spacing instead of adding to it (see .canvas).
+  const canvasRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    // The bar's real width: it is 0 where scrollbars overlay the content.
+    const update = () => canvas.style.setProperty("--canvas-bar", `${canvas.scrollHeight > canvas.clientHeight + 1 ? canvas.offsetWidth - canvas.clientWidth : 0}px`);
+    const sizes = new ResizeObserver(update);
+    const watch = () => { sizes.disconnect(); sizes.observe(canvas); for (const child of Array.from(canvas.children)) sizes.observe(child); update(); };
+    const children = new MutationObserver(watch);
+    children.observe(canvas, { childList: true });
+    watch();
+    return () => { sizes.disconnect(); children.disconnect(); };
+  }, []);
   const [helpRequest, setHelpRequest] = useState<HelpRequest | undefined>();
   const [settingsSection, setSettingsSection] = useState<SettingsSection>("general");
-  const [tourOpen, setTourOpen] = useState(false);
-  // Fresh installs get the guided tour right after the setup wizard. Existing
-  // windows never auto-start it; they replay it from Settings → Help.
-  const freshRun = useRef<boolean | null>(null);
-  if (freshRun.current === null) {
-    try {
-      freshRun.current = !localStorage.getItem("pzza.setupDone") && !localStorage.getItem("pzza.tour.seen");
-    } catch {
-      freshRun.current = false;
-    }
-  }
+  // Onboarding (machine setup plus the UI tour) opens on first launch and runs
+  // to the end. Finished installs replay it from Settings → Help.
+  // First launch: setup (permissions and requirements), then the UI tour.
+  const [setupOpen, setSetupOpen] = useState(setupPending);
+  const [tourOpen, setTourOpen] = useState(() => !setupPending() && onboardingPending());
+  // Missing requirements on this Mac install in the background on every launch.
+  useEffect(() => { startSetupAutoInstall(); }, []);
+  // Every workspace keeps an auto-saved snapshot (see workspaceSnapshots).
+  useEffect(() => startSnapshotAutosave(), []);
   useEffect(() => {
     const replay = () => {
       setSettingsOpen(false);
@@ -92,8 +116,20 @@ export default function App() {
       setWizardOpen(false);
       setTourOpen(true);
     };
+    // Setup can be run again from Settings → Help, e.g. after granting permissions.
+    const rerunSetup = () => {
+      setSettingsOpen(false);
+      setSessionDialogOpen(false);
+      setWizardOpen(false);
+      setTourOpen(false);
+      setSetupOpen(true);
+    };
     window.addEventListener("pzza:start-tour", replay);
-    return () => window.removeEventListener("pzza:start-tour", replay);
+    window.addEventListener("pzza:start-setup", rerunSetup);
+    return () => {
+      window.removeEventListener("pzza:start-tour", replay);
+      window.removeEventListener("pzza:start-setup", rerunSetup);
+    };
   }, [setWizardOpen]);
   const openSettings = (section: SettingsSection) => {
     announceMenu("settings");
@@ -116,6 +152,9 @@ export default function App() {
     setSessionDialogOpen(false);
     setNewWorkspaceRequest(request => request + 1);
   }, []);
+  // A folder dropped on the canvas opens the new-session form; the form reads the folder.
+  const newSessionRequest = useNewSessionRequest((s) => s.request);
+  useEffect(() => { if (newSessionRequest) openNewSession(); }, [newSessionRequest, openNewSession]);
   const navigationRef = useRef({ settingsOpen, settingsSection, sessionDialogOpen, wizardOpen, openSettings, openNewSession, openNewWorkspace });
   navigationRef.current = { settingsOpen, settingsSection, sessionDialogOpen, wizardOpen, openSettings, openNewSession, openNewWorkspace };
   useEffect(() => {
@@ -130,11 +169,14 @@ export default function App() {
         if (args.target === "new_session") navigationRef.current.openNewSession();
         if (args.target === "new_workspace") navigationRef.current.openNewWorkspace();
         if (args.target === "setup") setWizardOpen(true);
+        // The same events as the command palette's tour and setup rows.
+        if (args.target === "tour") window.dispatchEvent(new Event("pzza:start-tour"));
+        if (args.target === "requirements") window.dispatchEvent(new Event("pzza:start-setup"));
         return { target: args.target };
       }),
       registerAppControlHandler("open_help", args => {
         const topic = args.topic;
-        if (typeof topic !== "string" || !HELP_SECTIONS.some(group => group.topics.some(id => id === topic))) throw new Error("Unknown help topic.");
+        if (typeof topic !== "string" || !HELP_SECTIONS.some(group => group.topics.some(id => id === topic))) throw new Error(`Unknown help topic. Topics: ${HELP_SECTIONS.flatMap(group => group.topics).join(", ")}.`);
         setHelpRequest({ topic, serial: Date.now() });
         navigationRef.current.openSettings("help");
         return { topic };
@@ -153,6 +195,31 @@ export default function App() {
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
   }, [openNewSession, openNewWorkspace]);
+  // Capture phase, like the shortcuts above, so a focused terminal never sees it.
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (!commandPaletteShortcut(event)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      setPaletteOpen(true);
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, []);
+  // Search all terminals: the shortcut (capture phase, before a focused
+  // terminal or editor) and the command palette's event open the same panel.
+  useEffect(() => {
+    const show = () => { setPaletteOpen(false); setTerminalSearchOpen(true); };
+    const onKey = (event: KeyboardEvent) => {
+      if (!searchTerminalsShortcut(event)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      show();
+    };
+    window.addEventListener("keydown", onKey, true);
+    window.addEventListener(OPEN_TERMINAL_SEARCH_EVENT, show);
+    return () => { window.removeEventListener("keydown", onKey, true); window.removeEventListener(OPEN_TERMINAL_SEARCH_EVENT, show); };
+  }, []);
   useEffect(() => {
     if (!HAS_TAURI) return;
     let disposed = false;
@@ -170,6 +237,8 @@ export default function App() {
       }
       if (payload === "new-session") { openNewSession(); return; }
       if (payload === "new-workspace") { openNewWorkspace(); return; }
+      if (payload === "command-palette") { setPaletteOpen(true); return; }
+      if (payload === "search-terminals") { setTerminalSearchOpen(true); return; }
       if (["general", "about", "notifications", "devices", "sync", "remote", "mcp", "help", "quick-chat"].includes(payload)) {
         setSessionDialogOpen(false);
         openSettings(payload as SettingsSection);
@@ -293,15 +362,7 @@ export default function App() {
     loadSessions().catch(() => {
       if (!HAS_TAURI) seedPreview();
     });
-    // First run: open the setup wizard so a fresh install gets its local agent
-    // verified and can add remote devices. Runs in both the app and the browser
-    // build - the wizard adapts its checks to whichever backend it is talking to.
-    try {
-      if (!localStorage.getItem("pzza.setupDone")) setWizardOpen(true);
-    } catch {
-      /* ignore */
-    }
-  }, [loadSessions, seedPreview, setWizardOpen]);
+  }, [loadSessions, seedPreview]);
 
   return (
     <ThemeProvider>
@@ -314,12 +375,24 @@ export default function App() {
         <SessionMenu close={() => setSessionDialogOpen(false)} />
       </Modal>
       <Tooltip />
+      <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} onError={setPaletteError} />
+      <TerminalSearch open={terminalSearchOpen} onClose={() => setTerminalSearchOpen(false)} onError={setTerminalSearchError} />
+      <Modal open={terminalSearchError !== null} onClose={() => setTerminalSearchError(null)} title="Search all terminals" size="sm">
+        <p className="move-q" role="alert">{terminalSearchError}</p>
+        <div className="modal-actions"><button className="btn" onClick={() => setTerminalSearchError(null)}>Dismiss</button></div>
+      </Modal>
+      <Modal open={paletteError !== null} onClose={() => setPaletteError(null)} title="Command palette" size="sm">
+        <p className="move-q" role="alert">{paletteError}</p>
+        <div className="modal-actions"><button className="btn" onClick={() => setPaletteError(null)}>Dismiss</button></div>
+      </Modal>
       <Modal open={nativeCloseError !== null} onClose={() => setNativeCloseError(null)} title="Window close protection" size="sm">
         <p className="move-q" role="alert">{nativeCloseError}</p>
         <p className="set-note">Save your editor changes before closing the window again.</p>
         <div className="modal-actions"><button className="btn" onClick={() => setNativeCloseError(null)}>Dismiss</button></div>
       </Modal>
-      <div className="app">
+      {/* Hidden, not unmounted, behind setup: terminals keep running, and a
+          transparent window shows the desktop through setup rather than tiles. */}
+      <div className={`app ${setupOpen ? "app-behind-setup" : ""}`}>
         <header className="topbar" data-tauri-drag-region>
           <div className="brand">
             <span className="brand-mark">
@@ -367,20 +440,15 @@ export default function App() {
                     </button>
                   </>}
                 </Dropdown> : null}
-                <Dropdown icon={EthernetPort} title="Port manager" controlId="port_forwarding" width={320} loading={portsLoading} align="end" compact tourId="ports">
+                <Dropdown icon={EthernetPort} title="Port manager" controlId="port_forwarding" width={320} loading={portsLoading} align="end" compact tourId="ports"
+                  badgeLabel={forwardedPorts ? `Port manager: ${forwardedPorts} forwarded port${forwardedPorts === 1 ? "" : "s"}` : undefined}
+                  cornerBadge={forwardedPorts ? countLabel(forwardedPorts) : null}>
                   {(close, open) => <PortsMenu active={open && !settingsOpen} onLoadingChange={setPortsLoading} onOpenSettings={() => { close(); openSettings("ports"); }} />}
                 </Dropdown>
-                <Dropdown icon={Gauge} title="Agent usage" controlId="usage" width={320} tourId="usage">
-                  <UsageMenu />
-                </Dropdown>
-                <div className="notification-toolbar">
-                  <Dropdown icon={Bell} title="Notifications" controlId="notifications" width={380} panelClassName="notifications-panel" tourId="notifications">
-                    {(close) => <LatestNotifications viewAll={() => { close(); openSettings("notifications"); }} />}
-                  </Dropdown>
-                  {unreadNotifications ? <span className="notification-badge" aria-label={`${unreadNotifications} unread notifications`} /> : null}
-                </div>
+                <UsageTool />
+                <NotificationsTool viewAll={() => openSettings("notifications")} />
                 <IconButton icon={SettingsIcon} title="Settings" tourId="settings" onClick={() => openSettings("general")} />
-                <Dropdown icon={Plus} title="New session" controlId="new_session" label="New session" width={340} panelClassName="creation-panel" shortcut={NEW_SESSION_SHORTCUT} tourId="new-session">
+                <Dropdown icon={Plus} title="New session" controlId="new_session" label="New session" width={380} panelClassName="creation-panel" shortcut={NEW_SESSION_SHORTCUT} tourId="new-session">
                   {(close) => <SessionMenu close={close} />}
                 </Dropdown>
               </div>
@@ -391,27 +459,13 @@ export default function App() {
 
 
         <div className="body">
-          <main className="canvas">
+          <main className="canvas" ref={canvasRef}>
             <Canvas onNewSession={openNewSession} />
           </main>
         </div>
       </div>
-      <SetupWizard
-        open={wizardOpen}
-        onClose={() => {
-          setWizardOpen(false);
-          // Remember it was seen so it does not auto-open on every load.
-          try {
-            localStorage.setItem("pzza.setupDone", "1");
-          } catch {
-            /* ignore */
-          }
-          if (freshRun.current) {
-            freshRun.current = false;
-            window.setTimeout(() => setTourOpen(true), 400);
-          }
-        }}
-      />
+      <SetupWizard open={wizardOpen} onClose={() => setWizardOpen(false)} />
+      <SetupScreen open={setupOpen} onDone={() => { setSetupOpen(false); if (onboardingPending()) setTourOpen(true); }} />
       <OnboardingTour open={tourOpen} onClose={() => setTourOpen(false)} />
       <SettingsHub onOpen={openSettings} helpRequest={helpRequest} open={settingsOpen} section={settingsSection} onSectionChange={setSettingsSection} onClose={() => setSettingsOpen(false)} syncRequest={syncRequest} onSyncingChange={setSyncing} />
     </ThemeProvider>

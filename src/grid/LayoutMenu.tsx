@@ -1,12 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { Columns2, Columns3, Columns4, LayoutGrid } from "lucide-react";
+import { Columns2, Columns3, Columns4, LayoutDashboard, LayoutGrid } from "lucide-react";
 import { useStore } from "../state/store";
 import { useExclusiveMenu } from "../ui/menuBus";
 import { registerAppControlMenu } from "../appControlRuntime";
 import { ALL_WORKSPACE_ID } from "../workspaces";
+import { AUTO_COLUMNS } from "./autoLayout";
 
+// Auto picks the columns from the tile count and the window width.
 const OPTIONS = [
+  { n: AUTO_COLUMNS, Icon: LayoutDashboard, label: "Auto" },
   { n: 2, Icon: Columns2, label: "2 columns" },
   { n: 3, Icon: Columns3, label: "3 columns" },
   { n: 4, Icon: Columns4, label: "4 columns" },

@@ -1,151 +1,656 @@
-/* Guided first-run tour: dimmed spotlight with a highlight ring and a tooltip. */
+/* Onboarding: machine setup in a wide centered card, then a spotlight walk
+   through the UI. Colors come from the theme tokens; the strong tone is the
+   text color in dark mode and the accent in light mode, like inverse controls. */
 
 .tour-root {
   position: fixed;
   inset: 0;
   z-index: 2000;
+  --tour-strong: var(--text);
+  --tour-on-strong: var(--opaque-surface, var(--surface));
+  --tour-card: var(--opaque-surface, var(--surface));
+  --tour-well: color-mix(in srgb, var(--surface-alt) 32%, var(--tour-card));
+  --tour-line: var(--hairline);
+  --tour-shadow: 0 28px 70px -18px rgb(0 0 0 / 60%), 0 2px 8px rgb(0 0 0 / 22%);
+  color: var(--text);
+}
+
+:root[data-appearance="light"] .tour-root {
+  --tour-strong: var(--accent);
+  --tour-on-strong: var(--accent-text);
+  --tour-well: color-mix(in srgb, var(--surface-alt) 55%, var(--tour-card));
+  --tour-shadow: 0 28px 70px -20px rgb(15 23 42 / 32%), 0 1px 3px rgb(15 23 42 / 10%);
 }
 
 .tour-dim {
   position: fixed;
-  background: rgba(0, 0, 0, 0.55);
+  background: rgb(0 0 0 / 55%);
+}
+
+:root[data-appearance="light"] .tour-dim {
+  background: rgb(15 23 42 / 36%);
 }
 
 .tour-dim-full {
   inset: 0;
+  backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: blur(3px);
 }
 
 .tour-ring {
   position: fixed;
-  border: 2px solid var(--accent);
-  border-radius: 12px;
-  box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 25%, transparent);
+  border: 2px solid var(--tour-strong);
+  border-radius: var(--r-lg);
+  box-shadow: 0 0 0 5px color-mix(in srgb, var(--tour-strong) 22%, transparent);
   pointer-events: none;
   transition: left 0.25s ease, top 0.25s ease, width 0.25s ease, height 0.25s ease;
 }
 
-/* The tip carries both `menu` and `tour-tip`. They share specificity, so the
-   later `.menu` block wins the box properties (padding, position, radius) unless
-   we scope our overrides to the compound selector. Match the app's modal rhythm. */
-.menu.tour-tip {
+.tour-center {
   position: fixed;
-  right: auto;
-  padding: 18px 20px;
-  border-radius: 16px;
-  animation: tour-tip-in 180ms ease-out;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  pointer-events: none;
 }
 
-/* Anchor-less (centered) variant: the keyframe transform would override the
-   inline translate(-50%,-50%) centering for 180ms and the popup would visibly
-   snap into place, so the offset rides along inside the animation instead. */
-.menu.tour-tip-center {
-  animation-name: tour-tip-in-center;
+.tour-card {
+  position: relative;
+  background: var(--tour-card);
+  border: 1px solid var(--tour-line);
+  border-radius: var(--r-xl);
+  box-shadow: var(--tour-shadow);
+  font-size: var(--fs-md);
+  line-height: 1.5;
+  pointer-events: auto;
 }
 
-@keyframes tour-tip-in-center {
-  from {
-    opacity: 0;
-    transform: translate(-50%, -50%) translateY(6px);
-  }
-  to {
-    opacity: 1;
-    transform: translate(-50%, -50%);
-  }
+.tour-card :is(button, a):focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--tour-strong) 45%, transparent);
+  outline-offset: 2px;
 }
 
-.tour-tip-head {
+.tour-card-wide {
   display: flex;
-  align-items: baseline;
-  justify-content: space-between;
+  flex-direction: column;
+  max-height: calc(100vh - 32px);
+  overflow: hidden;
+}
+
+.tour-card-main {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.tour-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  padding: 22px 24px 0;
+}
+
+.tour-head-icon {
+  display: grid;
+  flex: 0 0 40px;
+  place-items: center;
+  height: 40px;
+  border: 1px solid var(--tour-line);
+  border-radius: var(--r-lg);
+  background: var(--tour-well);
+  color: var(--text);
+}
+
+/* Done: a centered, celebratory header. */
+.tour-card-done .tour-head {
+  flex-direction: column;
+  align-items: center;
   gap: 12px;
-  margin-bottom: 6px;
+  padding-top: 28px;
+  text-align: center;
 }
 
-.tour-tip-head strong {
-  font-size: 13.5px;
+.tour-card-done .tour-head-icon {
+  flex-basis: 52px;
+  width: 52px;
+  height: 52px;
+  border-color: color-mix(in srgb, var(--success) 32%, transparent);
+  border-radius: var(--r-pill);
+  background: color-mix(in srgb, var(--success) 15%, var(--tour-card));
+  color: var(--success-foreground, var(--success));
+}
+
+.tour-card-done .tour-head-title {
+  font-size: var(--fs-display);
+  font-weight: 700;
+}
+
+.tour-card-done .tour-head-text {
+  max-width: 400px;
+}
+
+.tour-head-copy {
+  min-width: 0;
+}
+
+.tour-head-title {
+  margin: 1px 0 3px;
+  font-size: var(--fs-xl);
   font-weight: 650;
+  letter-spacing: -0.01em;
+  color: var(--heading-text, var(--text));
 }
 
-.tour-count {
-  flex: 0 0 auto;
-  font-size: 11px;
-  color: var(--muted);
-  font-variant-numeric: tabular-nums;
-}
-
-.tour-tip-body {
-  margin: 0 0 12px;
-  font-size: 12.5px;
+.tour-head-text {
+  margin: 0;
+  font-size: var(--fs-md);
   line-height: 1.55;
-  color: color-mix(in srgb, var(--text) 85%, var(--muted));
+  color: var(--muted);
 }
 
-.tour-dots {
+.tour-body {
+  min-height: 0;
+  padding: 18px 24px 22px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.tour-foot {
   display: flex;
-  gap: 5px;
-  margin-bottom: 14px;
-}
-
-.tour-dots span {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--border);
-}
-
-.tour-dots span.seen {
-  background: var(--muted);
-}
-
-.tour-dots span.on {
-  background: var(--accent);
-}
-
-.tour-actions {
-  display: flex;
+  flex: 0 0 auto;
   align-items: center;
   gap: 8px;
-  padding-top: 2px;
+}
+
+.tour-card-wide .tour-foot {
+  padding: 12px 24px;
+  border-top: 1px solid var(--tour-line);
+  background: color-mix(in srgb, var(--surface-alt) 22%, var(--tour-card));
 }
 
 .tour-spacer {
   flex: 1;
 }
 
-.tour-skip {
-  border: 0;
-  background: none;
-  padding: 4px 2px;
+.tour-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 16px;
+  border: 1px solid transparent;
+  border-radius: var(--r-md);
   font: inherit;
-  font-size: 12px;
+  font-size: var(--fs-md);
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s, filter 0.12s, color 0.12s;
+}
+
+.tour-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* The main action is an outlined button like the rest of the app, set apart
+   by a firmer border and a light fill rather than a solid block of color. */
+.tour-btn-primary {
+  min-width: 84px;
+  border-color: color-mix(in srgb, var(--text) 38%, var(--tour-line));
+  background: color-mix(in srgb, var(--surface-alt) 60%, transparent);
+  color: var(--text);
+}
+
+.tour-btn-primary:hover:not(:disabled) {
+  border-color: var(--text);
+  background: var(--surface-alt);
+}
+
+.tour-btn-ghost {
+  border-color: var(--tour-line);
+  background: transparent;
+  color: var(--text);
+}
+
+.tour-btn-ghost:hover:not(:disabled) {
+  border-color: var(--muted);
+  background: var(--surface-alt);
+}
+
+
+/* Rows of checks, requirements and permissions. */
+.tour-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.tour-list {
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--tour-line);
+  border-radius: var(--r-lg);
+  background: var(--tour-well);
+  list-style: none;
+}
+
+.tour-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 52px;
+  padding: 9px 12px;
+}
+
+.tour-row + .tour-row {
+  border-top: 1px solid var(--tour-line);
+}
+
+.tour-row-icon {
+  display: grid;
+  flex: 0 0 30px;
+  place-items: center;
+  height: 30px;
+  border: 1px solid var(--tour-line);
+  border-radius: var(--r-md);
+  background: var(--tour-card);
+  color: var(--muted);
+}
+
+.tour-row-copy {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.tour-row-label {
+  font-size: var(--fs-md);
+  font-weight: 600;
+  color: var(--text);
+}
+
+.tour-row-detail {
+  overflow: hidden;
+  font-size: var(--fs-sm);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--muted);
+}
+
+.tour-row-hint {
+  margin-top: 3px;
+  font-size: var(--fs-sm);
+  line-height: 1.45;
+  color: var(--muted);
+}
+
+.tour-row-hint-fail {
+  color: var(--danger-foreground, var(--danger));
+}
+
+.tour-row-side {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.tour-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 20px;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  border-radius: var(--r-pill);
+  font-size: var(--fs-xs);
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.tour-pill-ok {
+  border-color: color-mix(in srgb, var(--success) 26%, transparent);
+  background: color-mix(in srgb, var(--success) 13%, transparent);
+  color: var(--success-foreground, var(--success));
+}
+
+.tour-pill-busy {
+  border-color: color-mix(in srgb, var(--text) 14%, transparent);
+  background: color-mix(in srgb, var(--text) 7%, transparent);
+  color: var(--text);
+}
+
+.tour-pill-action {
+  border-color: color-mix(in srgb, var(--warning) 30%, transparent);
+  background: color-mix(in srgb, var(--warning) 14%, transparent);
+  color: var(--warning-foreground, var(--warning));
+}
+
+.tour-pill-fail {
+  border-color: color-mix(in srgb, var(--danger) 30%, transparent);
+  background: color-mix(in srgb, var(--danger) 13%, transparent);
+  color: var(--danger-foreground, var(--danger));
+}
+
+.tour-pill-neutral {
+  border-color: color-mix(in srgb, var(--text) 10%, transparent);
+  background: transparent;
+  color: var(--muted);
+}
+
+.tour-group-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 4px;
+}
+
+.tour-group-title {
+  font-size: var(--fs-xs);
+  font-weight: 650;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.tour-group-meta {
+  font-size: var(--fs-sm);
+  color: var(--muted);
+}
+
+.tour-group-note {
+  margin: 0 0 8px;
+  font-size: var(--fs-sm);
+  line-height: 1.45;
+  color: var(--muted);
+}
+
+.tour-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.tour-chips + .tour-group-note {
+  margin: 8px 0 0;
+}
+
+.tour-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 10px;
+  border: 1px dashed var(--tour-line);
+  border-radius: var(--r-pill);
+  font-size: var(--fs-sm);
+  font-weight: 550;
+  color: var(--muted);
+}
+
+.tour-chip.is-found {
+  border-style: solid;
+  border-color: color-mix(in srgb, var(--success) 30%, transparent);
+  background: color-mix(in srgb, var(--success) 10%, transparent);
+  color: var(--text);
+}
+
+.tour-chip.is-found svg {
+  color: var(--success-foreground, var(--success));
+}
+
+.tour-chip-state {
+  font-size: var(--fs-xs);
+  font-weight: 450;
+  color: var(--muted);
+}
+
+.tour-callout {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--tour-line);
+  border-radius: var(--r-md);
+  background: var(--tour-well);
+  font-size: var(--fs-sm);
+  line-height: 1.45;
+}
+
+.tour-callout > span {
+  flex: 1;
+}
+
+.tour-callout-fail {
+  border-color: color-mix(in srgb, var(--danger) 35%, transparent);
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
+  color: var(--danger-foreground, var(--danger));
+}
+
+/* Welcome: hero, then one health summary that expands into the checks. */
+.tour-welcome {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.tour-health {
+  overflow: hidden;
+  border: 1px solid var(--tour-line);
+  border-radius: var(--r-lg);
+  background: var(--tour-well);
+}
+
+.tour-health-summary {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+}
+
+.tour-disclosure {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
   color: var(--muted);
   cursor: pointer;
 }
 
-.tour-skip:hover {
+.tour-disclosure:hover:not(:disabled) {
+  background: var(--surface-alt);
   color: var(--text);
 }
 
-.tour-actions .btn {
-  width: auto;
+.tour-disclosure:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
-@keyframes tour-tip-in {
-  from {
-    opacity: 0;
-    transform: translateY(6px);
+.tour-disclosure svg {
+  transition: transform 0.18s ease;
+}
+
+.tour-health.is-open .tour-disclosure svg {
+  transform: rotate(180deg);
+}
+
+.tour-health-checks {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 10px 12px 12px 54px;
+  border-top: 1px solid var(--tour-line);
+}
+
+.tour-health-check {
+  display: grid;
+  grid-template-columns: 14px 112px minmax(0, 1fr);
+  align-items: center;
+  gap: 6px;
+  font-size: var(--fs-sm);
+}
+
+.tour-health-check dt {
+  font-weight: 550;
+  color: var(--text);
+}
+
+.tour-health-check dd {
+  margin: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--muted);
+}
+
+/* Done: shortcut hints. */
+.tour-shortcuts {
+  display: grid;
+  gap: 8px;
+  margin: 6px 0 0;
+  padding: 12px;
+  border: 1px solid var(--tour-line);
+  border-radius: var(--r-lg);
+  background: var(--tour-well);
+  list-style: none;
+}
+
+.tour-shortcuts li {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: var(--fs-md);
+  color: var(--text);
+}
+
+.tour-shortcuts kbd {
+  display: inline-grid;
+  place-items: center;
+  min-width: 40px;
+  height: 24px;
+  padding: 0 7px;
+  border: 1px solid var(--tour-line);
+  border-bottom-width: 2px;
+  border-radius: var(--r-sm);
+  background: var(--tour-card);
+  font: 600 var(--fs-sm)/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--text);
+}
+
+/* Spotlight steps: a compact card next to the highlighted control. */
+.tour-card-tip {
+  position: fixed;
+  padding: 16px 18px 14px;
+  border-radius: var(--r-xl);
+}
+
+.tour-tip-title {
+  margin: 0 0 5px;
+  font-size: var(--fs-lg);
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  color: var(--heading-text, var(--text));
+}
+
+.tour-tip-text {
+  margin: 0 0 14px;
+  font-size: var(--fs-md);
+  line-height: 1.55;
+  color: var(--muted);
+}
+
+.tour-foot-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--fs-sm);
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}
+
+.tour-foot-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.tour-foot-dots span {
+  width: 5px;
+  height: 5px;
+  border-radius: var(--r-pill);
+  background: color-mix(in srgb, var(--text) 18%, transparent);
+  transition: width 0.2s ease, background 0.2s ease;
+}
+
+.tour-foot-dots span.on {
+  width: 12px;
+  background: var(--tour-strong);
+}
+
+@media (max-width: 560px) {
+  .tour-row {
+    flex-wrap: wrap;
   }
-  to {
-    opacity: 1;
-    transform: none;
+  .tour-row-side {
+    margin-left: 42px;
+  }
+  .tour-health-checks {
+    padding-left: 12px;
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .tour-ring {
+  .tour-ring,
+  .tour-disclosure svg,
+  .tour-foot-dots span {
     transition: none;
   }
-  .menu.tour-tip {
-    animation: none;
-  }
+}
+
+/* The spotlight tip is narrow: compact buttons, Skip as plain text, and the
+   step count kept on one line. The row may wrap but never overflows the card. */
+.tour-card-tip .tour-foot {
+  flex-wrap: wrap;
+  row-gap: 8px;
+  gap: 6px;
+}
+
+.tour-card-tip .tour-foot-count {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.tour-card-tip .tour-btn {
+  height: 28px;
+  min-width: 0;
+  padding: 0 12px;
+  border-radius: var(--r-md);
+}
+
+.tour-card-tip .tour-btn-skip {
+  padding: 0 6px;
+  border-color: transparent;
+  color: var(--muted);
+}
+
+.tour-card-tip .tour-btn-skip:hover:not(:disabled) {
+  border-color: transparent;
+  background: transparent;
+  color: var(--text);
 }

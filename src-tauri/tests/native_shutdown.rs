@@ -21,6 +21,18 @@ mod speech;
 #[cfg(target_os = "macos")]
 #[path = "../src/speech_model.rs"]
 mod speech_model;
+#[cfg(target_os = "macos")]
+#[path = "../src/setup.rs"]
+mod setup;
+#[cfg(target_os = "macos")]
+#[path = "../src/voice_io.rs"]
+mod voice_io;
+#[cfg(target_os = "macos")]
+#[path = "../src/voice_vad.rs"]
+mod voice_vad;
+#[cfg(target_os = "macos")]
+#[path = "../src/voice_log.rs"]
+mod voice_log;
 
 #[cfg(target_os = "macos")]
 fn main() {

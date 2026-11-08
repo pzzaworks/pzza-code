@@ -78,8 +78,45 @@ export function releaseDisabledForwardDevices(devices: Device[]): void {
   const host = forwardingHost;
   if (host && devices.some(device => device.disabled && deviceHost(device) === host)) {
     forwardingHost = "";
-    queueForwarding(() => forwardRelease(host)).catch(() => undefined);
+    queueForwarding(() => forwardRelease(host)).then(() => useForwardedPorts.setState({ count: 0 })).catch(() => undefined);
   }
+}
+// How many ports are forwarded right now, for the top bar chip; null until the
+// first observation. Native builds publish it from every forwarding reconcile
+// (the panel's polling and app control both go through it), since they own the
+// tunnels and a background scan would open SSH connections on its own. The
+// agent build reads the agent's in-memory forward state (see useForwardedCount).
+export const useForwardedPorts = create<{ count: number | null }>(() => ({ count: null }));
+const FORWARD_COUNT_POLL_MS = 60_000;
+export function useForwardedCount(enabled: boolean): number | null {
+  const count = useForwardedPorts(state => state.count);
+  useEffect(() => {
+    if (HAS_TAURI || !enabled) return;
+    let alive = true;
+    let caps: Capabilities | null = null;
+    const tick = async () => {
+      if (document.visibilityState !== "visible") return;
+      try {
+        caps ??= await fetchCapabilities();
+        // A source device mirrors nothing itself, so there is no count to show.
+        if (!caps.forward) return;
+        const state = await fetchForwardState();
+        if (alive) useForwardedPorts.setState({ count: state.enabled ? state.active.length : 0 });
+      } catch {
+        if (alive) useForwardedPorts.setState({ count: null });
+      }
+    };
+    const onVisibility = () => { if (document.visibilityState === "visible") void tick(); };
+    void tick();
+    const timer = window.setInterval(() => void tick(), FORWARD_COUNT_POLL_MS);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      alive = false;
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, [enabled]);
+  return count;
 }
 let forwardingQueue: Promise<unknown> = Promise.resolve();
 // The host whose ports this app is currently forwarding, if any.
@@ -99,7 +136,10 @@ export function reconcileSelectedForwarding(host: string, enabled: boolean, isAc
     const ports = enabled ? scan.wanted.filter(port => !scan.forwarded.includes(port)) : scan.forwarded;
     for (const port of ports) { check(); await forwardSet(host, port, enabled); }
     check();
-    return ports.length ? forwardScan(host, DEFAULT_SKIP, DEFAULT_MIN_PORT) : scan;
+    const status = ports.length ? await forwardScan(host, DEFAULT_SKIP, DEFAULT_MIN_PORT) : scan;
+    // Same number the panel shows: nothing counts as forwarded while disabled.
+    useForwardedPorts.setState({ count: enabled ? status.forwarded.length : 0 });
+    return status;
   });
 }
 
@@ -354,6 +394,7 @@ function ServerPorts({ pollingActive, showControls, onLoadingChange, route, refr
         if (alive && !togglingRef.current && version === mutationVersion.current) {
           setEnabled(s.enabled);
           setActive(s.active);
+          if (caps.forward) useForwardedPorts.setState({ count: s.enabled ? s.active.length : 0 });
         }
         if (!caps.forward) {
           const p = await fetchPorts();
@@ -389,6 +430,7 @@ function ServerPorts({ pollingActive, showControls, onLoadingChange, route, refr
       const s = await fetchForwardState();
       setEnabled(s.enabled);
       setActive(s.active);
+      useForwardedPorts.setState({ count: s.enabled ? s.active.length : 0 });
     } catch { setActionError("Could not change forwarding. Retry after checking the device connection."); }
     finally { togglingRef.current = false; setToggling(false); }
   };

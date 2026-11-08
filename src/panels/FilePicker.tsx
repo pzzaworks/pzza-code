@@ -240,8 +240,8 @@ export function FilePicker({
       size="md"
     >
       <div className="fp" onKeyDown={onKey}>
-        <div className="fp-bar">
-          {hosts && hosts.length > 1 ? (
+        {hosts && hosts.length > 1 ? (
+          <div className="fp-bar">
             <div className="fp-host">
               <Select
                 value={curHost}
@@ -249,9 +249,67 @@ export function FilePicker({
                 options={hosts.map((h) => ({ value: h.host, label: h.label, sub: h.sub ?? (h.host || "local") }))}
               />
             </div>
-          ) : null}
+          </div>
+        ) : null}
+
+        <div className="fp-crumbs">
+          {/* Address bar: up, the clickable path, and typing a path. */}
+          <div className="fp-path">
+            <button type="button" className="fp-tool" onClick={goUp} disabled={!dir || !parent || parent === dir} title="Up one level (Backspace)">
+              <ArrowUp size={16} />
+            </button>
+            {editing ? (
+              <input
+                ref={editRef}
+                className="fp-crumb-edit"
+                value={typed}
+                spellCheck={false}
+                onChange={(e) => setTyped(e.target.value)}
+                onBlur={() => setEditing(false)}
+                onKeyDown={(e) => {
+                  e.stopPropagation();
+                  if (e.key === "Enter") nav(typed.trim() || undefined, curHost);
+                  if (e.key === "Escape") setEditing(false);
+                }}
+              />
+            ) : (
+              <div ref={crumbRef} className="fp-crumb-list" onDoubleClick={() => { setTyped(shortDir ?? ""); setEditing(true); }}>
+                {/* Home is the first step under the home folder; elsewhere it leads the trail. */}
+                {dir && trail[0]?.label !== "~" ? (
+                  <button type="button" className="fp-crumb" onClick={() => nav(undefined, curHost)} title="Device home" aria-label="Device home"><House size={15} /></button>
+                ) : null}
+                {trail.map((c, i) => (
+                  <span key={c.path} className="fp-crumb-wrap">
+                    {i > 0 ? <ChevronRight size={12} className="fp-crumb-sep" /> : null}
+                    <button
+                      type="button"
+                      className={`fp-crumb ${i === trail.length - 1 ? "fp-crumb-cur" : ""}`}
+                      onClick={() => (i < trail.length - 1 ? nav(c.path, curHost) : undefined)}
+                      title={c.path}
+                    >
+                      {c.label === "~" ? <House size={15} aria-label="Home" /> : c.label}
+                    </button>
+                  </span>
+                ))}
+                {!dir ? <span className="muted small">…</span> : null}
+              </div>
+            )}
+            <button
+              type="button"
+              className="fp-tool"
+              onClick={() => {
+                setTyped(shortDir ?? "");
+                setEditing(true);
+              }}
+              title="Type a path"
+            >
+              <Pencil size={15} />
+            </button>
+          </div>
+          {/* The filter sits in the same row as the path: where you are, and
+              what you are looking for in it. */}
           <div className="fp-search">
-            <Search size={13} className="muted-icon" />
+            <Search size={15} className="muted-icon" />
             <input
               ref={filterRef}
               value={filter}
@@ -262,65 +320,17 @@ export function FilePicker({
                 setCursor(-1);
               }}
             />
+            {/* Dotfiles toggle inside the field: it filters the same list. */}
+            <button
+              type="button"
+              className={`fp-tool fp-search-tool ${showHidden ? "on" : ""}`}
+              onClick={toggleHidden}
+              aria-pressed={showHidden}
+              title={showHidden ? "Hide dotfiles" : `Show dotfiles${hiddenCount ? ` (${hiddenCount})` : ""}`}
+            >
+              {showHidden ? <Eye size={16} /> : <EyeOff size={16} />}
+            </button>
           </div>
-          <button
-            type="button"
-            className={`fp-tool ${showHidden ? "on" : ""}`}
-            onClick={toggleHidden}
-            title={showHidden ? "Hide dotfiles" : `Show dotfiles${hiddenCount ? ` (${hiddenCount})` : ""}`}
-          >
-            {showHidden ? <Eye size={14} /> : <EyeOff size={14} />}
-          </button>
-        </div>
-
-        <div className="fp-crumbs">
-          <button type="button" className="fp-tool" onClick={() => nav(undefined, curHost)} title="Device home" aria-label="Device home"><House size={14} /></button>
-          <button type="button" className="fp-tool" onClick={goUp} disabled={!dir || !parent || parent === dir} title="Up one level (Backspace)">
-            <ArrowUp size={14} />
-          </button>
-          {editing ? (
-            <input
-              ref={editRef}
-              className="fp-crumb-edit"
-              value={typed}
-              spellCheck={false}
-              onChange={(e) => setTyped(e.target.value)}
-              onBlur={() => setEditing(false)}
-              onKeyDown={(e) => {
-                e.stopPropagation();
-                if (e.key === "Enter") nav(typed.trim() || undefined, curHost);
-                if (e.key === "Escape") setEditing(false);
-              }}
-            />
-          ) : (
-            <div ref={crumbRef} className="fp-crumb-list" onDoubleClick={() => { setTyped(shortDir ?? ""); setEditing(true); }}>
-              {trail.map((c, i) => (
-                <span key={c.path} className="fp-crumb-wrap">
-                  {i > 0 ? <ChevronRight size={12} className="fp-crumb-sep" /> : null}
-                  <button
-                    type="button"
-                    className={`fp-crumb ${i === trail.length - 1 ? "fp-crumb-cur" : ""}`}
-                    onClick={() => (i < trail.length - 1 ? nav(c.path, curHost) : undefined)}
-                    title={c.path}
-                  >
-                    {c.label === "~" ? <House size={12} /> : c.label}
-                  </button>
-                </span>
-              ))}
-              {!dir ? <span className="muted small">…</span> : null}
-            </div>
-          )}
-          <button
-            type="button"
-            className="fp-tool"
-            onClick={() => {
-              setTyped(shortDir ?? "");
-              setEditing(true);
-            }}
-            title="Type a path"
-          >
-            <Pencil size={13} />
-          </button>
         </div>
 
         <div className="fp-list" ref={listRef}>
@@ -331,7 +341,9 @@ export function FilePicker({
           ) : error ? (
             <div className="fp-status fp-status-err" role="alert"><span>{error}</span><button type="button" className="btn btn-sm" onClick={() => nav(request.current.path, curHost)}>Retry</button></div>
           ) : shown.length === 0 ? (
-            <div className="fp-status muted">
+            <div className="fp-status fp-empty muted">
+              <FolderOpen size={22} aria-hidden="true" />
+              <span>
               {filter
                 ? "Nothing matches."
                 : mode === "folder"
@@ -341,6 +353,7 @@ export function FilePicker({
                   : hiddenCount && !showHidden
                     ? "Only hidden files here."
                     : "Empty folder."}
+              </span>
             </div>
           ) : (
             shown.map((e, i) => {
@@ -363,10 +376,10 @@ export function FilePicker({
         </div>
 
         <div className="fp-foot">
-          <span className="fp-foot-path" title={dir ?? ""}>
-            {mode === "folder" ? shortDir ?? "" : "Pick a file"}
+          <span className="fp-foot-info">
+            {shown.length} {mode === "folder" ? `folder${shown.length === 1 ? "" : "s"}` : `item${shown.length === 1 ? "" : "s"}`}
+            <span className="fp-foot-keys">↵ open · ⌫ up</span>
           </span>
-          <span className="fp-foot-hint muted small">{shown.length} item{shown.length === 1 ? "" : "s"}</span>
           <button className="btn btn-sm" onClick={onClose}>
             Cancel
           </button>

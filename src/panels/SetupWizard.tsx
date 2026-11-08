@@ -1,76 +1,17 @@
-import { AsyncButton } from "../ui/AsyncButton";
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { AlertTriangle, Check, Loader2, RefreshCw, ServerCog, X } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { Check, Loader2, ServerCog } from "lucide-react";
 import { Modal } from "../ui/Modal";
-import { WizardIcon } from "../ui/WizardIcon";
 import { PathField } from "../ui/PathField";
-import { PermissionsPanel } from "./Permissions";
-import { PERMISSIONS_SUPPORTED, installTmux } from "../state/permissions";
 import { useStore } from "../state/store";
-import {
-  fetchDoctor,
-  fetchSshHosts,
-  installAgent,
-  SERVER_HTTP,
-  type Doctor,
-  type SshHost,
-  type SshHosts,
-} from "../serverApi";
+import { fetchSshHosts, installAgent, type SshHost, type SshHosts } from "../serverApi";
 
-type Status = "ok" | "warn" | "fail" | "pending";
-type Mode = "this" | "add";
-
-interface CheckRow {
-  action?: ReactNode;
-  label: string;
-  status: Status;
-  detail: string;
-  hint?: string;
-}
-
-const StatusIcon = ({ status }: { status: Status }) => {
-  if (status === "ok") return <Check size={15} className="sw-ic sw-ok" />;
-  if (status === "warn") return <AlertTriangle size={15} className="sw-ic sw-warn" />;
-  if (status === "fail") return <X size={15} className="sw-ic sw-fail" />;
-  return <Loader2 size={15} className="sw-ic sw-spin" />;
-};
-
-// Setup wizard. "This device" shows the local agent's health via /doctor.
-// "Add a device" takes the SSH details of another machine the user can already
+// Add a device: takes the SSH details of another machine the user can already
 // reach, and installs the agent on it over that connection - the user handles
-// SSH access, we only take the connection info and drive the install.
+// SSH access, we only take the connection info and drive the install. Setting
+// up this machine is part of the onboarding tour.
 export function SetupWizard({ open, onClose }: { open: boolean; onClose: () => void }) {
-  const [mode, setMode] = useState<Mode>("this");
   const addDevice = useStore((s) => s.addDevice);
 
-  // --- this device ---
-  const [loading, setLoading] = useState(true);
-  const [doctor, setDoctor] = useState<Doctor | null>(null);
-  const check = useCallback(() => {
-    setLoading(true);
-    fetchDoctor()
-      .then(setDoctor)
-      .catch(() => setDoctor(null))
-      .finally(() => setLoading(false));
-  }, []);
-  useEffect(() => {
-    if (open && mode === "this") check();
-  }, [open, mode, check]);
-
-  // Local terminals need tmux; on this Mac it installs itself through
-  // Homebrew as soon as the check finds it missing, once per wizard session.
-  const [tmuxInstall, setTmuxInstall] = useState<{ state: "idle" | "installing" | "done" | "failed"; error?: string }>({ state: "idle" });
-  const runTmuxInstall = useCallback(() => {
-    setTmuxInstall({ state: "installing" });
-    installTmux()
-      .then(() => { setTmuxInstall({ state: "done" }); check(); })
-      .catch((error: unknown) => setTmuxInstall({ state: "failed", error: String(error instanceof Error ? error.message : error) }));
-  }, [check]);
-  useEffect(() => {
-    if (open && PERMISSIONS_SUPPORTED && doctor && !doctor.tmux && tmuxInstall.state === "idle") runTmuxInstall();
-  }, [open, doctor, tmuxInstall.state, runTmuxInstall]);
-
-  // --- add a device ---
   const [name, setName] = useState("");
   const [target, setTarget] = useState("");
   const [port, setPort] = useState("");
@@ -86,12 +27,12 @@ export function SetupWizard({ open, onClose }: { open: boolean; onClose: () => v
   // picker for choosing an identity by hand.
   const [ssh, setSsh] = useState<SshHosts | null>(null);
   useEffect(() => {
-    if (open && mode === "add" && !ssh) {
+    if (open && !ssh) {
       fetchSshHosts()
         .then(setSsh)
         .catch(() => setSsh({ dir: "", hosts: [], identities: [] }));
     }
-  }, [open, mode, ssh]);
+  }, [open, ssh]);
 
   // Prefill the whole form from a detected ~/.ssh/config host.
   const applyHost = (h: SshHost) => {
@@ -139,223 +80,117 @@ export function SetupWizard({ open, onClose }: { open: boolean; onClose: () => v
     setServerHost("");
     setLog("");
     setDone(false);
-    setMode("this");
+    onClose();
   };
 
-  // Checklist rows for this device.
-  const rows: CheckRow[] = doctor
-    ? [
-        {
-          label: "Device agent",
-          status: "ok",
-          detail: `${SERVER_HTTP} · ${doctor.role}${doctor.host ? ` -> ${doctor.host}` : ""}`,
-        },
-        {
-          label: "Persistent storage",
-          status: doctor.stateWritable ? "ok" : "fail",
-          detail: doctor.stateDir,
-          hint: doctor.stateWritable ? undefined : "Agent cannot write here - check permissions.",
-        },
-        {
-          label: "tmux (persistent sessions)",
-          ...(doctor.tmux ? { status: "ok" as const, detail: doctor.tmux }
-            : !PERMISSIONS_SUPPORTED ? { status: "warn" as const, detail: "not found", hint: "Install tmux: `sudo apt install tmux` / `brew install tmux`" }
-            : tmuxInstall.state === "installing" ? { status: "pending" as const, detail: "Installing with Homebrew..." }
-            : tmuxInstall.state === "failed" ? { status: "fail" as const, detail: "not installed", hint: tmuxInstall.error,
-              action: <button type="button" className="btn btn-sm" onClick={runTmuxInstall}>Retry</button> }
-            : { status: "warn" as const, detail: "not found" }),
-        },
-        {
-          label: "Terminal backend (node-pty)",
-          status: doctor.nodePty ? "ok" : "fail",
-          detail: doctor.nodePty ? "ready" : "native binding failed",
-        },
-      ]
-    : [];
-
   return (
-    <Modal open={open} onClose={onClose} title="Wizard" icon={WizardIcon} size="md">
-      <div className="sw-header">
-        <img src="/pzzacode.svg" alt="" className="sw-logo" />
-        <div className="sw-brand">
-          <span className="sw-brand-name">PzzaCode</span>
-          <span className="sw-brand-version">v{__APP_VERSION__}</span>
+    <Modal open={open} onClose={onClose} title="Add a device" icon={ServerCog} size="md">
+      <p className="sw-lead">
+        Enter the SSH details of a machine you can already reach - the agent installs itself
+        there over that connection. You set up SSH; we just use it.
+      </p>
+
+      {ssh && ssh.hosts.length > 0 ? (
+        <div className="sw-detected">
+          <span className="sw-detected-label">From your ~/.ssh/config</span>
+          <div className="sw-chips">
+            {ssh.hosts.map((h) => (
+              <button
+                key={h.host}
+                type="button"
+                className={`sw-chip ${target === h.host ? "on" : ""}`}
+                title={`${h.user ? `${h.user}@` : ""}${h.hostname ?? h.host}${h.port ? `:${h.port}` : ""}`}
+                onClick={() => applyHost(h)}
+              >
+                {h.host}
+              </button>
+            ))}
+          </div>
         </div>
+      ) : null}
+
+      <div className="sw-form">
+        <label className="sw-field">
+          <span>Device name</span>
+          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="My server" />
+        </label>
+        <label className="sw-field">
+          <span>SSH target</span>
+          <input
+            value={target}
+            onChange={(e) => setTarget(e.target.value)}
+            placeholder="user@host or ssh alias"
+            spellCheck={false}
+          />
+        </label>
+        <div className="sw-field-row">
+          <label className="sw-field">
+            <span>Port</span>
+            <input value={port} onChange={(e) => setPort(e.target.value)} placeholder="22" />
+          </label>
+          <label className="sw-field sw-grow">
+            <span>Identity file (optional)</span>
+            <PathField
+              value={identity}
+              mode="file"
+              start={ssh?.dir || undefined}
+              placeholder="~/.ssh/id_ed25519"
+              title="Choose a key file"
+              pickerTitle="SSH identity file"
+              onChange={(p) => setIdentity(p)}
+            />
+          </label>
+        </div>
+        <div className="sw-role">
+          <button
+            className={`sw-role-opt ${role === "source" ? "on" : ""}`}
+            onClick={() => setRole("source")}
+          >
+            Source <span>has tmux</span>
+          </button>
+          <button
+            className={`sw-role-opt ${role === "client" ? "on" : ""}`}
+            onClick={() => setRole("client")}
+          >
+            Client <span>forwards to a source</span>
+          </button>
+        </div>
+        {role === "client" ? (
+          <label className="sw-field">
+            <span>Forwards to (source host)</span>
+            <input
+              value={serverHost}
+              onChange={(e) => setServerHost(e.target.value)}
+              placeholder="my-server"
+              spellCheck={false}
+            />
+          </label>
+        ) : null}
       </div>
 
-      <div className="sw-tabs">
-        <button
-          className={`sw-tab ${mode === "this" ? "on" : ""}`}
-          onClick={() => setMode("this")}
-        >
-          This device
-        </button>
-        <button className={`sw-tab ${mode === "add" ? "on" : ""}`} onClick={() => setMode("add")}>
-          Add a device
-        </button>
+      {log ? (
+        <pre className="sw-log" ref={logRef}>
+          {log}
+        </pre>
+      ) : null}
+
+      <div className="modal-actions">
+        {succeeded ? (
+          <button className="btn btn-accent" onClick={saveDevice}>
+            <Check size={14} />
+            Add to devices
+          </button>
+        ) : (
+          <button
+            className="btn btn-accent"
+            onClick={runInstall}
+            disabled={installing || !target.trim()}
+          >
+            {installing ? <Loader2 size={14} className="sw-spin" /> : <ServerCog size={14} />}
+            {installing ? "Installing..." : "Install agent"}
+          </button>
+        )}
       </div>
-
-      {mode === "this" ? (
-        <>
-          <p className="sw-lead">
-            The <b>agent</b> on this machine serves your terminals, ports and saved state.
-          </p>
-          {loading ? (
-            <div className="sw-loading">
-              <Loader2 size={16} className="sw-spin" /> Checking...
-            </div>
-          ) : !doctor ? (
-            <div className="sw-row">
-              <StatusIcon status="fail" />
-              <div className="sw-row-body">
-                <div className="sw-row-label">No agent on {SERVER_HTTP}</div>
-                <div className="sw-row-detail">
-                  Install it from “Add a device”, or start it on this machine.
-                </div>
-              </div>
-            </div>
-          ) : (
-            <div className="sw-checks">
-              {rows.map((r) => (
-                <div className="sw-row" key={r.label}>
-                  <StatusIcon status={r.status} />
-                  <div className="sw-row-body">
-                    <div className="sw-row-label">{r.label}</div>
-                    <div className="sw-row-detail">{r.detail}</div>
-                    {r.hint ? <div className="sw-row-hint">{r.hint}</div> : null}
-                    {r.action ? <div className="sw-row-action">{r.action}</div> : null}
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-          {PERMISSIONS_SUPPORTED ? (
-            <section className="sw-permissions" aria-label="macOS permissions">
-              <div className="sw-section-title">Permissions</div>
-              <PermissionsPanel />
-              <div className="sw-row-detail">Skip any of these for now - Settings &gt; Permissions has the same list.</div>
-            </section>
-          ) : null}
-          <div className="modal-actions">
-            <AsyncButton className="btn" onClick={check} loading={loading} icon={RefreshCw}>
-              Re-check
-            </AsyncButton>
-            <button className="btn btn-accent" onClick={onClose}>
-              Done
-            </button>
-          </div>
-        </>
-      ) : (
-        <>
-          <p className="sw-lead">
-            Enter the SSH details of a machine you can already reach - the agent installs itself
-            there over that connection. You set up SSH; we just use it.
-          </p>
-
-          {ssh && ssh.hosts.length > 0 ? (
-            <div className="sw-detected">
-              <span className="sw-detected-label">From your ~/.ssh/config</span>
-              <div className="sw-chips">
-                {ssh.hosts.map((h) => (
-                  <button
-                    key={h.host}
-                    type="button"
-                    className={`sw-chip ${target === h.host ? "on" : ""}`}
-                    title={`${h.user ? `${h.user}@` : ""}${h.hostname ?? h.host}${h.port ? `:${h.port}` : ""}`}
-                    onClick={() => applyHost(h)}
-                  >
-                    {h.host}
-                  </button>
-                ))}
-              </div>
-            </div>
-          ) : null}
-
-          <div className="sw-form">
-            <label className="sw-field">
-              <span>Device name</span>
-              <input value={name} onChange={(e) => setName(e.target.value)} placeholder="My server" />
-            </label>
-            <label className="sw-field">
-              <span>SSH target</span>
-              <input
-                value={target}
-                onChange={(e) => setTarget(e.target.value)}
-                placeholder="user@host or ssh alias"
-                spellCheck={false}
-              />
-            </label>
-            <div className="sw-field-row">
-              <label className="sw-field">
-                <span>Port</span>
-                <input value={port} onChange={(e) => setPort(e.target.value)} placeholder="22" />
-              </label>
-              <label className="sw-field sw-grow">
-                <span>Identity file (optional)</span>
-                <PathField
-                  value={identity}
-                  mode="file"
-                  start={ssh?.dir || undefined}
-                  placeholder="~/.ssh/id_ed25519"
-                  title="Choose a key file"
-                  pickerTitle="SSH identity file"
-                  onChange={(p) => setIdentity(p)}
-                />
-              </label>
-            </div>
-            <div className="sw-role">
-              <button
-                className={`sw-role-opt ${role === "source" ? "on" : ""}`}
-                onClick={() => setRole("source")}
-              >
-                Source <span>has tmux</span>
-              </button>
-              <button
-                className={`sw-role-opt ${role === "client" ? "on" : ""}`}
-                onClick={() => setRole("client")}
-              >
-                Client <span>forwards to a source</span>
-              </button>
-            </div>
-            {role === "client" ? (
-              <label className="sw-field">
-                <span>Forwards to (source host)</span>
-                <input
-                  value={serverHost}
-                  onChange={(e) => setServerHost(e.target.value)}
-                  placeholder="my-server"
-                  spellCheck={false}
-                />
-              </label>
-            ) : null}
-          </div>
-
-          {log ? (
-            <pre className="sw-log" ref={logRef}>
-              {log}
-            </pre>
-          ) : null}
-
-          <div className="modal-actions">
-            {succeeded ? (
-              <button className="btn btn-accent" onClick={saveDevice}>
-                <Check size={14} />
-                Add to devices
-              </button>
-            ) : (
-              <button
-                className="btn btn-accent"
-                onClick={runInstall}
-                disabled={installing || !target.trim()}
-              >
-                {installing ? <Loader2 size={14} className="sw-spin" /> : <ServerCog size={14} />}
-                {installing ? "Installing..." : "Install agent"}
-              </button>
-            )}
-          </div>
-        </>
-      )}
-
     </Modal>
   );
 }

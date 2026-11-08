@@ -1,6 +1,6 @@
 [package]
 name = "pzzacode"
-version = "0.2.68"
+version = "0.2.70"
 description = "PzzaCode - every terminal, every agent, one grid"
 authors = ["Berke (pzzaworks)"]
 edition = "2021"
@@ -31,8 +31,15 @@ objc2 = "0.6"
 block2 = "0.6"
 coreaudio-rs = { version = "=0.13.0", default-features = false, features = ["audio_unit"] }
 objc2-core-audio = { version = "0.3", default-features = false, features = ["std", "AudioHardware"] }
-objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFString"] }
+# Raw input callback for the dictation microphone (see voice_io::TappedUnit).
+objc2-audio-toolbox = { version = "0.3", default-features = false, features = ["std", "objc2-core-audio-types", "AUComponent", "AudioComponent", "AudioUnitProperties"] }
+objc2-core-audio-types = { version = "0.3", default-features = false, features = ["std", "CoreAudioBaseTypes"] }
+objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFString", "CFArray", "CFLocale"] }
 whisper-rs = { version = "=0.16.0", features = ["metal"] }
+# ONNX Runtime for dictation's voice activity detection (voice_vad.rs). The
+# official onnxruntime dylib ships inside the app bundle (signed with it) and
+# is loaded at run time; nothing is downloaded at build time.
+ort = { version = "=2.0.0-rc.14", default-features = false, features = ["std", "load-dynamic", "api-22"] }
 
 [[test]]
 name = "native_terminal_drop"

@@ -4,9 +4,12 @@ import { tmuxArgs } from "./tmux-client.js";
 // Process arguments and account settings are examined only on that device.
 export function normalizeEffectiveModel(value) {
   if (typeof value !== "string") return null;
-  const model = value.trim().toLowerCase();
+  // A long-context marker ("opus[1m]") names the same model.
+  const model = value.trim().toLowerCase().replace(/\[1m\]$/, "");
   if (model.length === 0 || model.length > 128 || !/^[a-z0-9.-]+$/.test(model)) return null;
   if (/^claude-(?:opus|sonnet|haiku|fable|mythos)(?:[-.][a-z0-9]+)*$/.test(model)) return { model, provider: "claude" };
+  // Claude Code settings usually name a family alias rather than a full id.
+  if (/^(?:opus|sonnet|haiku|fable|opusplan)$/.test(model)) return { model, provider: "claude" };
   if (/^gpt-(?:\d+(?:\.\d+)?|4o)(?:-(?:mini|nano|pro|turbo|latest|chat-latest|codex(?:-(?:mini|max))?))*$/.test(model)) return { model, provider: "codex" };
   return null;
 }

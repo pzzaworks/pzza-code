@@ -8,9 +8,11 @@ import { ALL_WORKSPACE_ID, DEFAULT_WORKSPACE_ID, WORKSPACE_COLORS, wsKeyOf } fro
 import { altBadge, digitFromCode, NEW_WORKSPACE_SHORTCUT } from "../shortcuts";
 import { workspaceIcon, DEFAULT_WORKSPACE_ICON } from "../workspaceIcons";
 import { IconPicker } from "../ui/IconPicker";
+import { useSmoothHeight } from "../ui/useSmoothHeight";
 import { SESSION_DND, SESSION_TILE_DND, sessionDisplayName } from "../sessionMeta";
 import { WorkspaceSettings } from "../panels/WorkspaceSettings";
 import { useNotifications } from "../state/notifications";
+import { countLabel } from "../panels/Notifications";
 
 const WORKSPACE_DND = "application/x-pzza-workspace";
 
@@ -33,25 +35,49 @@ export function WorkspaceTabs({ openRequest = 0 }: { openRequest?: number }) {
   const notificationItems = useNotifications((s) => s.items);
   const unreadItems = useMemo(() => notificationItems.filter((item) => !item.read), [notificationItems]);
 
-  // Same green dot as the bell, but per workspace: a tab gets it when an
-  // unread notification belongs to one of its tiles. "All" gets it for any
-  // unread since it shows every workspace at once.
-  const unreadWorkspaces = useMemo(() => {
+  // Sessions waiting on the user, per workspace: a tile waits while it owns an
+  // unread terminal notification (the same rule that turns its status dot
+  // green, "notify" in TileStatus). Several notices from one tile count once.
+  // "All" counts every waiting tile since it shows every workspace at once.
+  // Notices left behind by a closed tile no longer belong to a session.
+  const waitingWorkspaces = useMemo(() => {
     const byTileId = new Map(tiles.map((tile) => [tile.id, sessionWs[wsKeyOf(tile)] ?? DEFAULT_WORKSPACE_ID]));
-    const counts = new Map<string, number>();
+    const tilesByWs = new Map<string, Set<string>>();
+    const all = new Set<string>();
     for (const item of unreadItems) {
       const tileId = item.target?.tileId;
-      if (!tileId) continue;
-      const wsId = byTileId.get(tileId) ?? sessionWs[tileId];
-      if (wsId) counts.set(wsId, (counts.get(wsId) ?? 0) + 1);
+      const wsId = tileId ? byTileId.get(tileId) : undefined;
+      if (!tileId || !wsId) continue;
+      all.add(tileId);
+      const waiting = tilesByWs.get(wsId) ?? new Set<string>();
+      waiting.add(tileId);
+      tilesByWs.set(wsId, waiting);
     }
+    const counts = new Map<string, number>([[ALL_WORKSPACE_ID, all.size]]);
+    for (const [wsId, waiting] of tilesByWs) counts.set(wsId, waiting.size);
     return counts;
   }, [tiles, sessionWs, unreadItems]);
+  const waitingBadge = (wsId: string, name: string) => {
+    const count = waitingWorkspaces.get(wsId) ?? 0;
+    if (!count) return null;
+    return (
+      <span className="corner-badge ws-tab-count" role="status" aria-label={`${count} session${count === 1 ? "" : "s"} waiting in ${name}`}>
+        {countLabel(count)}
+      </span>
+    );
+  };
 
   const [settingsFor, setSettingsFor] = useState<string | null>(null);
   const [settingsRect, setSettingsRect] = useState<DOMRect | null>(null);
   const [addOpen, setAddOpen] = useState(false);
   const [addRect, setAddRect] = useState<DOMRect | null>(null);
+  // Both panels resize smoothly when their content expands or collapses.
+  const settingsPanelRef = useRef<HTMLDivElement>(null);
+  const settingsBodyRef = useRef<HTMLDivElement>(null);
+  const addPanelRef = useRef<HTMLDivElement>(null);
+  const addBodyRef = useRef<HTMLDivElement>(null);
+  useSmoothHeight(settingsPanelRef, settingsBodyRef, settingsFor !== null);
+  useSmoothHeight(addPanelRef, addBodyRef, addOpen);
   const [name, setName] = useState("");
   const [icon, setIcon] = useState(DEFAULT_WORKSPACE_ICON);
   const [color, setColor] = useState(WORKSPACE_COLORS[0]);
@@ -92,8 +118,15 @@ export function WorkspaceTabs({ openRequest = 0 }: { openRequest?: number }) {
       const left = Math.min(Math.max(centered, regionL), regionR - width);
       strip.style.left = `${Math.round(left)}px`;
       strip.style.maxWidth = `${Math.floor(width)}px`;
+      markEdges();
+    };
+    // A clipped strip fades out on each side that has tabs scrolled out of view.
+    const markEdges = () => {
+      scroll.toggleAttribute("data-more-start", scroll.scrollLeft > 1);
+      scroll.toggleAttribute("data-more-end", scroll.scrollLeft + scroll.clientWidth < scroll.scrollWidth - 1);
     };
     measure();
+    scroll.addEventListener("scroll", markEdges, { passive: true });
     const ro = new ResizeObserver(measure);
     ro.observe(bar);
     ro.observe(brand);
@@ -102,6 +135,7 @@ export function WorkspaceTabs({ openRequest = 0 }: { openRequest?: number }) {
     window.addEventListener("resize", measure);
     return () => {
       ro.disconnect();
+      scroll.removeEventListener("scroll", markEdges);
       window.removeEventListener("resize", measure);
     };
   }, [workspaces]);
@@ -219,7 +253,15 @@ export function WorkspaceTabs({ openRequest = 0 }: { openRequest?: number }) {
     <div className="ws-tabs" ref={ref} data-tour="workspaces">
       {/* Only the tabs scroll; the + stays pinned after them so it is always
           reachable no matter how many workspaces there are. */}
-      <div className="ws-tabs-scroll" ref={scrollRef}>
+      <div
+        className="ws-tabs-scroll"
+        ref={scrollRef}
+        // A mouse wheel scrolls the clipped strip sideways; trackpads already do.
+        onWheel={(event) => {
+          const scroll = event.currentTarget;
+          if (Math.abs(event.deltaY) > Math.abs(event.deltaX) && scroll.scrollWidth > scroll.clientWidth) scroll.scrollLeft += event.deltaY;
+        }}
+      >
       <div
         className={`ws-tab ${workspaceId === ALL_WORKSPACE_ID ? "ws-tab-active" : ""}`}
         draggable={false}
@@ -229,7 +271,10 @@ export function WorkspaceTabs({ openRequest = 0 }: { openRequest?: number }) {
         }}
         title="All workspaces"
       >
-        <LayoutGrid size={13} className="ws-tab-icon" />
+        <span className="ws-tab-icon-anchor">
+          <LayoutGrid size={13} className="ws-tab-icon" />
+          {waitingBadge(ALL_WORKSPACE_ID, "all workspaces")}
+        </span>
         <span className="ws-tab-name">All</span>
         <kbd className="kbd ws-kbd">{altBadge(0)}</kbd>
       </div>
@@ -298,19 +343,15 @@ export function WorkspaceTabs({ openRequest = 0 }: { openRequest?: number }) {
               }}
               onDrop={(e) => onDropTab(w.id, e)}
             >
-              <Icon
-                size={13}
-                className="ws-tab-icon"
-                style={w.color ? { color: w.color } : undefined}
-              />
-              <span className="ws-tab-name">{w.name}</span>
-              {unreadWorkspaces.has(w.id) ? (
-                <span
-                  className="ws-tab-dot"
-                  role="status"
-                  aria-label={`${unreadWorkspaces.get(w.id)} unread notifications in ${w.name}`}
+              <span className="ws-tab-icon-anchor">
+                <Icon
+                  size={13}
+                  className="ws-tab-icon"
+                  style={w.color ? { color: w.color } : undefined}
                 />
-              ) : null}
+                {waitingBadge(w.id, w.name)}
+              </span>
+              <span className="ws-tab-name">{w.name}</span>
               {i < 9 ? <kbd className="kbd ws-kbd">{altBadge(i + 1)}</kbd> : null}
             </div>
           </div>
@@ -337,8 +378,8 @@ export function WorkspaceTabs({ openRequest = 0 }: { openRequest?: number }) {
 
       {settingsFor
         ? createPortal(
-            <div className="menu menu-panel pzza-portal" style={dropStyle(settingsRect)}>
-              <WorkspaceSettings id={settingsFor} close={() => setSettingsFor(null)} />
+            <div ref={settingsPanelRef} className="menu menu-panel pzza-portal" style={dropStyle(settingsRect)}>
+              <div ref={settingsBodyRef}><WorkspaceSettings id={settingsFor} close={() => setSettingsFor(null)} /></div>
             </div>,
             document.body,
           )
@@ -346,8 +387,8 @@ export function WorkspaceTabs({ openRequest = 0 }: { openRequest?: number }) {
 
       {addOpen
         ? createPortal(
-            <div className="menu menu-panel pzza-portal creation-panel new-workspace-panel" style={dropStyle(addRect, 420)}>
-              <div className="menu-body">
+            <div ref={addPanelRef} className="menu menu-panel pzza-portal creation-panel new-workspace-panel" style={dropStyle(addRect, 420)}>
+              <div ref={addBodyRef} className="menu-body">
                 <div className="menu-title">New workspace <kbd className="kbd" aria-hidden="true">{NEW_WORKSPACE_SHORTCUT.label}</kbd></div>
                 <div className="ws-chip">
                   <button

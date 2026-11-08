@@ -35,7 +35,12 @@ import { USAGE_FRESH_MS, collectUsage, fixClaudeToken } from "./lib/usage.js";
 import { createRemoteSpend, createRemoteUsage } from "./lib/device-agent.js";
 import { createMcpRepair } from "./lib/mcp-repair.js";
 import { gitProtectorRouter } from "./lib/git-protector.js";
+import { gitStatusRouter } from "./lib/git-status.js";
+import { gitReviewRouter } from "./lib/git-review.js";
+import { worktreeSetupRouter } from "./lib/worktree-setup.js";
+import { worktreeLandRouter } from "./lib/worktree-land.js";
 import { SPEND_FRESH_MS, computeSpend } from "./lib/spend.js";
+import { sessionCostRouter } from "./lib/session-cost.js";
 import { deviceInfo } from "./lib/device-info.js";
 import { deviceOs, doctor, sshHosts } from "./lib/system.js";
 import { mcpConfigs, mcpInstall } from "./lib/mcp.js";
@@ -78,6 +83,11 @@ const server = http.createServer(async (req, res) => {
   }
   if (await appControlRouter(req, res, url)) return;
   if (await gitProtectorRouter(req, res, url, json)) return;
+  if (await gitStatusRouter(req, res, url, json)) return;
+  if (await gitReviewRouter(req, res, url, json)) return;
+  if (await worktreeSetupRouter(req, res, url, json)) return;
+  if (await worktreeLandRouter(req, res, url, json)) return;
+  if (await sessionCostRouter(req, res, url, json)) return;
   if (await quickChatRouter(req, res, url, json)) return;
 
   if (url.pathname === "/capabilities") {

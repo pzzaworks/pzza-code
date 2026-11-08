@@ -9,9 +9,13 @@ import { confirmAction, type ConfirmationOptions } from "./ui/ConfirmDialog";
 import { hasUnsavedWork } from "./state/unsavedWork";
 import { useStore } from "./state/store";
 import { createSessionInApp, useSessionCreation, type SessionCreationInput } from "./sessionActions";
+import { sessionAgent } from "../server/lib/session-agents.js";
 import { HAS_TAURI } from "./tauriEnv";
 import { relaunchApp } from "./updater";
-import { DEFAULT_WORKSPACE_ID } from "./workspaces";
+import { ALL_WORKSPACE_ID, DEFAULT_WORKSPACE_ID } from "./workspaces";
+import { deleteWorkspaceSnapshot, relaunchWorkspaceSnapshot, renameWorkspaceSnapshot, saveWorkspaceSnapshot, snapshotSummaries, useWorkspaceSnapshots } from "./state/workspaceSnapshots";
+import { usePrompts } from "./state/prompts";
+import { openTilePullRequest, reviewTileChanges, tileGitStatus } from "./tileGit";
 
 function dictationState() {
   const state = useDictation.getState();
@@ -24,6 +28,9 @@ function dictationState() {
 function notificationState() {
   const state = useNotifications.getState();
   return { total: state.items.length, unread: state.items.filter(item => !item.read).length, preferences: state.preferences, events: NOTIFICATION_EVENTS };
+}
+function requireSnapshot(id: unknown) {
+  if (!useWorkspaceSnapshots.getState().snapshots.some(snapshot => snapshot.id === id)) throw new Error("Unknown snapshot. Read get_state runtime.snapshots for their IDs.");
 }
 function requireDictation() {
   if (!DICTATION_SUPPORTED) throw new Error("Voice input requires the macOS desktop app.");
@@ -51,6 +58,10 @@ export async function confirmAppControlAction(action: string, args: Readonly<Rec
   } else if (action === "close_app" || action === "relaunch_app") {
     if (hasUnsavedWork()) throw new Error("Save or explicitly discard all editor and settings drafts before closing or restarting the app.");
     options = { title: action === "close_app" ? "Close the app?" : "Restart the app?", message: "This closes the current app window. Your terminal sessions continue running.", confirmLabel: action === "close_app" ? "Close app" : "Restart app" };
+  } else if (action === "delete_saved_prompt") {
+    // The same question as the Delete button in Settings > Prompts.
+    const prompt = usePrompts.getState().prompts.find(item => item.id === args.promptId);
+    if (prompt) options = { title: "Delete this prompt?", message: `“${prompt.name}” is removed from the command palette and the broadcast bar.`, confirmLabel: "Delete prompt", danger: true };
   } else if (action === "clear_notifications" && useNotifications.getState().items.length) {
     options = { title: "Clear notification history?", message: "Permanently remove all notification history on this device? This cannot be undone.", confirmLabel: "Clear history", danger: true };
   } else if (action === "configure_appearance" && args.osc52Clipboard === true && !state.osc52Clipboard) {
@@ -74,7 +85,9 @@ export function initCoreAppControlHandlers(): () => void {
   }
   const handlers: Record<string, (args: Readonly<Record<string, unknown>>) => unknown> = {
     create_session: args => {
-      const pending = createSessionInApp({ name: args.name as string, deviceId: args.deviceId as string, workspaceId: args.workspaceId as string | undefined, cwd: args.cwd as string | undefined, account: args.account as SessionCreationInput["account"] });
+      const agent = args.agent as SessionCreationInput["agent"];
+      if (agent && !sessionAgent(agent.id)?.modes.some(mode => mode.id === agent.mode)) throw new Error("Choose a mode that this agent supports.");
+      const pending = createSessionInApp({ name: args.name as string, deviceId: args.deviceId as string, workspaceId: args.workspaceId as string | undefined, cwd: args.cwd as string | undefined, account: args.account as SessionCreationInput["account"], agent });
       void pending.catch(() => {});
       return { accepted: true, operation: useSessionCreation.getState().operation };
     },
@@ -106,6 +119,12 @@ export function initCoreAppControlHandlers(): () => void {
       if (hasUnsavedWork()) throw new Error("Save or explicitly discard all editor and settings drafts before relaunching the app.");
       afterAppControlReport(async () => { if (!hasUnsavedWork()) { window.dispatchEvent(new Event("pzza:quick-chat-cancel")); await relaunchApp(); } });
       return { accepted: true, relaunching: true };
+    },
+    auto_arrange: args => {
+      const state = useStore.getState();
+      const workspaceId = typeof args.workspaceId === "string" ? args.workspaceId : state.activeWorkspaceId;
+      if (workspaceId !== ALL_WORKSPACE_ID && !state.workspaces.some(workspace => workspace.id === workspaceId)) throw new Error("Choose an existing workspace or All.");
+      return { workspaceId, clearedSizes: state.autoArrange(workspaceId), columns: "auto" };
     },
     open_menu: args => { setAppControlMenu(args.menu as string, args.open as boolean); return { menu: args.menu, open: args.open }; },
     get_dictation: dictationState,
@@ -173,6 +192,27 @@ export function initCoreAppControlHandlers(): () => void {
     mark_notifications_read: args => { useNotifications.getState().read(args.id as string | undefined); return notificationState(); },
     remove_notification: args => { useNotifications.getState().remove(args.id as string); return notificationState(); },
     clear_notifications: () => { useNotifications.getState().clear(); return notificationState(); },
+    save_workspace_snapshot: args => {
+      const state = useStore.getState();
+      const workspaceId = typeof args.workspaceId === "string" ? args.workspaceId : state.activeWorkspaceId;
+      const workspace = state.workspaces.find(entry => entry.id === workspaceId);
+      if (!workspace) throw new Error("Unknown workspace.");
+      const name = typeof args.name === "string" && args.name.trim() ? args.name : `${workspace.name} ${new Date().toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}`;
+      const snapshot = saveWorkspaceSnapshot(workspaceId, name);
+      if (!snapshot) throw new Error("This workspace has no sessions to save.");
+      return { id: snapshot.id, name: snapshot.name, workspaceId, sessions: snapshot.sessions.length };
+    },
+    relaunch_workspace_snapshot: args => relaunchWorkspaceSnapshot(args.snapshotId as string, { continueChats: args.continueChats !== false }),
+    rename_workspace_snapshot: args => {
+      requireSnapshot(args.snapshotId);
+      renameWorkspaceSnapshot(args.snapshotId as string, args.name as string);
+      return snapshotSummaries().find(entry => entry.id === args.snapshotId) ?? null;
+    },
+    // Like the Delete button in Workspace settings, which does not ask either.
+    delete_workspace_snapshot: args => { requireSnapshot(args.snapshotId); deleteWorkspaceSnapshot(args.snapshotId as string); return { deleted: true }; },
+    review_tile_changes: args => reviewTileChanges(args.tileId as string),
+    open_pull_request: args => openTilePullRequest(args.tileId as string),
+    git_status: args => tileGitStatus(args.tileId as string),
     open_notification: args => {
       const item = useNotifications.getState().items.find(value => value.id === args.id);
       if (!item) throw new Error("This notification is no longer available.");
@@ -183,6 +223,7 @@ export function initCoreAppControlHandlers(): () => void {
   const cleanups = [
     registerAppControlState("sessionCreation", () => ({ operation: useSessionCreation.getState().operation, failed: Boolean(useSessionCreation.getState().error) })), registerAppControlState("platform", () => ({ desktop: HAS_TAURI, dictation: DICTATION_SUPPORTED, nativeWindow: HAS_TAURI, consent: "App control must be enabled locally." })), registerAppControlState("dictation", dictationState), registerAppControlState("notifications", notificationState),
     registerAppControlState("operations", () => Object.fromEntries(operations)),
+    registerAppControlState("snapshots", () => snapshotSummaries()),
     ...Object.entries(handlers).map(([action, handler]) => registerAppControlHandler(action, handler)),
   ];
   return () => cleanups.forEach(cleanup => cleanup());

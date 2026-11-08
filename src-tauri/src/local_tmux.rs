@@ -146,33 +146,45 @@ fn tmux_available() -> bool {
         .is_ok_and(|status| status.success())
 }
 
+pub(crate) fn homebrew() -> Option<&'static str> {
+    ["/opt/homebrew/bin/brew", "/usr/local/bin/brew"]
+        .into_iter()
+        .find(|path| Path::new(path).is_file())
+}
+
+/// Installs one Homebrew formula non-interactively. Callers pass fixed formula
+/// names only; nothing here comes from user input.
+pub(crate) fn brew_install(formula: &'static str) -> Result<(), String> {
+    let brew = homebrew().ok_or(format!(
+        "Homebrew is needed to install {formula}. Install Homebrew first, then try again."
+    ))?;
+    let output = Command::new(brew)
+        .args(["install", formula])
+        .env("PATH", crate::agent::login_path())
+        // Skip the index refresh: it can take minutes and these formulae are in any recent index.
+        .env("HOMEBREW_NO_AUTO_UPDATE", "1")
+        .env("HOMEBREW_NO_ENV_HINTS", "1")
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|_| "Homebrew could not be started".to_string())?;
+    if !output.status.success() {
+        let reason = String::from_utf8_lossy(&output.stderr)
+            .lines()
+            .rev()
+            .find(|line| !line.trim().is_empty())
+            .map(|line| line.trim().chars().take(300).collect::<String>())
+            .unwrap_or_default();
+        return Err(format!("Homebrew could not install {formula}. {reason}").trim().to_string());
+    }
+    Ok(())
+}
+
 /// Installs tmux with Homebrew when it is missing, then starts the local
 /// terminal service. Homebrew itself needs an administrator password to
 /// install, so it is a prerequisite rather than something set up silently.
 pub fn install() -> Result<(), String> {
     if !tmux_available() {
-        let brew = ["/opt/homebrew/bin/brew", "/usr/local/bin/brew"]
-            .into_iter()
-            .find(|path| Path::new(path).is_file())
-            .ok_or("Homebrew is needed to install tmux. Install it from brew.sh, then try again.")?;
-        let output = Command::new(brew)
-            .args(["install", "tmux"])
-            .env("PATH", crate::agent::login_path())
-            // Skip the index refresh: it can take minutes and tmux is in any recent index.
-            .env("HOMEBREW_NO_AUTO_UPDATE", "1")
-            .env("HOMEBREW_NO_ENV_HINTS", "1")
-            .stdin(Stdio::null())
-            .output()
-            .map_err(|_| "Homebrew could not be started".to_string())?;
-        if !output.status.success() {
-            let reason = String::from_utf8_lossy(&output.stderr)
-                .lines()
-                .rev()
-                .find(|line| !line.trim().is_empty())
-                .map(|line| line.trim().chars().take(300).collect::<String>())
-                .unwrap_or_default();
-            return Err(format!("Homebrew could not install tmux. {reason}").trim().to_string());
-        }
+        brew_install("tmux")?;
         if !tmux_available() {
             return Err("tmux was installed but cannot be found. Restart PzzaCode and try again.".into());
         }

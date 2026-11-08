@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useModalFocus } from "../ui/Modal";
 import { registerAppControlHandler, registerAppControlState } from "../appControlRuntime";
 import { createPortal } from "react-dom";
-import { Info, ChevronDown, Bell, Blocks, CircleQuestionMark, FolderSync, HardDrive, MessageSquare, Settings, ShieldCheck, X } from "lucide-react";
+import { Info, ChevronDown, Bell, Blocks, CircleQuestionMark, FolderSync, HardDrive, MessageSquare, Settings, Wrench, X } from "lucide-react";
 import { SettingsMenu, generalSections, type GeneralSection } from "./SettingsMenu";
 import { DevicesMenu } from "./DevicesMenu";
 import { ProjectsMenu } from "./ProjectsMenu";
@@ -12,21 +12,20 @@ import { RdpMenu } from "./RdpMenu";
 import { McpMenu } from "./McpMenu";
 import { useStore } from "../state/store";
 import { hasRemoteDevice } from "../devices";
-import { HelpContent, HELP_SECTIONS, type HelpSection, type HelpRequest } from "./HelpModal";
+import { HelpContent, HelpNav, HELP_SECTIONS, isHelpTopic, type HelpTopic, type HelpRequest } from "./HelpModal";
 import { About } from "./About";
 import { NotificationsSettings } from "./Notifications";
-import { PermissionsPanel } from "./Permissions";
-import { PERMISSIONS_SUPPORTED } from "../state/permissions";
+import { SetupSettings } from "./SetupSettings";
 import "./SettingsHub.css";
 
 const sections = [
   { id: "general", label: "General", icon: Settings },
   { id: "notifications", label: "Notifications", icon: Bell },
-  { id: "permissions", label: "Permissions", icon: ShieldCheck },
   { id: "quick-chat", label: "Quick Chat", icon: MessageSquare },
   { id: "devices", label: "Devices", icon: HardDrive },
   { id: "sync", label: "Sync", icon: FolderSync },
   { id: "mcp", label: "Connections", icon: Blocks },
+  { id: "setup", label: "Setup", icon: Wrench },
   { id: "help", label: "Help", icon: CircleQuestionMark },
   { id: "about", label: "About", icon: Info },
 ] as const;
@@ -47,28 +46,26 @@ export function SettingsHub({ open, section, onSectionChange, onOpen, onClose, s
   const hasRemote = useStore((state) => hasRemoteDevice(state.devices));
   const [generalSection, setGeneralSection] = useState<GeneralSection>("appearance");
   const [notificationPage, setNotificationPage] = useState<"activity" | "preferences">("activity");
-  const [helpSection, setHelpSection] = useState<HelpSection>("getting-started");
+  const [helpTopic, setHelpTopic] = useState<HelpTopic>("start");
   useEffect(() => {
-    if (!helpRequest) return;
-    const group = HELP_SECTIONS.find(entry => entry.topics.some(topic => topic === helpRequest.topic));
-    if (group) setHelpSection(group.id);
+    if (helpRequest && isHelpTopic(helpRequest.topic)) setHelpTopic(helpRequest.topic);
   }, [helpRequest]);
   const [syncPage, setSyncPage] = useState<"repositories" | "preferences">("repositories");
   const [syncVisited, setSyncVisited] = useState(false);
   const [mcpVisited, setMcpVisited] = useState(false);
   const [portsVisited, setPortsVisited] = useState(false);
-  const controlRef = useRef({ open, section, generalSection, notificationPage, helpSection, syncPage, onOpen });
-  controlRef.current = { open, section, generalSection, notificationPage, helpSection, syncPage, onOpen };
+  const controlRef = useRef({ open, section, generalSection, notificationPage, helpTopic, syncPage, onOpen });
+  controlRef.current = { open, section, generalSection, notificationPage, helpTopic, syncPage, onOpen };
   useEffect(() => {
     const pages: Record<SettingsSection, readonly string[]> = {
       general: generalSections.map(item => item.id), notifications: ["activity", "preferences"],
-      permissions: [], "quick-chat": [], devices: [], sync: ["repositories", "preferences"],
-      mcp: ["mcp"], help: HELP_SECTIONS.map(item => item.id), about: [], remote: [], ports: [],
+      setup: [], "quick-chat": [], devices: [], sync: ["repositories", "preferences"],
+      mcp: ["mcp"], help: HELP_SECTIONS.flatMap(item => item.topics), about: [], remote: [], ports: [],
     };
     const cleanups = [
       registerAppControlState("settings", () => {
         const current = controlRef.current;
-        return { open: current.open, section: current.section, pages, page: current.section === "general" ? current.generalSection : current.section === "notifications" ? current.notificationPage : current.section === "help" ? current.helpSection : current.section === "mcp" ? "mcp" : current.section === "sync" ? current.syncPage : null };
+        return { open: current.open, section: current.section, pages, page: current.section === "general" ? current.generalSection : current.section === "notifications" ? current.notificationPage : current.section === "help" ? current.helpTopic : current.section === "mcp" ? "mcp" : current.section === "sync" ? current.syncPage : null };
       }),
       registerAppControlHandler("open_settings", args => {
         const target = args.section as SettingsSection;
@@ -77,7 +74,7 @@ export function SettingsHub({ open, section, onSectionChange, onOpen, onClose, s
         if (page !== undefined) {
           if (target === "general") setGeneralSection(page as GeneralSection);
           if (target === "notifications") setNotificationPage(page as "activity" | "preferences");
-          if (target === "help") setHelpSection(page as HelpSection);
+          if (target === "help") setHelpTopic(page as HelpTopic);
           if (target === "sync") setSyncPage(page as "repositories" | "preferences");
         }
         controlRef.current.onOpen(target);
@@ -90,7 +87,7 @@ export function SettingsHub({ open, section, onSectionChange, onOpen, onClose, s
   const dialog = useRef<HTMLDivElement>(null);
   useEffect(() => {
     dialog.current?.querySelector(".settings-hub-content")?.scrollTo({ top: 0 });
-  }, [section, generalSection, notificationPage, helpSection, syncPage]);
+  }, [section, generalSection, notificationPage, helpTopic, syncPage]);
   useModalFocus(open, dialog, onClose);
   useEffect(() => {
     if ((open && section === "sync") || syncRequest > 0) setSyncVisited(true);
@@ -108,7 +105,7 @@ export function SettingsHub({ open, section, onSectionChange, onOpen, onClose, s
         </div>
         <div className="settings-hub-layout">
           <nav className="settings-hub-nav" aria-label="Settings sections">
-            {sections.filter(({ id }) => id !== "permissions" || PERMISSIONS_SUPPORTED).map(({ id, label, icon: Icon }) => {
+            {sections.map(({ id, label, icon: Icon }) => {
               const active = parentSection === id;
               const hasChildren = ["general", "notifications", "sync", "mcp", "help"].includes(id);
               return <div className="settings-nav-group" key={id}>
@@ -117,7 +114,7 @@ export function SettingsHub({ open, section, onSectionChange, onOpen, onClose, s
                 {active && id === "notifications" ? <SettingsSubnav label="Notification pages" items={[{ id: "activity", label: "Activity" }, { id: "preferences", label: "Preferences" }]} value={notificationPage} onChange={setNotificationPage} /> : null}
                 {active && id === "sync" ? <SettingsSubnav label="Sync pages" items={[{ id: "repositories", label: "Repositories" }, { id: "preferences", label: "Preferences" }]} value={syncPage} onChange={setSyncPage} /> : null}
                 {active && id === "mcp" ? <SettingsSubnav label="Connection settings" items={[{ id: "mcp" as const, label: "MCP integrations" }, ...(hasRemote ? [{ id: "remote" as const, label: "Remote desktop" }] : []), { id: "ports" as const, label: "Port forwarding" }]} value={section === "remote" || section === "ports" ? section : "mcp"} onChange={(value: "mcp" | "remote" | "ports") => onSectionChange(value)} /> : null}
-                {active && id === "help" ? <SettingsSubnav label="Help topics" items={HELP_SECTIONS} value={helpSection} onChange={setHelpSection} /> : null}
+                {active && id === "help" ? <HelpNav value={helpTopic} onChange={setHelpTopic} /> : null}
               </div>;
             })}
           </nav>
@@ -125,7 +122,7 @@ export function SettingsHub({ open, section, onSectionChange, onOpen, onClose, s
             <div className="settings-hub-content">
               {open && section === "general" ? <SettingsMenu section={generalSection} /> : null}
               {open && section === "notifications" ? <NotificationsSettings page={notificationPage} /> : null}
-              {open && section === "permissions" && PERMISSIONS_SUPPORTED ? <div className="settings-page"><PermissionsPanel /></div> : null}
+              {open && section === "setup" ? <SetupSettings /> : null}
               {open && section === "quick-chat" ? <QuickChatSettings /> : null}
               {open && section === "devices" ? <DevicesMenu /> : null}
               {/* The same sync instance owns the scan across navigation and closing. */}
@@ -134,7 +131,7 @@ export function SettingsHub({ open, section, onSectionChange, onOpen, onClose, s
               {open && section === "remote" ? <RdpMenu close={onClose} /> : null}
               {mcpVisited || (open && section === "mcp") ? <div hidden={!open || section !== "mcp"}><McpMenu /></div> : null}
               {open && section === "about" ? <About /> : null}
-              {open && section === "help" ? <HelpContent section={helpSection} request={helpRequest} /> : null}
+              {open && section === "help" ? <HelpContent topic={helpTopic} request={helpRequest} onNavigate={setHelpTopic} /> : null}
             </div>
           </div>
         </div>
@@ -150,6 +147,8 @@ function SettingsSubnav<T extends string>({ label, items, value, onChange }: {
   onChange: (value: T) => void;
 }) {
   return <div className="settings-nav-children" role="group" aria-label={label}>
-    {items.map(({ id, label: itemLabel }) => <button type="button" key={id} aria-current={value === id ? "page" : undefined} className={`settings-hub-sublink ${value === id ? "active" : ""}`} onClick={() => onChange(id)}><span>{itemLabel}</span></button>)}
+    {items.map(({ id, label: itemLabel }) => <button type="button" key={id} aria-current={value === id ? "page" : undefined} className={`settings-hub-sublink ${value === id ? "active" : ""}`} onClick={() => onChange(id)}>
+      <span className="settings-hub-sublabel">{itemLabel}</span>
+    </button>)}
   </div>;
 }

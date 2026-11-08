@@ -136,7 +136,7 @@ fn agent_path() -> String {
 
 // Find a Node runtime, preferring whatever the login PATH resolves (nvm / fnm /
 // asdf shims and Homebrew), falling back to the common install locations.
-fn find_node(path: &str) -> Option<String> {
+pub(crate) fn find_node(path: &str) -> Option<String> {
     let out = Command::new("/bin/sh")
         .arg("-lc")
         .arg("command -v node")

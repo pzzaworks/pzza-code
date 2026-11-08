@@ -151,6 +151,9 @@ test("effective model metadata uses exact foreground selectors and selected-acco
   for (const model of ["gpt-5", "gpt-5.1", "gpt-5.2-codex-max", "gpt-4o-mini"]) assert.equal(normalizeEffectiveModel(model)?.provider, "codex");
   for (const model of ["claude-fable-5-1", "claude-mythos-5-1"]) assert.equal(normalizeEffectiveModel(model)?.provider, "claude");
   assert.equal(normalizeEffectiveModel("proxy-codex"), null);
+  // Settings aliases name a Claude family; "default" names nothing.
+  for (const alias of ["opus", "Sonnet", "opus[1m]", "opusplan"]) assert.equal(normalizeEffectiveModel(alias)?.provider, "claude", alias);
+  assert.equal(normalizeEffectiveModel("default"), null);
 
   const remote = detectSessionActivity([{ ...pane(), command: "claude", effectiveModel: "GPT-5-CODEX", effectiveProvider: "codex", effectiveModelEvidence: "reported" }], []);
   assert.equal(remote[0].effectiveModelEvidence, "reported");

@@ -309,8 +309,10 @@ function TreeNode({ path, name, isDir, depth, activePath, onOpenFile, host }: {
   </>;
 }
 
-export function FolderTree({ root, activePath, onOpenFile, host, control }: {
+export function FolderTree({ root, activePath, onOpenFile, onPickRoot, host, control }: {
   root: string; activePath?: string; onOpenFile: (path: string) => void; host?: string;
+  // Clicking the root row picks a different root folder.
+  onPickRoot: () => void;
   control?: { revision: number; path?: string; expanded?: boolean };
 }) {
   const [children, setChildren] = useState<DirEntry[] | null>(null);
@@ -406,11 +408,14 @@ export function FolderTree({ root, activePath, onOpenFile, host, control }: {
   };
   return <TreeContext.Provider value={actions}>
     <div className="ft-body">
-      <button className="ft-row ft-root" title="Drop here to move into the root folder" disabled={busy}
-        onClick={() => setRevision((value) => value + 1)}
+      <button className="ft-row ft-root" disabled={busy}
+        title={`${resolvedRoot}\nClick to open a different folder; drop files here to move them into this one`}
+        aria-label={`Change folder (current: ${resolvedRoot.split("/").pop() || resolvedRoot})`}
+        onClick={onPickRoot}
         onDragOver={(event) => { if (canDrop(resolvedRoot)) { event.preventDefault(); event.stopPropagation(); event.dataTransfer.dropEffect = "move"; } }}
         onDrop={(event) => { event.preventDefault(); event.stopPropagation(); actions.drop(resolvedRoot); }}>
         <FolderOpen size={15} /><span className="ft-name">{resolvedRoot.split("/").pop() || resolvedRoot}</span>
+        <span className="ft-root-hint" aria-hidden="true">Change…</span>
       </button>
       {children === null ? <div className="ft-loading"><Loader2 size={12} className="sw-spin" /></div>
         : listingError ? <div className="ft-loading" role="alert">{listingError}</div>

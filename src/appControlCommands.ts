@@ -8,7 +8,7 @@ export type AppControlStore = Pick<ReturnType<typeof useStore.getState>,
   | "hideTile" | "closeTile" | "renameTile" | "reorderTile" | "setTileSpan" | "tileSpan" | "devices" | "activeDevices" | "addDevice" | "removeDevice" | "setHost" | "loadSessions"
   | "refreshing"
   | "themeId" | "setTheme" | "fontSize" | "setFontSize" | "cursorBlink" | "setCursorBlink" | "osc52Clipboard" | "setOsc52Clipboard"
-  | "semiTransparent" | "setSemiTransparent" | "grayscale" | "setGrayscale" | "transparencyOptions" | "setTransparencyOptions"
+  | "semiTransparent" | "setSemiTransparent" | "grayscale" | "setGrayscale" | "transparencyOptions" | "setTransparencyOptions" | "spacing" | "setSpacing"
 >;
 export interface AppControlContext {
   getState(): AppControlStore;
@@ -42,11 +42,12 @@ export function appControlSnapshot(context: AppControlContext) {
     runtime: context.readRuntime?.() ?? {},
     workspaces: state.workspaces ?? [],
     devices: state.devices?.map(({ id, name, host, user, disabled }) => ({ id, name, host, user, disabled: !!disabled })) ?? [],
-    appearance: { theme: state.themeId, fontSize: state.fontSize, cursorBlink: state.cursorBlink, osc52Clipboard: state.osc52Clipboard, semiTransparent: state.semiTransparent, grayscale: state.grayscale, ...state.transparencyOptions },
+    appearance: { theme: state.themeId, fontSize: state.fontSize, cursorBlink: state.cursorBlink, osc52Clipboard: state.osc52Clipboard, semiTransparent: state.semiTransparent, grayscale: state.grayscale, spacing: state.spacing, ...state.transparencyOptions },
     sessionsRefreshing: state.refreshing ?? false,
     activeId: state.activeId,
     workspaceId: state.activeWorkspaceId,
-    columns: state.workspaceColumns[state.activeWorkspaceId] ?? state.defaultColumns,
+    // 0 means the grid picks its columns from the tile count and window width.
+    columns: (state.workspaceColumns[state.activeWorkspaceId] ?? state.defaultColumns) || "auto",
     tiles: state.tiles.map((tile) => {
       const editor = state.tileCode[tile.id];
       return {
@@ -128,6 +129,7 @@ export function executeAppControl(action: string, args: Record<string, unknown>,
       if (args.osc52Clipboard !== undefined) state.setOsc52Clipboard(args.osc52Clipboard as boolean);
       if (args.semiTransparent !== undefined) state.setSemiTransparent(args.semiTransparent as boolean);
       if (args.grayscale !== undefined) state.setGrayscale(args.grayscale as boolean);
+      if (args.spacing !== undefined) state.setSpacing(args.spacing as number);
       const options: Partial<TransparencyOptions> = {};
       for (const key of ["opacity", "blur", "saturation", "surfaceOpacity", "textVisibility", "desktopBlurRadius"] as const) if (args[key] !== undefined) options[key] = args[key] as number;
       if (args.desktopBlur !== undefined) options.desktopBlur = args.desktopBlur as boolean;

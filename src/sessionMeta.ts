@@ -43,12 +43,6 @@ export function sessionDisplayName(
   return fallback;
 }
 
-// Shorten a path for the tile header: home dirs become ~.
-export function shortPath(p?: string): string {
-  if (!p) return "";
-  return p.replace(/^\/home\/[^/]+/, "~").replace(/^\/root/, "~");
-}
-
 // idle: grey, no unread notifications
 // active: producing output right now (blinking green, legacy activity signal)
 // notify: unread terminal notification (solid green)

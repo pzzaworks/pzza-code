@@ -6,6 +6,7 @@ import type { RemoteSession } from "./connection";
 import type { DeviceOs } from "./devices";
 import { HAS_TAURI } from "./tauriEnv";
 import { createAgentConnection } from "./agentConnection";
+import type { SessionAgentChoice } from "../server/lib/session-agents.js";
 
 function serverPort(): number {
   try {
@@ -130,6 +131,24 @@ export async function fetchSessionActivity(host?: string, signal?: AbortSignal):
   const response = await agentFetch(`${SERVER_HTTP}/sessions/activity${host !== undefined ? `?host=${encodeURIComponent(host)}` : ""}`, { signal });
   if (!response.ok) throw new Error("Session activity unavailable");
   return response.json();
+}
+
+// Branch and dirty state for up to 64 folders on one device (null: not a repo).
+export interface GitFolderStatus {
+  branch: string;
+  detached: boolean;
+  dirty: boolean;
+  ahead: number | null;
+  behind: number | null;
+}
+export async function fetchGitStatus(host: string, paths: string[], signal?: AbortSignal): Promise<Record<string, GitFolderStatus | null>> {
+  const response = await agentFetch(`${SERVER_HTTP}/git/status`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ host, paths }), signal,
+  });
+  if (!response.ok) throw new Error("Git status unavailable");
+  const body: unknown = await response.json();
+  if (!body || typeof body !== "object" || !("results" in body) || !body.results || typeof body.results !== "object") throw new Error("Git status unavailable");
+  return body.results as Record<string, GitFolderStatus | null>;
 }
 
 // Last-output epoch per tmux pane (tmux window_activity). Tiny JSON poll so
@@ -371,17 +390,46 @@ export async function createSession(
   cwd?: string,
   account?: { provider: string; dir: string },
   host?: string,
-): Promise<void> {
+  agent?: SessionAgentChoice,
+  worktree?: boolean,
+): Promise<{ agentStarted?: boolean; cwd?: string; setup?: WorktreeSetupReport; setupStarted?: boolean }> {
   const response = await agentFetch(`${SERVER_HTTP}/create`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name, cwd, account, host }),
-    signal: AbortSignal.timeout(20000),
+    body: JSON.stringify({ name, cwd, account, host, agent, worktree: worktree || undefined }),
+    // A worktree also copies its setup files before the session starts.
+    signal: AbortSignal.timeout(worktree ? 80000 : 20000),
   });
   if (!response.ok) {
     const value: unknown = await response.json().catch(() => null);
     throw new Error(value && typeof value === "object" && "error" in value && typeof value.error === "string" ? value.error : "Could not create the session.");
   }
+  const value: unknown = await response.json().catch(() => null);
+  if (!value || typeof value !== "object") return {};
+  return {
+    agentStarted: "agentStarted" in value && typeof value.agentStarted === "boolean" ? value.agentStarted : undefined,
+    cwd: "cwd" in value && typeof value.cwd === "string" && value.cwd.startsWith("/") ? value.cwd : undefined,
+    setup: "setup" in value ? parseWorktreeSetupReport(value.setup) : undefined,
+    setupStarted: "setupStarted" in value && typeof value.setupStarted === "boolean" ? value.setupStarted : undefined,
+  };
+}
+
+// What a new worktree got from its repository's setup: files copied from the
+// main checkout, files skipped (with why), the commands typed before the
+// agent, and whether commands were held back for approval.
+export interface WorktreeSetupReport {
+  copied: string[];
+  skipped: Array<{ path: string; reason: string }>;
+  run: string[];
+  unapproved: boolean;
+  error: string | null;
+}
+const isStringList = (value: unknown): value is string[] => Array.isArray(value) && value.every((item) => typeof item === "string");
+function parseWorktreeSetupReport(value: unknown): WorktreeSetupReport | undefined {
+  if (!isGitRecord(value) || !isStringList(value.copied) || !isStringList(value.run) || typeof value.unapproved !== "boolean" || !Array.isArray(value.skipped)) return undefined;
+  const skipped = value.skipped.flatMap((entry: unknown) => (
+    isGitRecord(entry) && typeof entry.path === "string" && typeof entry.reason === "string" ? [{ path: entry.path, reason: entry.reason }] : []));
+  return { copied: value.copied, skipped, run: value.run, unapproved: value.unapproved, error: typeof value.error === "string" ? value.error : null };
 }
 
 export type QuickChatAgent = "claude" | "codex" | "opencode";
@@ -607,6 +655,28 @@ export async function fetchSpend(fresh = false, host = ""): Promise<AccountSpend
   const params = new URLSearchParams({ host, ...(fresh ? { fresh: "1" } : {}) });
   const res = await agentFetch(`${SERVER_HTTP}/spend?${params}`, { signal: host ? AbortSignal.timeout(15000) : undefined });
   if (!res.ok) throw new Error(`spend ${res.status}`);
+  return res.json();
+}
+
+// Cost and time span of the agent session a tile runs, from the agent's local
+// transcript on this device (matched by folder and start time, best effort).
+export interface SessionCost {
+  found: boolean;
+  provider: "claude" | "codex";
+  startedAt?: number;
+  lastAt?: number;
+  subagents?: number;
+  models?: string[];
+  tokens?: { input: number; output: number; cacheRead: number; cacheWrite: number };
+  /** Null when a model has no known price; pricedCost is then a lower bound. */
+  cost?: number | null;
+  pricedCost?: number;
+  unpricedModels?: string[];
+}
+export async function fetchSessionCost(provider: "claude" | "codex", cwd: string, since: number, signal?: AbortSignal): Promise<SessionCost> {
+  const params = new URLSearchParams({ provider, cwd, since: String(Math.max(0, Math.floor(since))) });
+  const res = await agentFetch(`${SERVER_HTTP}/session/cost?${params}`, { signal });
+  if (!res.ok) throw new Error(`session cost ${res.status}`);
   return res.json();
 }
 
@@ -930,4 +1000,238 @@ export async function repairMcp(host = "", fresh = false): Promise<{ results: Mc
     throw new Error(value && typeof value === "object" && "error" in value && typeof value.error === "string" ? value.error : "Integration check failed");
   }
   return response.json();
+}
+
+// Git review: changed files, one file's before/after contents, the branch's
+// web page and pull request, and the repository's worktrees.
+export type GitChangeStatus = "modified" | "added" | "deleted" | "renamed" | "untracked" | "conflicted";
+export interface GitChangedFile {
+  path: string;
+  status: GitChangeStatus;
+  from?: string;
+}
+export interface GitChanges {
+  files: GitChangedFile[];
+  truncated: boolean;
+  root: string;
+}
+export interface GitFileDiff {
+  before: string | null;
+  after: string | null;
+  binary: boolean;
+  truncated: boolean;
+}
+export type GitPullRequestState = "OPEN" | "MERGED" | "CLOSED";
+export type GitChecksState = "passing" | "failing" | "pending" | "none";
+export interface GitPullRequest {
+  number: number;
+  url: string;
+  state: GitPullRequestState;
+  draft: boolean;
+  checks: GitChecksState;
+}
+export interface GitRemoteInfo {
+  web: string | null;
+  pr: GitPullRequest | null;
+  ghAvailable: boolean;
+}
+// How a branch's work reached the base: plain ancestry, a squash merge (merging
+// it changes nothing) or a rebase merge (every commit matched by patch-id).
+export type GitMergeKind = "ancestor" | "squash" | "patch";
+export interface GitWorktree {
+  path: string;
+  branch: string | null;
+  head: string;
+  merged: boolean;
+  mergedBy: GitMergeKind | null;
+  dirty: boolean;
+  current: boolean;
+  locked: boolean;
+  main: boolean;
+}
+export interface GitWorktrees {
+  worktrees: GitWorktree[];
+  base: string | null;
+}
+export interface GitWorktreeRemoval {
+  removed: true;
+  branchDeleted: boolean;
+}
+
+const GIT_CHANGE_STATUSES: readonly string[] = ["modified", "added", "deleted", "renamed", "untracked", "conflicted"];
+const GIT_PR_STATES: readonly string[] = ["OPEN", "MERGED", "CLOSED"];
+const GIT_MERGE_KINDS: readonly GitMergeKind[] = ["ancestor", "squash", "patch"];
+const isGitMergeKind = (value: unknown): value is GitMergeKind => GIT_MERGE_KINDS.some((kind) => kind === value);
+const GIT_CHECK_STATES: readonly string[] = ["passing", "failing", "pending", "none"];
+
+function isGitRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+const isStringOrNull = (value: unknown): value is string | null => value === null || typeof value === "string";
+
+async function postGitReview(endpoint: string, body: Record<string, unknown>, fallback: string, signal?: AbortSignal): Promise<unknown> {
+  const response = await agentFetch(`${SERVER_HTTP}/git/${endpoint}`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal,
+  });
+  const value: unknown = await response.json().catch(() => null);
+  if (!response.ok) throw new Error(isGitRecord(value) && typeof value.error === "string" ? value.error : fallback);
+  return value;
+}
+
+function parseGitChangedFile(value: unknown): GitChangedFile | null {
+  if (!isGitRecord(value) || typeof value.path !== "string" || typeof value.status !== "string" || !GIT_CHANGE_STATUSES.includes(value.status)) return null;
+  const file: GitChangedFile = { path: value.path, status: value.status as GitChangeStatus };
+  if (typeof value.from === "string") file.from = value.from;
+  return file;
+}
+
+export async function fetchGitChanges(host: string, path: string, signal?: AbortSignal): Promise<GitChanges> {
+  const value = await postGitReview("changes", { host, path }, "Git changes unavailable", signal);
+  if (!isGitRecord(value) || !Array.isArray(value.files) || typeof value.truncated !== "boolean" || typeof value.root !== "string") throw new Error("Git changes unavailable");
+  const files = value.files.map(parseGitChangedFile).filter((file): file is GitChangedFile => file !== null);
+  if (files.length !== value.files.length) throw new Error("Git changes unavailable");
+  return { files, truncated: value.truncated, root: value.root };
+}
+
+export async function fetchGitDiff(host: string, path: string, file: string, from?: string, signal?: AbortSignal): Promise<GitFileDiff> {
+  const body: Record<string, unknown> = { host, path, file };
+  if (from !== undefined) body.from = from;
+  const value = await postGitReview("diff", body, "File changes unavailable", signal);
+  if (!isGitRecord(value) || !isStringOrNull(value.before) || !isStringOrNull(value.after) || typeof value.binary !== "boolean" || typeof value.truncated !== "boolean") {
+    throw new Error("File changes unavailable");
+  }
+  return { before: value.before, after: value.after, binary: value.binary, truncated: value.truncated };
+}
+
+function parseGitPullRequest(value: unknown): GitPullRequest | null {
+  if (!isGitRecord(value) || typeof value.number !== "number" || typeof value.url !== "string" || typeof value.draft !== "boolean"
+    || typeof value.state !== "string" || !GIT_PR_STATES.includes(value.state) || typeof value.checks !== "string" || !GIT_CHECK_STATES.includes(value.checks)) return null;
+  return { number: value.number, url: value.url, state: value.state as GitPullRequestState, draft: value.draft, checks: value.checks as GitChecksState };
+}
+
+export async function fetchGitRemote(host: string, path: string, signal?: AbortSignal): Promise<GitRemoteInfo> {
+  const value = await postGitReview("remote", { host, path }, "Git remote unavailable", signal);
+  if (!isGitRecord(value) || !isStringOrNull(value.web) || typeof value.ghAvailable !== "boolean") throw new Error("Git remote unavailable");
+  const pr = value.pr === null ? null : parseGitPullRequest(value.pr);
+  if (value.pr !== null && pr === null) throw new Error("Git remote unavailable");
+  return { web: value.web, pr, ghAvailable: value.ghAvailable };
+}
+
+function parseGitWorktree(value: unknown): GitWorktree | null {
+  if (!isGitRecord(value) || typeof value.path !== "string" || !isStringOrNull(value.branch) || typeof value.head !== "string"
+    || typeof value.merged !== "boolean" || typeof value.dirty !== "boolean" || typeof value.current !== "boolean"
+    || typeof value.locked !== "boolean" || typeof value.main !== "boolean") return null;
+  const mergedBy = value.mergedBy === null ? null : isGitMergeKind(value.mergedBy) ? value.mergedBy : undefined;
+  if (mergedBy === undefined || (mergedBy !== null) !== value.merged) return null;
+  return {
+    path: value.path, branch: value.branch, head: value.head, merged: value.merged, mergedBy,
+    dirty: value.dirty, current: value.current, locked: value.locked, main: value.main,
+  };
+}
+
+export async function fetchGitWorktrees(host: string, path: string, signal?: AbortSignal): Promise<GitWorktrees> {
+  const value = await postGitReview("worktrees", { host, path }, "Worktrees unavailable", signal);
+  if (!isGitRecord(value) || !Array.isArray(value.worktrees) || !isStringOrNull(value.base)) throw new Error("Worktrees unavailable");
+  const worktrees = value.worktrees.map(parseGitWorktree).filter((worktree): worktree is GitWorktree => worktree !== null);
+  if (worktrees.length !== value.worktrees.length) throw new Error("Worktrees unavailable");
+  return { worktrees, base: value.base };
+}
+
+export async function removeGitWorktree(host: string, path: string, worktree: string, deleteBranch: boolean): Promise<GitWorktreeRemoval> {
+  const value = await postGitReview("worktrees/remove", { host, path, worktree, deleteBranch }, "Could not remove the worktree", AbortSignal.timeout(60000));
+  if (!isGitRecord(value) || value.removed !== true || typeof value.branchDeleted !== "boolean") throw new Error("Could not remove the worktree");
+  return { removed: true, branchDeleted: value.branchDeleted };
+}
+
+// A repository's worktree setup (.pzzacode/worktree.json in its main
+// checkout): the copy patterns, the commands typed before the agent, and
+// whether those commands are approved on this device.
+export interface WorktreeSetup {
+  main: string;
+  file: string;
+  exists: boolean;
+  error: string | null;
+  copy: string[];
+  defaultCopy: boolean;
+  run: string[];
+  approved: boolean;
+}
+
+function parseWorktreeSetup(value: unknown, fallback: string): WorktreeSetup {
+  if (!isGitRecord(value) || typeof value.main !== "string" || typeof value.file !== "string" || typeof value.exists !== "boolean"
+    || !isStringOrNull(value.error) || !isStringList(value.copy) || typeof value.defaultCopy !== "boolean" || !isStringList(value.run)
+    || typeof value.approved !== "boolean") throw new Error(fallback);
+  return { main: value.main, file: value.file, exists: value.exists, error: value.error, copy: value.copy, defaultCopy: value.defaultCopy, run: value.run, approved: value.approved };
+}
+
+export async function fetchWorktreeSetup(host: string, path: string, signal?: AbortSignal): Promise<WorktreeSetup> {
+  return parseWorktreeSetup(await postGitReview("worktree-setup", { host, path }, "Worktree setup unavailable", signal), "Worktree setup unavailable");
+}
+
+/** Saves the setup file; `copy: null` keeps the default .env* copy. Saving approves the commands. */
+export async function saveWorktreeSetup(host: string, path: string, copy: string[] | null, run: string[]): Promise<WorktreeSetup> {
+  const value = await postGitReview("worktree-setup/save", { host, path, copy, run }, "Could not save the worktree setup", AbortSignal.timeout(30000));
+  return parseWorktreeSetup(value, "Could not save the worktree setup");
+}
+
+/** Approves exactly these commands; refused when the file changed since they were shown. */
+export async function approveWorktreeSetup(host: string, path: string, run: string[]): Promise<WorktreeSetup> {
+  const value = await postGitReview("worktree-setup/approve", { host, path, run }, "Could not approve the setup commands", AbortSignal.timeout(30000));
+  return parseWorktreeSetup(value, "Could not approve the setup commands");
+}
+
+// Whether a folder is a linked worktree (not the main checkout), its branch,
+// the repository's base branch and its main checkout.
+export interface WorktreeInfo {
+  linked: boolean;
+  branch: string | null;
+  base: string | null;
+  main: string | null;
+}
+
+export async function fetchWorktreeInfo(host: string, path: string, signal?: AbortSignal): Promise<WorktreeInfo> {
+  const value = await postGitReview("worktree/info", { host, path }, "Worktree unavailable", signal);
+  if (!isGitRecord(value) || typeof value.linked !== "boolean" || !isStringOrNull(value.branch) || !isStringOrNull(value.base) || !isStringOrNull(value.main)) {
+    throw new Error("Worktree unavailable");
+  }
+  return { linked: value.linked, branch: value.branch, base: value.base, main: value.main };
+}
+
+// The result of pushing a worktree branch and asking gh for its pull request:
+// `url` is the pull request (new or existing); without one, `compareUrl` is
+// the host's page to open it by hand and `message` says why.
+export interface WorktreePullRequest {
+  branch: string;
+  base: string | null;
+  url: string | null;
+  created: boolean;
+  compareUrl: string | null;
+  message: string | null;
+}
+
+export async function openWorktreePullRequest(host: string, path: string): Promise<WorktreePullRequest> {
+  const value = await postGitReview("worktree/pr", { host, path }, "Could not open a pull request", AbortSignal.timeout(150000));
+  if (!isGitRecord(value) || value.pushed !== true || typeof value.branch !== "string" || !isStringOrNull(value.base) || !isStringOrNull(value.url)
+    || typeof value.created !== "boolean" || !isStringOrNull(value.compareUrl) || !isStringOrNull(value.message)) throw new Error("Could not open a pull request");
+  const web = (url: string | null) => (url && /^https:\/\/[^\s]+$/.test(url) ? url : null);
+  return { branch: value.branch, base: value.base, url: web(value.url), created: value.created, compareUrl: web(value.compareUrl), message: value.message };
+}
+
+export async function mergeWorktreeBranch(host: string, path: string, branch: string, base: string): Promise<{ commit: string | null; main: string }> {
+  const value = await postGitReview("worktree/merge", { host, path, branch, base }, "Could not merge the worktree", AbortSignal.timeout(150000));
+  if (!isGitRecord(value) || value.merged !== true || !isStringOrNull(value.commit) || typeof value.main !== "string") throw new Error("Could not merge the worktree");
+  return { commit: value.commit, main: value.main };
+}
+
+// Failed CI logs of a folder's branch, saved by the server to a file in the
+// repository's git dir; `checks` names the failed jobs.
+export interface GitCiFailures { branch: string; sha: string; path: string; checks: string[] }
+export async function fetchGitCiFailures(host: string, path: string): Promise<GitCiFailures> {
+  // Up to four runs' logs are read one after another on another device.
+  const value = await postGitReview("ci-failures", { host, path }, "Could not fetch the failing CI logs", AbortSignal.timeout(180000));
+  if (!isGitRecord(value) || typeof value.branch !== "string" || typeof value.sha !== "string" || typeof value.path !== "string"
+    || !value.path.startsWith("/") || !Array.isArray(value.checks) || !value.checks.every((name) => typeof name === "string")) {
+    throw new Error("Could not fetch the failing CI logs");
+  }
+  return { branch: value.branch, sha: value.sha, path: value.path, checks: value.checks.filter((name): name is string => typeof name === "string") };
 }

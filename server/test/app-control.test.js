@@ -90,7 +90,11 @@ test("strict UI action and argument validation rejects unsafe or unsupported req
     ["open_editor", { tileId: "tile", path: "bad\u0000path" }],
     ["set_layout", { tileId: "tile", panel: "editor", layout: "full" }], ["set_layout", { tileId: "tile", layout: "floating" }],
     ["set_columns", { columns: 9 }], ["set_columns", { columns: 1.5 }],
+    ["set_tile_span", { tileId: "tile", columns: 1.25, rows: 1 }], ["set_tile_span", { tileId: "tile", columns: 0, rows: 1 }],
+    ["set_tile_span", { tileId: "tile", columns: 1, rows: 8.5 }], ["set_tile_span", { tileId: "tile", columns: "1", rows: 1 }],
   ]) assert.throws(() => validateCommand(action, args));
+  // Tile spans snap to half columns and rows.
+  assert.deepEqual(validateCommand("set_tile_span", { tileId: "tile", columns: 1.5, rows: 0.5 }), { tileId: "tile", columns: 1.5, rows: 0.5 });
   assert.deepEqual(validateCommand("open_editor", { tileId: "tile", root: "/project", layout: "side-by-side" }), { tileId: "tile", root: "/project", layout: "side-by-side" });
   for (const tileId of ["devbox::my session", "session::w::2", "devbox::çalışma"]) assert.equal(validateCommand("focus_tile", { tileId }).tileId, tileId);
 });
@@ -136,4 +140,26 @@ test("app tool annotations distinguish explicit reads, mutations and destructive
     assert.equal(tool.annotations.readOnlyHint, false, action);
     assert.equal(tool.annotations.destructiveHint, true, action);
   }
+});
+
+test("workflow and appearance commands validate their arguments", () => {
+  assert.deepEqual(validateCommand("send_saved_prompt", { tileId: "api", promptId: "default-tests" }), { tileId: "api", promptId: "default-tests" });
+  assert.deepEqual(validateCommand("search_terminals", { query: "error", regex: false }), { query: "error", regex: false });
+  assert.deepEqual(validateCommand("configure_appearance", { spacing: 0 }), { spacing: 0 });
+  assert.deepEqual(validateCommand("rename_workspace_snapshot", { snapshotId: "s1", name: "Evening" }), { snapshotId: "s1", name: "Evening" });
+  assert.deepEqual(validateCommand("add_saved_prompt", { name: "Lint", text: "Run the linter and fix what it reports." }).name, "Lint");
+  for (const [action, args] of [["delete_workspace_snapshot", {}], ["add_saved_prompt", { name: "x".repeat(61), text: "t" }], ["add_saved_prompt", { name: "n", text: "line\nbreak" }], ["delete_saved_prompt", {}]]) assert.throws(() => validateCommand(action, args), undefined, action);
+  for (const action of ["send_review_comments", "open_worktree_pr", "merge_worktree"]) assert.deepEqual(validateCommand(action, { tileId: "api" }), { tileId: "api" });
+  for (const target of ["tour", "requirements"]) assert.equal(validateCommand("navigate", { target }).target, target);
+  for (const action of ["get_usage", "get_saved_prompts"]) assert.deepEqual(validateCommand(action, {}), {});
+  for (const [action, args] of [
+    ["send_saved_prompt", { tileId: "api" }], ["send_saved_prompt", { tileId: "api", promptId: "x".repeat(65) }],
+    ["search_terminals", {}], ["search_terminals", { query: "bad\nquery" }], ["search_terminals", { query: "x".repeat(201) }],
+    ["get_session_cost", {}], ["send_failing_checks", {}], ["move_to_worktree", { tileId: "api", branch: "x" }],
+    ["configure_appearance", { spacing: 25 }], ["configure_appearance", { spacing: 1.5 }], ["navigate", { target: "wizard" }],
+  ]) assert.throws(() => validateCommand(action, args), undefined, `${action} ${JSON.stringify(args)}`);
+  const annotation = (action) => TOOLS.find(item => item.name === `app_${action}`).annotations;
+  for (const action of ["get_usage", "get_session_cost", "search_terminals", "get_saved_prompts"]) assert.equal(annotation(action).readOnlyHint, true, action);
+  // Both type into a terminal and press Enter, like terminal_submit.
+  for (const action of ["send_saved_prompt", "send_failing_checks", "delete_workspace_snapshot", "delete_saved_prompt"]) assert.equal(annotation(action).destructiveHint, true, action);
 });

@@ -72,7 +72,7 @@ function modelRates(model, day) {
   return null;
 }
 
-function bucketCost(b, model, day) {
+export function bucketCost(b, model, day) {
   const rates = modelRates(model, day);
   if (!rates) return null;
   const [ri, wo, cacheRead = ri * CACHE_READ_RATE] = rates;
@@ -220,6 +220,31 @@ async function readLines(file, start, onLine) {
   return consumed;
 }
 
+// The transcript's working folder and its first and last priced record, kept
+// in the resume state so the per-session view (session-cost.js) can still read
+// them after an incremental resume.
+function sessionState(state) {
+  const session = state && state.session && typeof state.session === "object" ? state.session : {};
+  return {
+    cwd: typeof session.cwd === "string" ? session.cwd : null,
+    firstAt: Number.isFinite(session.firstAt) ? session.firstAt : null,
+    lastAt: Number.isFinite(session.lastAt) ? session.lastAt : null,
+    // The model of the most recent reply: what the session is running now.
+    lastModel: typeof session.lastModel === "string" ? session.lastModel : null,
+  };
+}
+
+function noteSession(session, rec, cwd, model) {
+  if (typeof cwd === "string" && cwd && !session.cwd) session.cwd = cwd;
+  const at = Date.parse(rec.timestamp);
+  if (!Number.isFinite(at)) return;
+  if (session.firstAt === null || at < session.firstAt) session.firstAt = at;
+  if (session.lastAt === null || at >= session.lastAt) {
+    session.lastAt = at;
+    if (typeof model === "string" && model) session.lastModel = model;
+  }
+}
+
 // Parse a Claude transcript (from byte `start`, continuing `state`) into
 // day -> model -> buckets. Deduplicates by (message id, requestId) within the
 // file (retries logged twice); each file is parsed at most once and the result
@@ -227,6 +252,7 @@ async function readLines(file, start, onLine) {
 // (a session appends to its own file) - are not worth a global pass.
 async function parseClaudeFile(file, start, days, state) {
   const seen = new Set(state && Array.isArray(state.seen) ? state.seen : []);
+  const session = sessionState(state);
   const parsedBytes = await readLines(file, start, (line) => {
     if (!line.includes('"usage"')) return;
     let rec;
@@ -245,6 +271,7 @@ async function parseClaudeFile(file, start, days, state) {
     seen.add(key);
     const day = recordDay(rec);
     if (!day) return;
+    noteSession(session, rec, rec.cwd, model);
     const created = usage.cache_creation || {};
     let five = created.ephemeral_5m_input_tokens;
     const hour = created.ephemeral_1h_input_tokens;
@@ -259,7 +286,7 @@ async function parseClaudeFile(file, start, days, state) {
   });
   // Sets iterate in insertion order, so the slice keeps the most recent keys.
   const keys = [...seen];
-  return { parsedBytes, state: { seen: keys.slice(Math.max(0, keys.length - SEEN_KEEP)) } };
+  return { parsedBytes, state: { seen: keys.slice(Math.max(0, keys.length - SEEN_KEEP)), session } };
 }
 
 // Parse a Codex transcript. token_count events carry running totals, so the
@@ -270,6 +297,7 @@ async function parseCodexFile(file, start, days, state) {
     state && Array.isArray(state.previous) && state.previous.length === CODEX_COUNTERS.length
       ? state.previous.map(Number)
       : null;
+  const session = sessionState(state);
   const parsedBytes = await readLines(file, start, (line) => {
     if (!line.includes('"turn_context"') && !line.includes('"token_count"')) return;
     let rec;
@@ -282,6 +310,7 @@ async function parseCodexFile(file, start, days, state) {
     if (!payload || typeof payload !== "object") return;
     if (rec.type === "turn_context") {
       if (typeof payload.model === "string") model = payload.model;
+      if (typeof payload.cwd === "string" && payload.cwd && !session.cwd) session.cwd = payload.cwd;
       return;
     }
     if (rec.type !== "event_msg" || payload.type !== "token_count") return;
@@ -295,17 +324,18 @@ async function parseCodexFile(file, start, days, state) {
     previous = current;
     const day = recordDay(rec);
     if (!model || !day || !delta.some((x) => x)) return;
+    noteSession(session, rec, undefined, model);
     const cached = Math.min(delta[1], delta[0]);
     addBuckets(days, day, model, [delta[0] - cached, delta[2], cached, 0, 0]);
   });
-  return { parsedBytes, state: { model, previous } };
+  return { parsedBytes, state: { model, previous, session } };
 }
 
 // Produce the cache entry for `file`: untouched files are reused as-is, files
 // that only grew are resumed from the last complete line, anything else (shrunk,
 // rewritten, mtime moved backwards, unusable state) is parsed from scratch.
 // Returns null when the file cannot be read, so it is retried next scan.
-async function parseTranscript(provider, file, st, prev) {
+export async function parseTranscript(provider, file, st, prev) {
   const parse = provider === "claude" ? parseClaudeFile : parseCodexFile;
   const canResume =
     prev &&

@@ -68,6 +68,8 @@ function targetAt(x: number, y: number): DropTarget | undefined {
   for (const [element, accept] of targets) if (element === hit || element.contains(hit)) return accept;
   return undefined;
 }
+// True when a drop at this point would land in a terminal.
+export const terminalDropTargetAt = (x: number, y: number): boolean => targetAt(x, y) !== undefined;
 const report = (message: string) => notify({ category: "terminal", title: "File drop needs attention", body: message });
 
 // Mount once at the application root. Capture external drops before an editor,
@@ -115,7 +117,10 @@ export function installTerminalDrops(): () => void {
       const accept = targetAt(drop.x, drop.y);
       if (!accept || drop.error) {
         void releaseNativeDrop(drop).catch(() => {});
-        if (drop.error) report(drop.error);
+        // Off-terminal drops are not file drops: a folder dropped on the
+        // canvas starts a session instead (see folderDrop.ts), so only a drop
+        // that targeted a terminal reports its error.
+        if (accept && drop.error) report(drop.error);
         return;
       }
       accept({ native: drop });

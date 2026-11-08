@@ -3,6 +3,7 @@ export interface AppArgumentSchema {
   enum?: string[];
   minimum?: number;
   maximum?: number;
+  multipleOf?: number;
   minLength?: number;
   maxLength?: number;
   pattern?: string;

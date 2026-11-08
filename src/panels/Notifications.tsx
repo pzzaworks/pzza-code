@@ -8,6 +8,8 @@ import { useNotifications, NOTIFICATION_EVENTS, NOTIFICATION_EVENT_CATEGORIES, t
 import { useStore } from "../state/store";
 import { DEFAULT_WORKSPACE_ID } from "../workspaces";
 import { confirmAction } from "../ui/ConfirmDialog";
+import { Dropdown } from "../ui/Dropdown";
+import { openTileChangesView } from "../tileGit";
 
 let clearingHistory: Promise<boolean> | null = null;
 export function clearNotificationHistory(): Promise<boolean> {
@@ -36,6 +38,13 @@ export function openNotice(item: Notice) {
     window.dispatchEvent(new Event("pzza-notification-terminal"));
   }
 }
+// A notice's follow-up: opens its tile like the notice itself, then the
+// tile's Changes view on the folder the notice was about.
+export function runNoticeAction(item: Notice) {
+  if (!item.action || !item.target?.tileId) return;
+  openNotice(item);
+  openTileChangesView(item.target.tileId, item.action.folder);
+}
 function Rows({ items, readOnly = false }: { items: Notice[]; readOnly?: boolean }) {
   const remove = useNotifications(state => state.remove);
   return <div className="notification-list">{items.length ? items.map(item => <article key={item.id} className={`notification-row ${item.read ? "" : "unread"}`}>
@@ -44,6 +53,7 @@ function Rows({ items, readOnly = false }: { items: Notice[]; readOnly?: boolean
       <small>{item.category} · <time dateTime={new Date(item.createdAt).toISOString()}>{new Date(item.createdAt).toLocaleString()}</time></small>
     </button>
     <div className="notification-row-actions">
+    {item.action?.kind === "review-changes" && item.target?.tileId ? <button type="button" className="btn btn-sm notification-action" onClick={() => runNoticeAction(item)}>Review changes</button> : null}
     {readOnly && (item.target?.section || item.target?.tileId) ? <button type="button" className="icon-btn notification-open" aria-label={`Open target for ${item.title}`} title="Open related activity" onClick={() => openNotice(item)}><ArrowUpRight size={15} /></button> : null}
     <button type="button" className="dismiss-btn notification-dismiss" aria-label={`Dismiss ${item.title}`} onClick={() => remove(item.id)}><X size={16} /></button>
     </div>
@@ -53,6 +63,20 @@ export function LatestNotifications({ viewAll }: { viewAll(): void }) {
   const items = useNotifications(state => state.items);
   return <div className="menu-body latest-notifications"><div className="notification-actions"><strong>Notifications</strong><button className="btn btn-sm" onClick={() => useNotifications.getState().read()}>Mark all read</button></div>
     <Rows items={items.slice(0, 5)} /><button className="btn" onClick={viewAll}>View all notifications</button></div>;
+}
+// Compact count for badges: exact up to nine, then "9+" so the chip keeps its width.
+export function countLabel(count: number): string {
+  return count > 9 ? "9+" : String(count);
+}
+// Top bar trigger for the notifications panel: the bell plus the unread count,
+// so pending activity is readable without opening the panel.
+export function NotificationsTool({ viewAll }: { viewAll(): void }) {
+  const unread = useNotifications(state => state.items.filter(item => !item.read).length);
+  return <Dropdown icon={Bell} title="Notifications" controlId="notifications" width={380} panelClassName="notifications-panel" tourId="notifications"
+    badgeLabel={unread ? `Notifications: ${unread} unread` : undefined}
+    cornerBadge={unread ? countLabel(unread) : null}>
+    {(close) => <LatestNotifications viewAll={() => { close(); viewAll(); }} />}
+  </Dropdown>;
 }
 function NotificationToggle({ label, hint, checked, onChange, disabled = false }: { label: string; hint?: string; checked: boolean; onChange: (checked: boolean) => void; disabled?: boolean }) {
   return <div className="settings-row">
