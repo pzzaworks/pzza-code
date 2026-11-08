@@ -1,7 +1,6 @@
 // tmux session and window listing on the connected device (or over ssh to a
 // named host, for the multi-device scan).
 import { execFile } from "node:child_process";
-import { randomUUID } from "node:crypto";
 import { DEVBOX, IS_CLIENT } from "./config.js";
 import { sh, shQuote, SSH_TOKEN, deviceEnv } from "./shell.js";
 import { tmuxCommand } from "./tmux-client.js";
@@ -52,30 +51,43 @@ export function terminateSession(name, window, host) {
 
 // Resolve the source's live pane rather than a cached path from the UI. A copy
 // starts a separate shell, so terminating it cannot affect the original pane.
-export function duplicationCommand(name, window, copyName, host) {
+// The copy is named "<base>", then "<base> 2", "<base> 3"... on the device
+// itself, so the name stays readable and unique among that device's sessions.
+// Prints the chosen name on the first line and the folder after it.
+const MAX_COPIES = 999;
+// Letters, digits, spaces, - and _ (as session names allow), no outer spaces.
+const COPY_NAME = /^[A-Za-z0-9_-](?:[A-Za-z0-9_ -]*[A-Za-z0-9_-])?$/;
+export function duplicationCommand(name, window, copyBase, host) {
   if (typeof name !== "string" || !name.trim() || /[\x00-\x1f\x7f]/.test(name)) throw new Error("invalid session");
   if (window !== undefined && (!Number.isInteger(window) || window < 0)) throw new Error("invalid window");
-  if (typeof copyName !== "string" || !/^[A-Za-z0-9_-]+$/.test(copyName)) throw new Error("invalid copy name");
+  if (typeof copyBase !== "string" || !COPY_NAME.test(copyBase)) throw new Error("invalid copy name");
   const target = shQuote(`=${name}:${window ?? ""}`);
   const tmux = tmuxCommand(host);
   return `cwd=$(${tmux} display-message -p -t ${target} '#{pane_current_path}') || exit 1
 [ -n "$cwd" ] && [ -d "$cwd" ] || exit 1
-${tmux} new-session -d -s ${shQuote(copyName)} -c "$cwd" || exit 1
-printf '%s' "$cwd"`;
+copy=${shQuote(copyBase)}; n=1
+while ${tmux} has-session -t "=$copy" 2>/dev/null; do
+  n=$((n + 1)); [ "$n" -le ${MAX_COPIES} ] || exit 1; copy=${shQuote(copyBase)}" $n"
+done
+${tmux} new-session -d -s "$copy" -c "$cwd" || exit 1
+printf '%s\\n%s' "$copy" "$cwd"`;
 }
 
 export function duplicateSession(name, window, host) {
   if (host !== undefined && (typeof host !== "string" || (host && !SSH_TOKEN.test(host)))) return Promise.reject(new Error("invalid host"));
-  const prefix = typeof name === "string" ? name.replace(/[^A-Za-z0-9_-]/g, "-").slice(0, 60) : "";
-  const copyName = `${prefix || "session"}-copy-${randomUUID()}`;
+  const prefix = typeof name === "string" ? name.replace(/[^A-Za-z0-9_ -]/g, "-").replace(/\s+/g, " ").trim().slice(0, 60).trim() : "";
+  const copyBase = `${prefix || "session"} Copy`;
   const targetHost = host === undefined ? (IS_CLIENT ? DEVBOX : "") : host;
-  const command = duplicationCommand(name, window, copyName, targetHost);
+  const command = duplicationCommand(name, window, copyBase, targetHost);
   return new Promise((resolve, reject) => {
     execFile(targetHost ? "ssh" : "sh", targetHost
       ? ["-o", "BatchMode=yes", "-o", "ConnectTimeout=8", "-o", "StrictHostKeyChecking=accept-new", targetHost, command]
-      : ["-c", command], { timeout: 15_000, maxBuffer: 64 * 1024, env: deviceEnv(targetHost) }, (error, cwd) => {
-      if (error) reject(new Error("Could not duplicate the session on this device. Check that the source window is still running."));
-      else resolve({ name: copyName, cwd });
+      : ["-c", command], { timeout: 15_000, maxBuffer: 64 * 1024, env: deviceEnv(targetHost) }, (error, output) => {
+      const text = String(output ?? "");
+      const split = text.indexOf("\n");
+      const copyName = split > 0 ? text.slice(0, split) : "";
+      if (error || !COPY_NAME.test(copyName)) reject(new Error("Could not duplicate the session on this device. Check that the source window is still running."));
+      else resolve({ name: copyName, cwd: text.slice(split + 1) });
     });
   });
 }
