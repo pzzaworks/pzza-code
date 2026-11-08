@@ -375,14 +375,17 @@ test("duplicate starts an independent shell in the selected window's live folder
   await tmux("send-keys", "-t", "=source:1", `${shQuote(realTmux)} -S ${shQuote(socket)} wait-for -S source-ready`, "Enter");
   await tmux("wait-for", "source-ready");
   const sourcePane = (await tmux("display-message", "-p", "-t", "=source:1", "#{pane_id}")).stdout.trim();
-  const result = await run("sh", ["-c", duplicationCommand("source", 1, "source-copy")], { env });
-  assert.equal(result.stdout, cwd);
-  await tmux("send-keys", "-t", "=source-copy:", `${shQuote(realTmux)} -S ${shQuote(socket)} wait-for -S copy-ready`, "Enter");
+  const result = await run("sh", ["-c", duplicationCommand("source", 1, "source Copy")], { env });
+  assert.equal(result.stdout, `source Copy\n${cwd}`, "the readable name first, then the folder");
+  // A second copy takes the next free readable name.
+  assert.equal((await run("sh", ["-c", duplicationCommand("source", 1, "source Copy")], { env })).stdout, `source Copy 2\n${cwd}`);
+  await tmux("kill-session", "-t", "=source Copy 2");
+  await tmux("send-keys", "-t", "=source Copy:", `${shQuote(realTmux)} -S ${shQuote(socket)} wait-for -S copy-ready`, "Enter");
   await tmux("wait-for", "copy-ready");
-  assert.equal((await tmux("display-message", "-p", "-t", "=source-copy:", "#{pane_current_path}")).stdout.trim(), cwd);
-  assert.notEqual((await tmux("display-message", "-p", "-t", "=source-copy:", "#{pane_id}")).stdout.trim(), sourcePane);
-  assert.equal((await tmux("display-message", "-p", "-t", "=source-copy:", "#{session_group}")).stdout.trim(), "");
-  await tmux("kill-session", "-t", "=source-copy");
+  assert.equal((await tmux("display-message", "-p", "-t", "=source Copy:", "#{pane_current_path}")).stdout.trim(), cwd);
+  assert.notEqual((await tmux("display-message", "-p", "-t", "=source Copy:", "#{pane_id}")).stdout.trim(), sourcePane);
+  assert.equal((await tmux("display-message", "-p", "-t", "=source Copy:", "#{session_group}")).stdout.trim(), "");
+  await tmux("kill-session", "-t", "=source Copy");
   assert.equal((await tmux("display-message", "-p", "-t", "=source:1", "#{pane_id}")).stdout.trim(), sourcePane);
   await assert.rejects(run("sh", ["-c", duplicationCommand("missing", undefined, "missing-copy")], { env }));
   await assert.rejects(tmux("has-session", "-t", "=missing-copy"));
@@ -391,20 +394,22 @@ test("duplicate starts an independent shell in the selected window's live folder
   }
 });
 
-test("duplicate routes to the source host, uses unique names and reports failures", async (t) => {
+test("duplicate routes to the source host, names the copy readably and reports failures", async (t) => {
   const { duplicateSession } = await import("../lib/tmux.js");
   const calls = [];
   const mock = t.mock.method(childProcess, "execFile", (command, args, options, callback) => {
     calls.push({ command, args });
     assert.ok(options.timeout <= 15000);
-    callback(args.includes("offline-device") ? new Error("failed") : null, "/projects/live");
+    callback(args.includes("offline-device") ? new Error("failed") : null, "source Copy 2\n/projects/live");
   });
   syncBuiltinESMExports();
   try {
     const first = await duplicateSession("source", 3, "fixture-device");
-    const second = await duplicateSession("source", 3, "fixture-device");
-    assert.notEqual(first.name, second.name);
+    await duplicateSession("source", 3, "fixture-device");
+    // The device picks the free name; the result carries it, never a random id.
+    assert.equal(first.name, "source Copy 2");
     assert.equal(first.cwd, "/projects/live");
+    assert.match(calls[0].args.at(-1), /copy='source Copy'/);
     assert.equal(calls[0].command, "ssh");
     assert.ok(calls[0].args.includes("fixture-device"));
     assert.match(calls[0].args.at(-1), /=source:3/);
