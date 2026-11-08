@@ -7,8 +7,7 @@
   z-index: 2000;
   display: flex;
   flex-direction: column;
-  /* Solid in a normal window. With a transparent one the app behind is
-     hidden (.app-behind-setup), so setup lets the desktop blur through. */
+  /* Solid in a normal window; see the transparent-window rules below. */
   background: var(--opaque-bg, var(--bg));
   color: var(--text);
   /* The tour's rows and pills, reused in the steps. */
@@ -27,20 +26,19 @@
   overflow-y: auto;
   overscroll-behavior: contain;
 }
-/* Held a fixed distance from the top rather than centered: a step that grows
-   (checks finishing, details expanding) extends downward and nothing above
-   it moves. Scrolls from the top once it no longer fits. */
+/* Centered in the window both ways; a step taller than the window scrolls
+   from its top (auto margins never push it above the scroll edge). */
 .setup-page {
   width: min(600px, 100%);
-  align-self: flex-start;
-  margin: 0 auto;
-  padding: clamp(16px, 11vh, 112px) 28px 8px;
+  margin: auto;
+  padding: 24px 28px;
   box-sizing: border-box;
 }
 
 .setup-count {
   display: flex;
   align-items: center;
+  justify-content: center;
   gap: 8px;
   margin-bottom: 18px;
   color: var(--muted);
@@ -52,20 +50,8 @@
 .setup-dots span.done { background: color-mix(in srgb, var(--text) 45%, transparent); }
 .setup-dots span.on { width: 14px; background: var(--text); }
 
-.setup-page-head { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 18px; }
-.setup-step-icon {
-  display: inline-flex;
-  flex: 0 0 auto;
-  align-items: center;
-  justify-content: center;
-  width: 32px;
-  height: 32px;
-  box-sizing: border-box;
-  border: 1px solid var(--hairline);
-  border-radius: var(--r-md);
-  color: var(--text);
-}
-.setup-head-copy { display: flex; flex: 1; flex-direction: column; gap: 3px; min-width: 0; }
+.setup-page-head { margin-bottom: 22px; text-align: center; }
+.setup-head-copy { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .setup-step-title { margin: 0; font-size: var(--fs-xl); font-weight: 650; }
 .setup-step-body { margin: 0; color: var(--muted); font-size: var(--fs-md); line-height: 1.5; }
 .setup-step-content { display: flex; flex-direction: column; gap: 12px; }
@@ -86,9 +72,10 @@
 .setup-wait { display: inline-flex; align-items: center; gap: 6px; min-width: 0; color: var(--muted); font-size: var(--fs-sm); }
 
 /* Welcome: logo, one line, and the steps ahead. */
-.setup-welcome { display: flex; flex-direction: column; align-items: flex-start; gap: 14px; }
-.setup-logo { width: 48px; height: 48px; }
-.setup-lead { margin: 0; color: var(--muted); font-size: var(--fs-md); line-height: 1.6; }
+.setup-welcome { display: flex; flex-direction: column; align-items: center; gap: 14px; }
+/* The welcome step's logo sits above its title. */
+.setup-logo { display: block; width: 48px; height: 48px; margin: 0 auto 14px; }
+.setup-lead { margin: 0; color: var(--muted); font-size: var(--fs-md); line-height: 1.6; text-align: center; }
 .setup-plan { display: flex; flex-direction: column; gap: 12px; width: 100%; margin: 6px 0 0; padding: 14px 0 0; border-top: 1px solid var(--divider); list-style: none; }
 .setup-plan-item { display: flex; align-items: flex-start; gap: 10px; }
 .setup-plan-icon {
@@ -108,4 +95,11 @@
 @media (prefers-reduced-motion: reduce) {
   .setup-dots span { transition: none; }
 }
-:root[data-transparency="on"] .setup-screen { background: transparent; }
+/* A transparent window: the app behind setup is hidden, so setup darkens the
+   (more strongly) blurred desktop about as much as a session tile does over
+   the app, and the actions sit on it without a block of their own. */
+:root[data-transparency="on"] .setup-screen { background: color-mix(in srgb, var(--opaque-bg) 78%, transparent); }
+:root[data-transparency="on"] .setup-actions { position: static; background: transparent; }
+@media (prefers-reduced-transparency: reduce) {
+  :root[data-transparency="on"] .setup-screen { background: var(--opaque-bg); }
+}

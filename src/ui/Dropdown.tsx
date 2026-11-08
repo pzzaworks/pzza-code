@@ -3,7 +3,6 @@ import { motion } from "framer-motion";
 import { Loader2, type LucideIcon } from "lucide-react";
 import { IconButton } from "./IconButton";
 import { useDelayedLoading } from "./useDelayedLoading";
-import { useSmoothHeight } from "./useSmoothHeight";
 import { useExclusiveMenu } from "./menuBus";
 import { registerAppControlMenu } from "../appControlRuntime";
 
@@ -44,10 +43,7 @@ export function Dropdown({ icon: Icon, title, label, badge, cornerBadge, badgeLa
   const showSpinner = useDelayedLoading(loading);
   const ref = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
-  const bodyRef = useRef<HTMLDivElement>(null);
   const [leftOffset, setLeftOffset] = useState(0);
-  // Content that loads, expands or collapses while the panel is open resizes it smoothly.
-  useSmoothHeight(panelRef, bodyRef, open);
   const close = useCallback(() => setOpen(false), [setOpen]);
 
   useExclusiveMenu(title, open, close);
@@ -157,7 +153,7 @@ export function Dropdown({ icon: Icon, title, label, badge, cornerBadge, badgeLa
       )}
       {open || (keepMounted && (visited || preload)) ? (
         <div ref={panelRef} className={`menu menu-panel ${compact ? "menu-compact" : ""} ${panelClassName}`} style={{ width, maxWidth: "calc(100vw - 24px)", left: leftOffset, right: "auto", display: open ? undefined : "none" }}>
-          <div ref={bodyRef}>{typeof children === "function" ? children(close, open) : children}</div>
+          {typeof children === "function" ? children(close, open) : children}
         </div>
       ) : null}
     </div>
