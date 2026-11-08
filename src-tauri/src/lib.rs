@@ -11,7 +11,11 @@ mod speech;
 mod speech_model;
 mod sshmux;
 mod sys;
+mod setup;
 mod tmux;
+mod voice_io;
+mod voice_vad;
+mod voice_log;
 #[cfg(target_os = "macos")]
 pub mod local_tmux;
 
@@ -71,7 +75,8 @@ pub fn run() {
             pty::pty_resize,
             pty::pty_kill,
             tmux::tmux_list_sessions,
-            tmux::tmux_install,
+            setup::setup_status,
+            setup::setup_install,
             forward::forward_scan,
             forward::forward_set,
             forward::forward_reconcile,
@@ -83,6 +88,8 @@ pub fn run() {
             terminal_drop::read_dropped_file,
             terminal_drop::release_drop,
             sys::open_url,
+            sys::reveal_path,
+            sys::system_languages,
             permissions::permissions_status,
             permissions::permission_request,
             permissions::permission_open_settings,

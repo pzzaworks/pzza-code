@@ -2,18 +2,9 @@ use std::process::Command;
 
 use crate::sshmux;
 
-// Installs tmux on this Mac when it is missing and starts local terminals.
-#[tauri::command]
-pub async fn tmux_install() -> Result<(), String> {
-    #[cfg(target_os = "macos")]
-    return tauri::async_runtime::spawn_blocking(crate::local_tmux::install)
-        .await
-        .map_err(|error| error.to_string())?;
-    #[cfg(not(target_os = "macos"))]
-    Err("Automatic tmux install is only available on macOS. Install tmux with your package manager.".into())
-}
-
-const SESSION_FORMAT: &str = "#{session_name}\t#{session_windows}\t#{session_attached}\t#{pane_current_command}\t#{session_created}";
+// The active pane's working folder comes last, so a tab inside a folder name
+// cannot shift the other fields.
+const SESSION_FORMAT: &str = "#{session_name}\t#{session_windows}\t#{session_attached}\t#{pane_current_command}\t#{session_created}\t#{pane_current_path}";
 
 // A tmux session on the device. One session maps to one grid tile, and a
 // session name is treated as a cmux tab.
@@ -25,6 +16,9 @@ pub struct TmuxSession {
     command: String,
     #[serde(rename = "createdAt")]
     created_at: Option<u64>,
+    // Active pane's current folder (shown in the tile footer).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    path: Option<String>,
 }
 
 // Build the command that talks to tmux. With a host it hops over ssh and lets
@@ -96,13 +90,35 @@ fn list_sessions_blocking(host: Option<String>) -> Result<Vec<TmuxSession>, Stri
         let command = parts.next().unwrap_or("").to_string();
         let created_at = parts.next().and_then(|value| value.parse::<u64>().ok())
             .filter(|value| *value > 0).and_then(|value| value.checked_mul(1000));
+        let path = parse_path(parts.collect::<Vec<_>>().join("\t"));
         sessions.push(TmuxSession {
             name,
             windows,
             attached,
             command,
             created_at,
+            path,
         });
     }
     Ok(sessions)
+}
+
+// An absolute folder from tmux, or None for an empty/odd value.
+fn parse_path(value: String) -> Option<String> {
+    let trimmed = value.trim_end_matches(['\r', '\n']);
+    (trimmed.starts_with('/') && trimmed.len() <= 4096 && !trimmed.chars().any(char::is_control))
+        .then(|| trimmed.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_path;
+
+    #[test]
+    fn session_paths_are_absolute_and_free_of_control_characters() {
+        assert_eq!(parse_path("/Users/me/app".into()), Some("/Users/me/app".into()));
+        assert_eq!(parse_path("/Users/me/with\ttab".into()), None);
+        assert_eq!(parse_path("".into()), None);
+        assert_eq!(parse_path("relative".into()), None);
+    }
 }

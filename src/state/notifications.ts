@@ -3,23 +3,28 @@ import { deliverDesktopAlert } from "../desktopNotifications";
 
 export type NotificationCategory = "sync" | "terminal" | "devices" | "app";
 export const NOTIFICATION_EVENTS = {
-  "device-added": "Device added", "device-removed": "Device removed", "session-opened": "Session window opened",
+  "device-added": "Device added", "device-removed": "Device removed", "session-opened": "Session window opened", "agent-start-failed": "Agent start failed",
   "model-ready": "Voice model downloaded", "model-error": "Voice model download failed",
+  "setup-installed": "Requirement installed", "setup-failed": "Requirement install failed",
   "sync-completed": "Sync completed", "sync-error": "Sync errors",
   "terminal-bell": "Terminal attention signal", "terminal-command": "Terminal command result", "terminal-exit": "Terminal process exit",
+  "agent-finished": "Agent finished with changes",
 } as const;
 export type NotificationEvent = keyof typeof NOTIFICATION_EVENTS;
 export const NOTIFICATION_EVENT_CATEGORIES: Record<NotificationEvent, NotificationCategory> = {
-  "session-opened": "app",
-  "model-ready": "app", "model-error": "app", "device-added": "devices", "device-removed": "devices",
-  "sync-completed": "sync", "sync-error": "sync", "terminal-bell": "terminal", "terminal-command": "terminal", "terminal-exit": "terminal",
+  "session-opened": "app", "agent-start-failed": "app",
+  "model-ready": "app", "model-error": "app", "setup-installed": "app", "setup-failed": "app", "device-added": "devices", "device-removed": "devices",
+  "sync-completed": "sync", "sync-error": "sync", "terminal-bell": "terminal", "terminal-command": "terminal", "terminal-exit": "terminal", "agent-finished": "terminal",
 };
 export interface NotificationTarget { tileId?: string; section?: "sync" | "mcp" | "devices" | "general" | "quick-chat" }
+/** A follow-up a notice offers besides opening its target: the tile's uncommitted changes. */
+export interface NoticeAction { kind: "review-changes"; folder: string }
 export interface Notice {
   event?: NotificationEvent;
   id: string; category: NotificationCategory; title: string; body: string;
   source?: string;
   createdAt: number; read: boolean; target?: NotificationTarget; dedupeKey?: string;
+  action?: NoticeAction;
 }
 interface Preferences {
   enabled: boolean; desktop: boolean;
@@ -29,6 +34,7 @@ interface Preferences {
 interface NotificationState {
   items: Notice[]; preferences: Preferences;
   read(id?: string): void; readTile(tileId: string): void; clear(): void; remove(id: string): void;
+  update(id: string, patch: Partial<Pick<Notice, "title" | "body" | "action">>): void;
   configure(patch: Partial<Preferences>): void;
 }
 const storeName = "pzza.notifications.v1";
@@ -52,7 +58,9 @@ function initial(): { items: Notice[]; preferences: Preferences } {
         if (item.target.section === "sync" || item.target.section === "mcp" || item.target.section === "devices" || item.target.section === "general" || item.target.section === "quick-chat") target.section = item.target.section;
       }
       const event = item.event && Object.hasOwn(NOTIFICATION_EVENTS, item.event) ? item.event : undefined;
-      return { ...item, event, target, dedupeKey: typeof item.dedupeKey === "string" ? item.dedupeKey.slice(0, 512) : undefined, source: typeof item.source === "string" && item.source ? item.source.slice(0, 160) : undefined };
+      const action = item.action && typeof item.action === "object" && item.action.kind === "review-changes" && typeof item.action.folder === "string" && item.action.folder.startsWith("/") && item.action.folder.length <= 4096
+        ? { kind: item.action.kind, folder: item.action.folder } : undefined;
+      return { ...item, event, target, action, dedupeKey: typeof item.dedupeKey === "string" ? item.dedupeKey.slice(0, 512) : undefined, source: typeof item.source === "string" && item.source ? item.source.slice(0, 160) : undefined };
     }) : [];
     const preferences = { ...defaults, categories: { ...defaults.categories } };
     if (raw.preferences && typeof raw.preferences === "object") {
@@ -83,6 +91,9 @@ export const useNotifications = create<NotificationState>((set) => ({
   }),
   clear: () => set({ items: [] }),
   remove: (id) => set(state => ({ items: state.items.filter(item => item.id !== id) })),
+  update: (id, patch) => set(state => ({ items: state.items.map(item => item.id !== id ? item : {
+    ...item, ...patch, title: (patch.title ?? item.title).slice(0, 160), body: (patch.body ?? item.body).slice(0, 4000),
+  }) })),
   configure: (patch) => set(state => ({ preferences: { ...state.preferences, ...patch } })),
 }));
 function persistNotifications({ items, preferences }: Pick<NotificationState, "items" | "preferences">): void {
@@ -97,17 +108,24 @@ export function noticePreview(text: string, max = NOTICE_PREVIEW_CHARS): string 
   const chars = Array.from(text.trim());
   return chars.length > max ? `${chars.slice(0, max - 1).join("").trimEnd()}…` : chars.join("");
 }
-export function notify(input: Omit<Notice, "id" | "createdAt" | "read">): void {
+/** Whether the master, category and event switches let this kind of notice into the history. */
+export function noticeAllowed(category: NotificationCategory, event?: NotificationEvent): boolean {
+  const { preferences } = useNotifications.getState();
+  return preferences.enabled && preferences.categories[category] && (!event || preferences.events[event] !== false);
+}
+/** Records a notice; returns its id, or undefined when preferences or dedupe dropped it. */
+export function notify(input: Omit<Notice, "id" | "createdAt" | "read">): string | undefined {
   const { items, preferences } = useNotifications.getState();
-  if (!preferences.enabled || !preferences.categories[input.category] || (input.event && preferences.events[input.event] === false)) return;
+  if (!noticeAllowed(input.category, input.event)) return undefined;
   const now = Date.now();
-  if (input.dedupeKey && items.some(item => item.dedupeKey === input.dedupeKey && now - item.createdAt < 30000)) return;
+  if (input.dedupeKey && items.some(item => item.dedupeKey === input.dedupeKey && now - item.createdAt < 30000)) return undefined;
   const notice: Notice = { ...input, title: input.title.slice(0, 160), body: input.body.slice(0, 4000), source: input.source?.slice(0, 160) || undefined, id: crypto.randomUUID(), createdAt: now, read: false };
   useNotifications.setState({ items: [notice, ...items.filter(item => now - item.createdAt < 30 * 86400000)].slice(0, 300) });
-  if (preferences.mutedUntil > now) return;
+  if (preferences.mutedUntil > now) return notice.id;
   const canDeliver = () => {
     const current = useNotifications.getState().preferences;
     return current.enabled && current.desktop && current.categories[input.category] && (!input.event || current.events[input.event] !== false) && current.mutedUntil <= Date.now() && !document.hasFocus();
   };
   if (canDeliver()) void deliverDesktopAlert({ ...notice, title: notice.source ? `${notice.source} - ${notice.title}` : notice.title, body: noticePreview(notice.body) }, canDeliver).catch(() => { /* Activity history remains available when the OS rejects an alert. */ });
+  return notice.id;
 }

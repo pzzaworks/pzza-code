@@ -4,6 +4,9 @@ pub struct InputDevice {
     id: String,
     name: String,
     is_default: bool,
+    // Connection type, used to keep dictation off Bluetooth microphones.
+    built_in: bool,
+    bluetooth: bool,
 }
 
 #[cfg(target_os = "macos")]
@@ -11,11 +14,12 @@ mod native {
     use super::InputDevice;
     use coreaudio::audio_unit::{
         audio_format::LinearPcmFlags, macos_helpers::{audio_unit_from_device_id, get_audio_device_ids},
-        render_callback::{self, data}, AudioUnit, Element, SampleFormat, Scope, StreamFormat,
+        Element, SampleFormat, Scope, StreamFormat,
     };
     use objc2_core_audio::{
         kAudioDevicePropertyDeviceIsAlive, kAudioDevicePropertyDeviceUID, kAudioDevicePropertyStreams,
-        kAudioHardwarePropertyDefaultInputDevice,
+        kAudioHardwarePropertyDefaultInputDevice, kAudioHardwarePropertyDefaultOutputDevice, kAudioDevicePropertyTransportType,
+        kAudioDeviceTransportTypeBluetooth, kAudioDeviceTransportTypeBluetoothLE, kAudioDeviceTransportTypeBuiltIn,
         kAudioObjectPropertyElementMain, kAudioObjectPropertyName, kAudioObjectPropertyScopeGlobal,
         kAudioObjectPropertyScopeInput, kAudioObjectSystemObject, AudioObjectGetPropertyData,
         AudioObjectGetPropertyDataSize, AudioObjectPropertyAddress,
@@ -85,6 +89,10 @@ mod native {
     struct Engine {
         context: WhisperContext,
         decoder: WhisperState,
+        // The latest language decided with confidence. It outlives utterances and
+        // recordings, but only as the first decode's guess: each utterance's own
+        // audio decides its language before any of its words are typed.
+        spoken_language: Option<String>,
     }
 
     impl Engine {
@@ -95,17 +103,21 @@ mod native {
                 model.to_str().ok_or("Speech model path is not valid UTF-8")?, parameters,
             ).map_err(|error| format!("Could not load the dictation model: {error}"))?;
             let decoder = context.create_state().map_err(|error| format!("Could not create speech decoder: {error}"))?;
-            let mut engine = Self { context, decoder };
+            let mut engine = Self { context, decoder, spoken_language: None };
             // Compile the live decoder's Metal kernels during preparation so
             // the first spoken words do not pay that startup cost.
             let warmup = Arc::new(Capture { cancel, ..Capture::new(String::new()) });
-            engine.recognize(&[0.0; 16_000], "en", &warmup, false)?;
+            engine.recognize(&[0.0; 16_000], "en", &warmup, audio_context(16_000), false)?;
             Ok(engine)
         }
 
-        fn recognize(&mut self, audio: &[f32], language: &str, capture: &Arc<Capture>, multilingual: bool) -> Result<(), String> {
+        fn recognize(&mut self, audio: &[f32], language: &str, capture: &Arc<Capture>, context: i32, fallback: bool) -> Result<(), String> {
             let mut params = recognition_params(language, capture);
-            params.set_audio_ctx(if multilingual { 1500 } else { audio_context(audio.len()) });
+            // Temperature fallback re-decodes a weak hypothesis up to five more
+            // times. Live passes are superseded a quarter-second later anyway, so
+            // only the final flush pays for it; previews keep a steady cadence.
+            if !fallback { params.set_temperature_inc(0.0); }
+            params.set_audio_ctx(context);
             let result = self.decoder.full(params, audio);
             if capture.cancel.load(Ordering::Acquire) { return Ok(()); }
             if let Err(error) = result {
@@ -115,20 +127,84 @@ mod native {
             Ok(())
         }
 
-        fn detect_language(&mut self, audio: &[f32]) -> Result<Option<String>, String> {
-            self.decoder.pcm_to_mel(audio, 8)
-                .map_err(|error| format!("Could not prepare language detection: {error}"))?;
-            let (language, probabilities) = self.decoder.lang_detect(0, 8)
+        // Reads the spoken language from the encoder output the last recognition
+        // left in the decoder state. This is whisper.cpp's own detector (one
+        // start-of-transcript decoder step, softmax over language tokens) minus
+        // its separate encoder pass, which cost as much as a whole live decode.
+        // Returns every language's probability, so the caller can restrict the
+        // decision to supported and preferred languages. It does not disturb
+        // the segments of that recognition.
+        fn language_probabilities(&mut self) -> Result<Vec<(&'static str, f32)>, String> {
+            self.decoder.decode(&[self.context.token_sot()], 0, decoder_threads() as usize)
                 .map_err(|error| format!("Could not detect the spoken language: {error}"))?;
-            Ok(probabilities.get(language as usize).filter(|probability| **probability >= 0.6)
-                .and_then(|_| whisper_rs::get_lang_str(language)).map(str::to_owned))
+            let logits = self.decoder.get_logits().map_err(|error| format!("Could not detect the spoken language: {error}"))?;
+            let languages: Vec<(&'static str, f32)> = (0..=whisper_rs::get_lang_max_id()).filter_map(|id| {
+                let logit = logits.get(self.context.token_lang(id) as usize).copied()?;
+                whisper_rs::get_lang_str(id).map(|language| (language, logit))
+            }).collect();
+            let peak = languages.iter().map(|(_, logit)| *logit).fold(f32::NEG_INFINITY, f32::max);
+            if !peak.is_finite() { return Ok(Vec::new()); }
+            let total: f32 = languages.iter().map(|(_, logit)| (logit - peak).exp()).sum();
+            Ok(languages.into_iter().map(|(language, logit)| (language, (logit - peak).exp() / total)).collect())
         }
+    }
+
+    // The language a stretch of speech is first decoded in, before its own
+    // audio is checked: what this user spoke last if it is one of their
+    // languages, else their main language.
+    fn first_guess(engine: &Engine, capture: &Capture) -> String {
+        engine.spoken_language.as_deref()
+            .filter(|language| capture.languages.is_empty() || capture.languages.iter().any(|own| own == language))
+            .or(capture.languages.first().map(String::as_str))
+            .unwrap_or("en").to_owned()
+    }
+
+    // The language this recognition's audio was spoken in, from the
+    // detector's view of the same encoder pass (one decoder step).
+    fn heard_language(engine: &mut Engine, capture: &Capture) -> Option<super::LanguageChoice> {
+        // An inconclusive detector must not interrupt otherwise usable recognition.
+        let probabilities = engine.language_probabilities().ok()?;
+        // Continuity: a close call keeps the language of the last confident utterance.
+        super::choose_language(&probabilities, &capture.languages, engine.spoken_language.as_deref())
+    }
+
+    // The share of probability at which an utterance's language is settled:
+    // live words may be typed in it and it hints the following decodes.
+    const SETTLED_SHARE: f32 = 0.8;
+
+    // New audio (16 kHz samples) between two hypotheses that makes their
+    // agreement enough to type a word without a third.
+    const INDEPENDENT_AUDIO: usize = 16_000;
+
+    fn decoder_threads() -> i32 {
+        std::thread::available_parallelism().map(|n| n.get().min(8) as i32).unwrap_or(4)
     }
 
     fn audio_context(samples: usize) -> i32 {
         // Each encoder frame covers 20 ms, with two seconds of padding. Mixed
         // speech uses the full context to avoid losing short language switches.
         (samples.div_ceil(320).saturating_add(100).div_ceil(128) * 128).clamp(768, 1500) as i32
+    }
+
+    fn decode_context(samples: usize, multilingual: bool) -> i32 {
+        if multilingual { 1500 } else { audio_context(samples) }
+    }
+
+    #[cfg(test)]
+    #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct PassStats {
+        audio_samples: usize,
+        audio_ctx: i32,
+        detect_ms: Option<f64>,
+        decode_ms: f64,
+        multilingual: bool,
+        finalizing: bool,
+        language: String,
+        // Text this pass typed, and the detector's verdict on its audio.
+        committed: String,
+        heard: Option<(String, f32)>,
+        redecoded: bool,
     }
 
     unsafe extern "C" fn recording_cancelled(data: *mut std::ffi::c_void) -> bool {
@@ -155,7 +231,7 @@ mod native {
 
     fn recognition_params<'a>(language: &'a str, capture: &'a Arc<Capture>) -> FullParams<'a, 'a> {
         let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
-        params.set_n_threads(std::thread::available_parallelism().map(|n| n.get().min(8) as i32).unwrap_or(4));
+        params.set_n_threads(decoder_threads());
         params.set_language(if language == "auto" { None } else { Some(language) });
         params.set_detect_language(false);
         params.set_translate(false);
@@ -181,6 +257,12 @@ mod native {
 
     struct Capture {
         id: String,
+        // Dictation ends on its own after this much quiet (silence_stop_due).
+        silence_stop_ms: Option<usize>,
+        // "My languages", main language first: detection keeps to these.
+        languages: Vec<String>,
+        // Audio samples per language decided with confidence, for the final event.
+        heard: Mutex<Vec<(String, usize)>>,
         stop: AtomicBool,
         cancel: Arc<AtomicBool>,
         closed: AtomicBool,
@@ -196,12 +278,16 @@ mod native {
         cancellation_seen: AtomicBool,
         #[cfg(test)]
         wait_for_cancellation: bool,
+        #[cfg(test)]
+        stats: Mutex<Vec<PassStats>>,
     }
 
     impl Capture {
         fn new(id: String) -> Self {
             Self {
-                id, stop: AtomicBool::new(false), cancel: Arc::new(AtomicBool::new(false)),
+                id, silence_stop_ms: None,
+                languages: Vec::new(), heard: Mutex::new(Vec::new()),
+                stop: AtomicBool::new(false), cancel: Arc::new(AtomicBool::new(false)),
                 closed: AtomicBool::new(false), samples: Mutex::new(Vec::new()),
                 rate: Mutex::new(16_000), error: Mutex::new(None), received: AtomicBool::new(false),
                 captured_samples: AtomicUsize::new(0), finished: AtomicBool::new(false),
@@ -211,6 +297,8 @@ mod native {
                 cancellation_seen: AtomicBool::new(false),
                 #[cfg(test)]
                 wait_for_cancellation: false,
+                #[cfg(test)]
+                stats: Mutex::new(Vec::new()),
             }
         }
     }
@@ -246,9 +334,46 @@ mod native {
             let status = unsafe { AudioObjectGetPropertyDataSize(object, NonNull::from(&address), 0, null(), NonNull::from(&mut size)) };
             if status != 0 || size == 0 { continue; }
             let (Ok(id), Ok(name)) = (device_string(object, kAudioDevicePropertyDeviceUID), device_string(object, kAudioObjectPropertyName)) else { continue; };
-            if valid_input_device_id(&id) { devices.push((object, InputDevice { id, name, is_default: object == default })); }
+            let transport = property::<u32>(object, kAudioDevicePropertyTransportType).unwrap_or(0);
+            if valid_input_device_id(&id) { devices.push((object, InputDevice { id, name, is_default: object == default, built_in: transport == kAudioDeviceTransportTypeBuiltIn, bluetooth: is_bluetooth(transport) })); }
         }
         Ok(devices)
+    }
+
+
+    fn is_bluetooth(transport: u32) -> bool {
+        transport == kAudioDeviceTransportTypeBluetooth || transport == kAudioDeviceTransportTypeBluetoothLE
+    }
+
+    // Whether the system output (speakers or headphones) is a Bluetooth device.
+    fn output_is_bluetooth() -> bool {
+        property::<u32>(kAudioObjectSystemObject as u32, kAudioHardwarePropertyDefaultOutputDevice)
+            .and_then(|device| property::<u32>(device, kAudioDevicePropertyTransportType))
+            .is_ok_and(is_bluetooth)
+    }
+
+    // Opening a Bluetooth headset's microphone switches it to its call profile,
+    // which makes everything it plays sound muffled and records at telephone
+    // quality (8 to 16 kHz), which recognition handles poorly. Dictation
+    // therefore uses the built-in microphone when the default input or the
+    // output is Bluetooth, unless the user picked one explicitly.
+    fn select_voice_input(devices: &[(u32, InputDevice)], id: Option<&str>, output_bluetooth: bool) -> Result<u32, String> {
+        if id.is_some() {
+            return select_input_device(devices, id);
+        }
+        let default_bluetooth = devices.iter().any(|(_, device)| device.is_default && device.bluetooth);
+        if default_bluetooth || output_bluetooth {
+            if let Some((object, _)) = devices.iter().find(|(_, device)| device.built_in && !device.bluetooth) {
+                return Ok(*object);
+            }
+        }
+        select_input_device(devices, None)
+    }
+
+    /// The microphone dictation uses: the explicit choice, or the
+    /// Bluetooth-safe default.
+    fn voice_input_device(id: Option<&str>) -> Result<u32, String> {
+        select_voice_input(&input_devices()?, id, output_is_bluetooth())
     }
 
     fn valid_input_device_id(id: &str) -> bool {
@@ -270,6 +395,10 @@ mod native {
             .await.map_err(|_| "Could not list microphones".to_string())?
     }
 
+    // The event stream dictation reports on, and the longest it records.
+    const CHANNEL: &str = "dictation";
+    const MAX_RECORDING: Duration = Duration::from_secs(300);
+
     #[derive(Clone, Serialize)]
     struct Event<'a> {
         id: &'a str,
@@ -282,6 +411,9 @@ mod native {
         error: Option<&'a str>,
         #[serde(skip_serializing_if = "Option::is_none")]
         active: Option<bool>,
+        // The language heard most with confidence in a finished recording.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        language: Option<&'a str>,
     }
 
     fn emit(
@@ -294,7 +426,7 @@ mod native {
     ) {
         if !capture.cancel.load(Ordering::Acquire) {
             let _ = app.emit(
-                "dictation",
+                CHANNEL,
                 Event {
                     id: &capture.id,
                     kind,
@@ -302,15 +434,20 @@ mod native {
                     level,
                     error,
                     active: None,
+                    language: None,
                 },
             );
         }
     }
 
     fn emit_processing(app: &AppHandle, capture: &Capture, active: bool) {
+        emit_flag(app, capture, "processing", active);
+    }
+
+    fn emit_flag(app: &AppHandle, capture: &Capture, kind: &str, active: bool) {
         if !capture.cancel.load(Ordering::Acquire) {
-            let _ = app.emit("dictation", Event {
-                id: &capture.id, kind: "processing", text: None, level: None, error: None, active: Some(active),
+            let _ = app.emit(CHANNEL, Event {
+                id: &capture.id, kind, text: None, level: None, error: None, active: Some(active), language: None,
             });
         }
     }
@@ -343,7 +480,7 @@ mod native {
             .map_err(|_| "Speech preparation failed".to_string())?
     }
 
-    fn input(device: u32, capture: Arc<Capture>) -> Result<(AudioUnit, u32), String> {
+    fn input(device: u32, capture: Arc<Capture>) -> Result<(crate::voice_io::TappedUnit, u32), String> {
         let mut stream = audio_unit_from_device_id(device, true)
             .map_err(|_| "Microphone unavailable. Check microphone access in macOS Privacy & Security settings.")?;
         let hardware = stream.stream_format(Scope::Input, Element::Input)
@@ -362,12 +499,12 @@ mod native {
             sample_format: SampleFormat::F32,
             flags: LinearPcmFlags::IS_FLOAT | LinearPcmFlags::IS_PACKED,
         }, Scope::Output, Element::Input).map_err(|_| "Unsupported microphone format")?;
-        stream.set_input_callback(move |args: render_callback::Args<data::Interleaved<f32>>| {
-            if capture.stop.load(Ordering::Acquire) { return Ok(()); }
-            if !args.data.buffer.is_empty() { capture.received.store(true, Ordering::Release); }
+        let stream = crate::voice_io::TappedUnit::new(stream, channels as u32, move |buffer: &[f32]| {
+            if capture.stop.load(Ordering::Acquire) { return; }
+            if !buffer.is_empty() { capture.received.store(true, Ordering::Release); }
             if let Ok(mut samples) = capture.samples.lock() {
                 let before = samples.len();
-                for frame in args.data.buffer.chunks_exact(channels) {
+                for frame in buffer.chunks_exact(channels) {
                     if samples.len() >= maximum {
                         if let Ok(mut error) = capture.error.lock() { *error = Some("Recognition could not keep up with the microphone. Try a shorter recording.".into()); }
                         capture.stop.store(true, Ordering::Release);
@@ -377,14 +514,13 @@ mod native {
                 }
                 capture.captured_samples.fetch_add(samples.len() - before, Ordering::Release);
             }
-            Ok(())
-        }).map_err(|_| "Could not initialize microphone capture")?;
+        })?;
         Ok((stream, rate))
     }
 
     fn capture_audio(app: AppHandle, capture: Arc<Capture>, input_device_id: Option<String>) {
         let result = (|| {
-            let device = select_input_device(&input_devices()?, input_device_id.as_deref())?;
+            let device = voice_input_device(input_device_id.as_deref())?;
             let (mut stream, rate) = input(device, capture.clone())?;
             if capture.stop.load(Ordering::Acquire) {
                 return Ok(());
@@ -395,13 +531,19 @@ mod native {
             emit(&app, &capture, "listening", None, None, None);
             let start = Instant::now();
             let mut last_audio = start;
+            let mut activity = ActivityMonitor::new(&app, &capture, rate);
             while !capture.stop.load(Ordering::Acquire)
-                && start.elapsed() < Duration::from_secs(300)
+                && start.elapsed() < MAX_RECORDING
             {
                 if capture.received.swap(false, Ordering::AcqRel) { last_audio = Instant::now(); }
                 if property::<u32>(device, kAudioDevicePropertyDeviceIsAlive).unwrap_or(0) == 0
                     || last_audio.elapsed() > Duration::from_secs(3) {
                     return Err("Microphone stopped providing audio. Check your selected input and microphone permission, then try again.".into());
+                }
+                if activity.update(&app, &capture) {
+                    // Everything said is already in the buffer; finalization
+                    // below transcribes it as after Stop.
+                    break;
                 }
                 let level = capture
                     .samples
@@ -437,6 +579,76 @@ mod native {
         capture.closed.store(true, Ordering::Release);
     }
 
+    /// Follows the dictation microphone in the capture thread, apart from
+    /// recognition: reports when speech starts and stops (the caret's live
+    /// indicator) and decides when silence ends the recording. The voice
+    /// activity model loads on its own thread, so the microphone never waits
+    /// for it; until it is ready, the level alone decides.
+    struct ActivityMonitor {
+        activity: super::DictationActivity,
+        vad: Option<crate::voice_vad::Vad>,
+        loading: Option<std::sync::mpsc::Receiver<Result<crate::voice_vad::Vad, String>>>,
+        rate: usize,
+        // Captured samples analyzed so far, counted from the recording's start.
+        analyzed: usize,
+    }
+
+    impl ActivityMonitor {
+        fn new(app: &AppHandle, capture: &Arc<Capture>, rate: u32) -> Self {
+            let (sender, receiver) = std::sync::mpsc::channel();
+            let loader_app = app.clone();
+            let loader_capture = capture.clone();
+            std::thread::spawn(move || {
+                let vad = crate::voice_vad::model_path(&loader_app).and_then(|path| {
+                    if loader_capture.stop.load(Ordering::Acquire) { return Err("Dictation ended".into()); }
+                    crate::voice_vad::Vad::load(&path)
+                });
+                let _ = sender.send(vad);
+            });
+            Self { activity: Default::default(), vad: None, loading: Some(receiver), rate: rate as usize, analyzed: 0 }
+        }
+
+        /// Analyzes the audio captured since the last call. Returns true when
+        /// silence should end the recording.
+        fn update(&mut self, app: &AppHandle, capture: &Capture) -> bool {
+            if let Some(result) = self.loading.as_ref().and_then(|receiver| receiver.try_recv().ok()) {
+                self.loading = None;
+                match result {
+                    Ok(vad) => self.vad = Some(vad),
+                    Err(error) => crate::voice_log::log(app, format!("dictation voice activity unavailable, using the level alone: {error}")),
+                }
+            }
+            // Whole 20 ms blocks, which resample to exactly one 16 kHz frame
+            // at every rate divisible by 50 (44.1 and 48 kHz included).
+            let block = (self.rate / 50).max(1);
+            let fresh: Vec<f32> = {
+                let Ok(samples) = capture.samples.lock() else { return false; };
+                // Recognition drains consumed audio from the front.
+                let drained = capture.captured_samples.load(Ordering::Acquire).saturating_sub(samples.len());
+                let from = self.analyzed.max(drained);
+                let whole = (drained + samples.len()).saturating_sub(from) / block * block;
+                self.analyzed = from + whole;
+                samples[from - drained..from - drained + whole].to_vec()
+            };
+            for frame in super::resample(&fresh, self.rate as u32).chunks_exact(super::DictationActivity::FRAME) {
+                let energy = frame.iter().map(|sample| sample * sample).sum::<f32>() / frame.len() as f32;
+                let probability = match self.vad.as_mut().map(|vad| vad.push(frame)) {
+                    Some(Ok(probability)) => Some(probability),
+                    Some(Err(error)) => {
+                        crate::voice_log::log(app, format!("dictation voice activity failed, using the level alone: {error}"));
+                        self.vad = None;
+                        None
+                    }
+                    None => None,
+                };
+                if let Some(hearing) = self.activity.frame(energy, probability) {
+                    emit_flag(app, capture, "voice", hearing);
+                }
+            }
+            self.activity.stop_due(capture.silence_stop_ms)
+        }
+    }
+
     struct Transcript {
         preview: String,
         committed: String,
@@ -456,8 +668,16 @@ mod native {
     struct TranscriptWindow {
         earlier: Vec<Word>,
         previous: Vec<Word>,
+        // Audio length the previous hypothesis was decoded from.
+        previous_duration: usize,
         confirmed: Vec<Word>,
         detected_language: Option<String>,
+        // The latest unsure decision on this utterance, its next decode guess.
+        tentative_language: Option<String>,
+        // Holds live words while the utterance's language is uncertain.
+        language_pending: bool,
+        // Consecutive language checks that agreed with their decode language.
+        agreeing_checks: u8,
         language_checked_at: usize,
         language_hint_until: usize,
         english_since: Option<usize>,
@@ -501,13 +721,18 @@ mod native {
             }
             let previous = &self.previous[self.entered(&self.previous)..];
             let earlier = &self.earlier[self.entered(&self.earlier)..];
-            let count = if complete { pending.len() } else if !self.boundary_suffix.is_empty() { 0 } else {
+            // A word is typed once consecutive hypotheses agree on it. Two
+            // suffice when they were decoded from clearly different audio (a
+            // busy machine decodes seldom); passes close together need a
+            // third, so a word is not typed on what is nearly the same evidence.
+            let independent = duration.saturating_sub(self.previous_duration) >= INDEPENDENT_AUDIO;
+            let count = if complete { pending.len() } else if !self.boundary_suffix.is_empty() || self.language_pending { 0 } else {
                 pending.iter().enumerate().take_while(|(index, word)| {
                     // Keep the newest half-second and incomplete last word open.
                     word.end.saturating_add(8_000) <= duration
                         && previous.len() > index + 1
                         && same_word(&previous[*index].text, &word.text)
-                        && earlier.get(*index).is_none_or(|old| same_word(&old.text, &word.text))
+                        && (independent || earlier.get(*index).is_none_or(|old| same_word(&old.text, &word.text)))
                 }).count()
             };
             let transcript = Transcript {
@@ -526,6 +751,7 @@ mod native {
             }
             if !words.is_empty() {
                 self.earlier = mem::replace(&mut self.previous, words);
+                self.previous_duration = duration;
             }
             transcript
         }
@@ -544,6 +770,11 @@ mod native {
         fn entered(&self, words: &[Word]) -> usize {
             let aligned = aligned_prefix(words, &self.confirmed);
             if aligned > 0 || self.missing_prefix { return aligned; }
+            // A decode can retime the retained audio by more than a word. When
+            // the entered words still read in order, follow them: the timing
+            // frontier below would treat retimed new words as already typed.
+            let (lexical, matched) = alignment(words, &self.confirmed, false);
+            if matched >= self.confirmed.len().min(2) && lexical > 0 { return lexical; }
             // Without a language change, a wholly revised hypothesis still
             // represents the same audio. Preserve the already entered frontier.
             self.confirmed.last().map(|last| words.iter()
@@ -596,6 +827,7 @@ mod native {
         }
 
         fn trim(&mut self, samples: usize) {
+            self.previous_duration = self.previous_duration.saturating_sub(samples);
             self.language_checked_at = self.language_checked_at.saturating_sub(samples);
             self.language_hint_until = self.language_hint_until.saturating_sub(samples);
             self.english_since = self.english_since.map(|start| start.saturating_sub(samples));
@@ -610,6 +842,18 @@ mod native {
                     word.end = word.end.saturating_sub(samples);
                 }
             }
+        }
+
+        // Records this pass's language check against the language its words
+        // were decoded in. Live words wait until two checks in a row find that
+        // language settled in the utterance's own audio; any later check that
+        // disagrees or is unsure holds them again (and checks every pass), so a
+        // guess or an early misdetection never types a translation.
+        fn record_language_check(&mut self, choice: &super::LanguageChoice, decode_language: &str) {
+            self.tentative_language = Some(choice.language.clone());
+            let agrees = choice.language == decode_language && choice.share >= SETTLED_SHARE;
+            self.agreeing_checks = if agrees { self.agreeing_checks.saturating_add(1) } else { 0 };
+            self.language_pending = self.agreeing_checks < 2;
         }
 
         fn observe_language(&mut self, language: String, duration: usize) {
@@ -640,7 +884,13 @@ mod native {
     }
 
     fn aligned_prefix(words: &[Word], confirmed: &[Word]) -> usize {
-        let Some(last) = confirmed.last() else { return 0; };
+        alignment(words, confirmed, true).0
+    }
+
+    // The prefix of `words` that covers `confirmed`, and how many words matched.
+    // `timed` requires matching words to share their audio (see aligned_prefix).
+    fn alignment(words: &[Word], confirmed: &[Word], timed: bool) -> (usize, usize) {
+        let Some(last) = confirmed.last() else { return (0, 0); };
         // Align the retained overlap, allowing insertions, deletions and revisions
         // in old speech. Time breaks ties so repeated words remain distinct.
         let mut costs: Vec<usize> = (0..=words.len()).collect();
@@ -657,9 +907,9 @@ mod native {
                 // alignment: cutting retained audio can retime the entire phrase.
                 let nearby = word.start < old.end.saturating_add(1_600)
                     && word.end.saturating_add(1_600) > old.start;
-                let equal = (overlaps || (nearby && diagonal_matches > 0) || diagonal_matches >= 2)
+                let equal = (!timed || overlaps || (nearby && diagonal_matches > 0) || diagonal_matches >= 2)
                     && same_word(&old.text, &word.text);
-                let substitution = if equal { 0 } else if overlaps { 1 } else { 2 };
+                let substitution = if equal { 0 } else if overlaps || !timed { 1 } else { 2 };
                 let best = [
                     (diagonal + substitution, diagonal_matches + usize::from(equal)),
                     (above + 1, above_matches),
@@ -671,10 +921,11 @@ mod native {
                 diagonal_matches = above_matches;
             }
         }
-        (0..=words.len()).filter(|index| *index == 0 || matches[*index] > 0).min_by_key(|index| {
+        let index = (0..=words.len()).filter(|index| *index == 0 || matches[*index] > 0).min_by_key(|index| {
             let end = index.checked_sub(1).map(|i| words[i].end).unwrap_or(0);
             (costs[*index], std::cmp::Reverse(matches[*index]), end.abs_diff(last.end))
-        }).unwrap_or(0)
+        }).unwrap_or(0);
+        (index, matches[index])
     }
 
     fn utterance_boundary(audio: &[f32]) -> Option<usize> {
@@ -729,6 +980,7 @@ mod native {
         finalizing: bool,
     ) -> Result<Transcript, String> {
         let mut audio = super::resample(samples, rate);
+        super::normalize_level(&mut audio);
         let boundary = utterance_boundary(&audio);
         let utterance_samples = boundary.map(|end| end * rate as usize / 16_000).unwrap_or(samples.len());
         if let Some(end) = boundary { audio.truncate(end); }
@@ -748,16 +1000,27 @@ mod native {
         if audio.len() < 16_000 {
             audio.resize(16_000, 0.0);
         }
-        // Recheck recent speech, not the beginning of a long utterance. Reuse the
-        // result between checks to avoid an extra encoder pass on every update.
-        if language == "auto" && duration.saturating_sub(window.language_checked_at) >= 24_000 {
-            // An inconclusive detector must not interrupt otherwise usable ASR.
-            if let Ok(Some(detected)) = engine.detect_language(&audio[duration.saturating_sub(32_000)..duration]) {
-                window.observe_language(detected, duration);
+        #[cfg(test)]
+        let mut detect_ms: Option<f64> = None;
+        #[cfg(test)]
+        let mut heard: Option<(String, f32)> = None;
+        let automatic = language == "auto";
+        // A confident hint for this utterance wins. Until one exists, decode in
+        // this utterance's latest decision, else the user's likely language;
+        // the pass's own audio then confirms or corrects that guess.
+        let mut decode_language = if automatic {
+            match window.detected_language.as_deref().or(window.tentative_language.as_deref()) {
+                Some(language) => language.to_owned(),
+                None => first_guess(engine, capture),
             }
-            window.language_checked_at = duration;
-        }
-        engine.recognize(&audio, window.detected_language.as_deref().unwrap_or(language), capture, window.multilingual)?;
+        } else { language.to_owned() };
+        let multilingual = window.multilingual;
+        let context = decode_context(audio.len(), multilingual);
+        #[cfg(test)]
+        let decoding = Instant::now();
+        engine.recognize(&audio, &decode_language, capture, context, finalizing)?;
+        #[cfg(test)]
+        let mut decode_ms = decoding.elapsed().as_secs_f64() * 1_000.0;
         if capture.cancel.load(Ordering::Acquire) {
             return Ok(Transcript {
                 preview: String::new(), consumed: samples.len(), committed: String::new(),
@@ -765,21 +1028,101 @@ mod native {
                 raw_words: String::new(),
             });
         }
-        let mut words: Vec<Word> = Vec::new();
-        for segment in engine.decoder.as_iter() {
-            if segment.no_speech_probability() >= 0.6 { continue; }
-            let text = segment.to_str_lossy().map_err(|_| "Could not read recognition result")?;
-            let start = segment.start_timestamp().max(0) as usize * 160;
-            let end = (segment.end_timestamp().max(0) as usize * 160).min(duration);
-            for (index, part) in text.split_whitespace().enumerate() {
-                if index == 0 && !text.starts_with(char::is_whitespace) {
-                    if let Some(last) = words.last_mut() {
-                        last.text.push_str(part);
-                        last.end = end;
-                        continue;
+        let mut words = decoded_words(&engine.decoder, duration)?;
+        #[cfg(test)]
+        let mut redecoded = false;
+        // Check every pass until the utterance has a confident language, every
+        // pass that types a whole utterance, and periodically otherwise. The
+        // detector reads this pass's own encoder output.
+        let decision = if automatic && (commit_all || window.detected_language.is_none() || window.language_pending
+            || duration.saturating_sub(window.language_checked_at) >= 24_000) {
+            #[cfg(test)]
+            let detecting = Instant::now();
+            let decision = heard_language(engine, capture);
+            window.language_checked_at = duration;
+            #[cfg(test)]
+            {
+                detect_ms = Some(detecting.elapsed().as_secs_f64() * 1_000.0);
+                heard = decision.as_ref().map(|choice| (choice.language.clone(), choice.share));
+            }
+            decision
+        } else { None };
+        // Whether this pass's words were decoded in a language other than the
+        // one its audio was spoken in: such text is a translation.
+        let mut mismatch = false;
+        if let Some(choice) = &decision {
+            mismatch = choice.language != decode_language;
+            // A whole utterance is typed at once: decode it again in the spoken
+            // language first, unless it already mixes languages under a hint,
+            // which keeps its own switching rules. Live passes are not decoded
+            // twice; their words are held and the next pass uses the decision.
+            if mismatch && commit_all && !multilingual {
+                #[cfg(test)]
+                let decoding = Instant::now();
+                engine.recognize(&audio, &choice.language, capture, context, finalizing)?;
+                #[cfg(test)]
+                { decode_ms += decoding.elapsed().as_secs_f64() * 1_000.0; }
+                if capture.cancel.load(Ordering::Acquire) {
+                    return Ok(Transcript {
+                        preview: String::new(), consumed: samples.len(), committed: String::new(),
+                        #[cfg(test)]
+                        raw_words: String::new(),
+                    });
+                }
+                words = decoded_words(&engine.decoder, duration)?;
+                decode_language = choice.language.clone();
+                #[cfg(test)]
+                { redecoded = true; }
+                mismatch = false;
+            }
+            if choice.confident {
+                engine.spoken_language = Some(choice.language.clone());
+                if commit_all {
+                    if let Ok(mut heard) = capture.heard.lock() {
+                        match heard.iter_mut().find(|(language, _)| *language == choice.language) {
+                            Some((_, samples)) => *samples += duration,
+                            None => heard.push((choice.language.clone(), duration)),
+                        }
                     }
                 }
-                words.push(Word { text: part.into(), start, end });
+            }
+            window.record_language_check(choice, &decode_language);
+        }
+        window.language_pending = automatic && window.agreeing_checks < 2;
+        // A hypothesis that skipped speech would type its end and lose what
+        // came before. Typed audio is the usual cause (a window starting in a
+        // cut word), so drop it, keeping the last typed word for alignment.
+        let restart = window.confirmed.last().map(|word| word.start / 320 * 320).filter(|cut| *cut > 0 && *cut + 16_000 <= duration);
+        if let Some(cut) = restart.filter(|_| skipped_speech(&words)) {
+            if !commit_all {
+                // Live: keep the last good preview and decode from the cut next time.
+                let preview = word_text(&window.previous[window.entered(&window.previous)..]);
+                window.trim(cut);
+                return Ok(Transcript {
+                    preview, committed: String::new(), consumed: cut * rate as usize / 16_000,
+                    #[cfg(test)]
+                    raw_words: word_text(&words),
+                });
+            }
+            // Typing the whole utterance: decode its untyped part on its own.
+            let mut tail = audio[cut..duration].to_vec();
+            tail.resize(tail.len().max(16_000), 0.0);
+            engine.recognize(&tail, &decode_language, capture, decode_context(tail.len(), multilingual), finalizing)?;
+            if capture.cancel.load(Ordering::Acquire) {
+                return Ok(Transcript {
+                    preview: String::new(), consumed: samples.len(), committed: String::new(),
+                    #[cfg(test)]
+                    raw_words: String::new(),
+                });
+            }
+            let mut retimed = decoded_words(&engine.decoder, duration - cut)?;
+            for word in &mut retimed {
+                word.start += cut;
+                word.end += cut;
+            }
+            let characters = |list: &[Word]| list.iter().map(|word| word.text.chars().count()).sum::<usize>();
+            if !skipped_speech(&retimed) || characters(&retimed) > characters(&words) {
+                words = retimed;
             }
         }
         #[cfg(test)]
@@ -788,6 +1131,20 @@ mod native {
         let mut transcript = Transcript { raw_words, ..window.update(words, duration, commit_all) };
         #[cfg(not(test))]
         let mut transcript = window.update(words, duration, commit_all);
+        // Never preview a translation either.
+        if mismatch { transcript.preview.clear(); }
+        // A settled language hints the next decodes of this utterance.
+        if let Some(choice) = decision.filter(|choice| choice.share >= SETTLED_SHARE && !commit_all) {
+            window.observe_language(choice.language, duration);
+        }
+        #[cfg(test)]
+        if let Ok(mut stats) = capture.stats.lock() {
+            stats.push(PassStats {
+                audio_samples: audio.len(), audio_ctx: decode_context(audio.len(), multilingual), detect_ms,
+                decode_ms, multilingual, finalizing, language: decode_language,
+                committed: transcript.committed.clone(), heard, redecoded,
+            });
+        }
         if commit_all {
             transcript.consumed = utterance_samples;
             *window = TranscriptWindow::default();
@@ -803,6 +1160,64 @@ mod native {
             }
         }
         Ok(transcript)
+    }
+
+    /// Whether a hypothesis skipped speech: whisper sometimes recognizes only
+    /// the end of a long window and stretches those few words over all of it.
+    /// A word other than the last that lasts over two seconds at under four
+    /// characters a second is such a stretch; a long unspaced sentence in
+    /// Chinese or Japanese reads faster than that.
+    fn skipped_speech(words: &[Word]) -> bool {
+        words.iter().rev().skip(1).any(|word| {
+            let seconds = word.end.saturating_sub(word.start) as f32 / 16_000.0;
+            seconds > 2.0 && (word.text.chars().count() as f32) < seconds * 4.0
+        })
+    }
+
+    fn decoded_words(decoder: &WhisperState, duration: usize) -> Result<Vec<Word>, String> {
+        let mut words: Vec<Word> = Vec::new();
+        for segment in decoder.as_iter() {
+            if segment.no_speech_probability() >= 0.6 { continue; }
+            let text = segment.to_str_lossy().map_err(|_| "Could not read recognition result")?;
+            let start = segment.start_timestamp().max(0) as usize * 160;
+            let end = (segment.end_timestamp().max(0) as usize * 160).min(duration);
+            for (index, part) in text.split_whitespace().enumerate() {
+                if index == 0 && !text.starts_with(char::is_whitespace) {
+                    if let Some(last) = words.last_mut() {
+                        last.text.push_str(part);
+                        last.end = end;
+                        continue;
+                    }
+                }
+                words.push(Word { text: part.into(), start, end });
+            }
+        }
+        collapse_loops(&mut words);
+        Ok(words)
+    }
+
+    /// Keeps one copy of a phrase of 1 to 8 words said three or more times in
+    /// a row: the decoder sometimes loops ("bu konuda, bu konuda, bu konuda"),
+    /// and live passes skip the fallback decode that would catch it. Real
+    /// speech rarely repeats the same phrase three times back to back.
+    fn collapse_loops(words: &mut Vec<Word>) {
+        let mut index = 0;
+        while index < words.len() {
+            let repeat = (1..=8).find(|&size| {
+                index + size * 3 <= words.len()
+                    && (0..size).all(|offset| same_word(&words[index + offset].text, &words[index + size + offset].text) && same_word(&words[index + offset].text, &words[index + size * 2 + offset].text))
+            });
+            if let Some(size) = repeat {
+                let mut end = index + size * 3;
+                while end + size <= words.len() && (0..size).all(|offset| same_word(&words[index + offset].text, &words[end + offset].text)) {
+                    end += size;
+                }
+                let last = words[end - 1].end;
+                words.drain(index + size..end);
+                words[index + size - 1].end = last;
+            }
+            index += 1;
+        }
     }
 
     fn same_word(left: &str, right: &str) -> bool {
@@ -822,6 +1237,18 @@ mod native {
 
         fn capture() -> Arc<Capture> {
             Arc::new(Capture::new("speech-test".into()))
+        }
+
+        #[test]
+        fn decoder_loops_keep_one_copy_and_real_repeats_stay() {
+            let words = |text: &str| text.split_whitespace().enumerate().map(|(index, word)| Word { text: word.into(), start: index * 1_000, end: index * 1_000 + 900 }).collect::<Vec<_>>();
+            let text = |mut list: Vec<Word>| { collapse_loops(&mut list); word_text(&list) };
+            assert_eq!(text(words("yaptıkları konuda, bu konuda, bu konuda, bu konuda, bu konuda, bu konuda, bu")), "yaptıkları konuda, bu");
+            assert_eq!(text(words("Sürücü davranışı %100 Sürücü davranışı %100 Sürücü davranışı %100")), "Sürücü davranışı %100");
+            // Twice is real speech ("evet evet", "çok çok iyi"), never collapsed.
+            assert_eq!(text(words("evet evet tamam")), "evet evet tamam");
+            assert_eq!(text(words("çok çok iyi oldu")), "çok çok iyi oldu");
+            assert_eq!(text(words("Testleri çalıştır, sonra push et.")), "Testleri çalıştır, sonra push et.");
         }
 
         #[test]
@@ -993,6 +1420,101 @@ mod native {
             assert!(window.boundary_suffix.is_empty());
             record_committed(&mut committed, window.update(extended, 52_000, false));
             assert_eq!(committed.join(" "), "alpha beta gamma delta payload tail");
+        }
+
+        #[test]
+        fn live_words_wait_until_the_utterance_language_is_certain() {
+            // Turkish right after English, first decoded in English: those
+            // hypotheses agree with each other but must never be typed.
+            let mut window = TranscriptWindow::default();
+            window.language_pending = true;
+            window.update(words("What you need to do"), 64_000, false);
+            assert_eq!(window.update(words("What you need to do"), 72_000, false).committed, "");
+            assert_eq!(window.update(words("What you need to do"), 72_000, false).committed, "");
+            // The pass's own audio names Turkish and is decoded again in it.
+            window.language_pending = false;
+            window.observe_language("tr".into(), 72_000);
+            assert_eq!(window.update(words("Ne yapman gerekiyorsa yapman"), 80_000, false).committed, "");
+            assert_eq!(window.update(words("Ne yapman gerekiyorsa yapman lazım"), 88_000, false).committed, "");
+            assert_eq!(window.update(words("Ne yapman gerekiyorsa yapman lazım"), 96_000, false).committed, "Ne yapman gerekiyorsa yapman");
+            assert_eq!(window.update(words("Ne yapman gerekiyorsa yapman lazım"), 96_000, true).committed, "lazım");
+        }
+
+        fn check(language: &str, share: f32) -> super::super::LanguageChoice {
+            super::super::LanguageChoice { language: language.into(), share, confident: share >= 0.5 }
+        }
+
+        #[test]
+        fn turkish_after_english_types_nothing_until_its_own_audio_settles_it() {
+            let mut window = TranscriptWindow::default();
+            // Decoded in English, the language last heard, while this audio is
+            // Turkish: the words are a translation and must stay untyped.
+            window.record_language_check(&check("tr", 0.62), "en");
+            assert!(window.language_pending);
+            window.update(words("What you need to do"), 56_000, false);
+            assert_eq!(window.update(words("What you need to do"), 64_000, false).committed, "");
+            // One agreeing check is not enough; an early detection can be wrong.
+            window.record_language_check(&check("tr", 0.95), "tr");
+            assert!(window.language_pending);
+            window.record_language_check(&check("tr", 0.98), "tr");
+            assert!(!window.language_pending);
+        }
+
+        #[test]
+        fn a_later_check_that_disagrees_or_is_unsure_holds_live_words_again() {
+            let mut window = TranscriptWindow::default();
+            for _ in 0..2 { window.record_language_check(&check("en", 0.89), "en"); }
+            assert!(!window.language_pending);
+            // Another language dominates, so the decision fell back to one of my
+            // languages with almost no weight: not a settled English.
+            window.record_language_check(&check("en", 0.01), "en");
+            assert!(window.language_pending);
+            window.record_language_check(&check("uk", 0.99), "en");
+            assert!(window.language_pending);
+            assert_eq!(window.tentative_language.as_deref(), Some("uk"));
+        }
+
+        #[test]
+        fn a_pending_language_still_types_the_whole_utterance_at_its_end() {
+            let mut window = TranscriptWindow::default();
+            window.language_pending = true;
+            window.update(words("Kaydet"), 16_000, false);
+            assert_eq!(window.update(words("Kaydet"), 24_000, true).committed, "Kaydet");
+        }
+
+        #[test]
+        fn a_retimed_final_decode_never_drops_words_that_were_not_typed() {
+            // The final decode moved the retained words a second earlier, so
+            // no word shares its audio with the typed ones. Only the words not
+            // yet typed follow, never fewer.
+            let mut window = TranscriptWindow {
+                confirmed: timed_words(&[("kullanıcı", 32_000, 44_000), ("ayarlarını", 44_000, 56_000), ("kaydeden", 56_000, 64_000)]),
+                ..Default::default()
+            };
+            let retimed = timed_words(&[("kullanıcı", 8_000, 16_000), ("ayarlarını", 16_000, 24_000), ("kaydeden", 24_000, 30_000),
+                ("fonksiyonu", 30_000, 40_000), ("yeniden", 40_000, 48_000), ("yazacağız.", 48_000, 60_000), ("Birlikte", 60_000, 70_000)]);
+            assert_eq!(window.update(retimed, 72_000, true).committed, "fonksiyonu yeniden yazacağız. Birlikte");
+        }
+
+        #[test]
+        fn stretched_words_mark_a_hypothesis_that_skipped_speech() {
+            // Seen on a busy machine: the end of an 11.7 s window spread over all of it.
+            assert!(skipped_speech(&timed_words(&[("Sonuçları", 0, 62_880), ("birlikte", 62_880, 108_800), ("kontrol", 108_800, 149_120), ("edelim.", 149_120, 183_680)])));
+            // A long last word is trailing silence, and long unspaced sentences read fast.
+            assert!(!skipped_speech(&timed_words(&[("Önce", 0, 6_400), ("düzelteceğiz,", 6_400, 37_000), ("sonra", 37_000, 42_000), ("bittik.", 42_000, 90_000)])));
+            assert!(!skipped_speech(&timed_words(&[("設定を開いてファイルを保存してください。", 0, 48_000), ("明日", 48_000, 56_000)])));
+        }
+
+        #[test]
+        fn hypotheses_from_clearly_different_audio_type_words_sooner() {
+            for (duration, typed) in [(56_000, ""), (72_000, "three four")] {
+                let mut window = TranscriptWindow::default();
+                window.update(words("one two tree four"), 40_000, false);
+                assert_eq!(window.update(words("one two three four five"), 48_000, false).committed, "one two");
+                // Half a second later the revised word still needs a third
+                // agreeing pass; a second and a half later two passes suffice.
+                assert_eq!(window.update(words("one two three four five six"), duration, false).committed, typed);
+            }
         }
 
         #[test]
@@ -1206,10 +1728,184 @@ mod native {
             assert_eq!(normalize(&committed), normalize(&expected));
             let decoded_audio = super::super::resample(&samples, rate);
             capture.cancel.store(true, Ordering::Release);
-            engine.recognize(&decoded_audio, language, &capture, false).unwrap();
+            engine.recognize(&decoded_audio, language, &capture, audio_context(decoded_audio.len()), true).unwrap();
             capture.cancel.store(false, Ordering::Release);
-            engine.recognize(&decoded_audio, language, &capture, false).unwrap();
+            engine.recognize(&decoded_audio, language, &capture, audio_context(decoded_audio.len()), true).unwrap();
             assert!(engine.decoder.full_n_segments() > 0, "The next recording must remain usable after cancellation");
+        }
+
+        pub(super) fn normalized_words(text: &str) -> Vec<String> {
+            text.to_lowercase().chars()
+                .filter(|character| character.is_alphanumeric() || character.is_whitespace()).collect::<String>()
+                .split_whitespace().map(str::to_owned).collect()
+        }
+
+        // Word-level edit distance plus, for each left word, its aligned right word.
+        pub(super) fn align_words(left: &[String], right: &[String]) -> (usize, Vec<Option<usize>>) {
+            let mut distance = vec![vec![0usize; right.len() + 1]; left.len() + 1];
+            for (index, row) in distance.iter_mut().enumerate() { row[0] = index; }
+            for (index, cell) in distance[0].iter_mut().enumerate() { *cell = index; }
+            for i in 1..=left.len() {
+                for j in 1..=right.len() {
+                    let substitution = distance[i - 1][j - 1] + usize::from(left[i - 1] != right[j - 1]);
+                    distance[i][j] = substitution.min(distance[i - 1][j] + 1).min(distance[i][j - 1] + 1);
+                }
+            }
+            let mut mapping = vec![None; left.len()];
+            let (mut i, mut j) = (left.len(), right.len());
+            while i > 0 && j > 0 {
+                if distance[i][j] == distance[i - 1][j - 1] + usize::from(left[i - 1] != right[j - 1]) {
+                    mapping[i - 1] = Some(j - 1);
+                    i -= 1;
+                    j -= 1;
+                } else if distance[i][j] == distance[i - 1][j] + 1 { i -= 1; } else { j -= 1; }
+            }
+            (distance[left.len()][right.len()], mapping)
+        }
+
+        pub(super) fn percentile(values: &[f64], fraction: f64) -> Option<f64> {
+            let mut sorted = values.to_vec();
+            sorted.sort_by(f64::total_cmp);
+            sorted.get(((sorted.len().max(1) - 1) as f64 * fraction).round() as usize).copied()
+        }
+
+        struct ReplayEvent {
+            seconds: f64,
+            committed_words: usize,
+            preview: Vec<String>,
+            finalizing: bool,
+        }
+
+        // Replays a recording at wall-clock speed with the worker's polling
+        // cadence, so audio keeps arriving while each decode runs.
+        fn replay(engine: &mut Engine, samples: &[f32], language: &str) -> (Vec<ReplayEvent>, String, Vec<PassStats>) {
+            let rate = 16_000;
+            let capture = capture();
+            let mut window = TranscriptWindow::default();
+            let mut committed = String::new();
+            let mut events = Vec::new();
+            let mut offset = 0;
+            let started = Instant::now();
+            while offset < samples.len() {
+                let available = ((started.elapsed().as_secs_f64() * rate as f64) as usize).min(samples.len());
+                if decode_due(available - offset, rate) || available == samples.len() {
+                    capture.samples.lock().unwrap().extend_from_slice(&samples[offset..available]);
+                    offset = available;
+                    let audio: Vec<f32> = capture.samples.lock().unwrap().iter().take(rate * 27).copied().collect();
+                    let transcript = transcribe_samples(engine, &capture, language, &mut window, &audio, rate as u32, false).unwrap();
+                    let preview = format!("{} {}", committed, transcript.preview);
+                    apply(&capture, &transcript, &mut committed).unwrap();
+                    events.push(ReplayEvent { seconds: started.elapsed().as_secs_f64(),
+                        committed_words: normalized_words(&committed).len(), preview: normalized_words(&preview), finalizing: false });
+                    continue;
+                }
+                std::thread::sleep(DECODE_POLL);
+            }
+            while !capture.samples.lock().unwrap().is_empty() {
+                let audio: Vec<f32> = capture.samples.lock().unwrap().iter().take(rate * 27).copied().collect();
+                let transcript = transcribe_samples(engine, &capture, language, &mut window, &audio, rate as u32, true).unwrap();
+                apply(&capture, &transcript, &mut committed).unwrap();
+                events.push(ReplayEvent { seconds: started.elapsed().as_secs_f64(),
+                    committed_words: normalized_words(&committed).len(), preview: normalized_words(&committed), finalizing: true });
+            }
+            let stats = capture.stats.lock().unwrap().clone();
+            (events, committed, stats)
+        }
+
+        #[test]
+        #[ignore = "Requires the installed speech model and a directory of float PCM fixtures with transcripts"]
+        fn real_model_latency_benchmark() {
+            whisper_rs::install_logging_hooks();
+            let model = std::env::var_os("PZZA_DICTATION_TEST_MODEL").expect("Set PZZA_DICTATION_TEST_MODEL");
+            // Each fixture is <name>.<language>.f32 (16 kHz mono float32 little
+            // endian) beside <name>.<language>.txt holding the spoken script.
+            let directory = std::env::var_os("PZZA_DICTATION_BENCH_DIR").expect("Set PZZA_DICTATION_BENCH_DIR");
+            let filter = std::env::var("PZZA_DICTATION_BENCH_ONLY").ok();
+            let mut fixtures: Vec<_> = std::fs::read_dir(&directory).unwrap().filter_map(Result::ok).map(|entry| entry.path())
+                .filter(|path| path.extension().is_some_and(|extension| extension == "f32"))
+                .filter(|path| filter.as_deref().is_none_or(|only| path.to_string_lossy().contains(only))).collect();
+            fixtures.sort();
+            assert!(!fixtures.is_empty(), "No fixtures found");
+            let mut engine = Engine::load(Path::new(&model), Arc::new(AtomicBool::new(false))).unwrap();
+            let mut report = Vec::new();
+            let mut table = vec![format!("{:<8} {:<5} {:>6} {:>7} {:>7} {:>7} {:>7} {:>6} {:>6} {:>6} {:>5} {:>5} {:>6} {:>6}",
+                "fixture", "mode", "ttfp", "prev50", "prev90", "comm50", "comm90", "dec50", "dec90", "decmax", "det", "ctx15", "wer", "oracle")];
+            for fixture in fixtures {
+                let stem = fixture.file_stem().unwrap().to_string_lossy().into_owned();
+                let (name, pinned) = stem.rsplit_once('.').expect("Fixture names must be <name>.<language>.f32");
+                let reference = std::fs::read_to_string(fixture.with_extension("txt")).unwrap();
+                let bytes = std::fs::read(&fixture).unwrap();
+                let samples: Vec<f32> = bytes.chunks_exact(4).map(|sample| f32::from_le_bytes(sample.try_into().unwrap())).collect();
+                // Offline reference timing: one full-context decode of the whole recording.
+                let oracle_capture = capture();
+                let mut padded = samples.clone();
+                padded.resize(padded.len().max(16_000), 0.0);
+                engine.recognize(&padded, pinned, &oracle_capture, 1500, true).unwrap();
+                let oracle = decoded_words(&engine.decoder, samples.len()).unwrap();
+                // Leave the decoder at the live encoder context, as preparation does.
+                engine.recognize(&[0.0; 16_000], "en", &oracle_capture, audio_context(16_000), false).unwrap();
+                let oracle_text = word_text(&oracle);
+                let oracle_words: Vec<(String, f64, f64)> = oracle.iter().flat_map(|word| {
+                    normalized_words(&word.text).into_iter().map(|text| (text, word.start as f64 / 16_000.0, word.end as f64 / 16_000.0)).collect::<Vec<_>>()
+                }).collect();
+                let reference_words = normalized_words(&reference);
+                let oracle_names: Vec<String> = oracle_words.iter().map(|(text, _, _)| text.clone()).collect();
+                let oracle_wer = align_words(&oracle_names, &reference_words).0 as f64 / reference_words.len() as f64;
+                for mode in ["auto", pinned] {
+                    let (events, transcript, stats) = replay(&mut engine, &samples, mode);
+                    let final_words = normalized_words(&transcript);
+                    let wer = align_words(&final_words, &reference_words).0 as f64 / reference_words.len() as f64;
+                    // Spoken end time of each final word, from its aligned offline word.
+                    let (_, mapping) = align_words(&final_words, &oracle_names);
+                    let mut spoken = Vec::with_capacity(final_words.len());
+                    let mut last = oracle_words.first().map_or(0.0, |word| word.2);
+                    for aligned in &mapping {
+                        if let Some(index) = aligned { last = oracle_words[*index].2; }
+                        spoken.push(last);
+                    }
+                    let first_speech = oracle_words.first().map_or(0.0, |word| word.1);
+                    let ttfp = events.iter().find(|event| !event.preview.is_empty()).map(|event| event.seconds - first_speech);
+                    let mut preview_latency = Vec::new();
+                    let mut commit_latency = Vec::new();
+                    let mut live_commits = 0;
+                    for (index, word) in final_words.iter().enumerate() {
+                        let commit = events.iter().find(|event| event.committed_words > index);
+                        if commit.is_some_and(|event| !event.finalizing) { live_commits += 1; }
+                        let preview = events.iter().find(|event| event.preview.get(index) == Some(word)).or(commit);
+                        if let Some(event) = preview { preview_latency.push(event.seconds - spoken[index]); }
+                        if let Some(event) = commit { commit_latency.push(event.seconds - spoken[index]); }
+                    }
+                    let live: Vec<&PassStats> = stats.iter().filter(|pass| !pass.finalizing).collect();
+                    let decode: Vec<f64> = live.iter().map(|pass| pass.decode_ms).collect();
+                    let detections: Vec<f64> = stats.iter().filter_map(|pass| pass.detect_ms).collect();
+                    let full_context = live.iter().filter(|pass| pass.audio_ctx == 1500).count();
+                    let ms = |value: Option<f64>| value.map_or("-".into(), |value| format!("{:.0}", value * 1_000.0));
+                    table.push(format!("{:<8} {:<5} {:>6} {:>7} {:>7} {:>7} {:>7} {:>6.0} {:>6.0} {:>6.0} {:>5} {:>5} {:>6.3} {:>6.3}",
+                        name, mode, ms(ttfp), ms(percentile(&preview_latency, 0.5)), ms(percentile(&preview_latency, 0.9)),
+                        ms(percentile(&commit_latency, 0.5)), ms(percentile(&commit_latency, 0.9)),
+                        percentile(&decode, 0.5).unwrap_or(0.0), percentile(&decode, 0.9).unwrap_or(0.0),
+                        decode.iter().copied().fold(0.0, f64::max),
+                        format!("{}/{:.0}", detections.len(), detections.iter().sum::<f64>() / detections.len().max(1) as f64),
+                        format!("{full_context}/{}", live.len()), wer, oracle_wer));
+                    eprintln!("{}", table.last().unwrap());
+                    eprintln!("  transcript: {transcript}");
+                    report.push(serde_json::json!({
+                        "fixture": name, "mode": mode, "reference": reference, "oracle": oracle_text, "transcript": transcript,
+                        "wer": wer, "oracleWer": oracle_wer, "timeToFirstPreview": ttfp, "liveCommittedWords": live_commits,
+                        "words": final_words.iter().enumerate().map(|(index, word)| serde_json::json!({
+                            "word": word, "spokenEnd": spoken[index],
+                            "previewLatency": preview_latency.get(index), "commitLatency": commit_latency.get(index),
+                        })).collect::<Vec<_>>(),
+                        "passes": stats,
+                        "events": events.iter().map(|event| serde_json::json!({ "seconds": event.seconds,
+                            "committedWords": event.committed_words, "preview": event.preview.join(" "), "finalizing": event.finalizing })).collect::<Vec<_>>(),
+                    }));
+                }
+            }
+            eprintln!("\n{}", table.join("\n"));
+            if let Some(path) = std::env::var_os("PZZA_DICTATION_BENCH_REPORT") {
+                serde_json::to_writer_pretty(std::fs::File::create(path).unwrap(), &serde_json::json!({ "runs": report, "table": table })).unwrap();
+            }
         }
     }
 
@@ -1234,6 +1930,13 @@ mod native {
         Ok(())
     }
 
+    // How often the idle worker checks for new audio.
+    const DECODE_POLL: Duration = Duration::from_millis(10);
+
+    fn decode_due(new_samples: usize, rate: usize) -> bool {
+        new_samples >= rate / 4
+    }
+
     fn run(app: AppHandle, capture: Arc<Capture>, language: String, input_device_id: Option<String>) {
         let result = (|| {
             emit(&app, &capture, "loading", None, None, None);
@@ -1247,6 +1950,8 @@ mod native {
             let mut processed_samples = 0;
             let mut committed = String::new();
             let mut window = TranscriptWindow::default();
+            // Words shown as pending in the last preview, for the stop diagnostic.
+            let mut pending_words = 0;
             while !capture.closed.load(Ordering::Acquire) {
                 if capture.cancel.load(Ordering::Acquire) {
                     capture.stop.store(true, Ordering::Release);
@@ -1260,12 +1965,13 @@ mod native {
                         return Err("Audio lock failed".into());
                     }
                 };
-                if !capture.stop.load(Ordering::Acquire) && captured_samples.saturating_sub(processed_samples) >= rate / 4 {
+                if !capture.stop.load(Ordering::Acquire) && decode_due(captured_samples.saturating_sub(processed_samples), rate) {
                     // Decode each new quarter-second of audio as soon as the engine
                     // is free, including audio captured while the last decode ran.
                     processed_samples = captured_samples;
                     match transcribe(&app, &capture, &language, &mut window, false) {
                         Ok(transcript) => {
+                            pending_words = transcript.preview.split_whitespace().count();
                             let preview = format!("{} {}", committed, transcript.preview)
                                 .trim()
                                 .to_string();
@@ -1285,8 +1991,11 @@ mod native {
                             return Err(error);
                         }
                     }
+                    // A decode outlasts the audio quantum, so the next one is
+                    // usually due already. Start it without an idle wait.
+                    continue;
                 }
-                std::thread::sleep(Duration::from_millis(30));
+                std::thread::sleep(DECODE_POLL);
             }
             let _ = microphone.join();
             if let Some(error) = capture
@@ -1300,6 +2009,8 @@ mod native {
             if capture.cancel.load(Ordering::Acquire) {
                 return Ok(String::new());
             }
+            let left = capture.samples.lock().map_err(|_| "Audio lock failed")?.len();
+            let typed_before = committed.split_whitespace().count();
             while !capture
                 .samples
                 .lock()
@@ -1309,6 +2020,12 @@ mod native {
                 let transcript = transcribe(&app, &capture, &language, &mut window, true)?;
                 apply(&capture, &transcript, &mut committed)?;
             }
+            // Counts only, never the words: dictation can hold anything.
+            let rate = capture.rate.lock().map(|rate| *rate).unwrap_or(16_000).max(1);
+            crate::voice_log::log(&app, format!(
+                "dictation {} stopped: {pending_words} words pending in the last preview, {:.1} s of audio left for the final pass, which typed {} words ({} words in all)",
+                capture.id, left as f64 / rate as f64, committed.split_whitespace().count().saturating_sub(typed_before), committed.split_whitespace().count(),
+            ));
             Ok(committed)
         })();
         // Release the singleton before notifying the interface so a new recording can start immediately.
@@ -1317,7 +2034,18 @@ mod native {
         }
         capture.finished.store(true, Ordering::Release);
         match result {
-            Ok(text) => emit(&app, &capture, "final", Some(&text), None, None),
+            Ok(text) => {
+                // The language heard most with confidence, so the app can learn the
+                // user's languages.
+                let language = capture.heard.lock().ok()
+                    .and_then(|heard| heard.iter().max_by_key(|(_, samples)| *samples).map(|(language, _)| language.clone()));
+                if !capture.cancel.load(Ordering::Acquire) {
+                    let _ = app.emit(CHANNEL, Event {
+                        id: &capture.id, kind: "final", text: Some(&text), level: None, error: None, active: None,
+                        language: language.as_deref(),
+                    });
+                }
+            }
             Err(error) => emit(&app, &capture, "error", None, None, Some(&error)),
         }
     }
@@ -1387,7 +2115,7 @@ mod native {
             let state = handle.state::<SpeechState>();
             let audio: Vec<f32> = (0..480_000).map(|i| ((i as f32) * 0.07).sin() * 0.1).collect();
             state.context.lock().unwrap().as_mut().unwrap()
-                .recognize(&audio, "en", &worker_capture, false).unwrap();
+                .recognize(&audio, "en", &worker_capture, audio_context(audio.len()), true).unwrap();
             worker_capture.finished.store(true, Ordering::Release);
         }));
         let deadline = Instant::now() + Duration::from_secs(10);
@@ -1405,7 +2133,7 @@ mod native {
         assert!(!state.shutting_down.load(Ordering::Acquire));
         let capture = Arc::new(Capture::new("cancelled-quit-regression".into()));
         state.context.lock().unwrap().as_mut().unwrap()
-            .recognize(&[0.0; 16_000], "en", &capture, false).unwrap();
+            .recognize(&[0.0; 16_000], "en", &capture, audio_context(16_000), true).unwrap();
     }
 
     #[cfg(test)]
@@ -1422,35 +2150,104 @@ mod native {
     }
 
     fn supported_language(language: &str) -> bool {
-        language == "auto"
-            || ((2..=3).contains(&language.len())
-                && language.bytes().all(|byte| byte.is_ascii_lowercase())
-                && whisper_rs::get_lang_id(language).and_then(whisper_rs::get_lang_str)
-                    == Some(language))
+        language == "auto" || super::supported_languages().contains(&language)
+    }
+
+    // "My languages": distinct supported languages, main language first.
+    fn speech_languages(languages: Option<Vec<String>>) -> Result<Vec<String>, String> {
+        let languages = languages.unwrap_or_default();
+        let valid = languages.len() <= super::supported_languages().len()
+            && languages.iter().enumerate().all(|(index, language)| {
+                language != "auto" && supported_language(language) && !languages[..index].contains(language)
+            });
+        if valid { Ok(languages) } else { Err("Invalid speech languages".into()) }
     }
 
     #[cfg(test)]
     mod language_tests {
-        use super::supported_language;
+        use super::{speech_languages, supported_language};
 
         #[test]
-        fn accepts_every_canonical_engine_language_and_auto() {
+        fn accepts_exactly_the_supported_languages_and_auto() {
             assert!(supported_language("auto"));
-            for id in 0..=whisper_rs::get_lang_max_id() {
-                assert!(supported_language(whisper_rs::get_lang_str(id).unwrap()));
+            for language in super::super::supported_languages() {
+                assert!(supported_language(language));
             }
-            for invalid in ["", "English", "TR", "en-US", "en\0", "turkish"] {
+            // Engine languages outside the supported set are refused too.
+            for invalid in ["", "English", "TR", "en-US", "en\0", "turkish", "az", "sw", "haw"] {
                 assert!(!supported_language(invalid));
+            }
+        }
+
+        #[test]
+        fn my_languages_are_distinct_supported_codes() {
+            let list = |codes: &[&str]| Some(codes.iter().map(|code| (*code).to_owned()).collect::<Vec<_>>());
+            assert_eq!(speech_languages(list(&["tr", "en"])).unwrap(), ["tr", "en"]);
+            assert!(speech_languages(None).unwrap().is_empty());
+            for invalid in [&["auto"][..], &["tr", "tr"], &["az"], &["EN"]] {
+                assert!(speech_languages(list(invalid)).is_err());
             }
         }
     }
 
     #[cfg(test)]
     mod device_tests {
-        use super::{select_input_device, valid_input_device_id, InputDevice};
+        use super::{select_input_device, select_voice_input, valid_input_device_id, InputDevice};
 
         fn microphone(object: u32, id: &str, is_default: bool) -> (u32, InputDevice) {
-            (object, InputDevice { id: id.into(), name: "USB microphone".into(), is_default })
+            (object, InputDevice { id: id.into(), name: "USB microphone".into(), is_default, built_in: false, bluetooth: false })
+        }
+
+        fn device(object: u32, id: &str, is_default: bool, built_in: bool, bluetooth: bool) -> (u32, InputDevice) {
+            (object, InputDevice { id: id.into(), name: id.into(), is_default, built_in, bluetooth })
+        }
+
+        #[test]
+        fn dictation_avoids_bluetooth_microphones() {
+            let airpods_default = vec![device(1, "airpods", true, false, true), device(2, "builtin", false, true, false), device(3, "usb", false, false, false)];
+            // A Bluetooth default input falls back to the built-in microphone.
+            assert_eq!(select_voice_input(&airpods_default, None, false).unwrap(), 2);
+            // So does a wired default input while Bluetooth headphones play the output.
+            let usb_default = vec![device(1, "airpods", false, false, true), device(2, "builtin", false, true, false), device(3, "usb", true, false, false)];
+            assert_eq!(select_voice_input(&usb_default, None, true).unwrap(), 2);
+            assert_eq!(select_voice_input(&usb_default, None, false).unwrap(), 3);
+            // An explicit choice always wins, even a Bluetooth one.
+            assert_eq!(select_voice_input(&airpods_default, Some("airpods"), true).unwrap(), 1);
+            assert!(select_voice_input(&airpods_default, Some("missing"), false).is_err());
+            // Without a built-in microphone the default is used rather than failing.
+            let headset_only = vec![device(1, "airpods", true, false, true)];
+            assert_eq!(select_voice_input(&headset_only, None, true).unwrap(), 1);
+        }
+
+        // Prints this Mac's input devices, their transport and the dictation choice.
+        #[test]
+        #[ignore = "reads the real audio devices of this Mac"]
+        fn this_macs_devices_and_dictation_choice() {
+            let devices = super::input_devices().unwrap();
+            for (object, device) in &devices {
+                println!("input {object}: {:?} default={} built_in={} bluetooth={}", device.name, device.is_default, device.built_in, device.bluetooth);
+            }
+            let output_bluetooth = super::output_is_bluetooth();
+            println!("default output is Bluetooth: {output_bluetooth}");
+            let chosen = select_voice_input(&devices, None, output_bluetooth).unwrap();
+            println!("dictation uses input {chosen}");
+        }
+
+        // Dictation reads the microphone through a deadlock-free tap;
+        // repeated starts must neither hang nor drop audio.
+        #[test]
+        #[ignore = "opens this Mac's microphone"]
+        fn dictation_microphone_restarts_and_records() {
+            let device = super::voice_input_device(None).unwrap();
+            for round in 0..10 {
+                let capture = std::sync::Arc::new(super::Capture::new(format!("test-{round}")));
+                let (mut stream, rate) = super::input(device, capture.clone()).unwrap();
+                stream.start().unwrap();
+                std::thread::sleep(std::time::Duration::from_millis(300));
+                drop(stream);
+                let samples = capture.captured_samples.load(std::sync::atomic::Ordering::Acquire);
+                assert!(samples > rate as usize / 10, "round {round}: only {samples} samples at {rate} Hz");
+            }
         }
 
         #[test]
@@ -1484,9 +2281,11 @@ mod native {
     }
 
     #[tauri::command]
-    pub fn speech_start(app: AppHandle, id: String, language: String, input_device_id: Option<String>) -> Result<(), String> {
+    pub fn speech_start(app: AppHandle, id: String, language: String, languages: Option<Vec<String>>, input_device_id: Option<String>, silence_stop_ms: Option<u64>) -> Result<(), String> {
+        let languages = speech_languages(languages).map_err(|_| "Invalid dictation request")?;
         if id.is_empty() || id.len() > 128 || !supported_language(&language)
-            || input_device_id.as_deref().is_some_and(|id| !valid_input_device_id(id)) {
+            || input_device_id.as_deref().is_some_and(|id| !valid_input_device_id(id))
+            || silence_stop_ms.is_some_and(|ms| !super::SILENCE_STOP_RANGE_MS.contains(&ms)) {
             return Err("Invalid dictation request".into());
         }
         let state = app.state::<SpeechState>();
@@ -1504,11 +2303,569 @@ mod native {
         if let Some(previous) = worker.take() {
             previous.join().map_err(|_| "The previous dictation worker failed")?;
         }
-        let capture = Arc::new(Capture::new(id));
+        let silence_stop_ms = silence_stop_ms.map(|ms| ms as usize);
+        let capture = Arc::new(Capture { languages, silence_stop_ms, ..Capture::new(id) });
         *active = Some(capture.clone());
         let worker_app = app.clone();
         *worker = Some(std::thread::spawn(move || run(worker_app, capture, language, input_device_id)));
         Ok(())
+    }
+
+    // Language detection and transcription quality on a synthetic set that
+    // mimics a Turkish developer: Turkish with English technical words, pure
+    // Turkish and English, alternating sentences in one recording, short
+    // commands, numbers and paths, and every supported language with a system
+    // voice, over room noise and quiet distant speech. Clips run through one
+    // engine in a fixed order, so language memory carries over as in real use,
+    // through the dictation streaming path (wall-clock replay). Audio is
+    // synthesized into PZZA_STT_EVAL_DIR once and reused, so every run hears
+    // identical input.
+    #[cfg(test)]
+    mod language_eval_tests {
+        use super::*;
+        use super::streaming_tests::{align_words, normalized_words, percentile};
+
+        const TR: &str = "Yelda (Turkish (Türkiye))";
+        const EN: &str = "Samantha (English (US))";
+        const EN_UK: &str = "Daniel (English (UK))";
+        const RATE: usize = 16_000;
+
+        #[derive(Clone, Copy)]
+        enum Condition { Clean, Room, Noisy, Distant }
+
+        impl Condition {
+            // Speech level (active speech, dBFS), noise level (dBFS), reverberation.
+            fn levels(self) -> (f32, f32, bool) {
+                match self {
+                    Condition::Clean => (-24.0, -70.0, false),
+                    Condition::Room => (-26.0, -54.0, false),
+                    // Above the pause detector's floor: no utterance boundaries.
+                    Condition::Noisy => (-28.0, -44.0, false),
+                    Condition::Distant => (-40.0, -58.0, true),
+                }
+            }
+
+            fn name(self) -> &'static str {
+                match self { Condition::Clean => "clean", Condition::Room => "room", Condition::Noisy => "noisy", Condition::Distant => "distant" }
+            }
+        }
+
+        struct Clip {
+            id: &'static str,
+            category: &'static str,
+            condition: Condition,
+            pause_ms: usize,
+            // Speaking rate in words per minute; 0 keeps the voice's default.
+            words_per_minute: u32,
+            parts: &'static [(&'static str, &'static str, &'static str)],
+        }
+
+        const fn clip(id: &'static str, category: &'static str, condition: Condition, pause_ms: usize, words_per_minute: u32,
+            parts: &'static [(&'static str, &'static str, &'static str)]) -> Clip {
+            Clip { id, category, condition, pause_ms, words_per_minute, parts }
+        }
+
+        use Condition::{Clean, Distant, Noisy, Room};
+        // Ordered so Turkish often follows English or another language, the
+        // situation in which a remembered language used to decode Turkish as
+        // an English translation.
+        const CLIPS: &[Clip] = &[
+            clip("01-en-settings", "en", Room, 0, 0, &[(EN, "en", "Please open the settings panel and enable dark mode.")]),
+            clip("02-tr-failure", "tr", Room, 0, 200, &[(TR, "tr", "Ne yapman gerekiyorsa yapman lazım.")]),
+            clip("03-short-en-stop", "short", Clean, 0, 0, &[(EN, "en", "Stop.")]),
+            clip("04-short-tr-save", "short", Room, 0, 0, &[(TR, "tr", "Kaydet.")]),
+            clip("05-tech-refactor", "tr-tech", Clean, 0, 190, &[(TR, "tr", "Şu component'i refactor edelim, sonra testleri tekrar çalıştıralım.")]),
+            clip("06-mixed-tests", "mixed", Room, 800, 0, &[
+                (EN, "en", "First, open the terminal and run the tests."), (TR, "tr", "Sonra hataları tek tek düzeltelim."),
+                (EN, "en", "Then push the branch."), (TR, "tr", "Ne yapman gerekiyorsa yapman lazım."),
+            ]),
+            clip("07-en-build", "en", Noisy, 0, 0, &[(EN_UK, "en", "The build failed because the tests timed out on the server.")]),
+            clip("08-tech-merge", "tr-tech", Noisy, 0, 0, &[(TR, "tr", "PR'ı merge etmeden önce testleri çalıştır.")]),
+            clip("09-short-tr-yes", "short", Distant, 0, 0, &[(TR, "tr", "Evet.")]),
+            clip("10-de-settings", "other", Room, 0, 0, &[("Anna (German (Germany))", "de", "Öffne bitte die Einstellungen und speichere die Datei.")]),
+            clip("11-short-tr-cancel", "short", Room, 0, 0, &[(TR, "tr", "Hayır, iptal et.")]),
+            clip("12-es-config", "other", Clean, 0, 0, &[("Mónica (Spanish (Spain))", "es", "Abre el archivo de configuración y guarda los cambios.")]),
+            clip("13-tr-evening", "tr", Distant, 0, 0, &[(TR, "tr", "Bugün akşam toplantıdan sonra eve gideceğim.")]),
+            clip("14-mixed-continuous", "mixed", Room, 300, 0, &[
+                (TR, "tr", "Bu fonksiyonu biraz daha hızlandırmamız lazım."), (EN, "en", "I think the cache is the problem."),
+                (TR, "tr", "Yarın birlikte bakalım."),
+            ]),
+            clip("15-en-async", "en", Distant, 0, 0, &[(EN, "en", "Can you refactor this function to use async await?")]),
+            clip("16-tech-cache", "tr-tech", Room, 0, 0, &[(TR, "tr", "Bu endpoint'in response'u çok yavaş, cache ekleyelim.")]),
+            clip("17-ja-settings", "other", Room, 0, 0, &[("Kyoko (Japanese (Japan))", "ja", "設定を開いてファイルを保存してください。")]),
+            clip("18-short-tr-tests", "short", Clean, 0, 0, &[(TR, "tr", "Testleri çalıştır.")]),
+            clip("19-num-tr-port", "numbers", Room, 0, 0, &[(TR, "tr", "Port numarasını 8080 yap ve sunucuyu yeniden başlat.")]),
+            clip("20-num-en-timeout", "numbers", Room, 0, 0, &[(EN, "en", "Change the timeout to 30 seconds and retry 3 times.")]),
+            clip("21-mixed-commit", "mixed", Noisy, 700, 0, &[
+                (EN, "en", "Okay, that looks good."), (TR, "tr", "Şimdi commit atıp push'layalım."),
+                (EN, "en", "And then create a pull request."),
+            ]),
+            clip("22-tech-deploy", "tr-tech", Distant, 0, 0, &[(TR, "tr", "Deploy pipeline'ı fail oldu, log'lara bakar mısın?")]),
+            clip("23-short-en-yes", "short", Room, 0, 0, &[(EN, "en", "Yes, do it.")]),
+            clip("24-tr-save-file", "tr", Room, 0, 0, &[(TR, "tr", "Bu dosyayı kaydet ve pencereyi kapat.")]),
+            clip("25-de-time", "other", Noisy, 0, 0, &[("Anna (German (Germany))", "de", "Wie spät ist es heute Abend in Berlin?")]),
+            clip("26-tech-hook", "tr-tech", Room, 0, 0, &[(TR, "tr", "State management için yeni bir hook yazmamız lazım.")]),
+            clip("27-es-review", "other", Room, 0, 0, &[("Paulina", "es", "Necesito revisar el código antes de la reunión.")]),
+            clip("28-short-tr-stop", "short", Noisy, 0, 0, &[(TR, "tr", "Durdur.")]),
+            clip("29-path-tr", "numbers", Clean, 0, 0, &[(TR, "tr", "src klasöründeki App.tsx dosyasını aç.")]),
+            clip("30-path-en", "numbers", Room, 0, 0, &[(EN, "en", "Open the main.rs file in the src folder.")]),
+            clip("31-ja-meeting", "other", Room, 0, 0, &[("Kyoko (Japanese (Japan))", "ja", "明日の会議は十時からです。")]),
+            clip("32-mixed-question", "mixed", Room, 600, 0, &[
+                (TR, "tr", "Bunu bitirmek için ne yapman lazım?"), (TR, "tr", "Ne yapman gerekiyorsa yapman lazım."),
+                (EN, "en", "Got it, thanks."),
+            ]),
+            clip("33-tech-rebase", "tr-tech", Noisy, 0, 0, &[(TR, "tr", "Branch'i rebase et ve conflict'leri çöz.")]),
+            clip("34-en-ship", "en", Room, 0, 0, &[(EN, "en", "Let's ship the release after the review is done.")]),
+            clip("35-tr-morning", "tr", Room, 0, 210, &[(TR, "tr", "Yarın sabah erkenden kalkıp işe başlamam gerekiyor.")]),
+            clip("36-short-en-open", "short", Distant, 0, 0, &[(EN, "en", "Open settings.")]),
+            clip("37-tr-failure-again", "tr", Clean, 0, 200, &[(TR, "tr", "Ne yapman gerekiyorsa yapman lazım.")]),
+            clip("38-tr-long", "tr-tech", Room, 500, 0, &[
+                (TR, "tr", "Bu hafta yeni özelliği bitirmemiz lazım."), (TR, "tr", "Önce API tarafını yazalım, sonra arayüzü bağlarız."),
+                (TR, "tr", "Testleri de unutmayalım."),
+            ]),
+            // Every other supported language with a system voice (Persian has none).
+            clip("40-zh", "other", Room, 0, 0, &[("Tingting (Chinese (China mainland))", "zh", "请打开设置并保存文件。")]),
+            clip("41-hi", "other", Room, 0, 0, &[("Lekha", "hi", "कृपया सेटिंग्स खोलें और फ़ाइल सेव करें।")]),
+            clip("42-tr-after-hi", "tr", Room, 0, 0, &[(TR, "tr", "Bu satırı silip yeniden yaz.")]),
+            clip("43-pt", "other", Room, 0, 0, &[("Luciana (Portuguese (Brazil))", "pt", "Abra o arquivo de configuração e salve as alterações.")]),
+            clip("44-ru", "other", Room, 0, 0, &[("Milena", "ru", "Пожалуйста, откройте настройки и сохраните файл.")]),
+            clip("45-fr", "other", Room, 0, 0, &[("Jacques", "fr", "Ouvre les paramètres et enregistre le fichier.")]),
+            clip("46-ko", "other", Room, 0, 0, &[("Yuna", "ko", "설정을 열고 파일을 저장해 주세요.")]),
+            clip("47-id", "other", Room, 0, 0, &[("Damayanti", "id", "Tolong buka pengaturan dan simpan berkasnya.")]),
+            clip("48-vi", "other", Room, 0, 0, &[("Linh", "vi", "Hãy mở phần cài đặt và lưu tệp lại.")]),
+            clip("49-pl", "other", Room, 0, 0, &[("Zosia", "pl", "Otwórz ustawienia i zapisz plik.")]),
+            clip("50-uk", "other", Room, 0, 0, &[("Lesya", "uk", "Будь ласка, відкрийте налаштування і збережіть файл.")]),
+            clip("51-short-tr-after-uk", "short", Room, 0, 0, &[(TR, "tr", "Tamam, devam et.")]),
+            clip("52-it", "other", Room, 0, 0, &[("Alice (Italian (Italy))", "it", "Apri le impostazioni e salva il file.")]),
+            clip("53-ar", "other", Room, 0, 0, &[("Majed", "ar", "من فضلك افتح الإعدادات واحفظ الملف.")]),
+            clip("54-nl", "other", Room, 0, 0, &[("Xander", "nl", "Open de instellingen en sla het bestand op.")]),
+            clip("55-bn", "other", Room, 0, 0, &[("Piya", "bn", "অনুগ্রহ করে সেটিংস খুলুন এবং ফাইলটি সংরক্ষণ করুন।")]),
+            clip("56-th", "other", Room, 0, 0, &[("Kanya", "th", "กรุณาเปิดการตั้งค่าและบันทึกไฟล์")]),
+            clip("57-he", "other", Room, 0, 0, &[("Carmit", "he", "בבקשה פתח את ההגדרות ושמור את הקובץ.")]),
+            clip("58-sv", "other", Room, 0, 0, &[("Alva", "sv", "Öppna inställningarna och spara filen.")]),
+            clip("59-cs", "other", Room, 0, 0, &[("Zuzana", "cs", "Otevři nastavení a ulož soubor.")]),
+            clip("60-ro", "other", Room, 0, 0, &[("Ioana", "ro", "Deschide setările și salvează fișierul.")]),
+            clip("61-el", "other", Room, 0, 0, &[("Melina", "el", "Άνοιξε τις ρυθμίσεις και αποθήκευσε το αρχείο.")]),
+            clip("62-hu", "other", Room, 0, 0, &[("Tünde", "hu", "Nyisd meg a beállításokat és mentsd el a fájlt.")]),
+            clip("63-ms", "other", Room, 0, 0, &[("Amira", "ms", "Sila buka tetapan dan simpan fail itu.")]),
+            clip("64-da", "other", Room, 0, 0, &[("Sara", "da", "Åbn indstillingerne og gem filen.")]),
+            clip("65-fi", "other", Room, 0, 0, &[("Satu", "fi", "Avaa asetukset ja tallenna tiedosto.")]),
+            clip("66-no", "other", Room, 0, 0, &[("Nora", "no", "Åpne innstillingene og lagre filen.")]),
+            clip("68-sk", "other", Room, 0, 0, &[("Laura", "sk", "Otvor nastavenia a ulož súbor.")]),
+            clip("69-bg", "other", Room, 0, 0, &[("Daria", "bg", "Моля, отвори настройките и запази файла.")]),
+            clip("70-sl", "other", Room, 0, 0, &[("Tina", "sl", "Odpri nastavitve in shrani datoteko.")]),
+            clip("71-tr-after-sl", "tr", Room, 0, 0, &[(TR, "tr", "Bunu da listeye ekle.")]),
+            clip("67-tr-after-no", "tr", Room, 0, 0, &[(TR, "tr", "Şimdi sunucuyu yeniden başlatalım.")]),
+        ];
+
+        struct Rng(u64);
+
+        impl Rng {
+            fn next(&mut self) -> f32 {
+                self.0 ^= self.0 << 13;
+                self.0 ^= self.0 >> 7;
+                self.0 ^= self.0 << 17;
+                (self.0 >> 40) as f32 / (1u64 << 24) as f32 * 2.0 - 1.0
+            }
+        }
+
+        fn decibels(level: f32) -> f32 { 10f32.powf(level / 20.0) }
+
+        fn rms(samples: &[f32]) -> f32 {
+            (samples.iter().map(|value| value * value).sum::<f32>() / samples.len().max(1) as f32).sqrt()
+        }
+
+        // Level of the voiced 20 ms frames only, so pauses do not dilute it.
+        fn active_rms(samples: &[f32]) -> f32 {
+            let energies: Vec<f32> = samples.chunks(320).map(|frame| frame.iter().map(|value| value * value).sum::<f32>() / frame.len() as f32).collect();
+            let peak = energies.iter().copied().fold(0.0, f32::max);
+            let active: Vec<f32> = energies.into_iter().filter(|energy| *energy > peak / 1_000.0).collect();
+            (active.iter().sum::<f32>() / active.len().max(1) as f32).sqrt()
+        }
+
+        // Fan rumble, broadband hiss and a little mains hum, at unit level.
+        fn room_noise(length: usize, seed: u64) -> Vec<f32> {
+            let mut rng = Rng(seed | 1);
+            let mut brown = 0.0f32;
+            let noise: Vec<f32> = (0..length).map(|index| {
+                let white = rng.next();
+                brown = 0.995 * brown + 0.05 * white;
+                let time = index as f32 / RATE as f32;
+                2.0 * brown + 0.5 * white + 0.1 * (std::f32::consts::TAU * 100.0 * time).sin() + 0.04 * (std::f32::consts::TAU * 200.0 * time).sin()
+            }).collect();
+            let level = rms(&noise);
+            noise.into_iter().map(|value| value / level).collect()
+        }
+
+        // A small room heard from across the desk: Schroeder reverberation and
+        // the high-frequency loss of distance.
+        fn distant(samples: &[f32]) -> Vec<f32> {
+            let length = samples.len() + RATE / 2;
+            let dry: Vec<f32> = samples.iter().copied().chain(std::iter::repeat_n(0.0, RATE / 2)).collect();
+            let mut wet = vec![0.0f32; length];
+            for (delay, gain) in [(475usize, 0.80f32), (594, 0.79), (658, 0.78), (699, 0.77)] {
+                let mut comb = vec![0.0f32; length];
+                for index in 0..length {
+                    comb[index] = dry[index] + if index >= delay { gain * comb[index - delay] } else { 0.0 };
+                    wet[index] += comb[index] * 0.25;
+                }
+            }
+            for (delay, gain) in [(80usize, 0.7f32), (27, 0.7)] {
+                let input = wet.clone();
+                for index in delay..length {
+                    wet[index] = -gain * input[index] + input[index - delay] + gain * wet[index - delay];
+                }
+            }
+            let mut low = 0.0f32;
+            dry.iter().zip(&wet).map(|(dry, wet)| {
+                low += 0.35 * (0.6 * dry + 0.5 * wet - low);
+                low
+            }).collect()
+        }
+
+        fn say(voice: &str, text: &str, words_per_minute: u32) -> Vec<f32> {
+            static COUNTER: AtomicUsize = AtomicUsize::new(0);
+            let path = std::env::temp_dir().join(format!("pzza-eval-{}-{}.wav", std::process::id(), COUNTER.fetch_add(1, Ordering::Relaxed)));
+            let mut command = std::process::Command::new("/usr/bin/say");
+            command.args(["-v", voice, "--data-format=LEF32@16000", "-o"]).arg(&path);
+            if words_per_minute > 0 { command.args(["-r", &words_per_minute.to_string()]); }
+            assert!(command.arg(text).status().unwrap().success(), "say failed for {voice}");
+            let bytes = std::fs::read(&path).unwrap();
+            let _ = std::fs::remove_file(&path);
+            let data = bytes.windows(4).position(|window| window == b"data").expect("WAV data chunk");
+            bytes[data + 8..].chunks_exact(4).map(|sample| f32::from_le_bytes([sample[0], sample[1], sample[2], sample[3]])).collect()
+        }
+
+        struct Sentence { language: String, text: String, start: usize, end: usize }
+
+        // Synthesizes a clip once and caches it with its transcript and the
+        // span of each sentence.
+        /// Recordings of a real voice (each <id>.f32 at RATE with its <id>.json,
+        /// as load_or_create reads them), evaluated in place of the synthetic
+        /// clips: a system voice reading a script is not how people speak.
+        fn recorded_clips(directory: &Path) -> Vec<Clip> {
+            let keep = |text: &str| -> &'static str { Box::leak(text.to_owned().into_boxed_str()) };
+            let mut clips: Vec<Clip> = std::fs::read_dir(directory).unwrap().flatten().map(|entry| entry.path())
+                .filter(|path| path.extension().is_some_and(|extension| extension == "json") && path.with_extension("f32").exists())
+                .map(|path| {
+                    let meta: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+                    let parts: Vec<(&'static str, &'static str, &'static str)> = meta["sentences"].as_array().unwrap().iter()
+                        .map(|sentence| ("", keep(sentence["language"].as_str().unwrap()), keep(sentence["text"].as_str().unwrap()))).collect();
+                    Clip {
+                        id: keep(&path.file_stem().unwrap().to_string_lossy()), category: keep(meta["category"].as_str().unwrap_or("recorded")),
+                        condition: Condition::Room, pause_ms: 0, words_per_minute: 0, parts: Box::leak(parts.into_boxed_slice()),
+                    }
+                }).collect();
+            clips.sort_by_key(|clip| clip.id);
+            clips
+        }
+
+        fn load_or_create(directory: &Path, clip: &Clip) -> (Vec<f32>, Vec<Sentence>) {
+            let audio_path = directory.join(format!("{}.f32", clip.id));
+            let meta_path = directory.join(format!("{}.json", clip.id));
+            if audio_path.exists() && meta_path.exists() {
+                let bytes = std::fs::read(&audio_path).unwrap();
+                let meta: serde_json::Value = serde_json::from_slice(&std::fs::read(&meta_path).unwrap()).unwrap();
+                let sentences = meta["sentences"].as_array().unwrap().iter().map(|sentence| Sentence {
+                    language: sentence["language"].as_str().unwrap().into(), text: sentence["text"].as_str().unwrap().into(),
+                    start: sentence["start"].as_u64().unwrap() as usize, end: sentence["end"].as_u64().unwrap() as usize,
+                }).collect();
+                return (bytes.chunks_exact(4).map(|sample| f32::from_le_bytes(sample.try_into().unwrap())).collect(), sentences);
+            }
+            let (speech_level, noise_level, reverberant) = clip.condition.levels();
+            let mut speech = vec![0.0f32; RATE / 2];
+            let mut sentences = Vec::new();
+            for (index, (voice, language, text)) in clip.parts.iter().enumerate() {
+                if index > 0 { speech.extend(std::iter::repeat_n(0.0, clip.pause_ms * RATE / 1_000)); }
+                let part = say(voice, text, clip.words_per_minute);
+                let level = active_rms(&part);
+                let start = speech.len();
+                speech.extend(part.iter().map(|value| value / level));
+                sentences.push(Sentence { language: (*language).into(), text: (*text).into(), start, end: speech.len() });
+            }
+            speech.extend(std::iter::repeat_n(0.0, RATE * 6 / 10));
+            if reverberant { speech = distant(&speech); }
+            let gain = decibels(speech_level) / active_rms(&speech);
+            let seed = clip.id.bytes().fold(1469598103934665603u64, |hash, byte| (hash ^ byte as u64).wrapping_mul(1099511628211));
+            let noise = room_noise(speech.len(), seed);
+            let audio: Vec<f32> = speech.iter().zip(&noise).map(|(speech, noise)| speech * gain + noise * decibels(noise_level)).collect();
+            std::fs::write(&audio_path, audio.iter().flat_map(|sample| sample.to_le_bytes()).collect::<Vec<u8>>()).unwrap();
+            std::fs::write(&meta_path, serde_json::to_vec_pretty(&serde_json::json!({
+                "id": clip.id, "category": clip.category, "condition": clip.condition.name(),
+                "sentences": sentences.iter().map(|sentence| serde_json::json!({
+                    "language": sentence.language, "text": sentence.text, "start": sentence.start, "end": sentence.end,
+                })).collect::<Vec<_>>(),
+            })).unwrap()).unwrap();
+            (audio, sentences)
+        }
+
+        // The dictation worker's loop at wall-clock speed. Returns the typed
+        // text, each decode pass with the absolute sample its audio starts at,
+        // and the time from the end of the audio to the final text.
+        fn dictate(engine: &mut Engine, capture: &Arc<Capture>, samples: &[f32]) -> (String, Vec<(usize, PassStats)>, f64) {
+            let mut window = TranscriptWindow::default();
+            let mut committed = String::new();
+            let mut passes = Vec::new();
+            let (mut offset, mut consumed) = (0, 0);
+            let mut pass = |engine: &mut Engine, window: &mut TranscriptWindow, committed: &mut String, consumed: &mut usize, finalizing: bool| {
+                let audio: Vec<f32> = capture.samples.lock().unwrap().iter().take(RATE * 27).copied().collect();
+                let before = capture.stats.lock().unwrap().len();
+                let transcript = transcribe_samples(engine, capture, "auto", window, &audio, RATE as u32, finalizing).unwrap();
+                if let Some(stats) = capture.stats.lock().unwrap().get(before).cloned() { passes.push((*consumed, stats)); }
+                *consumed += transcript.consumed;
+                apply(capture, &transcript, committed).unwrap();
+                transcript.consumed
+            };
+            let started = Instant::now();
+            while offset < samples.len() {
+                let available = ((started.elapsed().as_secs_f64() * RATE as f64) as usize).min(samples.len());
+                if decode_due(available - offset, RATE) || available == samples.len() {
+                    capture.samples.lock().unwrap().extend_from_slice(&samples[offset..available]);
+                    offset = available;
+                    pass(engine, &mut window, &mut committed, &mut consumed, false);
+                    continue;
+                }
+                std::thread::sleep(DECODE_POLL);
+            }
+            while !capture.samples.lock().unwrap().is_empty() {
+                assert!(pass(engine, &mut window, &mut committed, &mut consumed, true) > 0, "Finalization must consume audio");
+            }
+            let latency = (started.elapsed().as_secs_f64() - samples.len() as f64 / RATE as f64).max(0.0);
+            (committed, passes, latency)
+        }
+
+        const ENGLISH_MARKERS: &[&str] = &["the", "you", "your", "to", "do", "does", "need", "what", "is", "are", "it", "this", "that", "and", "of",
+            "for", "with", "we", "i", "me", "my", "our", "be", "have", "has", "can", "would", "should", "must", "let", "lets", "please", "then",
+            "there", "here", "from", "by", "if", "so", "not", "dont", "after", "before", "now", "just", "how", "why", "when", "where", "which",
+            "who", "yes", "stop", "save", "open", "file", "settings", "tomorrow", "today", "evening", "morning", "meeting", "home", "close",
+            "window", "cancel", "run", "tests", "okay"];
+        const TURKISH_MARKERS: &[&str] = &["bir", "ve", "bu", "şu", "ne", "için", "ile", "mi", "var", "yok", "sonra", "önce", "gibi", "ama",
+            "çok", "daha", "lazım", "şimdi", "yap", "et", "evet", "hayır", "kaydet", "aç", "kapat", "dosyayı", "tamam"];
+
+        fn latin_script(language: &str) -> bool {
+            !["zh", "ja", "ko", "ru", "uk", "bg", "ar", "fa", "hi", "bn", "th", "he", "el"].contains(&language)
+        }
+
+        fn char_distance(left: &[char], right: &[char]) -> usize {
+            let mut previous: Vec<usize> = (0..=right.len()).collect();
+            for (i, a) in left.iter().enumerate() {
+                let mut current = vec![i + 1];
+                for (j, b) in right.iter().enumerate() {
+                    current.push((previous[j] + usize::from(a != b)).min(previous[j + 1] + 1).min(current[j] + 1));
+                }
+                previous = current;
+            }
+            previous[right.len()]
+        }
+
+        #[derive(Default, Clone, Copy)]
+        struct Score { words: usize, word_errors: usize, chars: usize, char_errors: usize, translations: usize }
+
+        impl std::ops::AddAssign for Score {
+            fn add_assign(&mut self, other: Self) {
+                self.words += other.words;
+                self.word_errors += other.word_errors;
+                self.chars += other.chars;
+                self.char_errors += other.char_errors;
+                self.translations += other.translations;
+            }
+        }
+
+        // Error rates against the reference, plus wrong-language events: a
+        // sentence whose aligned output carries another language's common
+        // words or script (a translation instead of a transcript).
+        fn score(transcript: &str, sentences: &[Sentence], notes: &mut Vec<String>) -> Score {
+            let heard = normalized_words(transcript);
+            let mut reference = Vec::new();
+            let mut owner = Vec::new();
+            for (index, sentence) in sentences.iter().enumerate() {
+                let words = normalized_words(&sentence.text);
+                owner.extend(std::iter::repeat_n(index, words.len()));
+                reference.extend(words);
+            }
+            let (word_errors, mapping) = align_words(&heard, &reference);
+            let heard_chars: Vec<char> = heard.concat().chars().collect();
+            let reference_chars: Vec<char> = reference.concat().chars().collect();
+            let mut assigned: Vec<Vec<&str>> = vec![Vec::new(); sentences.len()];
+            let mut current = 0;
+            for (index, word) in heard.iter().enumerate() {
+                if let Some(position) = mapping[index] { current = owner[position]; }
+                assigned[current].push(word.as_str());
+            }
+            let mut translations = 0;
+            for (index, sentence) in sentences.iter().enumerate() {
+                let own = normalized_words(&sentence.text);
+                let foreign = assigned[index].iter().copied().filter(|word| !own.contains(&word.to_string()) && (
+                    (sentence.language != "en" && ENGLISH_MARKERS.contains(word))
+                    || (sentence.language != "tr" && (TURKISH_MARKERS.contains(word) || word.contains(['ğ', 'ı'])))
+                )).count();
+                let letters: Vec<char> = assigned[index].iter().flat_map(|word| word.chars()).filter(|c| c.is_alphabetic()).collect();
+                let latin = letters.iter().filter(|c| c.is_ascii_alphabetic() || ('\u{c0}'..='\u{24f}').contains(*c)).count();
+                let wrong_script = !letters.is_empty() && if latin_script(&sentence.language) { latin * 2 < letters.len() } else { latin * 2 > letters.len() };
+                if foreign >= 2 || (foreign >= 1 && own.len() <= 3) || wrong_script {
+                    translations += 1;
+                    notes.push(format!("wrong language in {} sentence {:?}: {:?}", sentence.language, sentence.text, assigned[index].join(" ")));
+                }
+            }
+            Score { words: reference.len(), word_errors, chars: reference_chars.len(), char_errors: char_distance(&heard_chars, &reference_chars), translations }
+        }
+
+        // The language spoken in most of [start, end).
+        fn spoken_language(sentences: &[Sentence], start: usize, end: usize) -> Option<&str> {
+            sentences.iter().map(|sentence| (sentence.end.min(end).saturating_sub(sentence.start.max(start)), sentence.language.as_str()))
+                .filter(|(overlap, _)| *overlap > 0).max_by_key(|(overlap, _)| *overlap).map(|(_, language)| language)
+        }
+
+        #[derive(Default)]
+        struct Tally { clips: usize, dictation: Score, passes: usize, passes_right: usize, dictation_latency: Vec<f64> }
+
+        #[test]
+        #[ignore = "needs the installed speech model, macOS voices and PZZA_STT_EVAL_DIR"]
+        fn real_model_language_evaluation() {
+            whisper_rs::install_logging_hooks();
+            let directory = std::path::PathBuf::from(std::env::var_os("PZZA_STT_EVAL_DIR").expect("Set PZZA_STT_EVAL_DIR"));
+            std::fs::create_dir_all(&directory).unwrap();
+            let model = std::env::var_os("PZZA_DICTATION_TEST_MODEL").map(std::path::PathBuf::from).unwrap_or_else(|| {
+                std::path::PathBuf::from(std::env::var("HOME").unwrap()).join("Library/Application Support/com.pzzacode.app/speech/ggml-large-v3-q5_0.bin")
+            });
+            let filter = std::env::var("PZZA_STT_EVAL_ONLY").ok();
+            // My languages, main first, e.g. "tr,en"; empty for none.
+            let preferred: Vec<String> = std::env::var("PZZA_STT_EVAL_LANGUAGES").unwrap_or_default()
+                .split(',').map(str::trim).filter(|code| !code.is_empty()).map(str::to_owned).collect();
+            // Re-aggregates an earlier run's report instead of recognizing, so a
+            // baseline can be compared on the current language list.
+            let rescore: Option<serde_json::Value> = std::env::var_os("PZZA_STT_EVAL_RESCORE")
+                .map(|path| serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap());
+            let mut engine = rescore.is_none().then(|| Engine::load(&model, Arc::new(AtomicBool::new(false))).unwrap());
+            let mut categories: std::collections::BTreeMap<String, Tally> = Default::default();
+            let mut languages: std::collections::BTreeMap<String, Tally> = Default::default();
+            let mut decode_ms = Vec::new();
+            // Single decodes at the smallest encoder context: a machine load reference.
+            let mut reference_ms = Vec::new();
+            let mut redecodes = 0;
+            let mut report = Vec::new();
+            let supported = |clip: &&Clip| clip.parts.iter().all(|(_, language, _)| super::super::supported_languages().contains(language));
+            // PZZA_STT_EVAL_RECORDED: the recordings in the directory instead of CLIPS.
+            let recorded = std::env::var_os("PZZA_STT_EVAL_RECORDED").map(|_| recorded_clips(&directory));
+            for clip in recorded.as_deref().unwrap_or(CLIPS).iter().filter(supported).filter(|clip| filter.as_deref().is_none_or(|only| clip.id.contains(only))) {
+                let (samples, sentences) = load_or_create(&directory, clip);
+                let single = sentences.iter().all(|sentence| sentence.language == sentences[0].language).then(|| sentences[0].language.clone());
+                let mut notes = Vec::new();
+
+                let (typed, passes, latency) = match (&rescore, engine.as_mut()) {
+                    (Some(earlier), _) => {
+                        let Some(entry) = earlier["clips"].as_array().unwrap().iter().find(|entry| entry["id"] == clip.id) else {
+                            eprintln!("{} is not in the earlier report", clip.id);
+                            continue;
+                        };
+                        let passes: Vec<(usize, PassStats)> = entry["passes"].as_array().unwrap().iter().map(|pass| {
+                            (pass["start"].as_u64().unwrap() as usize, serde_json::from_value(pass["stats"].clone()).unwrap())
+                        }).collect();
+                        (entry["dictation"].as_str().unwrap().to_owned(), passes, entry["dictationLatency"].as_f64().unwrap())
+                    }
+                    (None, Some(engine)) => {
+                        let capture = Arc::new(Capture { languages: preferred.clone(), ..Capture::new(format!("eval-{}", clip.id)) });
+                        dictate(engine, &capture, &samples)
+                    }
+                    (None, None) => unreachable!("The engine loads unless rescoring"),
+                };
+                let dictation = score(&typed, &sentences, &mut notes);
+                let mut decisions = (0, 0);
+                for (start, pass) in &passes {
+                    if !pass.finalizing { decode_ms.push(pass.decode_ms); }
+                    if !pass.finalizing && !pass.redecoded && pass.audio_ctx == 768 { reference_ms.push(pass.decode_ms); }
+                    redecodes += usize::from(pass.redecoded);
+                    if pass.committed.is_empty() { continue; }
+                    if let Some(expected) = spoken_language(&sentences, *start, start + pass.audio_samples) {
+                        decisions.0 += 1;
+                        decisions.1 += usize::from(pass.language == expected);
+                        let tally = languages.entry(expected.into()).or_default();
+                        tally.passes += 1;
+                        tally.passes_right += usize::from(pass.language == expected);
+                        if pass.language != expected { notes.push(format!("dictation typed {:?} decoded as {} over {expected} speech", pass.committed, pass.language)); }
+                    }
+                }
+
+                for key in [clip.category.to_owned(), "all".to_owned()] {
+                    let tally = categories.entry(key).or_default();
+                    tally.clips += 1;
+                    tally.dictation += dictation;
+                    tally.passes += decisions.0;
+                    tally.passes_right += decisions.1;
+                    tally.dictation_latency.push(latency);
+                }
+                if let Some(expected) = &single {
+                    let tally = languages.entry(expected.clone()).or_default();
+                    tally.clips += 1;
+                    tally.dictation += dictation;
+                }
+                eprintln!("[{}] {} {}\n  reference: {}\n  dictation: {typed}",
+                    clip.category, clip.id, clip.condition.name(), sentences.iter().map(|sentence| sentence.text.as_str()).collect::<Vec<_>>().join(" "));
+                for note in &notes { eprintln!("  ! {note}"); }
+                report.push(serde_json::json!({
+                    "id": clip.id, "category": clip.category, "condition": clip.condition.name(),
+                    "reference": sentences.iter().map(|sentence| serde_json::json!({ "language": sentence.language, "text": sentence.text })).collect::<Vec<_>>(),
+                    "dictation": typed, "dictationLatency": latency, "notes": notes,
+                    "passes": passes.iter().map(|(start, pass)| serde_json::json!({ "start": start, "stats": pass })).collect::<Vec<_>>(),
+                }));
+            }
+            let rate = |errors: usize, total: usize| if total == 0 { "-".to_owned() } else { format!("{:.3}", errors as f64 / total as f64) };
+            let share = |right: usize, total: usize| if total == 0 { "-".to_owned() } else { format!("{right}/{total}") };
+            let ms = |values: &[f64], fraction: f64, scale: f64| percentile(values, fraction).map_or("-".into(), |value| format!("{:.0}", value * scale));
+            let mut table = vec![format!("{:<10} {:>5} {:>6} {:>6} {:>5} {:>8} {:>7} {:>7}",
+                "category", "clips", "d.wer", "d.cer", "d.wl", "d.lang", "fin50", "fin90")];
+            for (name, tally) in &categories {
+                table.push(format!("{:<10} {:>5} {:>6} {:>6} {:>5} {:>8} {:>7} {:>7}",
+                    name, tally.clips, rate(tally.dictation.word_errors, tally.dictation.words), rate(tally.dictation.char_errors, tally.dictation.chars),
+                    tally.dictation.translations, share(tally.passes_right, tally.passes),
+                    ms(&tally.dictation_latency, 0.5, 1_000.0), ms(&tally.dictation_latency, 0.9, 1_000.0)));
+            }
+            table.push(format!("{:<10} {:>8} {:>6} {:>5}", "language", "d.cer", "d.wl", "d.lang"));
+            for (name, tally) in &languages {
+                table.push(format!("{:<10} {:>8} {:>6} {:>5}", name,
+                    rate(tally.dictation.char_errors, tally.dictation.chars), tally.dictation.translations, share(tally.passes_right, tally.passes)));
+            }
+            table.push(format!("live decode ms p50 {} p90 {} max {:.0}; passes {}; re-decodes {redecodes}; load reference (single decode at ctx 768) p50 {} ms",
+                ms(&decode_ms, 0.5, 1.0), ms(&decode_ms, 0.9, 1.0), decode_ms.iter().copied().fold(0.0, f64::max), decode_ms.len(), ms(&reference_ms, 0.5, 1.0)));
+            eprintln!("\n{}", table.join("\n"));
+            if let Some(path) = std::env::var_os("PZZA_STT_EVAL_REPORT") {
+                serde_json::to_writer_pretty(std::fs::File::create(path).unwrap(), &serde_json::json!({ "clips": report, "table": table })).unwrap();
+            }
+        }
+
+        // Stopping right on the last word (no quiet after it) must still type
+        // the words said last, which the live preview already showed.
+        #[test]
+        #[ignore = "needs the installed speech model and macOS voices"]
+        fn real_model_stopping_on_the_last_word_types_it() {
+            whisper_rs::install_logging_hooks();
+            let model = std::path::PathBuf::from(std::env::var("HOME").unwrap()).join("Library/Application Support/com.pzzacode.app/speech/ggml-large-v3-q5_0.bin");
+            let mut engine = Engine::load(&model, Arc::new(AtomicBool::new(false))).unwrap();
+            let sentences = [
+                (TR, "Bugün akşam toplantıdan sonra raporu bitirip ekibe göndereceğim, sonra da yeni tasarımı inceleyeceğiz."),
+                (TR, "Bu dosyadaki hatayı düzeltip testleri tekrar çalıştır ve sonucu bana bildir."),
+                (EN, "Please open the settings page, check the spacing value and then send me a short summary of the changes."),
+                (EN, "Run the tests again after you fix the login flow."),
+            ];
+            let mut missing = 0;
+            for (voice, text) in sentences {
+                for trailing in [0, RATE * 6 / 10] {
+                    let mut samples = vec![0.0f32; RATE / 2];
+                    let speech = say(voice, text, 0);
+                    let level = active_rms(&speech);
+                    samples.extend(speech.iter().map(|value| value / level * 0.1));
+                    samples.extend(std::iter::repeat_n(0.0, trailing));
+                    let capture = Arc::new(Capture { languages: vec!["en".into(), "tr".into()], ..Capture::new("tail".into()) });
+                    let (typed, _, _) = dictate(&mut engine, &capture, &samples);
+                    let last: Vec<String> = normalized_words(text).into_iter().rev().take(2).collect();
+                    let typed_words = normalized_words(&typed);
+                    let kept = last.iter().all(|word| typed_words.iter().rev().take(4).any(|typed| typed == word));
+                    if !kept && trailing == 0 { missing += 1; }
+                    eprintln!("TAIL {} quiet {:.1}s: {} typed {typed:?}", if kept { "ok  " } else { "LOST" }, trailing as f64 / RATE as f64, text);
+                }
+            }
+            assert_eq!(missing, 0, "the last words were lost when stopping right after them");
+        }
     }
 
     #[tauri::command]
@@ -1566,8 +2923,8 @@ pub async fn speech_input_devices() -> Result<Vec<InputDevice>, String> {
 }
 #[cfg(not(target_os = "macos"))]
 #[tauri::command]
-pub fn speech_start(id: String, language: String, input_device_id: Option<String>) -> Result<(), String> {
-    let _ = (id, language, input_device_id);
+pub fn speech_start(id: String, language: String, languages: Option<Vec<String>>, input_device_id: Option<String>, silence_stop_ms: Option<u64>) -> Result<(), String> {
+    let _ = (id, language, languages, input_device_id, silence_stop_ms);
     Err("Local dictation is available on macOS only".into())
 }
 #[cfg(not(target_os = "macos"))]
@@ -1677,6 +3034,34 @@ fn resample(samples: &[f32], rate: u32) -> Vec<f32> {
 }
 
 #[cfg(any(target_os = "macos", test))]
+/// Brings quiet speech (a soft voice, a microphone across the desk: -50 to
+/// -65 dBFS) up to a normal level before the speech gates, which use fixed
+/// thresholds and dropped it whole. Applied only when the loud frames stand
+/// clearly above the quiet ones (speech over a noise floor); silence and
+/// steady noise are left as they are, so nothing is made out of them.
+/// Recognition itself is level-independent (its spectrogram is normalized).
+fn normalize_level(audio: &mut [f32]) {
+    const FRAME: usize = 320;
+    const TARGET: f32 = 0.0025; // mean square of -26 dBFS speech
+    const MIN_CONTRAST: f32 = 8.0; // loud over quiet frames: about 9 dB
+    const MAX_GAIN: f32 = 31.6; // 30 dB
+    let mut energies: Vec<f32> = audio.chunks_exact(FRAME).map(|frame| frame.iter().map(|sample| sample * sample).sum::<f32>() / FRAME as f32).collect();
+    if energies.len() < 10 {
+        return;
+    }
+    energies.sort_by(f32::total_cmp);
+    let floor = energies[energies.len() / 10].max(1e-10);
+    let speech = energies[energies.len() * 95 / 100];
+    if speech >= TARGET || speech < floor * MIN_CONTRAST {
+        return;
+    }
+    let peak = audio.iter().fold(0.0f32, |peak, sample| peak.max(sample.abs()));
+    let gain = (TARGET / speech).sqrt().min(MAX_GAIN).min(0.95 / peak.max(1e-6));
+    if gain > 1.0 {
+        audio.iter_mut().for_each(|sample| *sample *= gain);
+    }
+}
+
 fn has_speech(audio: &[f32]) -> bool {
     // Require sustained energy rather than sending silence or a single click to the decoder.
     audio
@@ -1685,6 +3070,349 @@ fn has_speech(audio: &[f32]) -> bool {
         .take(10)
         .count()
         >= 10
+}
+
+/// The speech languages PzzaCode supports, in priority order, read from the
+/// app's single list (src/supportedLanguages.ts) when compiled, so adding or
+/// removing a language there changes recognition too.
+#[cfg(any(target_os = "macos", test))]
+fn supported_languages() -> &'static [&'static str] {
+    static LANGUAGES: std::sync::OnceLock<Vec<&'static str>> = std::sync::OnceLock::new();
+    LANGUAGES.get_or_init(|| {
+        include_str!("../../src/supportedLanguages.ts").split("code: \"").skip(1)
+            .filter_map(|entry| entry.split('"').next()).collect()
+    })
+}
+
+// A supported language outside "My languages" is chosen only when it holds
+// at least this share of the supported languages' probability.
+#[cfg(any(target_os = "macos", test))]
+const OUTSIDE_LANGUAGE_SHARE: f32 = 0.9;
+// Continuity between utterances: when the user's languages are this close,
+// the language of the previous utterance stays. A clear switch (another
+// language at least this many times as likely) is followed at once. There is
+// deliberately no fixed "main language" bias: it used to be the most often
+// detected language, so every misdetection strengthened itself.
+#[cfg(any(target_os = "macos", test))]
+const CONTINUITY_ADVANTAGE: f32 = 1.5;
+// An unsure decision (short turns like "Selam" or "İyiyim, sen?" spread their
+// weight over unrelated languages) keeps the previous language unless the top
+// one is clearly ahead: measured with the real model, 1.5 let that noise switch
+// Turkish speech to English and decode it in English.
+#[cfg(any(target_os = "macos", test))]
+const UNSURE_CONTINUITY_ADVANTAGE: f32 = 2.5;
+// A decision with at least this share is certain enough to type live words
+// and to remember.
+#[cfg(any(target_os = "macos", test))]
+const CONFIDENT_SHARE: f32 = 0.5;
+
+#[cfg(any(target_os = "macos", test))]
+#[derive(Debug, Clone, PartialEq)]
+struct LanguageChoice {
+    language: String,
+    // Share of the supported languages' probability.
+    share: f32,
+    confident: bool,
+}
+
+/// Decides the spoken language from the detector's probabilities for one
+/// stretch of audio: restricted to the supported languages, then to the
+/// user's own (`preferred`, in any order) unless another language is
+/// overwhelmingly likely. The most likely of the user's languages wins; only
+/// a close call keeps the `previous` utterance's language, so the reply
+/// language follows the user when they switch.
+#[cfg(any(target_os = "macos", test))]
+fn choose_language(probabilities: &[(&str, f32)], preferred: &[String], previous: Option<&str>) -> Option<LanguageChoice> {
+    let supported: Vec<(&str, f32)> = probabilities.iter().copied()
+        .filter(|(language, probability)| supported_languages().contains(language) && probability.is_finite() && *probability > 0.0)
+        .collect();
+    let mass: f32 = supported.iter().map(|(_, probability)| probability).sum();
+    if mass <= 0.0 { return None; }
+    let share = |language: &str| supported.iter().find(|(code, _)| *code == language).map_or(0.0, |(_, probability)| probability / mass);
+    let choice = |language: &str| {
+        let share = share(language);
+        LanguageChoice { language: language.to_owned(), share, confident: share >= CONFIDENT_SHARE }
+    };
+    let (best, _) = supported.iter().copied().fold(("", f32::NEG_INFINITY), |top, entry| if entry.1 > top.1 { entry } else { top });
+    let own: Vec<&str> = preferred.iter().map(String::as_str).filter(|language| supported_languages().contains(language)).collect();
+    if own.is_empty() || (!own.contains(&best) && share(best) >= OUTSIDE_LANGUAGE_SHARE) {
+        return Some(choice(best));
+    }
+    let top = own.iter().copied().fold(own[0], |top, language| if share(language) > share(top) { language } else { top });
+    let advantage = if share(top) >= CONFIDENT_SHARE { CONTINUITY_ADVANTAGE } else { UNSURE_CONTINUITY_ADVANTAGE };
+    let kept = previous.filter(|language| own.contains(language) && *language != top && share(top) < share(language) * advantage);
+    Some(choice(kept.unwrap_or(top)))
+}
+
+// ---- Dictation: speech activity and stopping after silence ----
+
+/// Accepted "Stop after silence" values from the interface.
+#[cfg(any(target_os = "macos", test))]
+const SILENCE_STOP_RANGE_MS: std::ops::RangeInclusive<u64> = 1_000..=60_000;
+/// Speech heard before the chosen quiet can end a recording.
+#[cfg(any(target_os = "macos", test))]
+const SILENCE_STOP_MIN_SPEECH_MS: usize = 300;
+/// Quiet that ends a recording in which nothing was said yet: people often
+/// start a recording and then think before speaking.
+#[cfg(any(target_os = "macos", test))]
+const SILENCE_STOP_GRACE_MS: usize = 8_000;
+
+/// Whether a dictation should end on its own: `stop_after_ms` of unbroken
+/// quiet once speech was heard (the longer grace before any), never while
+/// speech is being heard and never when the setting is off.
+#[cfg(any(target_os = "macos", test))]
+fn silence_stop_due(stop_after_ms: Option<usize>, heard_ms: usize, quiet_ms: usize, hearing: bool) -> bool {
+    let Some(after) = stop_after_ms.filter(|ms| *ms > 0) else { return false; };
+    let needed = if heard_ms >= SILENCE_STOP_MIN_SPEECH_MS { after } else { after.max(SILENCE_STOP_GRACE_MS) };
+    !hearing && quiet_ms >= needed
+}
+
+/// Speech activity on the dictation microphone, in 20 ms frames of 16 kHz
+/// audio. `hearing` (speech now, with hysteresis) drives the live indicator
+/// at the caret; `quiet_ms` counts frames in which both the level and the
+/// voice activity model are quiet, so breath, a soft word or a short pause
+/// mid-sentence restarts it and only real silence can end a recording.
+#[cfg(any(target_os = "macos", test))]
+#[derive(Default)]
+struct DictationActivity {
+    noise: f32,
+    frames: usize,
+    recent: std::collections::VecDeque<bool>,
+    hearing: bool,
+    since_voiced_ms: usize,
+    heard_ms: usize,
+    quiet_ms: usize,
+}
+
+#[cfg(any(target_os = "macos", test))]
+impl DictationActivity {
+    const FRAME: usize = 320;
+    // About -70 dBFS: digital silence never turns its own noise into speech.
+    const MIN_GATE: f32 = 1e-7;
+    // A level about 6 dB over the room's floor is sound worth waiting for.
+    const OVER_NOISE: f32 = 4.0;
+    // Voice activity probabilities that start speech, and keep it going.
+    const SPEECH_ON: f32 = 0.5;
+    const SPEECH_HOLD: f32 = 0.35;
+    // Hearing turns on with 100 ms of speech in 200 ms and off after this
+    // much without any, so the indicator does not flicker between words.
+    const ONSET_WINDOW: usize = 10;
+    const ONSET_FRAMES: usize = 5;
+    const RELEASE_MS: usize = 700;
+
+    /// Feeds one frame's mean-square energy and the voice activity model's
+    /// probability (None while the model is unavailable: level alone then
+    /// decides). Returns the new hearing state when it changes.
+    fn frame(&mut self, energy: f32, probability: Option<f32>) -> Option<bool> {
+        self.frames += 1;
+        // Minimum statistics: the floor drops at once to quieter frames and
+        // rises about 4 dB per second toward louder ones (0.4 dB while speech
+        // is heard), so steady noise is learned but speech is not.
+        let rise = if self.hearing { 1.002 } else { 1.02 };
+        self.noise = if self.frames == 1 { energy } else if energy < self.noise { self.noise * 0.8 + energy * 0.2 } else { (self.noise * rise).min(energy) }.max(1e-12);
+        let loud = energy > (self.noise * Self::OVER_NOISE).max(Self::MIN_GATE);
+        let voice = probability.is_none_or(|p| p >= if self.hearing { Self::SPEECH_HOLD } else { Self::SPEECH_ON });
+        let voiced = loud && voice;
+        if voiced { self.heard_ms += 20; }
+        let active = loud || probability.is_some_and(|p| p >= Self::SPEECH_HOLD);
+        self.quiet_ms = if active { 0 } else { self.quiet_ms + 20 };
+        self.recent.push_back(voiced);
+        if self.recent.len() > Self::ONSET_WINDOW { self.recent.pop_front(); }
+        self.since_voiced_ms = if voiced { 0 } else { self.since_voiced_ms + 20 };
+        let hearing = if self.hearing {
+            self.since_voiced_ms < Self::RELEASE_MS
+        } else {
+            self.recent.iter().filter(|voiced| **voiced).count() >= Self::ONSET_FRAMES
+        };
+        (hearing != self.hearing).then(|| { self.hearing = hearing; hearing })
+    }
+
+    fn stop_due(&self, stop_after_ms: Option<usize>) -> bool {
+        silence_stop_due(stop_after_ms, self.heard_ms, self.quiet_ms, self.hearing)
+    }
+}
+
+#[cfg(test)]
+mod dictation_activity_tests {
+    use super::*;
+
+    fn feed(activity: &mut DictationActivity, ms: usize, energy: f32, probability: Option<f32>) -> Vec<bool> {
+        (0..ms / 20).filter_map(|_| activity.frame(energy, probability)).collect()
+    }
+
+    // A recording that starts with a second of room noise.
+    fn settled() -> DictationActivity {
+        let mut activity = DictationActivity::default();
+        feed(&mut activity, 1_000, 1e-6, Some(0.02));
+        activity
+    }
+
+    #[test]
+    fn silence_stop_needs_speech_quiet_and_the_setting() {
+        assert!(!silence_stop_due(None, 5_000, 60_000, false), "Off never stops");
+        assert!(!silence_stop_due(Some(5_000), 5_000, 4_980, false));
+        assert!(silence_stop_due(Some(5_000), 5_000, 5_000, false));
+        assert!(!silence_stop_due(Some(5_000), 5_000, 60_000, true), "Never while speech is heard");
+        // Nothing said yet: the longer grace, or the setting when it is longer.
+        assert!(!silence_stop_due(Some(3_000), 0, 7_980, false));
+        assert!(silence_stop_due(Some(3_000), 0, SILENCE_STOP_GRACE_MS, false));
+        assert!(!silence_stop_due(Some(10_000), 0, 9_980, false));
+        assert!(silence_stop_due(Some(10_000), 200, 10_000, false));
+        assert!(silence_stop_due(Some(3_000), SILENCE_STOP_MIN_SPEECH_MS, 3_000, false));
+    }
+
+    #[test]
+    fn speech_is_heard_within_a_fraction_of_a_second_and_released_after_it() {
+        let mut activity = settled();
+        let changes: Vec<bool> = (0..20).filter_map(|_| activity.frame(1e-3, Some(0.9))).collect();
+        assert_eq!(changes, vec![true]);
+        // Hearing began on the fifth voiced frame: 100 ms after onset.
+        let mut fresh = settled();
+        let onset = (1..=20).find(|_| fresh.frame(1e-3, Some(0.9)) == Some(true)).unwrap();
+        assert_eq!(onset, DictationActivity::ONSET_FRAMES);
+        // Short gaps between words keep it on; a longer quiet turns it off.
+        assert!(feed(&mut activity, 400, 1e-6, Some(0.05)).is_empty());
+        assert!(feed(&mut activity, 200, 1e-3, Some(0.9)).is_empty());
+        assert_eq!(feed(&mut activity, 1_000, 1e-6, Some(0.05)), vec![false]);
+    }
+
+    #[test]
+    fn pauses_mid_sentence_never_end_a_recording() {
+        let mut activity = settled();
+        for _ in 0..10 {
+            feed(&mut activity, 1_500, 2e-4, Some(0.9));
+            // A long thinking pause, shorter than the setting.
+            feed(&mut activity, 4_000, 1e-6, Some(0.05));
+            assert!(!activity.stop_due(Some(5_000)));
+        }
+        // Breath or a soft word that the model still calls speech restarts
+        // the count even when it is barely above the room.
+        feed(&mut activity, 4_000, 1e-6, Some(0.05));
+        feed(&mut activity, 40, 1.2e-6, Some(0.5));
+        feed(&mut activity, 4_000, 1e-6, Some(0.05));
+        assert!(!activity.stop_due(Some(5_000)));
+        // A sound the model does not call speech still counts as not quiet.
+        feed(&mut activity, 60, 5e-4, Some(0.1));
+        feed(&mut activity, 4_960, 1e-6, Some(0.05));
+        assert!(!activity.stop_due(Some(5_000)));
+        feed(&mut activity, 40, 1e-6, Some(0.05));
+        assert!(activity.stop_due(Some(5_000)), "Five seconds of quiet after speech end it");
+    }
+
+    #[test]
+    fn a_silent_start_waits_for_the_grace_and_steady_noise_is_learned() {
+        let mut activity = DictationActivity::default();
+        feed(&mut activity, 5_000, 1e-6, Some(0.02));
+        assert!(!activity.stop_due(Some(5_000)), "No speech yet: wait the longer grace");
+        feed(&mut activity, 3_000, 1e-6, Some(0.02));
+        assert!(activity.stop_due(Some(5_000)));
+        // A fan that starts mid-recording becomes the floor instead of
+        // holding the recording open forever.
+        let mut activity = settled();
+        feed(&mut activity, 1_000, 2e-4, Some(0.9));
+        feed(&mut activity, 12_000, 1e-4, Some(0.05));
+        assert!(activity.stop_due(Some(5_000)));
+    }
+
+    #[test]
+    fn without_the_voice_model_the_level_alone_decides() {
+        let mut activity = settled();
+        assert_eq!(feed(&mut activity, 300, 1e-3, None), vec![true]);
+        feed(&mut activity, 4_000, 1e-6, None);
+        assert!(!activity.stop_due(Some(5_000)));
+        feed(&mut activity, 1_000, 1e-6, None);
+        assert!(activity.stop_due(Some(5_000)));
+    }
+}
+
+#[cfg(test)]
+mod language_choice_tests {
+    use super::*;
+
+    fn mine(languages: &[&str]) -> Vec<String> {
+        languages.iter().map(|language| (*language).to_owned()).collect()
+    }
+
+    fn chosen(probabilities: &[(&str, f32)], preferred: &[&str]) -> (String, bool) {
+        chosen_after(probabilities, preferred, None)
+    }
+
+    fn chosen_after(probabilities: &[(&str, f32)], preferred: &[&str], previous: Option<&str>) -> (String, bool) {
+        let choice = choose_language(probabilities, &mine(preferred), previous).unwrap();
+        (choice.language, choice.confident)
+    }
+
+    #[test]
+    fn the_supported_list_comes_from_the_app_and_names_engine_languages() {
+        let languages = supported_languages();
+        // English and Turkish are mandatory and lead the list.
+        assert_eq!(&languages[..2], ["en", "tr"]);
+        assert_eq!(languages.len(), include_str!("../../src/supportedLanguages.ts").matches("code: \"").count());
+        for (index, code) in languages.iter().enumerate() {
+            assert!(!languages[..index].contains(code), "{code} is listed twice");
+            assert_eq!(whisper_rs::get_lang_id(code).and_then(whisper_rs::get_lang_str), Some(*code), "{code} is not a speech engine language");
+        }
+    }
+
+
+    #[test]
+    fn the_most_likely_of_my_languages_wins_whatever_their_order() {
+        // There is no fixed main language: the detector's evidence decides.
+        assert_eq!(chosen(&[("en", 0.93), ("tr", 0.05)], &["tr", "en"]), ("en".into(), true));
+        assert_eq!(chosen(&[("tr", 0.97), ("en", 0.02)], &["tr", "en"]), ("tr".into(), true));
+        assert_eq!(chosen(&[("tr", 0.81), ("en", 0.12), ("az", 0.05)], &["en", "tr"]), ("tr".into(), true));
+        assert_eq!(chosen(&[("en", 0.55), ("tr", 0.40)], &["tr", "en"]).0, "en");
+        assert_eq!(chosen(&[("en", 0.55), ("tr", 0.40)], &["en", "tr"]).0, "en");
+    }
+
+    #[test]
+    fn close_calls_keep_the_previous_language_and_clear_switches_follow_the_user() {
+        // A close call stays in the language of the previous utterance...
+        assert_eq!(chosen_after(&[("en", 0.55), ("tr", 0.40)], &["tr", "en"], Some("tr")).0, "tr");
+        assert_eq!(chosen_after(&[("tr", 0.55), ("en", 0.40)], &["tr", "en"], Some("en")).0, "en");
+        // ...but switching languages is followed at once, both ways.
+        assert_eq!(chosen_after(&[("en", 0.70), ("tr", 0.25)], &["tr", "en"], Some("tr")).0, "en");
+        assert_eq!(chosen_after(&[("tr", 0.81), ("en", 0.12)], &["tr", "en"], Some("en")), ("tr".into(), true));
+        // A previous language outside the user's languages has no pull.
+        assert_eq!(chosen_after(&[("en", 0.55), ("tr", 0.40)], &["tr", "en"], Some("de")).0, "en");
+        // Short turns measured with the real model: the weight is spread over
+        // unrelated languages, so an unsure lead does not switch the language...
+        assert_eq!(chosen_after(&[("ru", 0.12), ("ja", 0.12), ("en", 0.12), ("de", 0.10), ("tr", 0.07)], &["en", "tr"], Some("tr")).0, "tr");
+        assert_eq!(chosen_after(&[("en", 0.47), ("tr", 0.36), ("ar", 0.03)], &["en", "tr"], Some("tr")).0, "tr");
+        // ...while a clear lead still does, even when unsure.
+        assert_eq!(chosen_after(&[("ru", 0.63), ("tr", 0.26), ("en", 0.01)], &["en", "tr"], Some("en")).0, "tr");
+    }
+
+    #[test]
+    fn a_close_call_is_not_settled() {
+        // The dictation failure: Turkish right after English with a detector
+        // unsure on short audio: the decision is not settled (share under 0.8),
+        // so later audio of the turn can still change it.
+        let unsure = [("en", 0.48), ("tr", 0.36), ("az", 0.08), ("de", 0.03)];
+        let choice = choose_language(&unsure, &mine(&["tr", "en"]), Some("en")).unwrap();
+        assert!(choice.share < 0.8, "share {}", choice.share);
+    }
+
+    #[test]
+    fn detection_stays_within_the_supported_languages() {
+        // Azerbaijani is close to Turkish but not supported: its weight cannot win.
+        assert_eq!(chosen(&[("az", 0.6), ("tr", 0.3), ("en", 0.1)], &[]), ("tr".into(), true));
+        assert_eq!(chosen(&[("nn", 0.5), ("no", 0.3), ("da", 0.2)], &[]), ("no".into(), true));
+        assert!(choose_language(&[("az", 1.0)], &[], None).is_none());
+        assert!(choose_language(&[], &mine(&["tr"]), None).is_none());
+    }
+
+    #[test]
+    fn other_languages_need_overwhelming_evidence_when_my_languages_are_set() {
+        assert_eq!(chosen(&[("de", 0.96), ("en", 0.03), ("tr", 0.01)], &["tr", "en"]), ("de".into(), true));
+        // A merely likely outside language goes to the most likely of mine,
+        // reported as unsure.
+        assert_eq!(chosen(&[("de", 0.7), ("en", 0.2), ("tr", 0.1)], &["tr", "en"]), ("en".into(), false));
+        // Unsupported or unknown preferences are ignored.
+        assert_eq!(chosen(&[("de", 0.7), ("en", 0.3)], &["xx"]), ("de".into(), true));
+        // Without preferences the most likely supported language wins.
+        assert_eq!(chosen(&[("pl", 0.3), ("cs", 0.25), ("sk", 0.2)], &[]), ("pl".into(), false));
+    }
 }
 
 #[cfg(test)]
@@ -1872,5 +3600,27 @@ mod tests {
         click[500] = 1.0;
         assert!(!has_speech(&click));
         assert!(has_speech(&vec![0.02; 3_200]));
+    }
+
+    #[test]
+    fn quiet_speech_is_raised_and_noise_is_left_alone() {
+        const RATE: usize = 16_000;
+        let noise = |level: f32, seconds: f32| (0..(seconds * RATE as f32) as usize).map(|index| (((index * 7919) % 1000) as f32 / 1000.0 - 0.5) * level).collect::<Vec<f32>>();
+        let tone = |level: f32, seconds: f32| (0..(seconds * RATE as f32) as usize).map(|index| (index as f32 * 0.07).sin() * level).collect::<Vec<f32>>();
+        // Speech at about -60 dBFS over a -85 dBFS room: dropped before, kept now.
+        let mut quiet: Vec<f32> = [noise(0.0002, 0.5), tone(0.0014, 2.0), noise(0.0002, 0.5)].concat();
+        assert!(!has_speech(&quiet));
+        normalize_level(&mut quiet);
+        assert!(has_speech(&quiet));
+        // Steady noise alone is never amplified into speech.
+        let mut room = noise(0.0004, 3.0);
+        let before = room.clone();
+        normalize_level(&mut room);
+        assert_eq!(room, before);
+        // Normal speech is left as it is.
+        let mut loud: Vec<f32> = [noise(0.001, 0.5), tone(0.2, 2.0)].concat();
+        let before = loud.clone();
+        normalize_level(&mut loud);
+        assert_eq!(loud, before);
     }
 }

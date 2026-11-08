@@ -1,78 +1,114 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ComponentType, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
+import { motion, useReducedMotion } from "framer-motion";
+import { PartyPopper, type LucideIcon } from "lucide-react";
+import { SetupSummary } from "./SetupSteps";
 import "./OnboardingTour.css";
 
-const SEEN_KEY = "pzza.tour.seen";
-function markTourSeen() {
+// The UI tour: a spotlight on each part of the window, then a summary. It
+// runs on first launch after setup (SetupScreen) and can be skipped any time.
+// Installs that completed the earlier setup wizard or tour count as done.
+const DONE_KEY = "pzza.onboarding.done";
+const LEGACY_DONE_KEYS = ["pzza.setupDone", "pzza.tour.seen"];
+
+export function onboardingPending(): boolean {
   try {
-    localStorage.setItem(SEEN_KEY, "1");
+    if (localStorage.getItem(DONE_KEY)) return false;
+    if (LEGACY_DONE_KEYS.some(key => localStorage.getItem(key))) {
+      localStorage.setItem(DONE_KEY, "1");
+      return false;
+    }
+    return true;
   } catch {
-    /* private mode - the tour simply shows again next launch */
+    // Storage is unavailable: never trap the user in a tour on every launch.
+    return false;
   }
 }
 
+function markOnboardingDone() {
+  try {
+    localStorage.setItem(DONE_KEY, "1");
+  } catch {
+    /* private mode - nothing to remember */
+  }
+}
+
+type Phase = "tour" | "done";
+
 interface Step {
   id: string;
+  phase: Phase;
   title: string;
+  // The tooltip text, or the line under the title of the closing card.
   body: string;
   // Candidate anchors in preference order; the step is skipped when none is visible.
   targets?: string[];
+  // The closing card's header icon.
+  icon?: LucideIcon;
+  // Interactive content shown in the wide, centered card.
+  content?: ComponentType;
 }
 
-const STEPS: Step[] = [
-  {
-    id: "welcome",
-    title: "Welcome to PzzaCode",
-    body: "Every terminal and every agent on one grid. This quick tour walks the whole app - one control at a time.",
-  },
+const ALL_STEPS: Step[] = [
   {
     id: "workspaces",
+    phase: "tour",
     title: "Workspaces",
     body: "Browser-style tabs group your sessions into contexts, one project per workspace. All shows every tile at once.",
     targets: ['[data-tour="workspaces"]', ".ws-tabs"],
   },
   {
     id: "new-session",
+    phase: "tour",
     title: "New session",
     body: "Open a terminal on any device, or jump back into a tmux window you left running somewhere else.",
     targets: ['[data-tour="new-session"]'],
   },
   {
     id: "quick-chat",
+    phase: "tour",
     title: "Quick Chat",
     body: "A dropdown chat with your saved agent. Hiding it never stops the conversation - it keeps running on its device.",
     targets: ['[data-tour="quick-chat"]'],
   },
   {
     id: "layout",
+    phase: "tour",
     title: "Grid layout",
     body: "Columns per workspace, remembered per workspace. A lone tile fills the row on its own.",
     targets: ['[data-tour="layout"]'],
   },
   {
     id: "usage",
+    phase: "tour",
     title: "Agent usage",
     body: "Live usage windows and estimated spend per account, with a one-click fix when a token expires.",
     targets: ['[data-tour="usage"]'],
   },
   {
     id: "canvas",
+    phase: "tour",
     title: "Session tiles",
     body: "Every tile is a live terminal. Click to work in it, drag headers to reorder, and find every control in the tile's top-right corner.",
     targets: [".tile:not(.tile-off) .tile-head", ".empty-session-create"],
   },
   {
     id: "settings",
+    phase: "tour",
     title: "Settings",
-    body: "Devices, sync, connections, Quick Chat and help all live here. Stuck later? Replay this tour from Settings → Help → Tips.",
+    body: "Devices, sync, connections, Quick Chat and help all live here. Replay this tour any time from Settings → Help.",
     targets: ['[data-tour="settings"]'],
   },
   {
     id: "done",
-    title: "You're set",
-    body: "Hit + New session and open your first terminal. Close the app anytime - everything keeps running on its device.",
+    phase: "done",
+    icon: PartyPopper,
+    title: "You're all set",
+    body: "Open your first terminal with New session. Close the app any time - everything keeps running on its device.",
+    content: SetupSummary,
   },
 ];
+const STEPS = ALL_STEPS;
 
 interface Rect {
   x: number;
@@ -108,11 +144,15 @@ function queryRect(selectors: string[]): Rect | null {
   return element ? rectOf(element) : null;
 }
 
-const TIP_WIDTH = 320;
+const TIP_WIDTH = 340;
+const SETUP_WIDTH = 540;
 const GAP = 12;
 
 export function OnboardingTour({ open, onClose }: { open: boolean; onClose: () => void }) {
   const [index, setIndex] = useState(0);
+  // Which way the last move went, so step content slides in from that side.
+  const [direction, setDirection] = useState<1 | -1>(1);
+  const reduceMotion = useReducedMotion();
   const [resolved, setResolved] = useState<{ number: number; step: Step; rect: Rect | null } | null>(null);
   const primaryRef = useRef<HTMLButtonElement>(null);
 
@@ -129,7 +169,7 @@ export function OnboardingTour({ open, onClose }: { open: boolean; onClose: () =
   }, [open ]);
 
   const finish = useCallback(() => {
-    markTourSeen();
+    markOnboardingDone();
     onClose();
   }, [onClose]);
 
@@ -193,6 +233,7 @@ export function OnboardingTour({ open, onClose }: { open: boolean; onClose: () =
     while (next >= 0 && next < STEPS.length) {
       const step = STEPS[next];
       if (step && (!step.targets || queryRect(step.targets))) {
+        setDirection(direction);
         setIndex(next);
         return;
       }
@@ -203,70 +244,106 @@ export function OnboardingTour({ open, onClose }: { open: boolean; onClose: () =
 
   useEffect(() => {
     if (!open) return;
+    // Captured first so nothing behind the tour reacts to its keys. Escape
+    // skips the tour, like its Skip button.
     const onKey = (event: KeyboardEvent) => {
+      const control = event.target instanceof Element ? event.target.closest("button, a, input, select, textarea, [contenteditable='true']") : null;
       if (event.key === "Escape") {
         event.stopPropagation();
+        event.preventDefault();
         finish();
-      } else if (event.key === "ArrowRight" || event.key === "Enter") {
+      } else if (event.key === "Enter" && !control) {
+        // A focused button handles Enter itself (the primary button is Next).
         event.stopPropagation();
         go(1);
-      } else if (event.key === "ArrowLeft") {
+      } else if ((event.key === "ArrowRight" || event.key === "ArrowLeft") && !(control && control.matches("input, select, textarea, [contenteditable='true']"))) {
         event.stopPropagation();
-        go(-1);
+        go(event.key === "ArrowRight" ? 1 : -1);
       }
     };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [open, finish, go]);
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [open, go, finish]);
 
   if (!open || !resolved) return null;
   const { step, number, rect } = resolved;
   const isFirst = number === 0;
   const isLast = number === STEPS.length - 1;
+  const Content = step.content;
+  const primaryLabel = isLast ? "Finish" : "Next";
+  const motionProps = {
+    initial: { opacity: 0, x: reduceMotion ? 0 : 14 * direction },
+    animate: { opacity: 1, x: 0 },
+    transition: { duration: reduceMotion ? 0.12 : 0.22, ease: [0.2, 0.8, 0.2, 1] as const },
+  };
+  const actions = <footer className="tour-foot">
+    {step.phase === "tour" ? <TourCount step={step} /> : null}
+    <span className="tour-spacer" />
+    {step.phase === "tour" ? <button type="button" className="tour-btn tour-btn-ghost tour-btn-skip" onClick={finish}>Skip</button> : null}
+    {!isFirst ? <button type="button" className="tour-btn tour-btn-ghost" onClick={() => go(-1)}>Back</button> : null}
+    <button type="button" ref={primaryRef} className="tour-btn tour-btn-primary" onClick={() => (isLast ? finish() : go(1))}>{primaryLabel}</button>
+  </footer>;
 
-  // Tooltip below the anchor when it fits, above it otherwise, centered
-  // fallback when there is no anchor. Horizontal position never leaves the
-  // viewport.
-  const placeAbove = rect !== null && rect.y + rect.h + GAP + 200 > window.innerHeight;
-  const tipLeft = rect ? Math.max(12, Math.min(rect.x + rect.w / 2 - TIP_WIDTH / 2, window.innerWidth - TIP_WIDTH - 12)) : undefined;
-  const tipStyle: CSSProperties = rect
-    ? placeAbove
+  // Spotlight steps: a compact card below the anchor when it fits, above it
+  // otherwise. Horizontal position never leaves the viewport.
+  if (rect) {
+    const placeAbove = rect.y + rect.h + GAP + 200 > window.innerHeight;
+    const tipLeft = Math.max(12, Math.min(rect.x + rect.w / 2 - TIP_WIDTH / 2, window.innerWidth - TIP_WIDTH - 12));
+    const tipStyle: CSSProperties = placeAbove
       ? { width: TIP_WIDTH, left: tipLeft, bottom: window.innerHeight - rect.y + GAP }
-      : { width: TIP_WIDTH, left: tipLeft, top: rect.y + rect.h + GAP }
-    : { width: Math.min(TIP_WIDTH + 20, window.innerWidth - 48), left: "50%", top: "42%", transform: "translate(-50%, -50%)" };
+      : { width: TIP_WIDTH, left: tipLeft, top: rect.y + rect.h + GAP };
+    return createPortal(
+      <div className="tour-root pzza-portal" role="dialog" aria-modal="true" aria-label={step.title}>
+        <div className="tour-dim" style={{ left: 0, top: 0, width: "100%", height: Math.max(0, rect.y) }} />
+        <div className="tour-dim" style={{ left: 0, top: rect.y + rect.h, width: "100%", bottom: 0 }} />
+        <div className="tour-dim" style={{ left: 0, top: rect.y, width: Math.max(0, rect.x), height: rect.h }} />
+        <div className="tour-dim" style={{ left: rect.x + rect.w, top: rect.y, right: 0, height: rect.h }} />
+        <div className="tour-ring" style={{ left: rect.x - 5, top: rect.y - 5, width: rect.w + 10, height: rect.h + 10 }} />
+        <motion.div className="tour-card tour-card-tip" style={tipStyle} key={step.id}
+          initial={{ opacity: 0, y: reduceMotion ? 0 : placeAbove ? -6 : 6 }} animate={{ opacity: 1, y: 0 }} transition={motionProps.transition}>
+          <h2 className="tour-tip-title">{step.title}</h2>
+          <p className="tour-tip-text">{step.body}</p>
+          {actions}
+        </motion.div>
+      </div>,
+      document.body,
+    );
+  }
 
+  // Setup and closing steps: one wide card that stays put while its content
+  // slides between steps.
+  const Icon = step.icon;
   return createPortal(
     <div className="tour-root pzza-portal" role="dialog" aria-modal="true" aria-label={step.title}>
-      {rect ? (
-        <>
-          <div className="tour-dim" style={{ left: 0, top: 0, width: "100%", height: Math.max(0, rect.y) }} />
-          <div className="tour-dim" style={{ left: 0, top: rect.y + rect.h, width: "100%", bottom: 0 }} />
-          <div className="tour-dim" style={{ left: 0, top: rect.y, width: Math.max(0, rect.x), height: rect.h }} />
-          <div className="tour-dim" style={{ left: rect.x + rect.w, top: rect.y, right: 0, height: rect.h }} />
-          <div className="tour-ring" style={{ left: rect.x - 5, top: rect.y - 5, width: rect.w + 10, height: rect.h + 10 }} />
-        </>
-      ) : (
-        <div className="tour-dim tour-dim-full" />
-      )}
-      <div className={rect ? "menu tour-tip" : "menu tour-tip tour-tip-center"} style={tipStyle} key={step.id}>
-        <div className="tour-tip-head">
-          <strong>{step.title}</strong>
-          <span className="tour-count" aria-label={`Step ${number + 1} of ${STEPS.length}`}>{number + 1} / {STEPS.length}</span>
-        </div>
-        <p className="tour-tip-body">{step.body}</p>
-        <div className="tour-dots" aria-hidden="true">
-          {STEPS.map((s, i) => <span key={s.id} className={i === number ? "on" : i < number ? "seen" : ""} />)}
-        </div>
-        <div className="tour-actions">
-          <button type="button" className="tour-skip" onClick={finish}>Skip</button>
-          <span className="tour-spacer" />
-          {!isFirst ? <button type="button" className="btn btn-sm" onClick={() => go(-1)}>Back</button> : null}
-          <button type="button" ref={primaryRef} className="btn btn-accent btn-sm" onClick={() => (isLast ? finish() : go(1))}>
-            {isFirst ? "Start tour" : isLast ? "Done" : "Next"}
-          </button>
-        </div>
+      <div className="tour-dim tour-dim-full" />
+      <div className="tour-center">
+        <motion.div className={`tour-card tour-card-wide tour-card-${step.phase}`} style={{ width: Math.min(SETUP_WIDTH, window.innerWidth - 32) }}
+          initial={{ opacity: 0, scale: reduceMotion ? 1 : 0.98 }} animate={{ opacity: 1, scale: 1 }} transition={motionProps.transition}>
+          <motion.div className="tour-card-main" key={step.id} {...motionProps}>
+            <header className="tour-head">
+              {Icon ? <span className="tour-head-icon" aria-hidden="true"><Icon size={step.phase === "done" ? 24 : 18} strokeWidth={1.9} /></span> : null}
+              <div className="tour-head-copy">
+                <h2 className="tour-head-title">{step.title}</h2>
+                <p className="tour-head-text">{step.body}</p>
+              </div>
+            </header>
+            {Content ? <div className="tour-body"><Content /></div> : null}
+          </motion.div>
+          {actions}
+        </motion.div>
       </div>
     </div>,
     document.body,
   );
+}
+
+// Position within the UI walkthrough, counting only the anchors on screen.
+function TourCount({ step }: { step: Step }) {
+  const visible = STEPS.filter(entry => entry.phase === "tour" && entry.targets && queryTarget(entry.targets));
+  const position = visible.indexOf(step);
+  if (position < 0) return null;
+  return <span className="tour-foot-count">
+    <span className="tour-foot-dots" aria-hidden="true">{visible.map(entry => <span key={entry.id} className={entry === step ? "on" : ""} />)}</span>
+    {position + 1} of {visible.length}
+  </span>;
 }

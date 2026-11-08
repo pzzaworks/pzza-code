@@ -58,7 +58,8 @@ test("dictation opt-in, native events, pinned insertion and cancellation", async
   const flush = () => new Promise(resolve => setImmediate(resolve));
   assert.equal(useDictation.getState().enabled, false);
   await initializeDictation();
-  assert.deepEqual(calls.map((call) => call.command), ["speech_model_status"]);
+  // Loading the module asks the Mac for its languages once (system_languages).
+  assert.deepEqual(calls.map((call) => call.command), ["system_languages", "speech_model_status"]);
   assert.equal(useDictation.getState().model, "missing");
   await useDictation.getState().download();
   assert.equal(useDictation.getState().model, "downloading", "invoke acceptance must not mark download complete");

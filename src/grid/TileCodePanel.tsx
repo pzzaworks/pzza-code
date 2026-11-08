@@ -1,61 +1,33 @@
 import { AsyncButton } from "../ui/AsyncButton";
 import { themeById } from "../theme/themes";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import CodeMirror from "@uiw/react-codemirror";
 import { Decoration, EditorView, keymap, type DecorationSet } from "@codemirror/view";
 import { StateEffect, StateField } from "@codemirror/state";
 import { highlightSelectionMatches, openSearchPanel, searchKeymap } from "@codemirror/search";
 import { githubDark, githubLight } from "@uiw/codemirror-theme-github";
-import { loadLanguage } from "@uiw/codemirror-extensions-langs";
-import { Eye, FolderOpen, FolderTree as FolderTreeIcon, Loader2, PanelLeft, Save, X } from "lucide-react";
+import { editorLanguage } from "./editorLanguage";
+import { Eye, FolderOpen, Loader2, PanelLeft, Pencil, Save, X } from "lucide-react";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
-import { deleteFile, fileRawUrl, listDir, moveFile, readFile, writeFile } from "../serverApi";
-import { useStore } from "../state/store";
+import { deleteFile, fileRawUrl, listDir, moveFile, readFile, writeFile, type GitChangedFile } from "../serverApi";
+import { tileCodeView, useStore } from "../state/store";
 import { FolderTree } from "./FileTree";
+import { changedFilePath, changesCount, CodeChangesList, CodeDiffView, CodeViewSwitch, diffLineStats, useGitChanges, useGitDiff } from "./CodeChanges";
 import { FilePicker } from "../panels/FilePicker";
 import { Modal } from "../ui/Modal";
 import { beginFileMutation, fileMutationPending, notifyFileMutation, onFileMutation, registerEditorDiscard, registerEditorFile, remapFilePath } from "../editorChanges";
 import { copyImageToClipboard } from "../imageClipboard";
-import { CodeLayoutMenu } from "./CodeLayoutMenu";
+import { CodeLayoutButtons } from "./CodeLayoutButtons";
 import { createEditorAppController, registerEditorAppControl } from "../appControlEditor";
 import { SplitHandle } from "../ui/SplitHandle";
+import { IS_MAC } from "../shortcuts";
+import { activityAgent, useSessionActivity } from "../ui/LiveSessionIcon";
+import { broadcastLine } from "../terminal/broadcast";
 
-// file extension -> the key codemirror-extensions-langs' loadLanguage expects.
-// Those keys are extension-style ("ts", "rs", "sh"), not full language names, so
-// only genuine aliases need an entry here; everything else falls back to the raw
-// extension (see the extensions memo below).
-const EXT_LANG: Record<string, string> = {
-  mts: "ts",
-  cts: "ts",
-  mjs: "js",
-  cjs: "js",
-  htm: "html",
-  mdx: "md",
-  markdown: "md",
-  zsh: "bash",
-  fish: "bash",
-  yml: "yaml",
-  h: "c",
-  cc: "cpp",
-  cxx: "cpp",
-  hpp: "cpp",
-  hxx: "cpp",
-  svg: "xml",
-  conf: "ini",
-};
 
 function baseName(p: string): string {
   return p.replace(/\/$/, "").split("/").pop() || p;
-}
-function dirName(p: string): string {
-  const i = p.lastIndexOf("/");
-  return i > 0 ? p.slice(0, i) : "";
-}
-function extOf(p: string): string {
-  const b = baseName(p);
-  const i = b.lastIndexOf(".");
-  return i > 0 ? b.slice(i + 1).toLowerCase() : "";
 }
 
 // File tree width bounds; the editor always keeps at least MIN_EDITOR_WIDTH px.
@@ -64,6 +36,27 @@ const MIN_EDITOR_WIDTH = 160;
 function clampTreeWidth(width: number, split: HTMLElement | null): number {
   const max = Math.max(MIN_TREE_WIDTH, (split?.clientWidth ?? Infinity) - MIN_EDITOR_WIDTH);
   return Math.round(Math.min(max, Math.max(MIN_TREE_WIDTH, width)));
+}
+
+// Width that shows every visible tree row without truncating its name: each
+// row's fixed parts (indent, icons, gaps) plus its name's real text width, plus
+// the tree's own padding, border and scrollbar. The name is a flex-filling,
+// ellipsized box, so its text is measured with a Range rather than its box.
+// The caller clamps the result to the split.
+function fitTreeWidth(tree: HTMLElement | null): number | null {
+  const rows = tree?.querySelectorAll<HTMLElement>(".ft-row");
+  if (!tree || !rows?.length) return null;
+  const range = document.createRange();
+  let content = 0;
+  for (const row of rows) {
+    const name = row.querySelector<HTMLElement>(".ft-name");
+    if (!name) { content = Math.max(content, row.scrollWidth); continue; }
+    range.selectNodeContents(name);
+    content = Math.max(content, row.offsetWidth - name.clientWidth + range.getBoundingClientRect().width);
+  }
+  range.detach();
+  const chrome = tree.offsetWidth - rows[0].offsetWidth;
+  return Math.ceil(content + chrome + 2);
 }
 
 // ---- Cmd/Ctrl/Alt+click go-to-definition ----
@@ -245,13 +238,32 @@ export function TileCodePanel({ tileId }: { tileId: string }) {
   const code = useStore((s) => s.tileCode[tileId]);
   // A remote tile edits files on its own device over ssh.
   const host = useStore((s) => s.tiles.find((t) => t.id === tileId)?.host);
+  // Questions about diff lines go to the coding agent in this tile's terminal.
+  const tileSession = useStore((s) => { const tile = s.tiles.find((t) => t.id === tileId); return tile ? tile.session ?? tile.name : ""; });
+  const tileWindow = useStore((s) => s.tiles.find((t) => t.id === tileId)?.window);
+  const agentRunning = activityAgent(useSessionActivity(tileSession, tileWindow, host)) !== undefined;
+  const diffAsk = useMemo(() => ({
+    tileId,
+    available: agentRunning,
+    send: async (line: string) => {
+      const [result] = await broadcastLine([tileId], line);
+      if (result?.error) throw new Error(result.error);
+    },
+  }), [agentRunning, tileId]);
   const setTileCodeRoot = useStore((s) => s.setTileCodeRoot);
   const setTileCodePath = useStore((s) => s.setTileCodePath);
   const closeTileFile = useStore((s) => s.closeTileFile);
   const setTileCodeSizes = useStore((s) => s.setTileCodeSizes);
+  const setTileCodeView = useStore((s) => s.setTileCodeView);
   const treeRef = useRef<HTMLDivElement>(null);
+  const sidePanelId = useId();
 
   const [treeOpen, setTreeOpen] = useState(true);
+  const sideView = tileCodeView(code);
+  // The changed file whose diff fills the editor pane, with the repository
+  // top-level its repo-relative path belongs to.
+  const [diffTarget, setDiffTarget] = useState<{ file: GitChangedFile; root: string } | null>(null);
+  const [changesNonce, setChangesNonce] = useState(0);
   const [treeControl, setTreeControl] = useState<{ revision: number; path?: string; expanded?: boolean }>({ revision: 0 });
   const [pickerOpen, setPickerOpen] = useState(false);
 
@@ -383,11 +395,8 @@ export function TileCodePanel({ tileId }: { tileId: string }) {
   }, [path, host]);
 
   const extensions = useMemo(() => {
-    const ext = path ? extOf(path) : "";
-    // loadLanguage keys are extension-style, so try the raw extension and only
-    // remap the handful of aliases that differ.
-    const key = ext ? EXT_LANG[ext] ?? ext : "";
-    const lang = key ? loadLanguage(key as Parameters<typeof loadLanguage>[0]) : null;
+    // Highlighting by file name first (Dockerfile, Makefile, .env, ...), then extension.
+    const lang = path ? editorLanguage(path) : null;
     // Cmd/Ctrl+F find panel plus selection-match highlights, alongside the
     // go-to-definition hover field.
     const base = [gotoHoverField, keymap.of(searchKeymap), highlightSelectionMatches()];
@@ -438,6 +447,7 @@ export function TileCodePanel({ tileId }: { tileId: string }) {
         try {
           await writeFile(path, content, host);
           snapshot.current.error = null; setError(null);
+          setChangesNonce((value) => value + 1);
         } catch (cause) {
           const message = cause instanceof Error ? cause.message : "File save failed.";
           snapshot.current.error = message; setError(message);
@@ -651,13 +661,37 @@ export function TileCodePanel({ tileId }: { tileId: string }) {
     setJump(null);
   }, [jump, loaded, path, content]);
 
+  // Changes view: git status of the folder's repository, plus one file's diff.
+  useEffect(() => onFileMutation((mutation) => {
+    if ((mutation.host || "") === (host || "")) setChangesNonce((value) => value + 1);
+  }), [host]);
+  const gitChanges = useGitChanges(host ?? "", root, sideView === "changes", changesNonce);
+  const showDiff = sideView === "changes" && diffTarget !== null;
+  const gitDiff = useGitDiff(host ?? "", root, showDiff ? diffTarget.file : null, gitChanges.checked);
+  const diffStats = useMemo(() => (gitDiff.diff && !gitDiff.diff.binary ? diffLineStats(gitDiff.diff) : null), [gitDiff.diff]);
+  const diffPath = diffTarget ? changedFilePath(diffTarget.root, diffTarget.file) : undefined;
+  useEffect(() => { if (path) setDiffTarget(null); }, [path]);
+  useEffect(() => { setDiffTarget(null); }, [root, host]);
+  const changesReveal = useStore((s) => s.changesReveal[tileId] ?? 0);
+  useEffect(() => { if (sideView === "changes") setTreeOpen(true); }, [sideView, changesReveal]);
+  const editorTheme = themeById(themeId).appearance === "light" ? githubLight : githubDark;
+  const showChange = (file: GitChangedFile, repoRoot: string) => void navigate(() => {
+    if (snapshot.current.path) closeTileFile(tileId);
+    setDiffTarget({ file, root: repoRoot });
+  });
+  const editChangedFile = () => {
+    if (!diffPath) return;
+    const target = diffPath;
+    void navigate(() => { setDiffTarget(null); setTileCodePath(tileId, target); });
+  };
+
   if (!root) {
     return (
       <div className="tile-code">
         <div className="tile-code-bar">
           <span className="tile-code-name">Code editor</span>
           <div className="tile-head-spacer" />
-          <CodeLayoutMenu tileId={tileId} />
+          <CodeLayoutButtons tileId={tileId} />
         </div>
         <div className="code-open">
           <FolderOpen size={28} className="code-open-icon" />
@@ -693,22 +727,73 @@ export function TileCodePanel({ tileId }: { tileId: string }) {
         >
           <PanelLeft size={13} />
         </button>
-        <span className="tile-code-name">
-          {path ? baseName(path) : baseName(root)}
-          {dirty ? <span className="code-dirty" title="Unsaved changes" /> : null}
-        </span>
-        <span className="tile-code-path" title={path || root}>
-          {path ? dirName(path) : root}
-        </span>
+        {showDiff && diffPath ? (
+          // A reviewed change reads as a tab too: name, line counts, a way into
+          // the file itself (not for deletions), and its close x.
+          <div className="code-file-tab code-diff-tab" title={diffPath}>
+            <span className="tile-code-name">{baseName(diffTarget.file.path)}</span>
+            {diffStats ? (
+              <span className="code-diff-stat" aria-label={`${diffStats.added} added, ${diffStats.removed} removed lines`}>
+                <span className="code-diff-added">+{diffStats.added}</span>
+                <span className="code-diff-removed">−{diffStats.removed}</span>
+              </span>
+            ) : null}
+            {diffTarget.file.status !== "deleted" ? (
+              <button
+                type="button"
+                className="code-diff-edit"
+                title={`Open ${diffTarget.file.path} in the editor`}
+                onMouseDown={(e) => e.stopPropagation()}
+                onClick={editChangedFile}
+              >
+                <Pencil size={12} aria-hidden="true" />
+                <span className="code-diff-edit-label">Edit file</span>
+              </button>
+            ) : null}
+            <button
+              type="button"
+              className="tile-btn code-file-tab-close"
+              title="Close diff"
+              aria-label="Close diff"
+              onMouseDown={(e) => e.stopPropagation()}
+              onClick={() => setDiffTarget(null)}
+            >
+              <X size={12} />
+            </button>
+          </div>
+        ) : path ? (
+          // The open file reads as a tab: name (full path on hover), a dirty
+          // dot, Save only while there is something to save, and its close x.
+          <div className="code-file-tab" title={path}>
+            <span className="tile-code-name">{baseName(path)}</span>
+            {dirty ? <span className="code-dirty" title="Unsaved changes" /> : null}
+            {dirty || saving ? (
+              <AsyncButton
+                className="tile-btn code-file-tab-save"
+                title={`Save (${IS_MAC ? "⌘S" : "Ctrl+S"})`}
+                aria-label="Save"
+                loading={saving}
+                icon={Save}
+                iconSize={12}
+                disabled={!dirty}
+                onMouseDown={(e) => e.stopPropagation()}
+                onClick={save}
+              />
+            ) : null}
+            <button
+              className="tile-btn code-file-tab-close"
+              title="Close file"
+              aria-label="Close file"
+              onMouseDown={(e) => e.stopPropagation()}
+              onClick={() => void navigate(() => closeTileFile(tileId))}
+            >
+              <X size={12} />
+            </button>
+          </div>
+        ) : (
+          <span className="tile-code-path" title={root}>{baseName(root)}</span>
+        )}
         <div className="tile-head-spacer" />
-        <button
-          className="tile-btn"
-          title="Change folder"
-          onMouseDown={(e) => e.stopPropagation()}
-          onClick={() => setPickerOpen(true)}
-        >
-          <FolderTreeIcon size={13} />
-        </button>
         {isMd ? (
           <button
             className={`tile-btn ${preview ? "tile-btn-on" : ""}`}
@@ -719,42 +804,29 @@ export function TileCodePanel({ tileId }: { tileId: string }) {
             <Eye size={13} />
           </button>
         ) : null}
-        <AsyncButton
-          className="tile-btn"
-          title="Save"
-          aria-label="Save"
-          loading={saving}
-          icon={Save}
-          iconSize={13}
-          disabled={!path || !dirty}
-          onMouseDown={(e) => e.stopPropagation()}
-          onClick={save}
-        />
-        {path ? (
-          <button
-            className="tile-btn"
-            title="Close file"
-            onMouseDown={(e) => e.stopPropagation()}
-            onClick={() => void navigate(() => closeTileFile(tileId))}
-          >
-            <X size={14} />
-          </button>
-        ) : null}
-        <CodeLayoutMenu tileId={tileId} />
+        <CodeLayoutButtons tileId={tileId} />
       </div>
 
       {error && dirty ? <div className="code-status code-err" role="alert">{error}</div> : null}
       {jumpStatus ? <div className="code-status muted" role="status">{jumpStatus}</div> : null}
       <div className="code-split">
         {treeOpen ? (
-          <div className="code-tile-tree" ref={treeRef} style={code?.treeWidth ? { width: code.treeWidth } : undefined}>
-            <FolderTree
-              root={root}
-              control={treeControl}
-              host={host}
-              activePath={path}
-              onOpenFile={(p) => { if (p !== path) void navigate(() => setTileCodePath(tileId, p)); }}
-            />
+          <div className="code-tile-tree code-changes-side" ref={treeRef} style={code?.treeWidth ? { width: code.treeWidth } : undefined}>
+            <CodeViewSwitch view={sideView} count={changesCount(gitChanges)} panelId={sidePanelId} onChange={(next) => setTileCodeView(tileId, next)} />
+            <div className="code-changes-pane" id={sidePanelId} role="tabpanel" aria-labelledby={`${sidePanelId}-${sideView}`}>
+              {sideView === "changes" ? (
+                <CodeChangesList state={gitChanges} selectedPath={showDiff ? diffPath : path} onSelect={showChange} />
+              ) : (
+                <FolderTree
+                  root={root}
+                  control={treeControl}
+                  host={host}
+                  activePath={path}
+                  onOpenFile={(p) => { if (p !== path) void navigate(() => setTileCodePath(tileId, p)); }}
+                  onPickRoot={() => setPickerOpen(true)}
+                />
+              )}
+            </div>
           </div>
         ) : null}
         {treeOpen ? (
@@ -768,13 +840,14 @@ export function TileCodePanel({ tileId }: { tileId: string }) {
             clamp={(width, handle) => clampTreeWidth(width, handle.parentElement)}
             preview={(width) => { if (treeRef.current) treeRef.current.style.width = `${width}px`; }}
             commit={(width) => setTileCodeSizes(tileId, { treeWidth: width })}
+            reset={() => fitTreeWidth(treeRef.current)}
           />
         ) : null}
         <div
           className="code-editor-pane"
-          title="Cmd/Ctrl/Alt+Click a symbol to jump to its definition"
           onKeyDown={(e) => {
-            if (e.defaultPrevented) return;
+            // The read-only diff has its own find panel and nothing to save.
+            if (e.defaultPrevented || showDiff) return;
             if ((e.metaKey || e.ctrlKey) && e.key === "s") {
               e.preventDefault();
               save();
@@ -791,8 +864,12 @@ export function TileCodePanel({ tileId }: { tileId: string }) {
             }
           }}
         >
-          {!path ? (
-            <div className="code-status muted">Pick a file from the tree to edit it.</div>
+          {showDiff ? (
+            <CodeDiffView state={gitDiff} file={diffTarget.file} theme={editorTheme} ask={diffAsk} />
+          ) : !path ? (
+            <div className="code-status muted">
+              {sideView === "changes" ? "Pick a changed file to review it." : "Pick a file from the tree to edit it."}
+            </div>
           ) : isImage ? (
             <div className="code-preview code-preview-img">
               <img ref={imageRef} crossOrigin="anonymous" src={fileRawUrl(path, host)} alt={baseName(path)} />
@@ -814,7 +891,7 @@ export function TileCodePanel({ tileId }: { tileId: string }) {
           ) : (
             <CodeMirror
               value={content}
-              theme={themeById(themeId).appearance === "light" ? githubLight : githubDark}
+              theme={editorTheme}
               extensions={extensions}
               height="100%"
               style={{ height: "100%" }}

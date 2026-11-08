@@ -1,0 +1,51 @@
+/* A slider with its value beside it at a fixed width. The slider gives way
+   before its value does, so the value is never cut. */
+.set-slider { display: inline-flex; align-items: center; gap: 10px; min-width: 0; max-width: 100%; }
+.set-slider-value { flex: 0 0 auto; min-width: 4.5ch; color: var(--muted); font-size: var(--fs-sm); font-variant-numeric: tabular-nums; text-align: right; }
+.set-slider:has(input:disabled) .set-slider-value { opacity: 0.5; }
+/* Sliders are drawn here rather than by the system: a thin track filled up
+   to the value, a round 14px thumb, and for sliders with a default a short
+   mark under it. A fixed thumb size lets the mark sit exactly where the thumb
+   rests at the default. */
+.set-slider-track { position: relative; display: flex; flex: 1 1 145px; align-items: center; min-width: 80px; }
+.set-slider-track input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  flex: 1;
+  width: 100%;
+  min-width: 0;
+  height: 18px;
+  margin: 0;
+  background: transparent;
+}
+.set-slider-track input[type="range"]::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: var(--r-pill);
+  background: linear-gradient(to right, var(--text) 0 var(--fill), var(--border) var(--fill) 100%);
+}
+.set-slider-track input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 14px;
+  height: 14px;
+  margin-top: -5px;
+  border: 2px solid var(--opaque-surface, var(--surface));
+  border-radius: 50%;
+  background: var(--text);
+  box-shadow: 0 0 0 1px var(--hairline-strong), 0 1px 3px rgb(0 0 0 / 25%);
+}
+.set-slider-track input[type="range"]:disabled { opacity: 0.45; }
+.set-slider-track input[type="range"]:focus-visible { outline: none; }
+.set-slider-track input[type="range"]:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 2px var(--focus-ring); }
+/* The default: a short tick below the track, at the thumb's resting centre. */
+.set-slider-mark {
+  position: absolute;
+  top: calc(50% + 5px);
+  left: calc(7px + (100% - 14px) * var(--mark-ratio, 0));
+  width: 2px;
+  height: 6px;
+  margin-left: -1px;
+  border-radius: 1px;
+  background: var(--muted);
+  pointer-events: none;
+}
+.set-slider-mark.is-on { background: var(--text); }

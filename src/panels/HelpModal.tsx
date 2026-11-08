@@ -1,53 +1,108 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
+  ArrowDown,
+  ArrowUp,
+  AudioLines,
+  Bell,
+  BellOff,
   Blocks,
   Bot,
   Boxes,
   Check,
   ChevronDown,
+  ChevronLeft,
   ChevronRight,
-  Bell,
-  FolderSync,
+  CircleCheck,
   CircleQuestionMark,
+  CircleX,
+  ClipboardPaste,
+  Coins,
   Columns2,
   Columns3,
   Columns4,
   Copy,
+  CornerDownLeft,
   Download,
-  EthernetPort,
   ExternalLink,
   Eye,
   EyeOff,
+  EthernetPort,
   FileCode,
+  FilePen,
+  FileUp,
   Focus,
+  FolderGit2,
   FolderInput,
+  FolderOpen,
+  FolderSync,
+  FolderTree,
   Gauge,
+  GitBranch,
+  GitCompareArrows,
+  GitMerge,
+  GitPullRequest,
+  GitPullRequestCreateArrow,
   HardDrive,
+  Hexagon,
+  History,
   Image as ImageIcon,
   Info,
   Keyboard,
+  Laptop,
   Layers,
   LayoutGrid,
   Lightbulb,
+  Link2,
+  ListChecks,
+  Loader2,
   Maximize2,
   MessageSquare,
+  MessageSquarePlus,
+  MessageSquareText,
   Mic,
   Monitor,
   MousePointerClick,
+  MoveDiagonal2,
+  Package,
+  PanelLeft,
   Plus,
+  Radio,
   RefreshCw,
+  Regex,
   Rocket,
+  RotateCcw,
+  Rows2,
+  Save,
+  Search,
+  Send,
+  ServerCog,
   Settings as SettingsIcon,
+  ShieldCheck,
+  ShieldOff,
   Sparkles,
+  Square,
+  SquareDashed,
   SquareTerminal,
+  TextSearch,
+  Trash2,
+  TriangleAlert,
   UsersRound,
+  Wrench,
   X,
   type LucideIcon,
 } from "lucide-react";
-import { Modal } from "../ui/Modal";
-import { altBadge, ctrlBadge, IS_MAC, NEW_SESSION_SHORTCUT, NEW_WORKSPACE_SHORTCUT } from "../shortcuts";
+import { ALT_LABEL, altBadge, COMMAND_PALETTE_SHORTCUT, ctrlBadge, IS_MAC, NEW_SESSION_SHORTCUT, NEW_WORKSPACE_SHORTCUT, SEARCH_TERMINALS_SHORTCUT } from "../shortcuts";
+import { ClaudeIcon, CodexIcon, OpenCodeIcon } from "../icons/BrandIcons";
+import { SESSION_AGENTS, SESSION_PROMPT_MAX_LENGTH } from "../../server/lib/session-agents.js";
+import { SESSION_NAME_MAX_LENGTH } from "../../server/lib/session-name.js";
+// The demos reuse these components' own classes; load their styles here too.
+import "../ui/Dictation.css";
+import "../tour/OnboardingTour.css";
 
 const CMD = IS_MAC ? "⌘" : "Ctrl";
+const SHIFT = IS_MAC ? "⇧" : "Shift";
+const CLAUDE_COLOR = "#D97757";
+const CODEX_COLOR = "#10A37F";
 
 // --- building blocks reusing the app's real classes, so the docs show the exact
 // controls the user clicks --------------------------------------------------
@@ -59,67 +114,29 @@ const IB = ({ icon: Icon }: { icon: LucideIcon }) => (
   </span>
 );
 
-const TB = ({ icon: Icon, on }: { icon: LucideIcon; on?: boolean }) => (
-  <span className={`tile-btn ${on ? "tile-btn-on" : ""}`}>
-    <Icon size={13} />
+const TB = ({ icon: Icon, on, danger }: { icon: LucideIcon; on?: boolean; danger?: boolean }) => (
+  <span className={`tile-btn ${on ? "tile-btn-on" : ""} ${danger ? "tile-btn-danger" : ""}`}>
+    <Icon size={danger ? 14 : 13} />
   </span>
 );
 
+// One named control and what it does, on a single compact line where it fits.
 function Row({ ui, name, children }: { ui: ReactNode; name: string; children: ReactNode }) {
   return (
     <div className="doc-row">
       <div className="doc-row-ui">{ui}</div>
       <div className="doc-row-body">
-        <div className="doc-row-name">{name}</div>
-        <div className="doc-row-desc">{children}</div>
+        <span className="doc-row-name">{name}</span> <span className="doc-row-desc">{children}</span>
       </div>
     </div>
   );
 }
 
 const P = ({ children }: { children: ReactNode }) => <p className="doc-p">{children}</p>;
-const H = ({ children }: { children: ReactNode }) => <div className="doc-h">{children}</div>;
-const Note = ({ children }: { children: ReactNode }) => (
-  <div className="doc-note">
-    <Info size={14} />
-    <div>{children}</div>
-  </div>
-);
-const Tip = ({ children }: { children: ReactNode }) => (
-  <div className="doc-note doc-note-tip">
-    <Lightbulb size={14} />
-    <div>{children}</div>
-  </div>
-);
+const Code = ({ children }: { children: ReactNode }) => <code className="doc-code">{children}</code>;
 
-const TileHeadDemo = () => (
-  <div className="tile-head doc-tilehead">
-    <span className="stat stat-notify" />
-    <span className="tile-icon" style={{ color: "#D97757" }}>
-      <Sparkles size={14} />
-    </span>
-    <span className="tile-title">Claude</span>
-    <kbd className="kbd tile-kbd">{ctrlBadge(1)}</kbd>
-    <span className="tile-device">Devbox</span>
-    <div className="tile-head-spacer" />
-    <div className="tile-actions">
-      <TB icon={LayoutGrid} />
-      <TB icon={Mic} />
-      <TB icon={Focus} />
-      <TB icon={FileCode} />
-      <TB icon={FolderInput} />
-      <TB icon={Copy} />
-      <TB icon={Maximize2} />
-      <TB icon={EyeOff} />
-      <span className="tile-btn tile-btn-danger">
-        <X size={14} />
-      </span>
-    </div>
-  </div>
-);
-
-// A framed stage at the top of a page that shows the exact control the page is
-// about, larger and non-interactive, so every doc page opens with its component.
+// A framed stage that shows the exact control a page is about, larger and
+// non-interactive.
 const Hero = ({ children, caption }: { children: ReactNode; caption: string }) => (
   <div className="doc-hero">
     <div className="doc-hero-stage">{children}</div>
@@ -130,76 +147,236 @@ const Hero = ({ children, caption }: { children: ReactNode; caption: string }) =
 // A numbered "how to" checklist so a page tells you what to do, not just what a
 // thing is.
 const Steps = ({ children }: { children: ReactNode }) => <ol className="doc-steps">{children}</ol>;
-const Step = ({ children }: { children: ReactNode }) => <li>{children}</li>;
+// One wrapper so mixed text and bold words flow as a paragraph inside the
+// flex row next to the step number.
+const Step = ({ children }: { children: ReactNode }) => <li><span>{children}</span></li>;
 
-// --- realistic, non-interactive previews of the actual dropdowns/panels each
-// top-bar button opens, built from the app's own classes so the docs show the
-// real thing (contents and all), not just an icon -----------------------------
-const Panel = ({ children, caption }: { children: ReactNode; caption: string }) => (
-  <details className="doc-panelwrap"><summary>View controls <span>{caption}</span></summary>
-    <div className="doc-panel">{children}</div>
-  </details>
+// A realistic, non-interactive preview of a dropdown or panel, built from the
+// app's own classes, with where it lives as its caption.
+const Panel = ({ children, caption, wide }: { children: ReactNode; caption: string; wide?: boolean }) => (
+  <figure className="doc-panelwrap">
+    <figcaption className="doc-hero-cap">{caption}</figcaption>
+    <div className={`doc-panel ${wide ? "doc-panel-wide" : ""}`}>{children}</div>
+  </figure>
 );
 
-const Switch = ({ on }: { on?: boolean }) => (
-  <span className={`switch ${on ? "switch-on" : ""}`}>
+const Switch = ({ on, small }: { on?: boolean; small?: boolean }) => (
+  <span className={`switch ${on ? "switch-on" : ""} ${small ? "switch-sm" : ""}`}>
     <span className="switch-knob" />
   </span>
 );
 
+// A select trigger as the app draws it (Select renders a .cselect button).
+const Pick = ({ icon, label, className = "" }: { icon?: ReactNode; label: string; className?: string }) => (
+  <span className={`cselect ${className}`}>
+    {icon}
+    <span className="cselect-value">{label}</span>
+    <ChevronDown size={14} className="muted-icon" />
+  </span>
+);
+
+// Several states of one control side by side, each with its name under it.
+const States = ({ items }: { items: { ui: ReactNode; label: string }[] }) => (
+  <div className="doc-states">
+    {items.map((item) => (
+      <div className="doc-state" key={item.label}>
+        <div className="doc-state-ui">{item.ui}</div>
+        <span className="doc-state-cap">{item.label}</span>
+      </div>
+    ))}
+  </div>
+);
+
+const ClaudeTileIcon = () => (
+  <span className="tile-icon" style={{ color: CLAUDE_COLOR }}>
+    <ClaudeIcon size={14} />
+  </span>
+);
+
+const TileHeadDemo = ({ title = "api", shortcut = 1, selected = false, actions = true }: { title?: string; shortcut?: number; selected?: boolean; actions?: boolean }) => (
+  <div className={`tile-head doc-tilehead ${selected ? "doc-tilehead-selected" : ""}`}>
+    <span className="stat stat-notify" />
+    <ClaudeTileIcon />
+    <span className="tile-title">{title}</span>
+    <kbd className="kbd tile-kbd">{ctrlBadge(shortcut)}</kbd>
+    <span className="tile-device">
+      <Monitor size={11} className="device-os-icon" />
+      Devbox
+    </span>
+    <div className="tile-head-spacer" />
+    {actions ? (
+      <div className="tile-actions">
+        <TB icon={Mic} />
+        <TB icon={FileCode} />
+        <TB icon={FolderInput} />
+        <TB icon={Copy} />
+        <TB icon={Maximize2} />
+        <TB icon={EyeOff} />
+        <TB icon={X} danger />
+      </div>
+    ) : null}
+  </div>
+);
+
+// The Git part of a tile's footer in its different states.
+type StripGit = "plain" | "status" | "failing" | "shared" | "worktree";
+const StripGitDemo = ({ git }: { git: StripGit }) => (
+  <span className="tile-strip-git">
+    <span className="tile-strip-git-icon">
+      <GitBranch size={11} aria-hidden="true" />
+      {git === "plain" || git === "status" ? <span className="tile-strip-dirty" /> : null}
+    </span>
+    <span className="tile-strip-branch-btn">
+      <code className="tile-strip-branch">{git === "worktree" ? "pzza/fix-login" : "main"}</code>
+      {git === "status" ? <span className="tile-strip-ab"><ArrowUp size={9} strokeWidth={2.4} aria-hidden="true" />2</span> : null}
+      {git === "status" ? <span className="tile-strip-ab"><ArrowDown size={9} strokeWidth={2.4} aria-hidden="true" />1</span> : null}
+      {git === "status" || git === "failing" ? <span className="tile-strip-pr">
+        <GitPullRequest size={10} aria-hidden="true" />42
+        {git === "status"
+          ? <CircleCheck size={10} className="tile-strip-check is-passing" aria-hidden="true" />
+          : <CircleX size={10} className="tile-strip-check is-failing" aria-hidden="true" />}
+      </span> : null}
+    </span>
+    {git === "failing" ? <span className="tile-strip-ci-send"><Send size={10} aria-hidden="true" /></span> : null}
+    {git === "shared" ? <span className="tile-strip-shared"><TriangleAlert size={11} aria-hidden="true" /></span> : null}
+    {git === "worktree" ? <span className="tile-strip-wt">
+      <span className="tile-strip-wt-action"><GitPullRequestCreateArrow size={11} aria-hidden="true" /></span>
+      <span className="tile-strip-wt-action"><GitMerge size={11} aria-hidden="true" /></span>
+    </span> : null}
+  </span>
+);
+
+// The one-line footer under every terminal; Git and cost demos leave out the
+// agent label so their own items keep the room.
+const TileStripDemo = ({ git = "plain", cost }: { git?: StripGit; cost?: string }) => (
+  <div className="tile-strip doc-tile-strip">
+    <span className="tile-strip-target">api</span>
+    <StripGitDemo git={git} />
+    <span className="tile-strip-running">
+      <ClaudeIcon size={11} className="tile-strip-logo" />
+      <code className="tile-strip-command">claude</code>
+      {git === "plain" && !cost ? <span className="tile-strip-agent">Claude Code · Accept edits</span> : null}
+    </span>
+    {cost ? <span className="tile-strip-cost">{cost}</span> : null}
+    <span className="tile-strip-path">
+      <span>~/…/api</span>
+    </span>
+    <span className="tile-strip-time">started 16:33</span>
+  </div>
+);
+
+// A whole tile: header, a few terminal lines and the footer strip.
+const TileDemo = ({ children, git, cost }: { children: ReactNode; git?: StripGit; cost?: string }) => (
+  <div className="doc-demo">
+    <div className="doc-tile">
+      <TileHeadDemo />
+      <div className="doc-tile-body">{children}</div>
+      <TileStripDemo git={git} cost={cost} />
+    </div>
+  </div>
+);
+
+const Line = ({ children }: { children: ReactNode }) => <div className="doc-term-line">{children}</div>;
+const Dim = ({ children }: { children: ReactNode }) => <span className="doc-term-dim">{children}</span>;
+// Text the app typed into the terminal for you.
+const Typed = ({ children }: { children: ReactNode }) => <span className="doc-term-typed">{children}</span>;
+
+
+const DictationMic = ({ state }: { state: "idle" | "listening" | "error" }) =>
+  state === "listening" ? (
+    <span className="tile-btn dictation-mic-on">
+      <span className="dictation-wave">
+        {[0.5, 0.85, 1, 0.85, 0.5].map((height, index) => <span key={index} style={{ transform: `scaleY(${height})` }} />)}
+      </span>
+      <Square size={12} />
+    </span>
+  ) : (
+    <span className={`tile-btn ${state === "error" ? "dictation-mic-error" : ""}`}>
+      <Mic size={13} />
+    </span>
+  );
+
+const ToolbarBadge = ({ icon: Icon, count, chip }: { icon: LucideIcon; count?: string; chip?: ReactNode }) => (
+  <span className={`icon-btn doc-ib ${chip ? "toolbar-chip" : ""}`}>
+    <span className="toolbar-icon-anchor">
+      <Icon size={16} strokeWidth={1.9} />
+      {count ? <span className="corner-badge">{count}</span> : null}
+    </span>
+    {chip ? <span className="toolbar-chip-info">{chip}</span> : null}
+  </span>
+);
+
+const UsageChip = () => (
+  <span className="usage-chip">
+    <span className="usage-chip-meter">
+      <span className="usage-chip-fill" style={{ width: "38%", background: "#e0a33e" }} />
+    </span>
+    <span className="usage-chip-pct">38%</span>
+  </span>
+);
+
+const NewSessionButton = () => (
+  <span className="btn dropdown-label-btn doc-ib">
+    <Plus size={15} strokeWidth={2} />
+    New session
+    <kbd className="kbd">{NEW_SESSION_SHORTCUT.label}</kbd>
+  </span>
+);
+
 const McpDemo = () => (
-  <Panel caption="Settings · Connections">
-    <div className="menu-body">
-      <div className="menu-title">MCP</div>
-      <div className="mcp-toggle">
-        <span className="set-label">
+  <Panel caption="Settings · Connections · MCP integrations" wide>
+    <div className="settings-page mcp-settings">
+      <div className="settings-row">
+        <div className="settings-row-copy">
           <span>Allow app window control</span>
-          <span className="set-hint">let connected agents control this app window</span>
-        </span>
+          <small>Control sessions, workspaces, editors, and app settings.</small>
+        </div>
         <Switch on />
       </div>
       <div className="mcp-list">
-        {["Claude Code", "Codex", "OpenCode", "Cursor", "Windsurf", "Zed"].map((label) => (
-          <div key={label} className="mcp-row">
-            <span className="mcp-name">{label}</span>
-            <div className="mcp-actions">
-              <span className="btn btn-accent btn-sm">
-                <Download size={13} strokeWidth={2} /> Add
-              </span>
-              <span className="btn btn-sm">
-                <Copy size={13} strokeWidth={2} />
-              </span>
+        {["Claude Code", "Codex"].map((label) => (
+          <div key={label} className="settings-row mcp-row">
+            <div className="settings-row-copy"><span>{label}</span></div>
+            <div className="settings-actions">
+              <span className="btn btn-sm"><Download size={13} strokeWidth={2} /> Add</span>
+              <span className="btn btn-sm"><Copy size={13} strokeWidth={2} /> Copy</span>
             </div>
           </div>
         ))}
       </div>
-      <p className="set-note mcp-path">
-        <Check size={11} strokeWidth={2.5} /> server: ~/.config/pzza/mcp.json
-      </p>
     </div>
   </Panel>
 );
 
 const PortsDemo = () => (
-  <Panel caption="Top bar · Ports">
+  <Panel caption="Top bar · Port manager">
     <div className="menu-body">
-      <div className="menu-title">Port forwarding</div>
-      <div className="ports-status">
+      <div className="ports-tabs">
+        <div className="usage-seg">
+          <span className="on">Forwarded</span>
+          <span>This device</span>
+        </div>
+      </div>
+      <div className="settings-row ports-status">
+        <span className="ports-route-inline">Devbox → This Mac</span>
         <span className="dot dot-up" />
-        <span className="small muted">forwarding 3 ports</span>
+        <span className="small muted ports-status-text">forwarding 2 ports</span>
         <div className="ports-status-spacer" />
-        <Switch on />
       </div>
       <div className="ports-box">
-        {[3000, 5173, 8080].map((port) => (
-          <div key={port} className="port-row">
-            <span className="port-num">
-              {port}
-              <span className="port-state on">live</span>
-            </span>
-            <span className="btn btn-sm">
-              <ExternalLink size={13} strokeWidth={2} />
-            </span>
+        {[
+          { port: 5173, name: "web", process: "node" },
+          { port: 8080, name: "api", process: "docker · api-1" },
+        ].map((row) => (
+          <div key={row.port} className="settings-row port-row">
+            <div className="port-identity">
+              <span className="port-project">{row.name}</span>
+              <span className="port-num">{row.port}<span className="port-state on">live</span></span>
+              <span className="port-process">{row.process}</span>
+            </div>
+            <div className="port-actions">
+              <span className="btn btn-sm"><ExternalLink size={13} /> Open</span>
+            </div>
           </div>
         ))}
       </div>
@@ -207,7 +384,39 @@ const PortsDemo = () => (
   </Panel>
 );
 
-const UsageDemo = () => (
+const UsageBar = ({ label, pct, color, reset, pin }: { label: string; pct: number; color: string; reset: string; pin: "auto" | "on" | "off" }) => (
+  <div className="usage-bar-row">
+    <div className="usage-bar-top">
+      <span className="usage-bar-text">
+        <span className="usage-bar-label">{label}</span>
+        <span className="usage-bar-pct">{pct}%</span>
+        <span className="usage-bar-reset">· {reset}</span>
+      </span>
+      <span className={`usage-pin ${pin === "on" ? "on" : ""} ${pin === "auto" ? "is-auto" : ""}`}>
+        {pin === "auto" ? <span className="usage-pin-auto">Auto</span> : null}
+        <span className="usage-radio" />
+      </span>
+    </div>
+    <div className="usage-bar">
+      <div className="usage-bar-fill" style={{ width: `${pct}%`, background: color }} />
+    </div>
+  </div>
+);
+
+const UsageCard = ({ brand, name, plan, email, children }: { brand: "claude" | "codex"; name: string; plan: string; email?: string; children: ReactNode }) => (
+  <div className="usage-card">
+    <div className="usage-card-head">
+      <span className="usage-brand" style={{ color: brand === "claude" ? CLAUDE_COLOR : CODEX_COLOR }}>{brand === "claude" ? <ClaudeIcon size={15} /> : <CodexIcon size={15} />}</span>
+      <span className="usage-name">{name}</span>
+      <span className="usage-plan">{plan}</span>
+      {email ? <span className="usage-email">{email}</span> : null}
+    </div>
+    {children}
+  </div>
+);
+
+// `accounts` shows two Claude accounts side by side, each with its email.
+const UsageDemo = ({ accounts }: { accounts?: boolean }) => (
   <Panel caption="Top bar · Agent usage">
     <div className="menu-body usage-menu">
       <div className="usage-head">
@@ -217,81 +426,94 @@ const UsageDemo = () => (
             <span className="on">Left</span>
             <span>Used</span>
           </span>
-          <span className="usage-refresh">
-            <RefreshCw size={13} />
-          </span>
+          <span className="usage-refresh"><RefreshCw size={13} /></span>
         </div>
       </div>
-      <div className="usage-card">
-        <div className="usage-card-head">
-          <span className="usage-dot" style={{ background: "#D97757" }} />
-          <span className="usage-name">Claude</span>
-          <span className="usage-plan">max 20x</span>
-        </div>
+      {accounts ? <>
+        <UsageCard brand="claude" name="Claude" plan="max 20x" email="me@example.com">
+          <UsageBar label="5h" pct={38} color="#e0a33e" reset="2h 10m" pin="on" />
+        </UsageCard>
+        <UsageCard brand="claude" name="Claude" plan="team" email="me@work.example">
+          <UsageBar label="5h" pct={12} color="#5fb37f" reset="4h 30m" pin="off" />
+        </UsageCard>
+      </> : <>
+        <UsageCard brand="claude" name="Claude" plan="max 20x">
+          <UsageBar label="5h" pct={38} color="#e0a33e" reset="2h 10m" pin="auto" />
+          <UsageBar label="Weekly" pct={71} color="#5fb37f" reset="3d" pin="off" />
+        </UsageCard>
+        <UsageCard brand="codex" name="Codex" plan="pro">
+          <UsageBar label="5h" pct={92} color="#5fb37f" reset="4h" pin="off" />
+        </UsageCard>
+      </>}
+    </div>
+  </Panel>
+);
+
+const NotificationsDemo = () => (
+  <Panel caption="Top bar · Notifications" wide>
+    <div className="menu-body latest-notifications">
+      <div className="notification-list">
         {[
-          { label: "5h", pct: 62, color: "#e0a33e" },
-          { label: "Weekly", pct: 88, color: "#e0555b" },
-        ].map((b) => (
-          <div className="usage-bar-row" key={b.label}>
-            <div className="usage-bar-top">
-              <span className="usage-bar-label">{b.label}</span>
-              <span className="usage-bar-pct">{b.pct}%</span>
-              <span className="usage-bar-reset">· resets 2h</span>
+          { title: "api finished · 12 files changed", body: "The agent stopped and its folder has uncommitted changes. Review them before you commit.", unread: true, review: true },
+          { title: "web - Claude is waiting for you", body: "Do you want to make this edit to server.ts?", unread: false, review: false },
+        ].map((item) => (
+          <article key={item.title} className={`notification-row ${item.unread ? "unread" : ""}`}>
+            <span className="notification-content">
+              <span className="notification-title">
+                <strong>{item.title}</strong>
+                {item.unread ? <span className="notification-new">New</span> : null}
+              </span>
+              <span className="notification-body">{item.body}</span>
+            </span>
+            <div className="notification-row-actions">
+              {item.review ? <span className="btn btn-sm notification-action">Review changes</span> : null}
+              <span className="dismiss-btn notification-dismiss"><X size={16} /></span>
             </div>
-            <div className="usage-bar">
-              <div className="usage-bar-fill" style={{ width: `${b.pct}%`, background: b.color }} />
-            </div>
-          </div>
+          </article>
         ))}
-        <div className="usage-spend">
-          <span className="usage-spend-label">Spend</span>
-          <span className="usage-spend-item">
-            today <b>$4.20</b>
-          </span>
-          <span className="usage-spend-item">
-            30d <b>$96.10</b>
-          </span>
-          <span className="usage-spend-est">est.</span>
-        </div>
       </div>
     </div>
   </Panel>
 );
 
 const DevicesDemo = () => (
-  <Panel caption="Settings · Devices">
-    <div className="menu-body">
-      <div className="menu-title">Devices</div>
-      <div className="device-list">
-        <div className="device-block on">
-          <div className="device-row device-row-click">
-            <ChevronDown size={14} className="muted-icon" />
-            <HardDrive size={15} className="muted-icon" />
-            <span className="device-main">
-              <span className="device-name">
-                Devbox <span className="device-tag">current</span>
+  <Panel caption="Settings · Devices" wide>
+    <div className="settings-page device-info-panel">
+      <section className="settings-section device-list">
+        {[
+          { name: "This Mac", sub: "localhost", kind: "Local", local: true },
+          { name: "Devbox", sub: "berke@devbox", kind: "SSH", local: false },
+        ].map((device) => (
+          <div key={device.name} className="managed-device">
+            <div className="managed-device-header">
+              <span className="managed-device-toggle">
+                <ChevronRight size={14} className="muted-icon" />
+                <Monitor size={15} />
+                <span className="device-main">
+                  <span className="device-name">
+                    {device.name}
+                    {device.local ? <span className="device-tag">current</span> : null}
+                  </span>
+                  <span className="device-sub">{device.sub}</span>
+                </span>
+                <span className="managed-device-kind">{device.kind}</span>
               </span>
-              <span className="device-sub">user@my-server · 4 sessions</span>
-            </span>
+              {device.local ? null : <Switch on small />}
+              {device.local ? null : <span className="icon-btn icon-btn-danger"><Trash2 size={14} /></span>}
+            </div>
           </div>
-        </div>
-        <div className="device-block">
-          <div className="device-row device-row-click">
-            <ChevronRight size={14} className="muted-icon" />
-            <HardDrive size={15} className="muted-icon" />
-            <span className="device-main">
-              <span className="device-name">Laptop</span>
-              <span className="device-sub">berke@laptop</span>
-            </span>
-          </div>
-        </div>
+        ))}
+      </section>
+      <div className="settings-actions">
+        <span className="btn btn-sm"><Plus size={14} strokeWidth={2.2} /> Add device</span>
+        <span className="btn btn-sm"><ServerCog size={14} strokeWidth={2} /> Install agent over SSH</span>
       </div>
     </div>
   </Panel>
 );
 
 const LayoutDemo = () => (
-  <Panel caption="Top bar · Layout">
+  <Panel caption="Top bar · Grid layout">
     <div className="menu-body">
       <div className="menu-head-title">
         Layout <span className="menu-head-ws">Main</span>
@@ -310,908 +532,1578 @@ const LayoutDemo = () => (
 );
 
 const RdpDemo = () => (
-  <Panel caption="Top bar · Remote desktop">
-    <div className="menu-body">
-      <div className="menu-title">Devbox · desktop</div>
-      <p className="set-note" style={{ marginTop: 0 }}>
-        Opens the Linux desktop over an SSH-tunneled RDP session.
-      </p>
-      <div className="field" style={{ marginTop: 12 }}>
-        <span className="field-label">Server</span>
-        <span className="doc-mini-select doc-select-wide">Devbox</span>
+  <Panel caption="Settings · Connections · Remote desktop" wide>
+    <div className="settings-page">
+      <div className="settings-field"><span>Remote server</span><Pick icon={<Monitor size={13} />} label="Devbox" /></div>
+      <div className="settings-actions"><span className="btn btn-sm"><Monitor size={14} /> Open desktop</span><span className="set-hint">SSH-tunneled RDP</span></div>
+    </div>
+  </Panel>
+);
+
+// The new-session form as it opens from the top bar, with Claude Code chosen.
+const NewSessionDemo = () => (
+  <Panel caption="Top bar · New session" wide>
+    <div className="menu-body new-session-form">
+      <div className="ns-composer has-prompt">
+        <div className="ns-composer-line">
+          <SquareTerminal size={16} className="muted-icon" />
+          <span className="ns-input">api-tests</span>
+          <span className="btn btn-accent ns-create">Create <CornerDownLeft size={12} strokeWidth={2.2} /></span>
+        </div>
+        <div className="ns-prompt doc-ns-placeholder">First prompt for Claude Code (optional)…</div>
       </div>
-      <div className="field">
-        <span className="field-label">Client</span>
-        <span className="doc-mini-select doc-select-wide">This machine</span>
-      </div>
-      <span className="btn btn-accent rdp-open">
-        <Monitor size={14} /> Open desktop
+      <AgentPills />
+    </div>
+  </Panel>
+);
+
+// The device | folder | agent bar and the agent's options, as in the form.
+const AgentPills = () => (
+  <>
+    <div className="ns-seg">
+      <Pick className="ns-pill" icon={<Monitor size={13} />} label="Devbox" />
+      <span className="ns-pill-path has-value">
+        <span className="path-field ns-pill">
+          <FolderOpen size={13} className="path-field-icon" />
+          <span className="path-field-value">~/api</span>
+        </span>
+        <span className="ns-clear"><X size={11} /></span>
       </span>
+      <Pick className="ns-pill" icon={<ClaudeIcon size={13} />} label="Claude Code" />
     </div>
-  </Panel>
+    <AgentOptions />
+  </>
 );
 
-const NewSessionDemo = ({ highlightAccount = false }: { highlightAccount?: boolean }) => (
-  <Panel caption="Top bar · New session">
+// The chosen agent's mode and start options.
+const AgentOptions = () => (
+  <div className="ns-seg ns-seg-extra">
+    <Pick className="ns-pill ns-mode" icon={<FilePen size={13} />} label="Accept edits" />
+    <span className="ns-toggle"><History size={12} /> Continue</span>
+    <span className="ns-toggle on"><GitBranch size={12} /> Worktree</span>
+  </div>
+);
+
+const SnapshotRow = ({ name, meta, on }: { name: string; meta: string; on?: boolean }) => (
+  <div className="snap-row">
+    <div className="snap-row-copy">
+      <span className="snap-name">{name}</span>
+      <span className="snap-meta">{meta}</span>
+    </div>
+    <span className={`snap-icon ${on ? "is-on" : ""}`}><RotateCcw size={14} /></span>
+    <span className="snap-icon"><Copy size={14} /></span>
+    <span className="snap-icon"><Trash2 size={14} /></span>
+  </div>
+);
+
+const SnapshotDemo = () => (
+  <Panel caption="Workspace settings · Snapshots">
     <div className="menu-body">
-      <div className="menu-title">New session</div>
-      <div className="doc-ns-row">
-        <span className="doc-ns-label">Device</span>
-        <span className="doc-mini-select doc-select-wide">Devbox</span>
-      </div>
-      <div className="doc-ns-row">
-        <span className="doc-ns-label">Workspace</span>
-        <span className="doc-mini-select doc-select-wide">Main</span>
-      </div>
-      <div className={`doc-ns-row ${highlightAccount ? "doc-ns-hi" : ""}`}>
-        <span className="doc-ns-label">Account</span>
-        <span className="doc-mini-select doc-select-wide">
-          <UsersRound size={12} /> Default account
-        </span>
-      </div>
-      <div className="doc-ns-create">
-        <span className="doc-ns-name">Name a new session</span>
-        <span className="btn btn-accent btn-sm">
-          <Plus size={13} /> Create
-        </span>
+      <div className="field snap-section">
+        <div className="snap-body">
+          <div className="snap-actions">
+            <span className="btn btn-sm"><Save size={13} strokeWidth={2} /> Save current</span>
+            <span className="btn btn-sm"><ClipboardPaste size={13} /> Paste snapshot</span>
+          </div>
+          <div className="snap-list">
+            <div className="snap-item"><SnapshotRow name="Release week" meta="3 sessions · Nov 6" /></div>
+            <div className="snap-item"><SnapshotRow name="Auto-saved" meta="Auto · 4 sessions · Nov 8, 16:40" /></div>
+          </div>
+        </div>
       </div>
     </div>
   </Panel>
 );
 
-interface Sec {
-  id: string;
+const RestoreDemo = () => (
+  <Panel caption="Snapshots · Restore preview">
+    <div className="menu-body">
+      <div className="snap-list">
+        <div className="snap-item">
+          <SnapshotRow name="Release week" meta="3 sessions · Nov 6" on />
+          <div className="snap-preview">
+            {[
+              { name: "api", status: "start", label: "Will start", can: true },
+              { name: "web", status: "resume", label: "Agent restarts", can: true },
+              { name: "logs", status: "running", label: "Running", can: false },
+            ].map((entry) => (
+              <label key={entry.name} className={`snap-preview-row ${entry.can ? "" : "is-off"}`}>
+                <input type="checkbox" defaultChecked={entry.can} disabled={!entry.can} tabIndex={-1} />
+                <span className="snap-preview-name">{entry.name}</span>
+                <span className={`snap-preview-status is-${entry.status}`}>{entry.label}</span>
+              </label>
+            ))}
+            <label className="snap-preview-option">
+              <input type="checkbox" defaultChecked tabIndex={-1} />
+              Continue agent conversations
+            </label>
+            <div className="snap-preview-actions">
+              <span className="btn btn-sm">Cancel</span>
+              <span className="btn btn-sm"><RotateCcw size={13} /> Restore 2</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </Panel>
+);
+
+const SetupDemo = () => (
+  <Panel caption="First launch · What PzzaCode runs on" wide>
+    <div className="tour-stack">
+      <ul className="tour-list">
+        {[
+          { Icon: Hexagon, label: "Node.js", detail: "v22.11.0", pill: "ok", text: "Ready" },
+          { Icon: SquareTerminal, label: "tmux", detail: "Keeps terminals running after you quit", pill: "busy", text: "Installing" },
+        ].map(({ Icon, label, detail, pill, text }) => (
+          <li key={label} className="tour-row">
+            <span className="tour-row-icon"><Icon size={15} strokeWidth={1.9} /></span>
+            <div className="tour-row-copy">
+              <span className="tour-row-label">{label}</span>
+              <span className="tour-row-detail">{detail}</span>
+            </div>
+            <div className="tour-row-side">
+              <span className={`tour-pill tour-pill-${pill}`}>{pill === "busy" ? <Loader2 size={11} className="sw-spin" /> : null}{text}</span>
+            </div>
+          </li>
+        ))}
+      </ul>
+      <section className="tour-group">
+        <div className="tour-group-head">
+          <span className="tour-group-title">Coding agents</span>
+          <span className="tour-group-meta">optional</span>
+        </div>
+        <div className="tour-chips">
+          {[{ name: "Claude Code", found: true }, { name: "Codex", found: true }, { name: "OpenCode", found: false }].map((agent) => (
+            <span key={agent.name} className={`tour-chip ${agent.found ? "is-found" : ""}`}>
+              {agent.found ? <Check size={11} /> : null}{agent.name}
+              <span className="tour-chip-state">{agent.found ? "found" : "not found"}</span>
+            </span>
+          ))}
+        </div>
+      </section>
+    </div>
+  </Panel>
+);
+
+// Settings → Setup, one row per group with its state.
+const SetupGroupsDemo = () => (
+  <Panel caption="Settings · Setup" wide>
+    <div className="setup-settings-groups">
+      {[
+        { Icon: ShieldCheck, title: "PzzaCode permissions", state: "5 of 5 allowed", tone: "ok" },
+        { Icon: ShieldCheck, title: "tmux permissions", state: "2 of 3 allowed", tone: "action" },
+        { Icon: Package, title: "Tools PzzaCode runs on", state: "Installed", tone: "ok" },
+      ].map(({ Icon, title, state, tone }) => (
+        <section key={title} className="setup-settings-group">
+          <span className="setup-settings-head">
+            <Icon size={15} className="setup-settings-icon" aria-hidden="true" />
+            <span className="setup-settings-title">{title}</span>
+            <span className={`setup-settings-state is-${tone}`}>{state}</span>
+            <ChevronRight size={14} className="setup-settings-chevron" aria-hidden="true" />
+          </span>
+        </section>
+      ))}
+    </div>
+  </Panel>
+);
+
+const BroadcastDemo = () => (
+  <div className="doc-demo doc-stack">
+    <TileHeadDemo title="api" shortcut={1} selected actions={false} />
+    <TileHeadDemo title="web" shortcut={2} selected actions={false} />
+    <div className="broadcast-bar doc-broadcast">
+      <Radio size={14} className="broadcast-icon" />
+      <span className="broadcast-targets">api, web</span>
+      <span className="broadcast-input doc-broadcast-input">git pull --rebase</span>
+      <span className="tile-btn"><MessageSquareText size={14} /></span>
+      <span className="btn btn-sm broadcast-send"><Send size={13} />Send</span>
+      <span className="tile-btn"><X size={14} /></span>
+    </div>
+  </div>
+);
+
+const CodeBarDemo = () => (
+  <div className="doc-demo">
+    <div className="tile-code-bar doc-codebar">
+      <TB icon={PanelLeft} on />
+      <div className="code-file-tab">
+        <span className="tile-code-name">server.ts</span>
+        <span className="code-dirty" />
+        <span className="tile-btn code-file-tab-save"><Save size={12} /></span>
+        <span className="tile-btn code-file-tab-close"><X size={12} /></span>
+      </div>
+      <div className="tile-head-spacer" />
+      <TB icon={Columns2} />
+      <TB icon={Maximize2} />
+      <TB icon={X} />
+    </div>
+  </div>
+);
+
+const WorkspaceTabsDemo = () => (
+  <div className="doc-demo">
+    <div className="doc-tabs">
+      <span className="ws-tab">
+        <span className="ws-tab-icon-anchor"><LayoutGrid size={13} className="ws-tab-icon" /></span>
+        <span className="ws-tab-name">All</span>
+        <kbd className="kbd ws-kbd">{altBadge(0)}</kbd>
+      </span>
+      <span className="ws-tab ws-tab-active">
+        <span className="ws-tab-icon-anchor"><Layers size={13} className="ws-tab-icon" style={{ color: "#7aa2f7" }} /></span>
+        <span className="ws-tab-name">Main</span>
+        <kbd className="kbd ws-kbd">{altBadge(1)}</kbd>
+      </span>
+      <span className="ws-tab">
+        <span className="ws-tab-icon-anchor">
+          <Rocket size={13} className="ws-tab-icon" style={{ color: "#e0a33e" }} />
+          <span className="corner-badge ws-tab-count">2</span>
+        </span>
+        <span className="ws-tab-name">Release</span>
+        <kbd className="kbd ws-kbd">{altBadge(2)}</kbd>
+      </span>
+      <span className="ws-tab-add-demo">+</span>
+    </div>
+  </div>
+);
+
+// Four tiles at a given gap, to compare spacing values at a glance.
+const MiniGrid = ({ gap }: { gap: number }) => (
+  <span className={`doc-minigrid ${gap === 0 ? "is-joined" : ""}`} style={{ gap, padding: gap }}>
+    {[0, 1, 2, 3].map((tile) => <span key={tile} />)}
+  </span>
+);
+
+// The command palette with a query typed, built from its own classes.
+const PaletteRow = ({ icon: Icon, label, detail, shortcut, active }: { icon: LucideIcon; label: string; detail?: string; shortcut?: string; active?: boolean }) => (
+  <div className={`cmdk-row ${active ? "cmdk-row-active" : ""}`}>
+    <Icon size={15} className="cmdk-row-icon" />
+    <span className="cmdk-row-label">{label}</span>
+    <span className="cmdk-row-detail">{detail}</span>
+    {shortcut ? <kbd className="kbd">{shortcut}</kbd> : null}
+  </div>
+);
+
+const PaletteDemo = () => (
+  <div className="doc-demo doc-dialog-demo">
+    <div className="cmdk">
+      <div className="cmdk-search">
+        <Search size={16} strokeWidth={1.9} aria-hidden="true" />
+        <span className="cmdk-input">work</span>
+        <kbd className="kbd">{COMMAND_PALETTE_SHORTCUT.label}</kbd>
+      </div>
+      <div className="cmdk-list">
+        <div className="cmdk-group">
+          <div className="cmdk-group-title">Workspaces</div>
+          <PaletteRow icon={Rocket} label="Release" detail="2 sessions" shortcut={altBadge(2)} active />
+        </div>
+        <div className="cmdk-group">
+          <div className="cmdk-group-title">Actions</div>
+          <PaletteRow icon={Plus} label="New workspace" shortcut={NEW_WORKSPACE_SHORTCUT.label} />
+        </div>
+        <div className="cmdk-group">
+          <div className="cmdk-group-title">Help</div>
+          <PaletteRow icon={FolderGit2} label="Worktrees" detail="Git & review" />
+        </div>
+      </div>
+    </div>
+  </div>
+);
+
+const SearchDemo = () => (
+  <div className="doc-demo doc-dialog-demo">
+    <div className="cmdk term-search">
+      <div className="cmdk-search">
+        <TextSearch size={16} strokeWidth={1.9} aria-hidden="true" />
+        <span className="cmdk-input">ECONNREFUSED</span>
+        <span className="tile-btn"><Regex size={14} aria-hidden="true" /></span>
+        <kbd className="kbd">{SEARCH_TERMINALS_SHORTCUT.label}</kbd>
+      </div>
+      <div className="cmdk-list term-search-list">
+        {[
+          { tile: "api", line: 214, before: "> node server.js", text: "Error: connect ECONNREFUSED 127.0.0.1:5432", active: true },
+          { tile: "worker", line: 88, before: "retrying queue connection", text: "redis ECONNREFUSED 127.0.0.1:6379", active: false },
+        ].map((match) => (
+          <div className="cmdk-group" key={match.tile}>
+            <div className="cmdk-group-title term-search-group"><span>{match.tile}</span><span>1</span></div>
+            <div className={`cmdk-row term-search-row ${match.active ? "cmdk-row-active" : ""}`}>
+              <span className="term-search-number">{match.line}</span>
+              <span className="term-search-context">
+                <span className="term-search-near">{match.before}</span>
+                <span className="term-search-line">{match.text.slice(0, match.text.indexOf("ECONNREFUSED"))}<mark>ECONNREFUSED</mark>{match.text.slice(match.text.indexOf("ECONNREFUSED") + 12)}</span>
+              </span>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  </div>
+);
+
+// A terminal with its find bar open.
+const FindDemo = () => (
+  <div className="doc-demo">
+    <div className="doc-tile">
+      <div className="doc-tile-body doc-find-body">
+        <Line><Dim>✓</Dim> 212 tests passed</Line>
+        <Line><Dim>✗</Dim> 1 <span className="doc-term-match">failed</span>: session API › rejects long names</Line>
+        <Line><Dim>›</Dim> Fix the one that <span className="doc-term-match is-active">failed</span></Line>
+        <div className="term-find-bar">
+          <span className="term-find-input">failed</span>
+          <span className="tile-btn"><span className="term-find-aa">Aa</span></span>
+          <span className="tile-btn"><ChevronDown size={13} /></span>
+          <span className="term-find-count">2 / 2</span>
+          <span className="tile-btn"><X size={13} /></span>
+        </div>
+      </div>
+    </div>
+  </div>
+);
+
+// The editor's sidebar on Changes next to one file's diff.
+const ChangesDemo = () => (
+  <div className="doc-demo doc-changes">
+    <div className="doc-changes-side">
+      <div className="code-changes-switch">
+        <span className="code-changes-tab"><FolderTree size={13} aria-hidden="true" /><span className="code-changes-label">Files</span></span>
+        <span className="code-changes-tab on"><GitCompareArrows size={13} aria-hidden="true" /><span className="code-changes-label">Changes</span><span className="code-changes-count">3</span></span>
+      </div>
+      <div className="code-changes-list">
+        {[
+          { status: "modified", letter: "M", name: "server.ts", dir: "src", on: true },
+          { status: "untracked", letter: "U", name: "limits.ts", dir: "src" },
+          { status: "deleted", letter: "D", name: "old-api.md", dir: "docs" },
+        ].map((file) => (
+          <span key={file.name} className={`ft-row code-changes-row ${file.on ? "on" : ""}`}>
+            <span className={`code-changes-status code-changes-status-${file.status}`}>{file.letter}</span>
+            <span className="ft-name"><span className="code-changes-name">{file.name}</span><span className="code-changes-dir">{file.dir}</span></span>
+          </span>
+        ))}
+      </div>
+    </div>
+    <div className="doc-changes-main">
+      <div className="code-diff-bar">
+        <span className="code-diff-legend"><span className="code-diff-legend-del">− removed</span><span className="code-diff-legend-add">+ added</span></span>
+        <span className="code-diff-mode">
+          <span className="on"><Rows2 size={12} aria-hidden="true" /><span className="code-diff-mode-label">Unified</span></span>
+          <span><Columns2 size={12} aria-hidden="true" /><span className="code-diff-mode-label">Split</span></span>
+        </span>
+      </div>
+      <div className="doc-tile-body">
+        <Line><Dim>  </Dim>if (name.length &gt; MAX) {"{"}</Line>
+        <Line><span className="doc-diff-del">−   throw new Error("long");</span></Line>
+        <Line><span className="doc-diff-add">+   return reject(res, 400);</span></Line>
+        <Line><Dim>  </Dim>{"}"}</Line>
+      </div>
+    </div>
+  </div>
+);
+
+// A diff with lines selected, the question box open and a pending review.
+const ReviewDemo = () => (
+  <div className="doc-demo">
+    <div className="code-diff code-diff-unified doc-review">
+      <div className="code-diff-bar">
+        <span className="code-diff-legend"><span className="code-diff-legend-del">− removed</span><span className="code-diff-legend-add">+ added</span></span>
+        <span className="btn btn-sm code-diff-ask-btn"><MessageSquare size={12} aria-hidden="true" />Ask agent</span>
+        <span className="btn btn-sm code-diff-ask-btn"><MessageSquarePlus size={12} aria-hidden="true" />Add comment</span>
+        <span className="code-diff-review">
+          <span className="code-diff-review-count">2 comments</span>
+          <span className="code-diff-review-dot">·</span>
+          <span className="btn btn-sm code-diff-ask-btn"><Send size={12} aria-hidden="true" />Send review</span>
+        </span>
+      </div>
+      <div className="code-diff-ask">
+        <span className="code-diff-ask-target">lines 14-15</span>
+        <span className="doc-review-input">Why return 400 instead of 422 here?</span>
+      </div>
+      <div className="doc-tile-body">
+        <Line><span className="doc-diff-add doc-diff-picked">+   if (name.length &gt; MAX)</span></Line>
+        <Line><span className="doc-diff-add doc-diff-picked">+     return reject(res, 400);</span></Line>
+      </div>
+    </div>
+  </div>
+);
+
+// Workspace settings → Worktrees with one merged and one open worktree.
+const WorktreesDemo = () => (
+  <Panel caption="Workspace settings · Worktrees" wide>
+    <div className="menu-body">
+      <div className="field snap-section">
+        <div className="snap-body">
+          <div className="snap-actions"><span className="btn btn-sm"><Trash2 size={13} /> Clean up 1 merged</span></div>
+          <div className="snap-list">
+            <span className="wt-setup-head"><ChevronRight size={12} className="snap-chevron" aria-hidden="true" />Setup for new worktrees</span>
+            {[
+              { branch: "pzza/fix-login", meta: "Squash-merged into main · ~/api.worktrees/fix-login", merged: true },
+              { branch: "pzza/api-tests", meta: "Not merged · ~/api.worktrees/api-tests", merged: false },
+            ].map((worktree) => (
+              <div key={worktree.branch} className="snap-row">
+                <div className="snap-row-copy">
+                  <span className="snap-name wt-branch">{worktree.branch}</span>
+                  <span className="snap-meta"><span className={worktree.merged ? "wt-merged" : undefined}>{worktree.meta}</span></span>
+                </div>
+                <span className="snap-icon"><GitPullRequestCreateArrow size={14} /></span>
+                <span className="snap-icon"><GitMerge size={14} /></span>
+                <span className="snap-icon"><Trash2 size={14} /></span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  </Panel>
+);
+
+const QuickChatDemo = () => (
+  <Panel caption="Top bar · Quick Chat" wide>
+    <div className="doc-quickchat">
+      <div className="quick-chat-header">
+        <div><strong>Quick Chat</strong><span className="muted">This Mac · Claude</span></div>
+        <div className="quick-chat-actions"><span className="icon-btn"><X size={15} /></span></div>
+      </div>
+      <div className="doc-tile-body">
+        <Line><Dim>›</Dim> What does git rebase --onto do?</Line>
+        <Line><Dim>⏺</Dim> It replays a range of commits onto a new base…</Line>
+      </div>
+      <div className="quick-chat-footer"><span className="muted">Connected. Hiding keeps your chat running.</span></div>
+    </div>
+  </Panel>
+);
+
+const SyncDemo = () => (
+  <Panel caption="Settings · Sync · Repositories" wide>
+    <div className="settings-page">
+      {[
+        { name: "api", detail: "This Mac, Devbox · development", on: true },
+        { name: "web", detail: "This Mac, Devbox · main", on: true },
+        { name: "notes", detail: "This Mac", on: false },
+      ].map((repo) => (
+        <div key={repo.name} className="settings-row">
+          <div className="settings-row-copy"><span>{repo.name}</span><small>{repo.detail}</small></div>
+          <Switch on={repo.on} small />
+        </div>
+      ))}
+    </div>
+  </Panel>
+);
+
+const LanguagesDemo = () => (
+  <Panel caption="Settings · General · Dictation" wide>
+    <div className="settings-page">
+      <div className="settings-row"><div className="settings-row-copy"><span>Recognition language</span></div><Pick label="Auto-detect" /></div>
+      <div className="settings-row"><div className="settings-row-copy"><span>My languages</span><small>English (main), Turkish</small></div></div>
+      <div className="settings-row"><div className="settings-row-copy"><span>Microphone input</span></div><Pick label="MacBook Pro Microphone" /></div>
+    </div>
+  </Panel>
+);
+
+const CostDemo = () => (
+  <div className="doc-demo doc-stack">
+    <div className="doc-tile">
+      <TileStripDemo cost="$1.24 · 38m" />
+    </div>
+    <div className="doc-hovercard">
+      <span>Claude Code session, matched by folder and start time (best effort)</span>
+      <span>Running 38m since 16:02</span>
+      <span>Estimated $1.24 at standard API prices</span>
+      <span>Input 1.2M · Output 48K · Cache read 9.1M · Cache write 310K</span>
+    </div>
+  </div>
+);
+
+const MODE_ICONS: Record<string, LucideIcon> = { default: ShieldCheck, acceptEdits: FilePen, plan: ListChecks, auto: Sparkles, readOnly: Eye, bypass: ShieldOff };
+const AGENT_ICONS = { claude: ClaudeIcon, codex: CodexIcon, opencode: OpenCodeIcon } as const;
+
+// Each agent's permission modes, read from the same catalog the form uses.
+const AgentModes = () => (
+  <table className="doc-keys doc-modes">
+    <tbody>
+      {SESSION_AGENTS.map((agent) => {
+        const Icon = AGENT_ICONS[agent.id];
+        return agent.modes.map((mode, index) => {
+          const ModeIcon = MODE_ICONS[mode.id] ?? ShieldCheck;
+          return (
+            <tr key={`${agent.id}-${mode.id}`}>
+              <td>{index === 0 ? <span className="doc-inline"><Icon size={13} /> {agent.label}</span> : null}</td>
+              <td className={mode.id === "bypass" ? "doc-danger" : ""}><span className="doc-inline"><ModeIcon size={12} /> {mode.label}</span></td>
+              <td>{mode.description}</td>
+            </tr>
+          );
+        });
+      })}
+    </tbody>
+  </table>
+);
+
+
+// --- the catalog -------------------------------------------------------------
+
+export const HELP_SECTIONS = [
+  { id: "getting-started", label: "Getting started", icon: Rocket, topics: ["start", "setup", "permissions", "topbar", "new-session", "agents", "palette", "settings"] },
+  { id: "workspace", label: "Workspace", icon: LayoutGrid, topics: ["tiles", "controls", "focus", "layout", "spacing", "workspaces", "snapshots", "restore", "broadcast"] },
+  { id: "git", label: "Git & review", icon: GitBranch, topics: ["git", "ci", "shared-branch", "worktrees", "land", "changes", "review"] },
+  { id: "terminal", label: "Terminal & editor", icon: SquareTerminal, topics: ["links", "paths", "paste", "drop", "find", "search", "prompts", "code"] },
+  { id: "agents", label: "Agents & activity", icon: Bot, topics: ["quick-chat", "agent-tools", "notifications", "usage", "cost", "multiaccount"] },
+  { id: "voice", label: "Voice dictation", icon: Mic, topics: ["dictation", "languages"] },
+  { id: "connections", label: "Connections", icon: Blocks, topics: ["devices", "sync", "ports", "rdp", "mcp"] },
+  { id: "tips", label: "Shortcuts & tips", icon: Lightbulb, topics: ["shortcuts", "terminal-keys", "tips"] },
+] as const;
+export type HelpTopic = typeof HELP_SECTIONS[number]["topics"][number];
+export type HelpSection = typeof HELP_SECTIONS[number]["id"];
+export interface HelpRequest { topic: string; serial: number }
+
+// Every page in reading order, for previous / next.
+const HELP_ORDER: readonly HelpTopic[] = HELP_SECTIONS.flatMap((section): readonly HelpTopic[] => section.topics);
+export const isHelpTopic = (value: string): value is HelpTopic => HELP_ORDER.some((topic) => topic === value);
+const sectionOf = (topic: HelpTopic) => HELP_SECTIONS.find((section) => section.topics.some((id) => id === topic)) ?? HELP_SECTIONS[0];
+
+// One focused page: what you can do and why (blurb), a demo, the steps and
+// details, then a couple of tips.
+interface HelpPage {
   label: string;
   blurb: string;
   icon: LucideIcon;
+  demo: ReactNode;
   body: ReactNode;
-}
-interface Group {
-  title: string;
-  sections: Sec[];
+  tips?: ReactNode[];
 }
 
-export const HELP_SECTIONS = [
-  { id: "getting-started", label: "Getting started", icon: Rocket, topics: ["start", "topbar", "agent-tools"] },
-  { id: "workspace", label: "Workspace", icon: LayoutGrid, topics: ["tiles", "controls", "focus", "workspaces", "layout", "code", "shortcuts"] },
-  { id: "agents", label: "Agents", icon: Bot, topics: ["usage", "multiaccount", "paste"] },
-  { id: "connections", label: "Connections", icon: Blocks, topics: ["devices", "ports", "rdp", "mcp"] },
-  { id: "tips", label: "Tips", icon: Lightbulb, topics: ["tips"] },
-] as const;
-export interface HelpRequest { topic: string; serial: number }
-export type HelpSection = typeof HELP_SECTIONS[number]["id"];
-
-export function HelpModal({ open, onClose }: { open: boolean; onClose: () => void }) {
-  const [section, setSection] = useState<HelpSection>("getting-started");
-  return <Modal open={open} onClose={onClose} title="Help & docs" icon={CircleQuestionMark} size="xl">
-    <nav className="help-topics" aria-label="Help topics">{HELP_SECTIONS.map((entry) => <button type="button" key={entry.id} className={section === entry.id ? "active" : ""} onClick={() => setSection(entry.id)}>{entry.label}</button>)}</nav>
-    <HelpContent section={section} />
-  </Modal>;
-}
-
-export function HelpContent({ section, request }: { section: HelpSection; request?: HelpRequest }) {
-  const content = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (!request) return;
-    const target = content.current?.querySelector<HTMLElement>(`[data-help-topic="${request.topic}"]`);
-    if (target) {
-      target.scrollIntoView({ block: "start", behavior: "instant" });
-      target.querySelector<HTMLElement>(".help-article-head")?.focus();
-    }
-  }, [section, request]);
-  const groups: Group[] = [
-    {
-      title: "Basics",
-      sections: [
-        {
-          id: "start",
-          label: "Overview",
-          blurb: "What PzzaCode is and how to open your first session",
-          icon: Rocket,
-          body: (
-            <>
-              <NewSessionDemo />
-              <H>Get started in a minute</H>
-              <Steps>
-                <Step>
-                  Hit <IB icon={Plus} /> <b>New session</b> in the top bar and give it a name.
-                </Step>
-                <Step>Pick the device and workspace - and an account, if you keep several.</Step>
-                <Step>
-                  Drive everything from the grid; hop between tiles with{" "}
-                  <Kbd>{ctrlBadge(1)}</Kbd>–<Kbd>{ctrlBadge(9)}</Kbd>.
-                </Step>
-                <Step>Quit whenever - your sessions keep running on their devices.</Step>
-              </Steps>
-              <H>One grid for every terminal</H>
-              <P>
-                Each tile is a live terminal: a plain shell, or a coding agent like{" "}
-                <b>Claude Code</b>, <b>Codex</b> or <b>OpenCode</b>. No more hunting through
-                tmux windows or terminal tabs - everything you run is visible on one screen,
-                on every device you added.
-              </P>
-              <H>Closing changes nothing</H>
-              <P>
-                Tiles are backed by real <b>tmux</b> sessions on the device, not by the app
-                window. Closing PzzaCode - or losing the connection - only detaches your
-                view. Reopen and every agent is exactly where you left it.
-              </P>
-              <Tip>
-                New here? Open your first session from the top bar, then take the{" "}
-                <b>guided tour</b> below - it walks every control in place.
-              </Tip>
-            </>
-          ),
-        },
-        {
-          id: "topbar",
-          label: "The top bar",
-          blurb: "Every button above the grid, left to right",
-          icon: LayoutGrid,
-          body: (
-            <>
-              <Hero caption="Top bar · tools (right side)">
-                <span className="doc-hero-cluster">
-                  <IB icon={LayoutGrid} />
-                  <IB icon={MessageSquare} />
-                  <IB icon={FolderSync} />
-                  <IB icon={Monitor} />
-                  <IB icon={EthernetPort} />
-                  <IB icon={Gauge} />
-                  <IB icon={Bell} />
-                  <IB icon={SettingsIcon} />
-                  <IB icon={Plus} />
-                </span>
-              </Hero>
-              <H>Left to right</H>
-              <P>
-                Your <b>brand</b> and version sit on the left, <b>workspace tabs</b> in the
-                middle, and the tools on the right:
-              </P>
-              <Row ui={<IB icon={LayoutGrid} />} name="Layout">
-                Grid columns for the <i>active</i> workspace - each workspace keeps its own.
-              </Row>
-              <Row ui={<IB icon={MessageSquare} />} name="Quick Chat">
-                A dropdown chat with your saved agent (Claude, Codex or OpenCode) - it keeps
-                running while hidden.
-              </Row>
-              <Row ui={<IB icon={FolderSync} />} name="Sync">
-                Review and confirm the sync before it starts. A small indicator shows
-                progress, and you can cancel without discarding local changes.
-              </Row>
-              <Row ui={<IB icon={Monitor} />} name="Remote desktop">
-                The device's Linux desktop over an SSH-tunneled RDP session.
-              </Row>
-              <Row ui={<IB icon={EthernetPort} />} name="Port manager">
-                Forwarded ports plus this device's listeners, each with Open and Stop.
-              </Row>
-              <Row ui={<IB icon={Gauge} />} name="Agent usage">
-                Live Claude / Codex / OpenCode usage and estimated spend.
-              </Row>
-              <Row ui={<IB icon={Bell} />} name="Notifications">
-                Recent activity, beside Settings in the toolbar.
-              </Row>
-              <Row ui={<IB icon={SettingsIcon} />} name="Settings">
-                Preferences, devices, sync, connections, Quick Chat and help.
-              </Row>
-              <Row ui={<IB icon={Plus} />} name="New session">
-                A new terminal - pick the device, workspace and optionally the account.
-              </Row>
-            </>
-          ),
-        },
-        {
-          id: "agent-tools",
-          label: "Agent tools",
-          blurb: "Quick Chat and the agent MCP tools",
-          icon: Sparkles,
-          body: <>
-            <H>Quick Chat</H>
-            <P>Open <b>Quick Chat</b> in the top bar to chat in a dropdown. It opens your saved agent (Claude, Codex or OpenCode) immediately. Choose the agent and device for the next app launch in <b>Settings → Quick Chat</b>.</P>
-            <P>Click outside or use <b>Hide chat</b> to dismiss the dropdown while the chat keeps running. Your chat is prepared at app startup and remains available until the app closes.</P>
-          </>,
-        },
-      ],
-    },
-    {
-      title: "Windows",
-      sections: [
-        {
-          id: "tiles",
-          label: "Sessions & tiles",
-          blurb: "Anatomy of a tile header",
-          icon: SquareTerminal,
-          body: (
-            <>
-              <H>Anatomy of a tile</H>
-              <P>Every tile carries this header. Here is what each part means:</P>
-              <div className="doc-demo">
-                <TileHeadDemo />
-              </div>
-              <Row
-                ui={
-                  <span className="doc-dots">
-                    <span className="stat stat-idle" />
-                    <span className="stat stat-notify" />
-                    <span className="stat stat-failed" />
-                  </span>
-                }
-                name="Status dot"
-              >
-                Grey = idle, solid green = unread notification for this tile, red = the process exited. Clicking the tile marks its notifications read.
-              </Row>
-              <Row
-                ui={
-                  <span className="tile-icon" style={{ color: "#D97757" }}>
-                    <Sparkles size={14} />
-                  </span>
-                }
-                name="Type icon"
-              >
-                Colored by what's running - Claude, Codex, OpenCode, Docker, a shell, and so on.
-              </Row>
-              <Row ui={<kbd className="kbd tile-kbd">{ctrlBadge(1)}</kbd>} name="Shortcut badge">
-                The key that activates this tile (see Keyboard shortcuts).
-              </Row>
-              <Row
-                ui={
-                  <span className="tile-title" style={{ cursor: "text" }}>
-                    Claude
-                  </span>
-                }
-                name="Title"
-              >
-                Click it to rename inline. The name is yours - it never touches the underlying tmux
-                session.
-              </Row>
-              <Row ui={<span className="tile-device">Devbox</span>} name="Device & path">
-                Which device the session runs on, and its current folder (the folder end stays
-                visible when space is tight).
-              </Row>
-              <Note>
-                Sessions are shared with your real tmux server, so a tab you opened in your
-                terminal shows up here too, and vice versa.
-              </Note>
-            </>
-          ),
-        },
-        {
-          id: "controls",
-          label: "Tile controls",
-          blurb: "Duplicate, focus, layout, maximize, hide, terminate",
-          icon: Boxes,
-          body: (
-            <>
-              <Hero caption="Tile actions · top-right of every tile">
-                <span className="tile-actions">
-                  <TB icon={LayoutGrid} />
-                  <TB icon={Mic} />
-                  <TB icon={Focus} />
-                  <TB icon={FileCode} />
-                  <TB icon={FolderInput} />
-                  <TB icon={Copy} />
-                  <TB icon={Maximize2} />
-                  <TB icon={EyeOff} />
-                  <span className="tile-btn tile-btn-danger">
-                    <X size={14} />
-                  </span>
-                </span>
-              </Hero>
-              <H>The buttons on each tile</H>
-              <Row ui={<TB icon={Mic} />} name="Dictation">
-                Dictate speech into the tile through the microphone.
-              </Row>
-              <Row ui={<TB icon={FileCode} />} name="Code editor">
-                Open the built-in editor beside the terminal (see Code editor below).
-              </Row>
-              <Row ui={<TB icon={FolderInput} />} name="Move to workspace">
-                Move the tile's session to another workspace.
-              </Row>
-              <Row ui={<TB icon={Copy} />} name="Duplicate session">
-                Opens a fresh terminal in the same folder, device, and workspace. The original
-                keeps running; running programs and terminal history are not copied.
-              </Row>
-              <Row ui={<TB icon={Focus} />} name="Focus">
-                Spotlights this tile and dims every other one, corner accents and all. Click any
-                dimmed tile to exit.
-              </Row>
-              <Row ui={<TB icon={LayoutGrid} />} name="Tile layout">
-                Make this tile wide, tall, or big (2×2) within the grid - or leave it on
-                Auto to share the row evenly with the others.
-              </Row>
-              <Row ui={<TB icon={Maximize2} />} name="Maximize">
-                Blow the tile up to fill the canvas; the same button restores it.
-              </Row>
-              <Row ui={<TB icon={EyeOff} />} name="Hide">
-                Hide the tile without stopping it. Bring it back from the workspace's Sessions list
-                with <Eye size={12} style={{ verticalAlign: "-2px" }} />.
-              </Row>
-              <Row
-                ui={
-                  <span className="tile-btn tile-btn-danger">
-                    <X size={14} />
-                  </span>
-                }
-                name="Terminate"
-              >
-                Ends the session and everything running in it. To keep it running but out of sight, use Hide instead.
-              </Row>
-              <Note>
-                <b>Terminate</b> cannot be undone - the session and everything in it is stopped.
-              </Note>
-            </>
-          ),
-        },
-        {
-          id: "focus",
-          label: "Focus & attention",
-          blurb: "Spotlight one tile, dim the rest",
-          icon: Focus,
-          body: (
-            <>
-              <Hero caption="Focus · dims every other tile">
-                <span className="tile-actions">
-                  <TB icon={Focus} on />
-                </span>
-              </Hero>
-              <H>Keeping your eyes on the right tile</H>
-              <P>
-                Click a tile to make it <b>active</b> - the rest get a light grey wash so the
-                one you're working in stands out. Only the active tile scrolls or takes
-                keystrokes, so the background agents never steal your scroll or type in the
-                wrong place.
-              </P>
-              <Row ui={<TB icon={Focus} on />} name="Focus (spotlight)">
-                Reduce other tiles’ opacity and apply a colored overlay. Great when one session needs your full attention.
-              </Row>
-              <Tip>
-                Activating a tile with the keyboard (<Kbd>{ctrlBadge(1)}</Kbd>–
-                <Kbd>{ctrlBadge(9)}</Kbd>) also scrolls it to the center of the screen.
-              </Tip>
-            </>
-          ),
-        },
-        {
-          id: "workspaces",
-          label: "Workspaces",
-          blurb: "Group sessions into tabbed contexts",
-          icon: Layers,
-          body: (
-            <>
-              <H>Grouping your sessions</H>
-              <div className="doc-demo">
-                <div className="doc-tabs">
-                  <span className="ws-tab ws-tab-active">
-                    <LayoutGrid size={13} /> All <kbd className="kbd">{altBadge(0)}</kbd>
-                  </span>
-                  <span className="ws-tab">
-                    <Layers size={13} style={{ color: "#7aa2f7" }} /> Main{" "}
-                    <kbd className="kbd">{altBadge(1)}</kbd>
-                  </span>
-                </div>
-              </div>
-              <P>
-                Browser-style tabs group your sessions into contexts - one project per workspace,
-                say. <b>All</b> shows every workspace's tiles at once.
-              </P>
-              <H>How to</H>
-              <Steps>
-                <Step>
-                  Hit <span className="ws-tab-add-demo">+</span> to add a workspace - name it, pick an
-                  icon and a color.
-                </Step>
-                <Step>Click a session's header and drag it onto a tab to move it there.</Step>
-                <Step>
-                  Click the <i>active</i> tab to rename it or show/hide its sessions.
-                </Step>
-                <Step>
-                  Jump between workspaces with <Kbd>{altBadge(0)}</Kbd>–<Kbd>{altBadge(9)}</Kbd>.
-                </Step>
-              </Steps>
-              <Row ui={<span className="ws-tab-add-demo">+</span>} name="Add a workspace">
-                Give it a name, an icon and a color from the searchable icon picker.
-              </Row>
-              <Row
-                ui={
-                  <span className="tile-icon">
-                    <SettingsIcon size={14} />
-                  </span>
-                }
-                name="Workspace settings"
-              >
-                Click the <i>active</i> tab to rename it, change its icon / color, and show or hide
-                each of its sessions.
-              </Row>
-              <Row ui={<MousePointerClick size={15} className="muted-icon" />} name="Move a session">
-                Drag a tile's header onto a tab to move it to that workspace (with a confirm).
-              </Row>
-              <Note>
-                Grid columns are stored per workspace, so Main can be 3 columns while another is 2.
-              </Note>
-            </>
-          ),
-        },
-        {
-          id: "layout",
-          label: "Layout & grid",
-          blurb: "Columns, auto-sizing and per-tile spans",
-          icon: LayoutGrid,
-          body: (
-            <>
-              <LayoutDemo />
-              <H>How to</H>
-              <Steps>
-                <Step>Switch to the workspace you want to resize.</Step>
-                <Step>
-                  Open <IB icon={LayoutGrid} /> <b>Layout</b> from the top bar.
-                </Step>
-                <Step>
-                  Pick <b>2</b>, <b>3</b> or <b>4</b> columns - it's remembered per workspace.
-                </Step>
-                <Step>
-                  For one tile, use its <TB icon={LayoutGrid} /> button to make it wide, tall or big.
-                </Step>
-              </Steps>
-              <H>Sizing the grid</H>
-              <P>
-                <IB icon={LayoutGrid} /> in the top bar sets 2, 3 or 4 columns for the active
-                workspace. Every tile stays mounted when you switch workspaces or resize, so
-                terminals never re-attach or garble.
-              </P>
-              <Row ui={<TB icon={LayoutGrid} />} name="Per-tile size">
-                The tile-layout button makes one tile wide, tall, or big within the grid - or
-                Auto, which shares the row evenly with the others.
-              </Row>
-              <Row ui={<TB icon={Maximize2} />} name="Maximize">
-                Fill the whole canvas with one tile, then restore it.
-              </Row>
-              <Tip>
-                A workspace with a single tile fills the whole row on its own - no layout
-                fiddling needed.
-              </Tip>
-            </>
-          ),
-        },
-        {
-          id: "code",
-          label: "Code editor",
-          blurb: "Built-in editor with go-to-definition",
-          icon: FileCode,
-          body: (
-            <>
-              <H>How to</H>
-              <Steps>
-                <Step>
-                  Click a tile's <TB icon={FileCode} /> button to open its editor beside the
-                  terminal (side-by-side by default).
-                </Step>
-                <Step>
-                  Pick a folder, then a file from the tree. <Kbd>{CMD} S</Kbd> saves; unsaved
-                  changes guard closing.
-                </Step>
-                <Step>
-                  <b>Cmd / Ctrl / Alt+Click</b> a symbol to jump to its definition - across
-                  files through imports, or in the same file.
-                </Step>
-                <Step>
-                  Switch Full, Side by side or Stacked from the editor's own layout menu.
-                </Step>
-              </Steps>
-              <H>Built-in editor</H>
-              <P>
-                Every tile carries a lightweight code editor rooted at the terminal's live
-                folder, with its own file tree. It edits over the same connection as the
-                terminal, so remote files just work.
-              </P>
-              <Row ui={<TB icon={FileCode} />} name="Go to definition">
-                Hold <b>Cmd</b>, <b>Ctrl</b> or <b>Alt</b> and click a symbol: imports resolve
-                to the defining file (following export aliases), other symbols jump within
-                the file. Clicking the module path itself opens that file.
-              </Row>
-            </>
-          ),
-        },
-        {
-          id: "shortcuts",
-          label: "Keyboard shortcuts",
-          blurb: "Every key combo in one table",
-          icon: Keyboard,
-          body: (
-            <>
-              <Hero caption="Activate a tile">
-                <Kbd>{ctrlBadge(1)}</Kbd>
-                <Kbd>{ctrlBadge(2)}</Kbd>
-                <Kbd>{ctrlBadge(3)}</Kbd>
-              </Hero>
-              <H>Shortcuts</H>
-              <table className="doc-keys">
-                <tbody>
-                  <tr><td><Kbd>{NEW_SESSION_SHORTCUT.label}</Kbd></td><td>New session</td></tr>
-                  <tr><td><Kbd>{NEW_WORKSPACE_SHORTCUT.label}</Kbd></td><td>New workspace</td></tr>
-                  <tr>
-                    <td>
-                      <Kbd>{altBadge(0)}</Kbd>
-                    </td>
-                    <td>Switch to the All workspace</td>
-                  </tr>
-                  <tr>
-                    <td>
-                      <Kbd>{altBadge(1)}</Kbd> – <Kbd>{altBadge(9)}</Kbd>
-                    </td>
-                    <td>Switch to the Nth workspace</td>
-                  </tr>
-                  <tr>
-                    <td>
-                      <Kbd>{ctrlBadge(1)}</Kbd> – <Kbd>{ctrlBadge(9)}</Kbd>
-                    </td>
-                    <td>Activate the Nth visible tile (and center it)</td>
-                  </tr>
-                <tr>
-                  <td>
-                    <Kbd>{CMD} V</Kbd>
-                  </td>
-                  <td>Paste an image into the focused terminal</td>
-                </tr>
-                <tr>
-                  <td>
-                    <Kbd>{CMD} + Click</Kbd>
-                  </td>
-                  <td>Go to definition in the code editor (Ctrl or Alt works too)</td>
-                </tr>
-                  <tr>
-                    <td>
-                      <Kbd>Esc</Kbd>
-                    </td>
-                    <td>Close a modal / cancel an inline rename</td>
-                  </tr>
-                </tbody>
-              </table>
-              <Note>On macOS ⌥ is Option and ⌃ is Control; elsewhere they read as Alt and Ctrl.</Note>
-            </>
-          ),
-        },
-      ],
-    },
-    {
-      title: "Agents & devices",
-      sections: [
-        {
-          id: "usage",
-          label: "Agent usage",
-          blurb: "Live quotas, spend and token fixes",
-          icon: Gauge,
-          body: (
-            <>
-              <UsageDemo />
-              <H>How to</H>
-              <Steps>
-                <Step>
-                  Open <IB icon={Gauge} /> <b>Agent usage</b> from the top bar.
-                </Step>
-                <Step>
-                  Read each account's windows - Claude / Codex show <b>5-hour</b> and{" "}
-                  <b>weekly</b> bars, OpenCode shows rolling, weekly, monthly and credits.
-                </Step>
-                <Step>
-                  Toggle <b>Left / Used</b> to switch what the bars measure.
-                </Step>
-                <Step>
-                  Check <b>Spend</b> for today's and the last 30 days' estimated cost.
-                </Step>
-              </Steps>
-              <H>Live usage</H>
-              <P>
-                <IB icon={Gauge} /> shows each Claude / Codex / OpenCode account on the device
-                with its usage windows, reset countdowns and plan - read live from the same
-                usage endpoints the official apps use. Accounts are discovered automatically;
-                nothing is configured by hand. Missing providers are filled in from your other
-                connected devices when they have them.
-              </P>
-              <Row
-                ui={
-                  <span className="usage-seg">
-                    <span className="on">Left</span>
-                    <span>Used</span>
-                  </span>
-                }
-                name="Left / Used"
-              >
-                Toggle whether the bars read how much is <b>left</b> or how much you've <b>used</b>.
-                The color always reflects the risk, so a nearly-spent window is red either way.
-              </Row>
-              <H>Estimated spend</H>
-              <P>
-                Under each account, <b>Spend</b> estimates today's and the last 30 days' cost in
-                USD, computed locally from your Claude / Codex transcripts at published token
-                rates. It's an estimate (marked <i>est.</i>), not a bill.
-              </P>
-              <H>Token trouble?</H>
-              <P>
-                An expired Claude token shows a <b>Run Claude to refresh</b> action that runs
-                the CLI once to refresh it, then reloads usage - the same fix as doing it by
-                hand in a terminal.
-              </P>
-            </>
-          ),
-        },
-        {
-          id: "multiaccount",
-          label: "Multi-account",
-          blurb: "Run sessions under different accounts",
-          icon: UsersRound,
-          body: (
-            <>
-              <NewSessionDemo highlightAccount />
-              <H>How to</H>
-              <Steps>
-                <Step>
-                  Log into each account once in a terminal with its own config dir (e.g.{" "}
-                  <code className="doc-code">CLAUDE_CONFIG_DIR=~/.claude-work claude</code>).
-                </Step>
-                <Step>
-                  Open <IB icon={Plus} /> <b>New session</b>.
-                </Step>
-                <Step>
-                  Pick the <b>Account</b> from the picker.
-                </Step>
-                <Step>
-                  Hit <b>Create</b> - the session launches bound to that account's config.
-                </Step>
-              </Steps>
-              <H>One session, one account</H>
-              <P>
-                A device can hold several Claude or Codex accounts (each is a config directory like{" "}
-                <code className="doc-code">~/.claude</code> or{" "}
-                <code className="doc-code">~/.codex-work</code>). When you open a{" "}
-                <IB icon={Plus} /> new session, an <b>Account</b> picker lets you choose which one
-                it runs under - the session is launched bound to that account's config.
-              </P>
-              <Tip>
-                To add another account, log into it in a terminal with a different config dir (e.g.
-                <code className="doc-code">CLAUDE_CONFIG_DIR=~/.claude-work claude</code>). It then
-                shows up in the picker automatically.
-              </Tip>
-            </>
-          ),
-        },
-        {
-          id: "devices",
-          label: "Devices & the agent",
-          blurb: "Add machines and scan their sessions",
-          icon: HardDrive,
-          body: (
-            <>
-              <DevicesDemo />
-              <H>How to</H>
-              <Steps>
-                <Step>
-                  Open <b>Settings</b> and choose <IB icon={HardDrive} /> <b>Devices</b>.
-                </Step>
-                <Step>Click a device to expand it and scan its live tmux sessions.</Step>
-                <Step>Add a session to a workspace, move it, or terminate a stale one.</Step>
-                <Step>
-                  To add a new device, run the setup wizard and give it SSH details you can already
-                  reach.
-                </Step>
-              </Steps>
-              <H>The agent, per device</H>
-              <P>
-                A small <b>agent</b> runs on each device and serves its terminals, ports, saved
-                state and usage over a loopback API. Your state lives on the device - not only
-                in the browser - so it survives clearing site data.
-              </P>
-              <H>Add a device</H>
-              <P>
-                The setup wizard in <b>Settings → Devices</b> takes the SSH details of a machine
-                you can already reach and installs the agent on it <i>over that connection</i> -
-                you set up SSH, PzzaCode drives the rest.
-              </P>
-              <H>Scan a device's sessions</H>
-              <P>
-                In <IB icon={HardDrive} /> Devices, click a device to scan every tmux session on
-                it - even leftovers the app never opened. From there you can add one to a
-                workspace, move it, or terminate it.
-              </P>
-            </>
-          ),
-        },
-        {
-          id: "paste",
-          label: "Image paste",
-          blurb: "Get images into the terminal",
-          icon: ImageIcon,
-          body: (
-            <>
-              <Hero caption="Focused terminal">
-                <ImageIcon size={20} className="muted-icon" />
-                <Kbd>{CMD} V</Kbd>
-              </Hero>
-              <H>How to</H>
-              <Steps>
-                <Step>Copy an image to your clipboard (screenshot, file, or web image).</Step>
-                <Step>Click the terminal you want it in so it's focused.</Step>
-                <Step>
-                  Press <Kbd>{CMD} V</Kbd> - the image uploads and its path is typed in for the
-                  agent, even over SSH.
-                </Step>
-              </Steps>
-              <H>Paste images to your agent</H>
-              <P>
-                Press <Kbd>{CMD} V</Kbd> with an image in your clipboard while a terminal is
-                focused. The image is uploaded to the device and its file path is typed into the
-                terminal, so the coding agent can read it - <b>even over SSH</b>, where a normal
-                paste couldn't carry the file.
-              </P>
-            </>
-          ),
-        },
-        {
-          id: "ports",
-          label: "Ports",
-          blurb: "Mirror device ports to localhost",
-          icon: EthernetPort,
-          body: (
-            <>
-              <PortsDemo />
-              <H>How to</H>
-              <Steps>
-                <Step>Start a server on the device (say a dev server on port 5173).</Step>
-                <Step>
-                  Open <b>Settings → Connections → Port forwarding</b> - the port shows up in the list.
-                </Step>
-                <Step>
-                  On a client machine, flip the switch <b>on</b> to mirror it to your{" "}
-                  <code className="doc-code">localhost</code>.
-                </Step>
-                <Step>
-                  Click <ExternalLink size={12} style={{ verticalAlign: "-2px" }} /> to open it in
-                  your browser.
-                </Step>
-              </Steps>
-              <H>Port manager</H>
-              <P>
-                <IB icon={EthernetPort} /> mirrors the device's listening ports to your machine
-                automatically - start a server on the device and it appears on your{" "}
-                <code className="doc-code">localhost</code> at the same port. On the device itself
-                ports are local; on a client machine the agent forwards them over SSH and you get a
-                global enable / disable.
-              </P>
-              <P>
-                The <b>This device</b> tab lists everything listening locally. Every row has{" "}
-                <b>Open</b> and a <b>Stop</b> action: containers are stopped, plain processes are
-                terminated after a confirmation. System services and the agent itself can never
-                be stopped from here.
-              </P>
-              <Note>
-                Keeping the origin on <code className="doc-code">localhost</code> also keeps OAuth
-                callbacks and cookies working, which a raw LAN address would break.
-              </Note>
-            </>
-          ),
-        },
-        {
-          id: "rdp",
-          label: "Remote desktop",
-          blurb: "Linux desktop over SSH",
-          icon: Monitor,
-          body: (
-            <>
-              <RdpDemo />
-              <H>How to</H>
-              <Steps>
-                <Step>
-                  Choose your server in <b>Settings → Connections → Remote desktop</b>.
-                </Step>
-                <Step>The desktop viewer runs on this device.</Step>
-                <Step>
-                  Click <b>Remote desktop</b> in the toolbar to connect immediately. The password is read from your OS keychain at launch.
-                </Step>
-              </Steps>
-              <H>Linux desktop (RDP)</H>
-              <P>
-                <IB icon={Monitor} /> opens the device's Linux desktop over an SSH-tunneled RDP
-                session, with the password read from your OS keychain at launch - never stored in
-                the app.
-              </P>
-            </>
-          ),
-        },
-        {
-          id: "mcp",
-          label: "MCP",
-          blurb: "Wire agents into this app",
-          icon: Blocks,
-          body: (
-            <>
-              <McpDemo />
-              <H>How to</H>
-              <Steps>
-                <Step>
-                  Open <IB icon={Blocks} /> <b>Connections</b> in Settings.
-                </Step>
-                <Step>
-                  Turn <b>Allow app window control</b> on if you want agents to control this window. This does not disable independent session, file or device tools.
-                </Step>
-                <Step>
-                  Use <b>Add</b> to register the server in the client automatically.
-                </Step>
-                <Step>
-                  For a remote setup, copy the configuration into its MCP settings.
-                </Step>
-              </Steps>
-              <H>Model Context Protocol</H>
-              <P>
-                <IB icon={Blocks} /> provides tools for sessions, files, devices and app control.
-                Copy a configuration or install it into a supported CLI so your agent can connect.
-              </P>
-            </>
-          ),
-        },
-      ],
-    },
-    {
-      title: "More",
-      sections: [
-        {
-          id: "tips",
-          label: "Tips",
-          blurb: "Small things worth knowing",
-          icon: Lightbulb,
-          body: (
-            <>
-              <Hero caption="Settings · Help & docs">
-                <IB icon={CircleQuestionMark} />
-              </Hero>
-              <H>Handy to know</H>
-              <Tip>Hover almost anything for a tooltip - the icons don't need labels once you know them.</Tip>
-              <Tip>
-                Renaming a tile or workspace is just a click on its name; press <Kbd>Esc</Kbd> to
-                cancel.
-              </Tip>
-              <Tip>
-                Left a stale session running somewhere? Open <IB icon={HardDrive} /> Devices, scan
-                the device, and terminate it.
-              </Tip>
-              <Tip>
-                Expired Claude token in Agent usage? Hit <b>Run Claude to refresh</b> right on
-                the card instead of opening a terminal.
-              </Tip>
-              <Tip>
-                Everything you set - workspaces, layouts, names, hidden tiles - is saved on the
-                device by its agent, so it follows you to any browser pointed at that device.
-              </Tip>
-            </>
-          ),
-        },
-      ],
-    },
-  ];
-
-  const current = HELP_SECTIONS.find((entry) => entry.id === section) ?? HELP_SECTIONS[0];
-  const topics = groups.flatMap((group) => group.sections);
-  return <div className="settings-page help-page"><div className="doc-content" key={current.id} ref={content}>
-    <div className="help-tour-banner">
-      <Sparkles size={15} />
-      <div><strong>New here?</strong><span>Take the guided tour - it walks every control in place.</span></div>
-      <button
-        type="button"
-        className="btn btn-sm"
-        onClick={() => window.dispatchEvent(new Event("pzza:start-tour"))}
-      >
-        Start tour
-      </button>
-    </div>
-    {current.topics.map((id) => {
-      const topic = topics.find((entry) => entry.id === id);
-      if (!topic) return null;
-      const Icon = topic.icon;
-      return <section className="help-article" key={topic.id} data-help-topic={topic.id}>
-        <div className="help-article-head" tabIndex={-1}>
-          <Icon size={17} strokeWidth={1.9} />
-          <div><h3>{topic.label}</h3><p>{topic.blurb}</p></div>
+export const HELP_PAGES: Record<HelpTopic, HelpPage> = {
+  // --- Getting started -------------------------------------------------------
+  start: {
+    label: "Overview",
+    blurb: "Run every terminal and coding agent side by side, on all your machines, and pick up exactly where you left off.",
+    icon: Rocket,
+    demo: (
+      <TileDemo>
+        <Line><Dim>›</Dim> Add tests for the session API</Line>
+        <Line><Dim>⏺</Dim> Wrote 14 tests in <span className="doc-term-path">~/api/test/session.test.ts</span></Line>
+      </TileDemo>
+    ),
+    body: (
+      <>
+        <div className="help-tour-banner">
+          <Sparkles size={15} />
+          <div><strong>New here?</strong><span>Take the tour of every control, or run setup again.</span></div>
+          <span className="help-tour-actions">
+            <button type="button" className="btn btn-sm" onClick={() => window.dispatchEvent(new Event("pzza:start-setup"))}>Run setup</button>
+            <button type="button" className="btn btn-sm" onClick={() => window.dispatchEvent(new Event("pzza:start-tour"))}>Start tour</button>
+          </span>
         </div>
-        <div className="help-article-body">{topic.body}</div>
-      </section>;
+        <Steps>
+          <Step>Press <b>New session</b> (<Kbd>{NEW_SESSION_SHORTCUT.label}</Kbd>), name it, and pick the device, the folder and a terminal or an agent.</Step>
+          <Step>Press <Kbd>Enter</Kbd>. Hop between tiles with <Kbd>{ctrlBadge(1)}</Kbd>–<Kbd>{ctrlBadge(9)}</Kbd>.</Step>
+          <Step>Quit whenever: tiles run in <b>tmux</b> on their device, so closing the app or losing the connection only detaches your view.</Step>
+        </Steps>
+      </>
+    ),
+    tips: [
+      <>Press <Kbd>{COMMAND_PALETTE_SHORTCUT.label}</Kbd> to find any action, session or help page.</>,
+      <><b>Next</b> at the bottom of every page walks the whole guide in order.</>,
+    ],
+  },
+  setup: {
+    label: "Setup & tour",
+    blurb: "A short first-launch setup gets permissions and tools in place, then a guided tour shows every control where it lives.",
+    icon: ListChecks,
+    demo: <SetupDemo />,
+    body: (
+      <Steps>
+        <Step><b>Privacy permissions</b> (Mac): each <b>Allow</b> shows the macOS prompt or opens the right page in System Settings.</Step>
+        <Step><b>What PzzaCode runs on</b>: Node.js and tmux install themselves with Homebrew; <b>Install Homebrew</b> opens Terminal for your password.</Step>
+        <Step><b>Coding agents</b> lists the CLIs found (optional). <b>Finish setup</b> starts the tour; <Kbd>Esc</Kbd> skips it.</Step>
+      </Steps>
+    ),
+    tips: [
+      <>Replay either from the Overview page or with <b>Start the tour</b> / <b>Run setup</b> in <Kbd>{COMMAND_PALETTE_SHORTCUT.label}</Kbd>.</>,
+    ],
+  },
+  permissions: {
+    label: "Permissions & tools",
+    blurb: "Settings → Setup shows at a glance whether this machine has every permission and tool PzzaCode needs, and fixes what is missing.",
+    icon: Wrench,
+    demo: <SetupGroupsDemo />,
+    body: (
+      <>
+        <Row ui={<ShieldCheck size={15} className="muted-icon" />} name="PzzaCode permissions">
+          Full Disk Access, Microphone, Screen Recording, Accessibility, Automation (Mac).
+        </Row>
+        <Row ui={<ShieldCheck size={15} className="muted-icon" />} name="tmux permissions">
+          tmux runs your terminals and needs three of them too: drag it from Finder into the list.
+        </Row>
+        <Row ui={<Package size={15} className="muted-icon" />} name="Tools">
+          Homebrew, Node.js, tmux.
+        </Row>
+        <Row ui={<Laptop size={15} className="muted-icon" />} name="This device">
+          Agent, storage and terminal backend.
+        </Row>
+      </>
+    ),
+    tips: [
+      <>A group that needs you opens on its own. Full Disk Access and Screen Recording apply after a restart.</>,
+    ],
+  },
+  topbar: {
+    label: "The top bar",
+    blurb: "Every tool sits one click away above the grid, so you rarely need a menu.",
+    icon: LayoutGrid,
+    demo: (
+      <Hero caption="Top bar · tools (right side)">
+        <span className="doc-hero-cluster">
+          <IB icon={LayoutGrid} />
+          <IB icon={MessageSquare} />
+          <IB icon={FolderSync} />
+          <IB icon={Monitor} />
+          <ToolbarBadge icon={EthernetPort} count="2" />
+          <ToolbarBadge icon={Gauge} chip={<UsageChip />} />
+          <ToolbarBadge icon={Bell} count="3" />
+          <IB icon={SettingsIcon} />
+          <NewSessionButton />
+        </span>
+      </Hero>
+    ),
+    body: (
+      <>
+        <Row ui={<IB icon={LayoutGrid} />} name="Grid layout">2, 3 or 4 columns, per workspace.</Row>
+        <Row ui={<IB icon={MessageSquare} />} name="Quick Chat">A dropdown chat with your agent.</Row>
+        <Row ui={<IB icon={FolderSync} />} name="Sync projects">With a remote device: align repositories.</Row>
+        <Row ui={<IB icon={Monitor} />} name="Remote desktop">With a remote device: its Linux desktop.</Row>
+        <Row ui={<ToolbarBadge icon={EthernetPort} count="2" />} name="Port manager">Forwarded and local ports.</Row>
+        <Row ui={<IB icon={Gauge} />} name="Agent usage">Live limits and spend.</Row>
+        <Row ui={<ToolbarBadge icon={Bell} count="3" />} name="Notifications">The latest activity.</Row>
+      </>
+    ),
+    tips: [
+      <>Hover any icon for its name; in a narrow window the tools fold behind <b>Tools</b>.</>,
+    ],
+  },
+  "new-session": {
+    label: "New session",
+    blurb: "Start a shell or a coding agent in any folder on any device from one compact form, with a first prompt if you like.",
+    icon: Plus,
+    demo: <NewSessionDemo />,
+    body: (
+      <>
+        <Steps>
+          <Step>Press <b>New session</b> or <Kbd>{NEW_SESSION_SHORTCUT.label}</Kbd> and type a name (up to {SESSION_NAME_MAX_LENGTH} characters).</Step>
+          <Step>Pick the <b>device</b>, the <b>folder</b> (home when empty) and <b>Terminal</b> or an agent.</Step>
+          <Step>Optionally add a <b>first prompt</b> (one line, up to {SESSION_PROMPT_MAX_LENGTH} characters), then press <Kbd>Enter</Kbd>.</Step>
+        </Steps>
+        <P><b>Recent</b> offers recent folders in one click, with the agent and mode you last used there.</P>
+      </>
+    ),
+    tips: [
+      <>Drop a folder from Finder onto the canvas, not a terminal, to open this form for it.</>,
+      <><b>Open a terminal</b> below the form attaches tmux windows that are not on the grid yet.</>,
+    ],
+  },
+  agents: {
+    label: "Agents & modes",
+    blurb: "Pick the agent and how much it may do without asking, before it starts.",
+    icon: Bot,
+    demo: (
+      <Panel caption="New session · agent options" wide><div className="menu-body new-session-form"><AgentOptions /></div></Panel>
+    ),
+    body: (
+      <>
+        <AgentModes />
+      </>
+    ),
+    tips: [<><b>Continue</b> resumes the last conversation here; red <b>Bypass</b> never asks.</>],
+  },
+  palette: {
+    label: "Command palette",
+    blurb: "Do anything from the keyboard: jump to a session or workspace, run an action, start in a recent folder or open help.",
+    icon: Search,
+    demo: <PaletteDemo />,
+    body: (
+      <Steps>
+        <Step>Press <Kbd>{COMMAND_PALETTE_SHORTCUT.label}</Kbd>{IS_MAC ? ", even while typing in a terminal" : ""}.</Step>
+        <Step>Type a few letters; matches are fuzzy, so <b>work</b> finds workspaces and Worktrees.</Step>
+        <Step>Arrow keys move, <Kbd>Enter</Kbd> runs, <Kbd>Esc</Kbd> closes.</Step>
+      </Steps>
+    ),
+    tips: [
+      <>Actions follow the active tile: maximize, open its editor, show changes, duplicate, hide, or send a saved prompt.</>,
+      ...(IS_MAC ? [] : [<>A focused terminal keeps Ctrl K for the shell; click outside it first.</>]),
+    ],
+  },
+  settings: {
+    label: "Settings map",
+    blurb: "Find any preference fast: Settings keeps everything in a handful of sections.",
+    icon: SettingsIcon,
+    demo: (
+      <Hero caption={`Top bar · Settings · ${CMD} ,`}>
+        <IB icon={SettingsIcon} />
+      </Hero>
+    ),
+    body: (
+      <>
+        <Row ui={<IB icon={SettingsIcon} />} name="General">Appearance (theme, grayscale, spacing, transparency), Terminal, Saved prompts{IS_MAC ? " and Dictation" : ""}.</Row>
+        <Row ui={<IB icon={Bell} />} name="Notifications">Activity history and alert preferences.</Row>
+        <Row ui={<IB icon={Wrench} />} name="Setup">Permissions, tools and this device's health.</Row>
+        <Row ui={<IB icon={MessageSquare} />} name="Quick Chat">The agent and device it uses.</Row>
+        <Row ui={<IB icon={HardDrive} />} name="Devices">Your machines and their sessions.</Row>
+        <Row ui={<IB icon={FolderSync} />} name="Sync">Repositories and sync preferences.</Row>
+        <Row ui={<IB icon={Blocks} />} name="Connections">MCP, remote desktop, port forwarding.</Row>
+        <Row ui={<IB icon={Info} />} name="About">Version and updates.</Row>
+      </>
+    ),
+  },
+  // --- Workspace ---------------------------------------------------------------
+  tiles: {
+    label: "Sessions & tiles",
+    blurb: "Every tile tells you what runs, where, on which branch and since when, without typing a command.",
+    icon: SquareTerminal,
+    demo: (
+      <TileDemo>
+        <Line><Dim>›</Dim> Add tests for the session API</Line>
+      </TileDemo>
+    ),
+    body: (
+      <>
+        <Row ui={<span className="doc-dots"><span className="stat stat-idle" /><span className="stat stat-notify" /><span className="stat stat-failed" /></span>} name="Status dot">
+          Grey idle, green waiting on you, red exited.
+        </Row>
+        <Row ui={<ClaudeTileIcon />} name="Type icon">What runs right now, in its own color.</Row>
+        <Row ui={<span className="tile-title">api</span>} name="Title">Click to rename; tmux keeps its own name.</Row>
+        <Row ui={<GitBranch size={15} className="muted-icon" />} name="Footer">Session, branch, running program and agent mode, folder and start time.</Row>
+      </>
+    ),
+    tips: [
+      <>Click the folder in the footer to copy its full path.</>,
+      <>Drag a header onto another tile to reorder; sessions you opened in your own terminal can be attached too.</>,
+    ],
+  },
+  controls: {
+    label: "Tile controls",
+    blurb: "Each tile carries its own buttons, so you can edit, move, copy or park a session without leaving it.",
+    icon: Boxes,
+    demo: (
+      <Hero caption="Tile actions · top-right of every tile">
+        <span className="tile-actions">
+          <TB icon={Mic} />
+          <TB icon={FileCode} />
+          <TB icon={FolderInput} />
+          <TB icon={Copy} />
+          <TB icon={Maximize2} />
+          <TB icon={EyeOff} />
+          <TB icon={X} danger />
+        </span>
+      </Hero>
+    ),
+    body: (
+      <>
+        <Row ui={<TB icon={Mic} />} name="Dictation">Speak into this terminal (Mac).</Row>
+        <Row ui={<TB icon={FileCode} />} name="Code editor">Open the editor beside the terminal.</Row>
+        <Row ui={<TB icon={FolderInput} />} name="Move">Send the session to another workspace.</Row>
+        <Row ui={<TB icon={Copy} />} name="Duplicate">A fresh terminal in the same folder and device.</Row>
+        <Row ui={<TB icon={Maximize2} />} name="Maximize">Fill the canvas; <Kbd>Esc</Kbd> restores.</Row>
+        <Row ui={<TB icon={EyeOff} />} name="Hide">Out of sight, still running.</Row>
+        <Row ui={<TB icon={X} danger />} name="Terminate">Ends the session, after a confirmation.</Row>
+      </>
+    ),
+    tips: [<>Buttons on other tiles appear when you hover or tab into them.</>],
+  },
+  focus: {
+    label: "Focus & attention",
+    blurb: "Background agents never steal your scroll or keystrokes, and the one that needs you is a key away.",
+    icon: Focus,
+    demo: (
+      <Hero caption="Attention at a glance">
+        <States
+          items={[
+            { ui: <span className="stat stat-notify" />, label: "Waiting on you" },
+            { ui: <span className="tile-actions"><TB icon={Maximize2} on /></span>, label: "Maximized" },
+            { ui: <Kbd>{CMD} J</Kbd>, label: "Jump to it" },
+          ]}
+        />
+      </Hero>
+    ),
+    body: (
+      <>
+        <P>Click a tile to make it <b>active</b>: the others get a light wash, and only the active one scrolls and takes your typing.</P>
+        <Row ui={<span className="stat stat-notify" />} name="Waiting on you">
+          An agent rings the bell or a process exits: the dot turns green, a notification is added and the workspace tab shows a count.
+        </Row>
+        <Row ui={<Kbd>{CMD} J</Kbd>} name="Jump">
+          Activates the next tile waiting on you, across workspaces, revealing it if hidden.
+        </Row>
+        <Row ui={<TB icon={Maximize2} on />} name="Maximize">Double-click a header for the whole canvas; again or <Kbd>Esc</Kbd> restores.</Row>
+      </>
+    ),
+    tips: [<><Kbd>{ctrlBadge(1)}</Kbd>–<Kbd>{ctrlBadge(9)}</Kbd> also scrolls the tile to the center.</>],
+  },
+  layout: {
+    label: "Layout & grid",
+    blurb: "Size the grid per workspace and give any tile more room, without terminals ever re-attaching or garbling.",
+    icon: Columns3,
+    demo: <LayoutDemo />,
+    body: (
+      <>
+        <Steps>
+          <Step><IB icon={LayoutGrid} /> <b>Grid layout</b> on <b>Auto</b> fits columns to the window and shares rows evenly (5 tiles: 3 + 2); or pick <b>2</b>-<b>4</b> per workspace.</Step>
+          <Step>Drag a tile's header to move it: the grid shows where it will land, the others make room, and <Kbd>Esc</Kbd> cancels.</Step>
+          <Step>Drag a tile's right edge, bottom edge or corner to span more or less, in half steps; double-click any of them to return the tile to automatic size.</Step>
+        </Steps>
+        <Row ui={<span className="tile-btn"><MoveDiagonal2 size={13} /></span>} name="Keyboard">
+          <Kbd>{IS_MAC ? "⌃⌥" : "Ctrl+Alt+"}</Kbd> + arrows move the active tile; add <Kbd>{IS_MAC ? "⇧" : "Shift"}</Kbd> to resize it by half a column or row.
+        </Row>
+      </>
+    ),
+    tips: [<><b>Auto arrange</b> in the command palette clears the sizes you set and returns the workspace to Auto.</>],
+  },
+  spacing: {
+    label: "Spacing",
+    blurb: "Choose how much room sits around and between tiles, from airy to edge to edge, for the screen you are on.",
+    icon: SquareDashed,
+    demo: (
+      <Hero caption="Settings · General · Appearance · Spacing">
+        <States
+          items={[
+            { ui: <MiniGrid gap={10} />, label: "10 px · default" },
+            { ui: <MiniGrid gap={4} />, label: "4 px" },
+            { ui: <MiniGrid gap={0} />, label: "0 · joined" },
+          ]}
+        />
+      </Hero>
+    ),
+    body: (
+      <Steps>
+        <Step>Open <b>Settings → General → Appearance</b>.</Step>
+        <Step>Drag <b>Spacing</b> from 0 to 24 px; the mark is the default, and the slider snaps to it.</Step>
+        <Step>At <b>0</b> tiles join edge to edge and drop their borders at the window edges.</Step>
+      </Steps>
+    ),
+    tips: [<>The palette has <b>Spacing: join tiles</b> and <b>Spacing: default</b> for a quick switch.</>],
+  },
+  workspaces: {
+    label: "Workspaces",
+    blurb: "Group sessions into tabbed contexts, one per project, and switch between them with a key.",
+    icon: Layers,
+    demo: <WorkspaceTabsDemo />,
+    body: (
+      <>
+        <Steps>
+          <Step>Press <span className="ws-tab-add-demo">+</span> or <Kbd>{NEW_WORKSPACE_SHORTCUT.label}</Kbd>; name it and pick an icon and color.</Step>
+          <Step>Drag a tile's header onto a tab to move the session there.</Step>
+          <Step>Switch with <Kbd>{altBadge(1)}</Kbd>–<Kbd>{altBadge(9)}</Kbd>; <Kbd>{altBadge(0)}</Kbd> shows <b>All</b>.</Step>
+        </Steps>
+        <P>Click the active tab, or right-click any tab, for its settings: name and icon, its <b>Sessions</b> (show or hide each), <b>Snapshots</b> and <b>Worktrees</b>.</P>
+      </>
+    ),
+    tips: [
+      <>A count on a tab means sessions there are waiting on you.</>,
+      <>Deleting a workspace moves its sessions to the default one; nothing is terminated.</>,
+    ],
+  },
+  snapshots: {
+    label: "Snapshots",
+    blurb: "Save a workspace's sessions and layout, bring them back after a reboot, or share the setup with another machine.",
+    icon: Save,
+    demo: <SnapshotDemo />,
+    body: (
+      <>
+        <Steps>
+          <Step>Open the workspace's settings and unfold <b>Snapshots</b>.</Step>
+          <Step><b>Save current</b> saves at once (like "Main · 16:40"); click the name to rename it.</Step>
+          <Step><Copy size={12} className="doc-inline-icon" /> copies it; <b>Paste snapshot</b> adds it on another machine.</Step>
+        </Steps>
+        <P>A snapshot holds each session's device, folder, agent, mode and branch, plus tile order, sizes, titles, hidden tiles, open editors and columns.</P>
+      </>
+    ),
+    tips: [
+      <>Each workspace keeps an <b>Auto-saved</b> snapshot, and deleting one saves <b>Before deleting …</b> first.</>,
+    ],
+  },
+  restore: {
+    label: "Restore snapshots",
+    blurb: "See exactly what a restore will do before anything starts, and keep only what you want.",
+    icon: RotateCcw,
+    demo: <RestoreDemo />,
+    body: (
+      <>
+        <table className="doc-keys">
+          <tbody>
+            <tr><td><span className="snap-preview-status is-start">Will start</span></td><td>Created again in its folder, with its agent.</td></tr>
+            <tr><td><span className="snap-preview-status is-resume">Agent restarts</span></td><td>Open but back at its shell: the agent starts again.</td></tr>
+            <tr><td><span className="snap-preview-status is-running">Running</span></td><td>Already running, left alone.</td></tr>
+            <tr><td><span className="snap-preview-status is-no-device">Device missing</span></td><td>Its device is not enabled.</td></tr>
+          </tbody>
+        </table>
+        <P><b>Continue agent conversations</b> picks up each agent's last conversation; the layout comes back too. Changed branches are reported, never switched.</P>
+      </>
+    ),
+  },
+  broadcast: {
+    label: "Broadcast",
+    blurb: "Type one line once and send it to several terminals at the same time.",
+    icon: Radio,
+    demo: <BroadcastDemo />,
+    body: (
+      <Steps>
+        <Step><b>Shift+click</b> the headers of two or more tiles; they tint and a bar docks under the grid.</Step>
+        <Step>Type a line, or pick a saved prompt with <MessageSquareText size={12} className="doc-inline-icon" />.</Step>
+        <Step>Press <Kbd>Enter</Kbd> or <b>Send</b>: each terminal gets the line and Enter, and the bar reports any that failed.</Step>
+      </Steps>
+    ),
+    tips: [
+      <><Kbd>Esc</Kbd> or a click on the empty canvas clears the selection.</>,
+      <><b>Broadcast to visible tiles</b> in the palette selects every visible tile at once.</>,
+    ],
+  },
+  // --- Git & review -----------------------------------------------------------
+  git: {
+    label: "Branch & PR",
+    blurb: "Each tile's footer shows its branch, what is left to push or pull, and its pull request with live checks.",
+    icon: GitBranch,
+    demo: (
+      <TileDemo git="status">
+        <Line><Dim>⏺</Dim> Pushed 2 commits to main</Line>
+      </TileDemo>
+    ),
+    body: (
+      <>
+        <Row ui={<span className="doc-strip-ui"><span className="tile-strip-ab"><ArrowUp size={10} />2</span> <span className="tile-strip-ab"><ArrowDown size={10} />1</span></span>} name="Push and pull">Commits to push (↑) and to pull (↓).</Row>
+        <Row ui={<span className="doc-strip-ui tile-strip-pr"><GitPullRequest size={10} />42</span>} name="Pull request">With <Code>gh</Code> signed in on the device: the branch's PR and whether checks pass, fail or run.</Row>
+        <Row ui={<span className="tile-strip-git-icon doc-strip-ui"><GitBranch size={11} /><span className="tile-strip-dirty" /></span>} name="Dot">Uncommitted changes; click it to review them.</Row>
+      </>
+    ),
+    tips: [<>Click the branch to open its pull request, or the branch page on GitHub, GitLab or Bitbucket.</>],
+  },
+  ci: {
+    label: "Fix failing CI",
+    blurb: "When checks fail, hand the logs to the agent in one click instead of copying them out of the browser.",
+    icon: CircleX,
+    demo: (
+      <TileDemo git="failing">
+        <Line><Dim>›</Dim> <Typed>CI failed on main (test, lint). Logs: ~/api/.git/… Please fix.</Typed></Line>
+      </TileDemo>
+    ),
+    body: (
+      <Steps>
+        <Step>A red check next to the pull request means a check failed.</Step>
+        <Step>Press <Send size={11} className="doc-inline-icon" /> beside it. The failed CI logs are saved to a file in the repository's <Code>.git</Code> folder.</Step>
+        <Step>The tile's agent gets one line naming the branch, the failed jobs and the log file, and starts fixing.</Step>
+      </Steps>
+    ),
+    tips: [<>The button works while an agent runs in the tile; the logs never flood the terminal.</>],
+  },
+  "shared-branch": {
+    label: "Shared branch",
+    blurb: "PzzaCode warns when two agents work on the same branch of one checkout, and moves one aside before they collide.",
+    icon: TriangleAlert,
+    demo: (
+      <TileDemo git="shared">
+        <Line><Dim>⏺</Dim> Editing src/session.ts</Line>
+      </TileDemo>
+    ),
+    body: (
+      <Steps>
+        <Step>The <TriangleAlert size={11} className="doc-inline-icon" /> warning shows when another tile's agent is on the same branch; hover it to see which.</Step>
+        <Step>Click it: this tile's agent starts in its own worktree, in a new tile next to it.</Step>
+        <Step>The original session keeps running, so nothing is lost.</Step>
+      </Steps>
+    ),
+    tips: [<>Hidden tiles running an agent count too, even in other workspaces.</>],
+  },
+  worktrees: {
+    label: "Worktrees",
+    blurb: "Run agents in parallel on one repository, each with its own checkout and branch, so they never overwrite each other.",
+    icon: FolderGit2,
+    demo: <WorktreesDemo />,
+    body: (
+      <>
+        <P>Tick <b>Worktree</b> in New session: the agent gets <Code>{"<repo>.worktrees/<name>"}</Code> on a new <Code>{"pzza/<name>"}</Code> branch, with ignored <Code>.env*</Code> files copied in.</P>
+        <Row ui={<ChevronRight size={14} className="muted-icon" />} name="Setup for new worktrees">Files to copy and commands to run first (like <Code>npm install</Code>), saved in <Code>.pzzacode/worktree.json</Code>.</Row>
+        <Row ui={<Trash2 size={14} className="muted-icon" />} name="Clean up">Removes merged worktrees with their branches, squash and rebase merges included.</Row>
+      </>
+    ),
+    tips: [<>Setup commands changed elsewhere wait for <b>Approve commands</b> before they run.</>],
+  },
+  land: {
+    label: "Open PR & merge",
+    blurb: "Bring a worktree's work home from the tile itself: open a pull request or merge it, with safe guards.",
+    icon: GitPullRequestCreateArrow,
+    demo: (
+      <TileDemo git="worktree">
+        <Line><Dim>⏺</Dim> Fixed the login redirect; all tests pass.</Line>
+      </TileDemo>
+    ),
+    body: (
+      <>
+        <Row ui={<GitPullRequestCreateArrow size={14} className="muted-icon" />} name="Open PR">Pushes the branch and runs <Code>gh pr create --fill</Code>; without <Code>gh</Code>, the compare page opens.</Row>
+        <Row ui={<GitMerge size={14} className="muted-icon" />} name="Merge">After a confirmation, <Code>git merge --no-ff</Code> in the main checkout.</Row>
+        <P>Merge runs only when the worktree and the main checkout are clean and the main checkout is on the base branch. A conflicting merge is aborted.</P>
+      </>
+    ),
+    tips: [<>The same buttons sit on each row of Workspace settings → Worktrees.</>],
+  },
+  changes: {
+    label: "Changes view",
+    blurb: "See what an agent changed, file by file, right next to its terminal.",
+    icon: GitCompareArrows,
+    demo: <ChangesDemo />,
+    body: (
+      <Steps>
+        <Step>Click the dot on the footer branch, or <b>Show changes</b> in the palette.</Step>
+        <Step><b>Changes</b> lists files: M modified, A added, U untracked, D deleted, R renamed, ! conflicted.</Step>
+        <Step>Pick one for its diff: <b>Unified</b> or <b>Split</b>, unchanged stretches folded. <b>Edit file</b> opens it.</Step>
+      </Steps>
+    ),
+    tips: [<>The layout you pick is remembered for next time.</>],
+  },
+  review: {
+    label: "Review with agent",
+    blurb: "Point at exact lines in a diff and ask the agent, or collect comments and send them as one review.",
+    icon: MessageSquarePlus,
+    demo: <ReviewDemo />,
+    body: (
+      <>
+        <Row ui={<MessageSquare size={14} className="muted-icon" />} name="Ask agent">Select lines, ask, <Kbd>Enter</Kbd>: the question goes to the tile's agent with the file and lines.</Row>
+        <Row ui={<MessageSquarePlus size={14} className="muted-icon" />} name="Add comment">Collects comments across files; commented lines get a colored edge.</Row>
+        <Row ui={<Send size={14} className="muted-icon" />} name="Send review">Types every comment to the agent as one numbered review.</Row>
+      </>
+    ),
+    tips: [<>In Split, select on the left to ask about removed lines; the comment count opens the list to edit.</>],
+  },
+  // --- Terminal & editor ------------------------------------------------------
+  links: {
+    label: "Open links",
+    blurb: `${CMD}+click any web address in a terminal to open it in your browser, even one an agent wrapped across lines.`,
+    icon: Link2,
+    demo: (
+      <TileDemo>
+        <Line><Dim>⏺</Dim> Opened the pull request:</Line>
+        <Line>{"  "}<span className="doc-term-link">https://github.com/pzzaworks/pzza-code/pull/</span></Line>
+        <Line>{"  "}<span className="doc-term-link">1287</span></Line>
+      </TileDemo>
+    ),
+    body: (
+      <Steps>
+        <Step>Point at an <Code>http</Code> or <Code>https</Code> address: it underlines.</Step>
+        <Step><Kbd>{CMD} Click</Kbd>: it opens in this computer's default browser, whichever device the session runs on.</Step>
+        <Step>A URL broken over several lines, even with an indent, opens whole.</Step>
+      </Steps>
+    ),
+    tips: [
+      <>A plain click stays a terminal click, so links never open by accident.</>,
+      <>Double-click a link to select all of it; copying gives the joined address.</>,
+    ],
+  },
+  paths: {
+    label: "Open file paths",
+    blurb: `${CMD}+click a file path an agent printed to jump straight to it in Finder.`,
+    icon: FolderOpen,
+    demo: (
+      <TileDemo>
+        <Line><Dim>⏺</Dim> Wrote the report to <span className="doc-term-path">~/Projects/api/report.md</span></Line>
+        <Line><Dim>⏺</Dim> Screenshots are in <span className="doc-term-path">/Users/me/Desktop/shots</span></Line>
+      </TileDemo>
+    ),
+    body: (
+      <>
+        <Steps>
+          <Step>Point at an absolute path (<Code>/Users/me/x.ts</Code>) or a home path (<Code>~/notes</Code>).</Step>
+          <Step><Kbd>{CMD} Click</Kbd>: a <b>file</b> is selected in its folder, a <b>folder</b> opens.</Step>
+        </Steps>
+        <P>Paths wrapped across lines work too. If the path does not exist, PzzaCode says so instead of guessing.</P>
+      </>
+    ),
+    tips: [<>This works for sessions on this Mac in the desktop app; a remote device's paths stay plain text.</>],
+  },
+  paste: {
+    label: "Paste images",
+    blurb: "Paste a screenshot straight into a terminal and the agent can see it, on this machine or a remote one.",
+    icon: ImageIcon,
+    demo: (
+      <TileDemo>
+        <Line><Dim>›</Dim> Make the header match this <Typed>'/Users/me/.cache/pzzacode/paste/7f3a91c2.png'</Typed></Line>
+      </TileDemo>
+    ),
+    body: (
+      <>
+        <Steps>
+          <Step>Copy an image: a screenshot (<Kbd>{IS_MAC ? "⌃⇧⌘4" : "PrtSc"}</Kbd>), an image file or one from the web.</Step>
+          <Step>Click the terminal and press <Kbd>{CMD} V</Kbd>, or right-click → <b>Paste text or image</b>.</Step>
+          <Step>The image is saved on the session's device and its quoted path is typed in, without Enter. Add your words and send.</Step>
+        </Steps>
+        <P>Agents that read images from a path, like Claude Code and Codex, open it from there. Over SSH the image travels with it.</P>
+      </>
+    ),
+    tips: [
+      <>PNG, JPEG, GIF, WebP and BMP, up to 20 MB each.</>,
+      <>Images are saved where only you can read them, under <Code>pzzacode/paste</Code> in the device's cache folder.</>,
+    ],
+  },
+  drop: {
+    label: "Drop files",
+    blurb: "Drag files from Finder onto a terminal to hand them to the agent, even when the session runs on another machine.",
+    icon: FileUp,
+    demo: (
+      <TileDemo>
+        <Line><Dim>›</Dim> Summarize <Typed>'/tmp/pzzacode-drop-4e1c/spec.pdf' '/tmp/pzzacode-drop-4e1c/notes.md'</Typed></Line>
+      </TileDemo>
+    ),
+    body: (
+      <>
+        <Steps>
+          <Step>Drag one or more files onto the terminal you want.</Step>
+          <Step>They are copied to a private temporary folder on the session's device.</Step>
+          <Step>Their quoted paths are typed in, without Enter, ready for the agent to read.</Step>
+        </Steps>
+        <P>Up to 8 files at once, 16 MB each and 32 MB in total. A folder is refused in a terminal; dropped on the empty canvas, it starts a new session there instead.</P>
+      </>
+    ),
+    tips: [<>If a drop fails, PzzaCode says why and removes its temporary copy.</>],
+  },
+  find: {
+    label: "Find & copy",
+    blurb: "Search a terminal's output and copy exactly what you need, without leaving the keyboard.",
+    icon: Search,
+    demo: <FindDemo />,
+    body: (
+      <>
+        <Row ui={<Kbd>{CMD} F</Kbd>} name="Find">Opens the find bar; the selection seeds it. <Kbd>Enter</Kbd> next, <Kbd>Shift Enter</Kbd> previous, <b>Aa</b> matches case.</Row>
+        <Row ui={<Kbd>{IS_MAC ? "⌘ C" : "Ctrl Shift C"}</Kbd>} name="Copy">Copies the selection.</Row>
+        <Row ui={<ClipboardPaste size={15} className="muted-icon" />} name="Right-click">Copy text, Paste text or image, Select all, Clear selection.</Row>
+      </>
+    ),
+    tips: [<>Programs may set the clipboard only once you allow it in Settings → General → Terminal; terminal output is untrusted.</>],
+  },
+  search: {
+    label: "Search terminals",
+    blurb: "Find that one error in any terminal at once, then jump right to the line.",
+    icon: TextSearch,
+    demo: <SearchDemo />,
+    body: (
+      <Steps>
+        <Step>Press <Kbd>{SEARCH_TERMINALS_SHORTCUT.label}</Kbd> or pick <b>Search all terminals</b> in the palette.</Step>
+        <Step>Type; matches from every open terminal's scrollback appear grouped by tile, with the lines around them. <Regex size={12} className="doc-inline-icon" /> switches to a regular expression.</Step>
+        <Step><Kbd>Enter</Kbd> or a click activates the tile, scrolls to the line and highlights it.</Step>
+      </Steps>
+    ),
+    tips: [<>Plain text ignores case.</>],
+  },
+  prompts: {
+    label: "Saved prompts",
+    blurb: "Keep the instructions you send every day one click away, for one tile or many.",
+    icon: MessageSquareText,
+    demo: (
+      <div className="doc-demo doc-dialog-demo">
+        <div className="cmdk">
+          <div className="cmdk-list">
+            <div className="cmdk-group">
+              <div className="cmdk-group-title">Actions</div>
+              <PaletteRow icon={MessageSquareText} label="Prompt: Run the tests" detail="Send to api" active />
+              <PaletteRow icon={MessageSquareText} label="Prompt: Review my changes" detail="Send to api" />
+            </div>
+          </div>
+        </div>
+      </div>
+    ),
+    body: (
+      <Steps>
+        <Step>Add them in <b>Settings → General → Saved prompts</b>: one line each, reorder as you like.</Step>
+        <Step>In <Kbd>{COMMAND_PALETTE_SHORTCUT.label}</Kbd>, a <b>Prompt: …</b> row sends it to the active tile with Enter.</Step>
+        <Step>In the broadcast bar, <MessageSquareText size={12} className="doc-inline-icon" /> fills the input so you can check it first.</Step>
+      </Steps>
+    ),
+  },
+  code: {
+    label: "Code editor",
+    blurb: "Read and edit files beside the terminal, local or remote, with a file tree and go-to-definition.",
+    icon: FileCode,
+    demo: <CodeBarDemo />,
+    body: (
+      <>
+        <Steps>
+          <Step>Press a tile's <TB icon={FileCode} />: the editor opens beside the terminal, at its live folder.</Step>
+          <Step>Pick files from the tree; a dot marks unsaved changes and <Kbd>{CMD} S</Kbd> saves.</Step>
+        </Steps>
+        <Row ui={<TB icon={PanelLeft} on />} name="Tree">Show or hide it; right-click to rename or delete, drag to move.</Row>
+        <Row ui={<TB icon={Columns2} />} name="Split">Side by side or stacked; drag the divider, double-click to center.</Row>
+        <Row ui={<MousePointerClick size={15} className="muted-icon" />} name="Definition">Hold {IS_MAC ? "⌘, ⌃ or ⌥" : "Ctrl or Alt"} and click a symbol; imports open their file.</Row>
+      </>
+    ),
+    tips: [<><Kbd>{CMD} F</Kbd> finds and replaces; Markdown has a Preview, images and PDFs open as previews.</>],
+  },
+  // --- Agents & activity ------------------------------------------------------
+  "quick-chat": {
+    label: "Quick Chat",
+    blurb: "Ask your agent a quick question from a dropdown, without opening a session or losing your place.",
+    icon: MessageSquare,
+    demo: <QuickChatDemo />,
+    body: (
+      <Steps>
+        <Step>Press <IB icon={MessageSquare} /> <b>Quick Chat</b> in the top bar; your saved agent is ready.</Step>
+        <Step>Click outside or <X size={11} className="doc-inline-icon" /> to hide it; the chat keeps running until the app closes.</Step>
+        <Step>Pick its agent (Claude, Codex or OpenCode) and device in <b>Settings → Quick Chat</b>.</Step>
+      </Steps>
+    ),
+  },
+  "agent-tools": {
+    label: "Agent automation",
+    blurb: "Let a coding agent work the app for you: open sessions, arrange tiles, save snapshots and more.",
+    icon: Sparkles,
+    demo: (
+      <div className="doc-demo">
+        <div className="doc-tile">
+          <div className="doc-tile-body">
+            <Line><Dim>›</Dim> Open a Codex session in ~/web and use 3 columns</Line>
+            <Line><Dim>⏺</Dim> app_create_session <Dim>· name "web", agent codex</Dim></Line>
+            <Line><Dim>⏺</Dim> app_set_columns <Dim>· columns 3</Dim></Line>
+          </div>
+        </div>
+      </div>
+    ),
+    body: (
+      <>
+        <Row ui={<IB icon={SquareTerminal} />} name="Sessions & tiles">Create with an agent, focus, rename, hide, resize, move, terminate.</Row>
+        <Row ui={<IB icon={Layers} />} name="Workspaces">Create, switch, reorder; save and restore snapshots.</Row>
+        <Row ui={<IB icon={Keyboard} />} name="Terminals">Read output (credentials redacted), type, press keys, scroll.</Row>
+        <Row ui={<IB icon={FileCode} />} name="Editors">Open, edit by revision, save; manage the file tree.</Row>
+      </>
+    ),
+    tips: [
+      <>Turn it on in Settings → Connections (see MCP). Deleting and terminating still ask you first.</>,
+    ],
+  },
+  notifications: {
+    label: "Notifications",
+    blurb: "Know the moment an agent finishes or needs you, with what changed and a button to review it.",
+    icon: Bell,
+    demo: <NotificationsDemo />,
+    body: (
+      <>
+        <Steps>
+          <Step>The <IB icon={Bell} /> badge counts unread items; open it for the latest five.</Step>
+          <Step>Click one to jump to its tile. <b>Review changes</b> opens the finished agent's Changes.</Step>
+          <Step><b>View all notifications</b> filters the history by category or unread.</Step>
+        </Steps>
+        <Row ui={<BellOff size={15} className="muted-icon" />} name="Preferences">System alerts while unfocused, pause for an hour, categories and single events.</Row>
+      </>
+    ),
+    tips: [<>Terminal alerts need a bell or a process exit; plain output never notifies.</>],
+  },
+  usage: {
+    label: "Usage limits",
+    blurb: "See every account's live limits at a glance, so a reset never catches you mid-task.",
+    icon: Gauge,
+    demo: <UsageDemo />,
+    body: (
+      <Steps>
+        <Step>Open <IB icon={Gauge} /> <b>Agent usage</b>: Claude and Codex show <b>5h</b> and <b>Weekly</b>, OpenCode adds <b>Monthly</b> and <b>Credits</b>.</Step>
+        <Step><b>Left / Used</b> flips the bars; <b>Show percentage</b> keeps one limit in the top bar: the tightest (<b>Auto</b>), or the one you pin.</Step>
+      </Steps>
+    ),
+    tips: [<>Accounts are found automatically; a provider missing here is filled in from your other devices.</>],
+  },
+  cost: {
+    label: "Session cost",
+    blurb: "Every Claude Code or Codex tile shows what its session has cost so far and how long it has run.",
+    icon: Coins,
+    demo: <CostDemo />,
+    body: (
+      <>
+        <P>The footer reads like <b>$1.24 · 38m</b>; hover it for the token breakdown, models and subagents. It is an estimate at standard API prices, not a bill.</P>
+        <P>In <b>Agent usage</b>, <b>More</b> under an account adds a token trend, a daily breakdown and <b>Today</b>, <b>Yesterday</b> and <b>Last 30 days</b>.</P>
+      </>
+    ),
+    tips: [<>Sessions are matched by folder and start time; narrow tiles leave the cost out first.</>],
+  },
+  multiaccount: {
+    label: "Multi-account",
+    blurb: "Track several Claude or Codex accounts side by side and run agents under any of them.",
+    icon: UsersRound,
+    demo: <UsageDemo accounts />,
+    body: (
+      <Steps>
+        <Step>Log in to each account once with its own config folder, like <Code>CLAUDE_CONFIG_DIR=~/.claude-work claude</Code> or <Code>CODEX_HOME=~/.codex-work codex</Code>.</Step>
+        <Step><b>Agent usage</b> lists each account with its plan, email and limits.</Step>
+        <Step>Start an agent under another account the same way, in any tile.</Step>
+      </Steps>
+    ),
+    tips: [<>New session uses each agent's default account in the desktop app; the browser shows an <b>Account</b> pill.</>],
+  },
+  // --- Dictation ----------------------------------------------------------------
+  dictation: {
+    label: "Dictation",
+    blurb: "Speak instead of typing into any terminal; recognition runs on this Mac and audio never leaves it.",
+    icon: Mic,
+    demo: (
+      <Hero caption="Tile microphone · push to talk">
+        <States
+          items={[
+            { ui: <DictationMic state="idle" />, label: "Ready" },
+            { ui: <DictationMic state="listening" />, label: "Listening" },
+            { ui: <DictationMic state="error" />, label: "Failed, retry" },
+            { ui: <Kbd>Hold {ALT_LABEL}</Kbd>, label: "Push to talk" },
+          ]}
+        />
+      </Hero>
+    ),
+    body: (
+      <Steps>
+        <Step>In <b>Settings → General → Dictation</b>, download the speech model once (Whisper large-v3, 1.1 GB) and turn on <b>Enable dictation</b>.</Step>
+        <Step>Click a tile's <TB icon={Mic} />, or <b>hold Option</b> on its own, and speak; dots at the cursor show you are heard and turn into words as they are recognized.</Step>
+        <Step>Release Option or click stop; a clicked recording also ends on its own after <b>Stop after silence</b> (5 seconds by default) of quiet. The text is inserted without Enter, so you can check it.</Step>
+      </Steps>
+    ),
+    tips: [
+      <>Set <b>Option key</b> to <b>Tap</b> to start and stop with a tap, or a pause in speech.</>,
+      <>No subscription or API key; an Option shortcut never starts a recording.</>,
+    ],
+  },
+  languages: {
+    label: "Languages & mic",
+    blurb: "Dictate in your own languages, mixed if you like, with clear audio from the right microphone.",
+    icon: AudioLines,
+    demo: <LanguagesDemo />,
+    body: (
+      <>
+        <Row ui={<Sparkles size={15} className="muted-icon" />} name="Recognition language">Auto-detect, or the one language you speak.</Row>
+        <Row ui={<UsersRound size={15} className="muted-icon" />} name="My languages">Up to six, main first; detection favors it when unsure.</Row>
+        <Row ui={<Mic size={15} className="muted-icon" />} name="Microphone input">The macOS input or one you pick.</Row>
+      </>
+    ),
+    tips: [<>With Bluetooth headphones, dictation records from the built-in microphone so their sound stays clear.</>],
+  },
+  // --- Connections ------------------------------------------------------------
+  devices: {
+    label: "Devices",
+    blurb: "Add your other machines over SSH and run sessions on all of them from one grid.",
+    icon: HardDrive,
+    demo: <DevicesDemo />,
+    body: (
+      <Steps>
+        <Step>In <b>Settings → Devices</b>, pick a host from <Code>~/.ssh/config</Code> or type one, then <b>Add device</b>.</Step>
+        <Step>No agent there yet? <b>Install agent over SSH</b> installs it over the connection you already have.</Step>
+        <Step>Expand a device for its live tmux sessions; the switch turns it off without removing it.</Step>
+      </Steps>
+    ),
+    tips: [<>Each device's agent keeps its own state, so your layout follows you to any client.</>],
+  },
+  sync: {
+    label: "Sync",
+    blurb: "Keep your Git projects aligned across devices in one reviewed step.",
+    icon: FolderSync,
+    demo: <SyncDemo />,
+    body: (
+      <>
+        <Steps>
+          <Step>Press <IB icon={FolderSync} /> <b>Sync projects</b> in the top bar; PzzaCode scans each device.</Step>
+          <Step>Review, then confirm <b>Sync projects</b>. <b>Cancel sync</b> stops what has not started.</Step>
+        </Steps>
+        <P>In <b>Settings → Sync</b>: devices in sync, cloning missing projects, aligning to the remote baseline, stashing uncommitted changes and syncing env files (with private backups).</P>
+      </>
+    ),
+    tips: [<>A failed sync shows up in Notifications with the reason.</>],
+  },
+  ports: {
+    label: "Ports",
+    blurb: "Open a remote dev server on localhost, so OAuth callbacks and cookies keep working.",
+    icon: EthernetPort,
+    demo: <PortsDemo />,
+    body: (
+      <Steps>
+        <Step>In <b>Settings → Connections → Port forwarding</b>, pick the <b>Source device</b> and the <b>Receiver</b> and turn it on.</Step>
+        <Step>Ports appear under <b>Forwarded</b> in the Port manager; <b>Open</b> opens one in the browser.</Step>
+        <Step><b>This device</b> lists local listeners; <Square size={11} className="doc-inline-icon" /> <b>Stop</b> ends one after a confirmation.</Step>
+      </Steps>
+    ),
+    tips: [<>System services and the agent itself can never be stopped from here.</>],
+  },
+  rdp: {
+    label: "Remote desktop",
+    blurb: "Open a remote Linux desktop over SSH in one click, without exposing it to the network.",
+    icon: Monitor,
+    demo: <RdpDemo />,
+    body: (
+      <Steps>
+        <Step>Choose the <b>Remote server</b> in <b>Settings → Connections → Remote desktop</b>.</Step>
+        <Step>Press <IB icon={Monitor} /> <b>Remote desktop → Open</b> in the top bar.</Step>
+      </Steps>
+    ),
+    tips: [<>The password comes from your keychain at launch and is never stored in the app.</>],
+  },
+  mcp: {
+    label: "MCP",
+    blurb: "Connect Claude Code, Codex and other agents to PzzaCode in one click.",
+    icon: Blocks,
+    demo: <McpDemo />,
+    body: (
+      <Steps>
+        <Step>Open <b>Settings → Connections</b>; turn on <b>Allow app window control</b> to let agents drive this window.</Step>
+        <Step>Press <b>Add</b> next to a client (Claude Code, Codex, OpenCode, Cursor, Windsurf, Zed), or <b>Copy</b> its configuration.</Step>
+        <Step>For an agent on another device, set the <b>App SSH host</b> and <b>MCP script path</b> first.</Step>
+      </Steps>
+    ),
+    tips: [<>Session, file and device tools work even with window control off; <b>Check now</b> repairs installed configurations.</>],
+  },
+  // --- Shortcuts & tips -------------------------------------------------------
+  shortcuts: {
+    label: "Shortcuts",
+    blurb: "The keys that move you around the app fastest.",
+    icon: Keyboard,
+    demo: (
+      <Hero caption="Command palette">
+        <Kbd>{COMMAND_PALETTE_SHORTCUT.label}</Kbd>
+      </Hero>
+    ),
+    body: (
+      <table className="doc-keys">
+        <tbody>
+          <tr><td><Kbd>{COMMAND_PALETTE_SHORTCUT.label}</Kbd></td><td>Command palette</td></tr>
+          <tr><td><Kbd>{NEW_SESSION_SHORTCUT.label}</Kbd> / <Kbd>{NEW_WORKSPACE_SHORTCUT.label}</Kbd></td><td>New session / new workspace</td></tr>
+          <tr><td><Kbd>{CMD} ,</Kbd></td><td>Settings</td></tr>
+          <tr><td><Kbd>{CMD} {SHIFT} /</Kbd></td><td>PzzaCode Help</td></tr>
+          <tr><td><Kbd>{altBadge(0)}</Kbd> – <Kbd>{altBadge(9)}</Kbd></td><td>All, then the Nth workspace</td></tr>
+          <tr><td><Kbd>{ctrlBadge(1)}</Kbd> – <Kbd>{ctrlBadge(9)}</Kbd></td><td>Activate the Nth visible tile</td></tr>
+          <tr><td><Kbd>{CMD} J</Kbd></td><td>Next tile waiting on you</td></tr>
+          <tr><td><Kbd>Shift Click</Kbd></td><td>Select tiles to broadcast</td></tr>
+          <tr><td><Kbd>Esc</Kbd></td><td>Close, cancel, restore a maximized tile</td></tr>
+        </tbody>
+      </table>
+    ),
+    tips: [<>On macOS ⌥ is Option and ⌃ is Control; elsewhere they read Alt and Ctrl.</>],
+  },
+  "terminal-keys": {
+    label: "Terminal shortcuts",
+    blurb: "Keys and clicks for working inside terminals and the editor.",
+    icon: MousePointerClick,
+    demo: (
+      <Hero caption="Terminal">
+        <Kbd>{CMD} Click</Kbd>
+        <Kbd>{CMD} V</Kbd>
+        <Kbd>{SEARCH_TERMINALS_SHORTCUT.label}</Kbd>
+      </Hero>
+    ),
+    body: (
+      <table className="doc-keys">
+        <tbody>
+          <tr><td><Kbd>{CMD} Click</Kbd> a link</td><td>Open it in your browser, even wrapped</td></tr>
+          <tr><td><Kbd>{CMD} Click</Kbd> a path</td><td>Reveal a file or open a folder in Finder</td></tr>
+          <tr><td><Kbd>{CMD} V</Kbd></td><td>Paste text or an image</td></tr>
+          <tr><td><Kbd>{IS_MAC ? "⌘ C" : "Ctrl Shift C"}</Kbd></td><td>Copy the selection</td></tr>
+          <tr><td><Kbd>{CMD} F</Kbd> / <Kbd>{SEARCH_TERMINALS_SHORTCUT.label}</Kbd></td><td>Find here / in every terminal</td></tr>
+          <tr><td><Kbd>{CMD} S</Kbd></td><td>Save the open file</td></tr>
+          <tr><td><Kbd>{CMD} {SHIFT} =</Kbd> / <Kbd>{CMD} -</Kbd></td><td>Terminal font size up / down</td></tr>
+          {IS_MAC ? <tr><td><Kbd>Hold {ALT_LABEL}</Kbd></td><td>Push to talk into the active terminal</td></tr> : null}
+        </tbody>
+      </table>
+    ),
+  },
+  tips: {
+    label: "Tips",
+    blurb: "Small habits that save time every day.",
+    icon: Lightbulb,
+    demo: (
+      <Hero caption="Settings · Help">
+        <IB icon={CircleQuestionMark} />
+      </Hero>
+    ),
+    body: (
+      <ul className="doc-list">
+        <li>Several agents on one repository? Tick <b>Worktree</b> so each gets its own checkout and branch.</li>
+        <li>Rebooting a device? <b>Save current</b> in Snapshots first, then restore with <b>Continue agent conversations</b>.</li>
+        <li>A stale session somewhere? <IB icon={HardDrive} /> Devices → expand the device → terminate it.</li>
+        <li>Renaming a tile, workspace or snapshot is a click on its name; <Kbd>Esc</Kbd> cancels.</li>
+        <li>Agents can open any page here with the <Code>open_help</Code> app command and a page id such as <Code>paste</Code>.</li>
+      </ul>
+    ),
+  },
+};
+
+// The Help part of the Settings sidebar: sections that unfold into their pages.
+// The section of the open page is unfolded; a click on another section opens
+// its first page, and a click on the open section folds it.
+export function HelpNav({ value, onChange }: { value: HelpTopic; onChange: (topic: HelpTopic) => void }) {
+  const current = sectionOf(value);
+  // A fold lasts until another page opens; it is reset while rendering so the
+  // newly opened section never shows folded for a frame.
+  const [folded, setFolded] = useState(false);
+  const [foldedOn, setFoldedOn] = useState(value);
+  if (foldedOn !== value) {
+    setFoldedOn(value);
+    setFolded(false);
+  }
+  const activeRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => { activeRef.current?.scrollIntoView({ block: "nearest" }); }, [value]);
+  return <div className="settings-nav-children help-nav" role="group" aria-label="Help topics">
+    {HELP_SECTIONS.map((section) => {
+      const here = section.id === current.id;
+      const open = here && !folded;
+      return <div className="help-nav-section" key={section.id}>
+        <button type="button" className={`settings-hub-sublink help-nav-head ${here ? "is-current" : ""}`} aria-expanded={open}
+          onClick={() => { if (here) setFolded(open); else onChange(section.topics[0]); }}>
+          <ChevronRight size={12} className="help-nav-chevron" aria-hidden="true" />
+          <span className="settings-hub-sublabel">{section.label}</span>
+        </button>
+        {open ? <div className="help-nav-pages" role="group" aria-label={`${section.label} pages`}>
+          {section.topics.map((topic) => {
+            const page = HELP_PAGES[topic];
+            const active = topic === value;
+            return <button type="button" key={topic} ref={active ? activeRef : undefined} title={page.label}
+              aria-current={active ? "page" : undefined} className={`settings-hub-sublink help-nav-page ${active ? "active" : ""}`} onClick={() => onChange(topic)}>
+              <span className="settings-hub-sublabel">{page.label}</span>
+            </button>;
+          })}
+        </div> : null}
+      </div>;
     })}
+  </div>;
+}
+
+// One Help page with previous / next links that run through every section.
+export function HelpContent({ topic, request, onNavigate }: { topic: HelpTopic; request?: HelpRequest; onNavigate: (topic: HelpTopic) => void }) {
+  const head = useRef<HTMLDivElement>(null);
+  // Focus follows a page opened from elsewhere (menu, palette, an agent) or
+  // through previous / next, so keyboard and screen reader users land on it.
+  const handled = useRef<number | undefined>(undefined);
+  const paged = useRef(false);
+  useEffect(() => {
+    if (request && request.topic === topic && handled.current !== request.serial) {
+      handled.current = request.serial;
+      head.current?.focus({ preventScroll: true });
+    } else if (paged.current) head.current?.focus({ preventScroll: true });
+    paged.current = false;
+  }, [request, topic]);
+  const page = HELP_PAGES[topic];
+  const section = sectionOf(topic);
+  const index = HELP_ORDER.indexOf(topic);
+  const prev = HELP_ORDER[index - 1];
+  const next = HELP_ORDER[index + 1];
+  const position = section.topics.findIndex((id) => id === topic);
+  const go = (target: HelpTopic) => { paged.current = true; onNavigate(target); };
+  const Icon = page.icon;
+  return <div className="settings-page help-page"><div className="doc-content">
+    <article className="help-article" key={topic} data-help-topic={topic}>
+      <span className="help-crumb">{section.label} · {position + 1} of {section.topics.length}</span>
+      <div className="help-article-head" tabIndex={-1} ref={head}>
+        <Icon size={17} strokeWidth={1.9} />
+        <div>
+          <h3>{page.label}</h3>
+          <p className="help-benefit">{page.blurb}</p>
+        </div>
+      </div>
+      <div className="help-demo">{page.demo}</div>
+      <div className="help-article-body">{page.body}</div>
+      {page.tips?.length ? <div className="doc-note doc-note-tip help-tips">
+        <Lightbulb size={14} />
+        <ul>{page.tips.map((tip, tipIndex) => <li key={tipIndex}>{tip}</li>)}</ul>
+      </div> : null}
+      <nav className="help-pager" aria-label="Previous and next help pages">
+        {prev ? <button type="button" className="help-pager-link" aria-label={`Previous: ${HELP_PAGES[prev].label}`} onClick={() => go(prev)}>
+          <span className="help-pager-dir"><ChevronLeft size={13} aria-hidden="true" />Previous</span>
+          <span className="help-pager-title">{HELP_PAGES[prev].label}</span>
+        </button> : <span />}
+        {next ? <button type="button" className="help-pager-link is-next" aria-label={`Next: ${HELP_PAGES[next].label}`} onClick={() => go(next)}>
+          <span className="help-pager-dir">Next<ChevronRight size={13} aria-hidden="true" /></span>
+          <span className="help-pager-title">{HELP_PAGES[next].label}</span>
+        </button> : null}
+      </nav>
+    </article>
   </div></div>;
 }

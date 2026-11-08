@@ -31,6 +31,8 @@ export function Tooltip() {
       if (native) {
         el.setAttribute("data-tip", native);
         el.removeAttribute("title"); // suppress the browser's native tooltip
+        // An icon-only control was named by its title; keep that name.
+        if (!el.hasAttribute("aria-label") && !el.hasAttribute("aria-labelledby") && !el.textContent?.trim()) el.setAttribute("aria-label", native);
       }
       const text = el.getAttribute("data-tip");
       if (!text) return;

@@ -1,0 +1,84 @@
+import { useState, type ReactNode } from "react";
+import { ChevronRight, Laptop, Package, RotateCcw, ShieldCheck, type LucideIcon } from "lucide-react";
+import { PERMISSIONS, PERMISSIONS_SUPPORTED } from "../state/permissions";
+import { useSetup } from "../state/setup";
+import { usePermissionControls } from "./Permissions";
+import { SetupHealth, SetupPermissions, SetupRequirements, useRequirementsReady } from "../tour/SetupSteps";
+import "../tour/OnboardingTour.css";
+
+type Tone = "ok" | "busy" | "action";
+
+interface Group {
+  id: string;
+  icon: LucideIcon;
+  title: string;
+  summary: string;
+  tone: Tone;
+  body: ReactNode;
+}
+
+// Settings → Setup: what PzzaCode needs on this machine, one short row per
+// group with its state. Groups that need something open on their own; the
+// rest stay folded so the page stays short. The full first-launch setup can
+// be run again from here.
+export function SetupSettings() {
+  // One status source for the summaries and the rows inside the groups.
+  const controls = usePermissionControls();
+  const { statuses } = controls;
+  const ready = useRequirementsReady();
+  const installing = useSetup((state) => state.busy !== null);
+  const [toggled, setToggled] = useState<Record<string, boolean>>({});
+
+  const permissionGroup = (subject: "app" | "tmux", title: string): Group => {
+    const items = PERMISSIONS.filter((item) => item.subject === subject);
+    const known = items.every((item) => statuses[item.id] !== undefined);
+    const allowed = items.filter((item) => statuses[item.id] === "granted").length;
+    return {
+      id: subject,
+      icon: ShieldCheck,
+      title,
+      summary: known ? `${allowed} of ${items.length} allowed` : "Checking…",
+      tone: !known ? "busy" : allowed === items.length ? "ok" : "action",
+      body: <SetupPermissions only={subject} controls={controls} />,
+    };
+  };
+  const groups: Group[] = [
+    ...(PERMISSIONS_SUPPORTED ? [permissionGroup("app", "PzzaCode permissions"), permissionGroup("tmux", "tmux permissions")] : []),
+    {
+      id: "requirements",
+      icon: Package,
+      title: "Tools PzzaCode runs on",
+      summary: ready ? "Installed" : installing ? "Installing…" : "Something is missing",
+      tone: ready ? "ok" : installing ? "busy" : "action",
+      body: <SetupRequirements />,
+    },
+    { id: "health", icon: Laptop, title: "This device", summary: "Agent, storage and terminals", tone: "ok", body: <SetupHealth /> },
+  ];
+  // Until toggled, a group is open exactly when it needs action.
+  const isOpen = (group: Group) => toggled[group.id] ?? group.tone === "action";
+
+  return <div className="settings-page setup-settings">
+    <div className="setup-settings-intro">
+      <p>Permissions and the tools PzzaCode needs on this machine. Anything that needs you opens here.</p>
+      <button type="button" className="btn btn-sm" onClick={() => window.dispatchEvent(new Event("pzza:start-setup"))}>
+        <RotateCcw size={13} aria-hidden="true" /> Run setup
+      </button>
+    </div>
+    <div className="setup-settings-groups">
+      {groups.map((group) => {
+        const open = isOpen(group);
+        const Icon = group.icon;
+        return <section key={group.id} className={`setup-settings-group ${open ? "is-open" : ""}`}>
+          <button type="button" className="setup-settings-head" aria-expanded={open}
+            onClick={() => setToggled((current) => ({ ...current, [group.id]: !open }))}>
+            <Icon size={15} className="setup-settings-icon" aria-hidden="true" />
+            <span className="setup-settings-title">{group.title}</span>
+            <span className={`setup-settings-state is-${group.tone}`}>{group.summary}</span>
+            <ChevronRight size={14} className="setup-settings-chevron" aria-hidden="true" />
+          </button>
+          {open ? <div className="setup-settings-body">{group.body}</div> : null}
+        </section>;
+      })}
+    </div>
+  </div>;
+}

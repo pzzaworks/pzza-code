@@ -93,6 +93,10 @@ export function attachCommand(
   // shells that cannot handle multibyte input; give its environment a UTF-8
   // LANG once so every new window/pane gets one.
   const heal = `${tmux} show-environment -g LANG >/dev/null 2>&1 || ${tmux} set-environment -g LANG "\${LANG:-en_US.UTF-8}" 2>/dev/null; `;
+  // The tile footer shows what tmux's status line would, so the attached
+  // session hides it. Chained after the attach so a session that new-session
+  // -A is about to create gets it too.
+  const statusOff = (target: string) => ` \\; set-option -t ${shQuote(target)} status off`;
   let remote: string;
   if (managedChat) {
     if (session !== "pzza-quick-chat" || window !== undefined ||
@@ -102,7 +106,7 @@ export function attachCommand(
     remote = `${tmux} has-session -t ${target} 2>/dev/null || exit 45; ` +
       `[ "$(${tmux} show-environment -t ${target} PZZA_QUICK_CHAT_AGENT 2>/dev/null)" = ${shQuote(`PZZA_QUICK_CHAT_AGENT=${managedChat.agent}`)} ] || exit 44; ` +
       `[ "$(${tmux} display-message -p -t '=pzza-quick-chat:' '#{session_id}:#{session_created}:#{pid}' 2>/dev/null)" = ${shQuote(managedChat.identity)} ] || exit 45; ` +
-      `exec ${tmux} -u attach -t ${shQuote(managedChat.identity.split(":")[0])}`;
+      `exec ${tmux} -u attach -t ${shQuote(managedChat.identity.split(":")[0])}${statusOff(managedChat.identity.split(":")[0])}`;
   } else if (window !== undefined) {
     // View a specific window through a grouped session (independent view,
     // auto-destroyed on detach).
@@ -113,9 +117,9 @@ export function attachCommand(
       // Arm cleanup only after attachment; an unattached view is otherwise destroyed immediately.
       `${tmux} set-hook -t ${shQuote(view)} client-attached ${shQuote(`set-option -t ${shQuote(view)} destroy-unattached on`)}; ` +
       `${tmux} select-window -t ${shQuote(view + ":" + window)} 2>/dev/null; ` +
-      `exec ${tmux} -u attach -t ${shQuote(view)}`;
+      `exec ${tmux} -u attach -t ${shQuote(view)}${statusOff(view)}`;
   } else {
-    remote = `${heal}exec ${tmux} -u new-session -A -s ${shQuote(session)}${cwd ? ` -c ${shQuote(cwd)}` : ""}`;
+    remote = `${heal}exec ${tmux} -u new-session -A -s ${shQuote(session)}${cwd ? ` -c ${shQuote(cwd)}` : ""}${statusOff(`=${session}:`)}`;
   }
   if (conn.host) {
     const verificationOptions = managedChat ? ["-o", "BatchMode=yes", "-o", "ConnectTimeout=8", "-o", "StrictHostKeyChecking=yes", "-o", "ForwardAgent=no"] : [];

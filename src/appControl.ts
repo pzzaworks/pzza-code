@@ -4,8 +4,9 @@ import { initIntegrationAppControlHandlers } from "./appControlIntegrations";
 import { confirmAppControlAction, initCoreAppControlHandlers } from "./appControlCore";
 import { initDeviceAppControlHandlers } from "./appControlDevice";
 import { initEditorAppControlHandlers } from "./appControlEditor";
+import { initWorkflowAppControlHandlers } from "./appControlWorkflow";
 import { useStore } from "./state/store";
-import { executeAppControlRuntime, readAppControlRuntime, runAppControlExecution, finishAppControlReport, discardAppControlReport } from "./appControlRuntime";
+import { executeAppControlRuntime, readAppControlRuntime, runAppControlExecution, finishAppControlReport, discardAppControlReport, runConfirmedAppCommand } from "./appControlRuntime";
 import { hasIcon } from "./workspaceIcons";
 import { HAS_TAURI } from "./tauriEnv";
 import { hasUnsavedEditors } from "./editorChanges";
@@ -26,6 +27,11 @@ const context: AppControlContext = {
   readRuntime: readAppControlRuntime,
 };
 
+/** Runs an app command for an in-app caller through the same confirmation and dispatcher as remote app control. */
+export function runLocalAppCommand(action: string, args: Record<string, unknown>): Promise<unknown> {
+  return runConfirmedAppCommand(action, args, { confirm: confirmAppControlAction, execute: (name, values) => executeAppControl(name, values, context) });
+}
+
 function pause(delay: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
     const finish = () => { clearTimeout(timer); signal.removeEventListener("abort", finish); resolve(); };
@@ -37,7 +43,7 @@ function pause(delay: number, signal: AbortSignal): Promise<void> {
 
 export function useAppControl(): void {
   useEffect(() => {
-    const cleanups = [initCoreAppControlHandlers(), initTerminalAppControlHandlers(), initDeviceAppControlHandlers(), initEditorAppControlHandlers(), initIntegrationAppControlHandlers()];
+    const cleanups = [initCoreAppControlHandlers(), initTerminalAppControlHandlers(), initDeviceAppControlHandlers(), initEditorAppControlHandlers(), initIntegrationAppControlHandlers(), initWorkflowAppControlHandlers()];
     return () => cleanups.forEach(cleanup => cleanup());
   }, []);
   const [enabled, setEnabled] = useState(storedEnabled);

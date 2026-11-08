@@ -50,6 +50,7 @@ export function CodeSplitHandle({ tileId }: { tileId: string }) {
       clamp={clampSplit}
       preview={(value, handle) => applySplit(handle.parentElement, value)}
       commit={(value) => setTileCodeSizes(tileId, { split: value })}
+      reset={() => 0.5}
     />
   );
 }

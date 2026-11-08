@@ -20,6 +20,7 @@ import {
 } from "../workspaces";
 import { DEFAULT_DEVICES, THIS_MAC, type Device } from "../devices";
 import { QUICK_CHAT_SESSION, tileTitle } from "../sessionMeta";
+import { AUTO_COLUMNS } from "../grid/autoLayout";
 
 // A tile open on the canvas. id === tmux session name. Tile order IS the grid
 // arrangement - the canvas is a uniform N-column grid, never free-floating.
@@ -46,6 +47,20 @@ const TILETITLES_KEY = "pzza.tileTitles";
 const TILECODE_KEY = "pzza.tileCode";
 const TRANSPARENCY_KEY = "pzza.semiTransparent";
 const GRAYSCALE_KEY = "pzza.grayscale";
+const SPACING_KEY = "pzza.spacing";
+/** Room around and between tiles, in px: the same value everywhere. */
+export const SPACING_RANGE = { min: 0, max: 24, default: 10, joined: 0, smallestGap: 4 } as const;
+// 1-3px would set two tile borders (and the header line) a pixel or two
+// apart, which reads as a doubled line: tiles either join (0) or keep at
+// least 4px between them, so those values settle on the nearer of the two.
+export function normalizeSpacing(value: number): number {
+  const rounded = Math.round(Math.min(SPACING_RANGE.max, Math.max(SPACING_RANGE.min, value)));
+  if (rounded > SPACING_RANGE.joined && rounded < SPACING_RANGE.smallestGap) return rounded < SPACING_RANGE.smallestGap / 2 ? SPACING_RANGE.joined : SPACING_RANGE.smallestGap;
+  return rounded;
+}
+function validSpacing(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) ? normalizeSpacing(value) : SPACING_RANGE.default;
+}
 const TRANSPARENCY_OPTIONS_KEY = "pzza.transparencyOptions";
 export interface TransparencyOptions { opacity: number; blur: number; saturation: number; surfaceOpacity: number; textVisibility: number; desktopBlur: boolean; desktopBlurRadius: number }
 export const DEFAULT_TRANSPARENCY_OPTIONS: Readonly<TransparencyOptions> = {
@@ -101,6 +116,8 @@ interface ConsoleState {
   semiTransparent: boolean;
   grayscale: boolean;
   setGrayscale: (enabled: boolean) => void;
+  spacing: number;
+  setSpacing: (value: number) => void;
   setSemiTransparent: (enabled: boolean) => void;
   transparencyOptions: TransparencyOptions;
   setTransparencyOptions: (options: Partial<TransparencyOptions>) => void;
@@ -159,12 +176,15 @@ interface ConsoleState {
   tileSpan: Record<string, { c: number; r: number }>;
   setTileSpan: (id: string, c: number, r: number) => void;
   clearTileSpan: (id: string) => void;
+  // Drops every saved span in a workspace and lets the canvas pick its columns.
+  autoArrange: (workspaceId: string) => number;
 
   // Optional per-tile display-name override (empty clears it back to default).
   tileTitles: Record<string, string>;
   renameTile: (id: string, title: string) => void;
 
   // Grid columns are per-workspace. `setColumns` applies to the active one.
+  // AUTO_COLUMNS (0) picks the columns from the tile count and window size.
   workspaceColumns: Record<string, number>;
   defaultColumns: number;
   setColumns: (n: number) => void;
@@ -205,6 +225,10 @@ interface ConsoleState {
   openWindow: (w: RemoteWindow, displayName: string, host?: string) => void;
   closeTile: (id: string) => void;
   reorderTile: (fromId: string, toId: string) => void;
+  /** Puts back a saved workspace layout (see workspaceSnapshots): these tiles
+   *  in this order among the positions they hold, with their sizes, titles,
+   *  hidden state and editors, and the workspace's columns. */
+  applyWorkspaceLayout: (workspaceId: string, layout: { tiles: { id: string; name: string; span?: { c: number; r: number }; title?: string; hidden?: boolean; code?: TileCode }[]; columns?: number }) => void;
   moveTileToEnd: (id: string) => void;
   setActive: (id: string) => void;
   seedPreview: () => void;
@@ -218,6 +242,12 @@ interface ConsoleState {
   setTileCodeRoot: (id: string, root: string) => void;
   setTileCodePath: (id: string, path: string) => void;
   closeTileFile: (id: string) => void;
+  setTileCodeView: (id: string, view: TileCodeView) => void;
+  /** Opens the tile's editor (rooted at its current folder, else `folder`) on
+   *  the Changes view. */
+  openTileChanges: (id: string, folder: string) => void;
+  /** Bumped by openTileChanges so a panel already on Changes shows its list again (not persisted). */
+  changesReveal: Record<string, number>;
 }
 
 // Per-device RDP account (the password lives in the Keychain under
@@ -238,6 +268,13 @@ export interface TileCode {
   treeWidth?: number; // file tree width in px
   root?: string;
   path?: string;
+  view?: TileCodeView; // left pane: absent means "files"
+}
+
+export type TileCodeView = "files" | "changes";
+// Stored entries are unvalidated JSON, so anything but "changes" is the file tree.
+export function tileCodeView(code: TileCode | undefined): TileCodeView {
+  return code?.view === "changes" ? "changes" : "files";
 }
 
 // Always keep a "This Mac" local device (the machine running the app), and
@@ -257,7 +294,8 @@ function deviceLists(devices: Device[]): Pick<ConsoleState, "devices" | "activeD
 }
 
 export const useStore = create<ConsoleState>((set, get) => ({
-  semiTransparent: load<unknown>(TRANSPARENCY_KEY, false) === true,
+  // On unless the user turned it off: a saved false is kept.
+  semiTransparent: load<unknown>(TRANSPARENCY_KEY, true) !== false,
   setSemiTransparent: (enabled) => {
     persist(TRANSPARENCY_KEY, enabled);
     set({ semiTransparent: enabled, transparencyNotice: null });
@@ -267,6 +305,12 @@ export const useStore = create<ConsoleState>((set, get) => ({
   setGrayscale: (enabled) => {
     persist(GRAYSCALE_KEY, enabled);
     set({ grayscale: enabled });
+  },
+  spacing: validSpacing(load<unknown>(SPACING_KEY, SPACING_RANGE.default)),
+  setSpacing: (value) => {
+    const next = validSpacing(value);
+    persist(SPACING_KEY, next);
+    set({ spacing: next });
   },
   transparencyOptions: transparencyOptions(load<Partial<TransparencyOptions>>(TRANSPARENCY_OPTIONS_KEY, {})),
   setTransparencyOptions: (options) => {
@@ -471,9 +515,27 @@ export const useStore = create<ConsoleState>((set, get) => ({
     persist(TILESPAN_KEY, tileSpan);
     set((state) => ({ tileSpan, refreshNonce: state.refreshNonce + 1 }));
   },
+  autoArrange: (workspaceId) => {
+    const state = get();
+    const tileSpan = { ...state.tileSpan };
+    let cleared = 0;
+    for (const tile of state.tiles) {
+      const inWorkspace = workspaceId === ALL_WORKSPACE_ID || (state.sessionWs[wsKeyOf(tile)] ?? DEFAULT_WORKSPACE_ID) === workspaceId;
+      if (inWorkspace && tile.id in tileSpan) {
+        delete tileSpan[tile.id];
+        cleared++;
+      }
+    }
+    const workspaceColumns = { ...state.workspaceColumns, [workspaceId]: AUTO_COLUMNS };
+    persist(TILESPAN_KEY, tileSpan);
+    persist(WSCOLUMNS_KEY, workspaceColumns);
+    set((current) => ({ tileSpan, workspaceColumns, refreshNonce: current.refreshNonce + 1 }));
+    return cleared;
+  },
 
-  // Fall back to the old global columns value for workspaces without their own.
-  defaultColumns: load<number>(COLUMNS_KEY, 2),
+  // Fall back to the old global columns value for workspaces without their own;
+  // without either the canvas arranges itself.
+  defaultColumns: load<number>(COLUMNS_KEY, AUTO_COLUMNS),
   workspaceColumns: load<Record<string, number>>(WSCOLUMNS_KEY, {}),
   setColumns: (n) => {
     const id = get().activeWorkspaceId;
@@ -645,6 +707,41 @@ export const useStore = create<ConsoleState>((set, get) => ({
       return { tiles: arr };
     }),
 
+  applyWorkspaceLayout: (workspaceId, layout) =>
+    set((state) => {
+      const wanted = layout.tiles.filter((entry) => state.tiles.some((tile) => tile.id === entry.id));
+      if (!wanted.length && layout.columns === undefined) return {};
+      // The snapshot's tiles take the positions they already hold, in its order;
+      // every other tile stays where it is.
+      const ids = new Set(wanted.map((entry) => entry.id));
+      const slots = state.tiles.flatMap((tile, index) => (ids.has(tile.id) ? [index] : []));
+      const tiles = [...state.tiles];
+      wanted.forEach((entry, position) => { tiles[slots[position]] = state.tiles.find((tile) => tile.id === entry.id)!; });
+      const tileSpan = { ...state.tileSpan };
+      const tileTitles = { ...state.tileTitles };
+      const hidden = new Set(state.hiddenTiles);
+      const tileCode = { ...state.tileCode };
+      for (const entry of wanted) {
+        if (entry.span) tileSpan[entry.id] = entry.span;
+        else delete tileSpan[entry.id];
+        if (entry.title) tileTitles[entry.id] = entry.title;
+        else delete tileTitles[entry.id];
+        if (entry.hidden) hidden.add(entry.name);
+        else hidden.delete(entry.name);
+        // A snapshot without a view restores the file tree, not whatever view is showing now.
+        tileCode[entry.id] = entry.code ? { ...tileCode[entry.id], ...entry.code, view: entry.code.view } : { ...tileCode[entry.id], open: false, path: undefined };
+      }
+      const hiddenTiles = [...hidden];
+      const workspaceColumns = layout.columns ? { ...state.workspaceColumns, [workspaceId]: layout.columns } : state.workspaceColumns;
+      persist(TILES_KEY, tiles);
+      persist(TILESPAN_KEY, tileSpan);
+      persist(TILETITLES_KEY, tileTitles);
+      persist(HIDDEN_KEY, hiddenTiles);
+      persist(TILECODE_KEY, tileCode);
+      persist(WSCOLUMNS_KEY, workspaceColumns);
+      return { tiles, tileSpan, tileTitles, hiddenTiles, tileCode, workspaceColumns, refreshNonce: state.refreshNonce + 1 };
+    }),
+
   moveTileToEnd: (id) =>
     set((state) => {
       const moved = state.tiles.find((t) => t.id === id);
@@ -673,7 +770,7 @@ export const useStore = create<ConsoleState>((set, get) => ({
       // Closing the editor also closes the file that was open in it; reopening
       // starts back at the folder tree with nothing selected.
       const next: TileCode = opening
-        ? { ...cur, open: true, layout: cur?.layout ?? "side-by-side", root: cur?.root ?? defaultRoot, path: undefined }
+        ? { ...cur, open: true, layout: cur?.layout ?? "side-by-side", root: cur?.root ?? defaultRoot, path: undefined, view: undefined }
         : { ...cur, open: false, layout: cur?.layout ?? "side-by-side", root: cur?.root, path: undefined };
       const tileCode = { ...state.tileCode, [id]: next };
       persist(TILECODE_KEY, tileCode);
@@ -716,6 +813,26 @@ export const useStore = create<ConsoleState>((set, get) => ({
       const tileCode = { ...state.tileCode, [id]: { ...cur, path: undefined } };
       persist(TILECODE_KEY, tileCode);
       return { tileCode };
+    }),
+  setTileCodeView: (id, view) =>
+    set((state) => {
+      const cur = state.tileCode[id];
+      if (!cur || tileCodeView(cur) === view) return {};
+      const tileCode = { ...state.tileCode, [id]: { ...cur, view: view === "changes" ? view : undefined } };
+      persist(TILECODE_KEY, tileCode);
+      return { tileCode };
+    }),
+  changesReveal: {},
+  openTileChanges: (id, folder) =>
+    set((state) => {
+      const cur = state.tileCode[id];
+      // An open editor keeps its file; a closed one opens like toggleTileCode.
+      const next: TileCode = cur?.open
+        ? { ...cur, root: cur.root || folder, view: "changes" }
+        : { ...cur, open: true, layout: cur?.layout ?? "side-by-side", root: cur?.root || folder, path: undefined, view: "changes" };
+      const tileCode = { ...state.tileCode, [id]: next };
+      persist(TILECODE_KEY, tileCode);
+      return { tileCode, activeId: id, changesReveal: { ...state.changesReveal, [id]: (state.changesReveal[id] ?? 0) + 1 } };
     }),
 }));
 

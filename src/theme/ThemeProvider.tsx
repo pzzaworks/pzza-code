@@ -68,5 +68,14 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
     root.dataset.native = String(HAS_TAURI);
   }, [themeId, transparent, gray, options]);
 
+  // One spacing for the window edge, the canvas and between tiles; at 0 the
+  // tiles join edge to edge (data-space="0" switches to shared borders).
+  const spacing = useStore((s) => s.spacing);
+  useLayoutEffect(() => {
+    const root = document.documentElement;
+    root.style.setProperty("--space", `${spacing}px`);
+    root.dataset.space = String(spacing);
+  }, [spacing]);
+
   return <>{children}</>;
 }

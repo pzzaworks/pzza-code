@@ -15,17 +15,22 @@ import { installMouseSelection } from "./mouseSelection";
 import { createOutputScheduler } from "./outputScheduler";
 import { HAS_TAURI } from "../tauriEnv";
 import { openUrl } from "../forward";
+import { invoke } from "@tauri-apps/api/core";
 import { discardTerminalDrop, uploadPasteImage, uploadTerminalDrop, verifyQuickChat } from "../serverApi";
 import { createAttachmentRecovery, type AttachmentStatus } from "../state/quickChatSession";
 import { readNativeDrop, registerTerminalDropTarget, releaseNativeDrop, shellQuotePaths, validateDroppedFiles, type TerminalDrop } from "./fileDrop";
+import { registerBroadcastTarget } from "./broadcast";
+import { registerSearchTarget } from "./terminalSearch";
 import { sessionDisplayName, type TileStatus } from "../sessionMeta";
 import { registerContextMenu, clipboardPaste, readClipboardData } from "../ui/ContextMenu";
 import { registerDictationTarget, useDictation } from "../state/dictation";
 import { createDictationComposition } from "./dictationComposition";
 import { notify } from "../state/notifications";
 import { createTerminalSignals } from "./notificationSignals";
+import { agentSignalled } from "./agentFinished";
 import { createTerminalAppController, registerTerminalAppControl, validateTerminalPaste } from "../appControlTerminal";
 import { IS_MAC } from "../shortcuts";
+import { layoutPreviewActive, onLayoutPreviewEnd } from "../grid/layoutPreview";
 import { ChevronDown, ChevronUp, ClipboardPaste, Copy, Eraser, TextSelect, X } from "lucide-react";
 
 // Cmd-click (Ctrl-click off macOS) opens a link in this machine's default browser, whichever
@@ -36,6 +41,15 @@ function openTerminalLink(event: MouseEvent, uri: string): void {
   event.preventDefault();
   if (HAS_TAURI) void openUrl(uri).catch(() => { /* Rejected or unsupported addresses are simply not opened. */ });
   else window.open(uri, "_blank", "noopener,noreferrer");
+}
+
+// Cmd-click on a file path reveals it in Finder (a folder opens, a file is
+// selected in its folder). Only paths of sessions on this Mac exist in its
+// Finder; a remote device's paths are left as plain text clicks.
+function revealTerminalPath(event: MouseEvent, path: string, host: string | undefined, report: (message: string) => void): void {
+  if (!(IS_MAC ? event.metaKey : event.ctrlKey) || !HAS_TAURI || host) return;
+  event.preventDefault();
+  void invoke<void>("reveal_path", { path }).catch((error: unknown) => report(error instanceof Error ? error.message : String(error)));
 }
 
 // Find-all highlight colors (#RRGGBB as the addon requires). Amber reads on
@@ -51,7 +65,7 @@ const FIND_DECORATIONS = {
 // context (https or localhost), so on a client that opened the app over plain
 // http via a LAN address it is undefined - fall back to a hidden textarea +
 // execCommand("copy"), which works from a user gesture in any context.
-async function copyToClipboard(text: string): Promise<boolean> {
+export async function copyToClipboard(text: string): Promise<boolean> {
   if (!text) return false;
   try {
     if (navigator.clipboard?.writeText) {
@@ -359,7 +373,10 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
       const searchResults = search.onDidChangeResults(({ resultIndex, resultCount }) => {
         if (!disposed) setFindCount(resultIndex < 0 ? null : { index: resultIndex, total: resultCount });
       });
-      const linkProvider = registerTerminalLinks(term, openTerminalLink);
+      const linkProvider = registerTerminalLinks(term, (event, text, kind) => {
+        if (kind === "path") revealTerminalPath(event, text, host, reportError);
+        else openTerminalLink(event, text);
+      });
       term.loadAddon(new Unicode11Addon());
       term.unicode.activeVersion = "11";
 
@@ -539,7 +556,8 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
         }
       };
       const scheduleFit = () => {
-        if (fitRaf || disposed) return;
+        // A tile drag preview reflows the grid on every hover; fit once it ends.
+        if (fitRaf || disposed || layoutPreviewActive()) return;
         fitRaf = requestAnimationFrame(() => {
           fitRaf = 0;
           if (!disposed) safeFit();
@@ -560,7 +578,8 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
         const label = sessionDisplayName(tile ?? { id: tileId, name, session: name, host, window: win }, state.tileTitles)
           .replace(/[\x00-\x1f\x7f-\x9f]/g, "").slice(0, 100);
         const device = (tile?.host ?? host ?? "This device").replace(/[\x00-\x1f\x7f-\x9f]/g, "").slice(0, 100) || "This device";
-        notify({ ...notification, source: `${label || "Terminal"} (${device})`, body: notification.body });
+        const noticeId = notify({ ...notification, source: `${label || "Terminal"} (${device})`, body: notification.body });
+        if (notification.event === "terminal-bell") agentSignalled(tileId, noticeId);
       }, {
         attachment: true,
         isFocused: () => document.hasFocus() && container.contains(document.activeElement),
@@ -941,6 +960,24 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
         }).finally(() => { if ("native" in drop) void releaseNativeDrop(drop.native).catch(() => {}); });
       });
 
+      // Raw key input (Enter, control keys) for this attachment only.
+      const sendRaw = async (value: string) => {
+        if (transportSuspended) throw new Error("Terminal is paused while hidden. Reveal the tile before sending input.");
+        if (!connected()) throw new Error("The terminal is disconnected.");
+        notificationSignals.input(value);
+        cancelDictationInput();
+        if (HAS_TAURI && tauriId !== null) await writePty(tauriId, value);
+        else if (!ws?.write(value)) throw new Error("Terminal input could not be sent.");
+      };
+      // Broadcast: the line goes through the guarded paste path (one line,
+      // no control characters), then Enter is sent separately so it submits
+      // even in bracketed paste mode. Queued with other pastes, in order.
+      const unregisterBroadcast = registerBroadcastTarget(tileId, text => enqueuePaste(async () => {
+        validateTerminalPaste(text, term.modes.bracketedPasteMode, true);
+        await insert(text, false);
+        await sendRaw("\r");
+      }));
+
       const unregisterControl = registerTerminalAppControl(tileId, createTerminalAppController({
         state: () => ({ connected: connected(), cols: term.cols, rows: term.rows, bufferLines: term.buffer.active.length, viewportY: term.buffer.active.viewportY, hasSelection: term.hasSelection(), bracketedPasteMode: term.modes.bracketedPasteMode }),
         lines: async () => {
@@ -961,18 +998,49 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
         selection: () => selectionText(),
         paste: text => enqueuePaste(() => insert(text, true)),
         pasteClipboard: async () => { const data = await readClipboardData(); await enqueuePaste(() => performPaste(data, true)); },
-        sendControl: value => enqueuePaste(async () => {
-          if (transportSuspended) throw new Error("Terminal is paused while hidden. Reveal the tile before sending input.");
-          if (!connected()) throw new Error("The terminal is disconnected.");
-          notificationSignals.input(value);
-          cancelDictationInput();
-          if (HAS_TAURI && tauriId !== null) await writePty(tauriId, value);
-          else if (!ws?.write(value)) throw new Error("Terminal input could not be sent.");
-        }),
+        sendControl: value => enqueuePaste(() => sendRaw(value)),
         copy: async () => { if (!await copyToClipboard(selectionText())) throw new Error("Select terminal text and allow clipboard access before copying."); },
         selectAll: () => term.selectAll(), clearSelection: () => term.clearSelection(), clear: () => term.clear(),
         scroll: (target, lines) => { if (target === "top") term.scrollToTop(); else if (target === "bottom") term.scrollToBottom(); else term.scrollLines(lines); },
       }));
+
+      // Search across all terminals: logical lines with their first buffer row,
+      // and a reveal that scrolls to a match, selects it and marks every match
+      // with the find decorations until the next keystroke in this terminal.
+      let revealCleanup: { dispose(): void } | null = null;
+      const unregisterSearch = registerSearchTarget(tileId, {
+        lines: async () => {
+          output.flush();
+          await new Promise<void>(resolve => term.write("", resolve));
+          const buffer = term.buffer.active;
+          const lines: { text: string; row: number }[] = [];
+          for (let row = 0; row < buffer.length; row++) {
+            const line = buffer.getLine(row);
+            if (!line) continue;
+            // A row continued by the next keeps its trailing cells so offsets
+            // in the joined line still map to columns.
+            const text = line.translateToString(!buffer.getLine(row + 1)?.isWrapped);
+            if (line.isWrapped && lines.length) lines[lines.length - 1].text += text;
+            else lines.push({ text, row });
+          }
+          return lines;
+        },
+        cols: () => term.cols,
+        reveal: ({ row, col, length, query, regex }) => {
+          const search = searchRef.current;
+          if (disposed || !search) return;
+          revealCleanup?.dispose();
+          term.scrollToLine(Math.max(0, row - Math.floor(term.rows / 2)));
+          term.select(Math.min(col, Math.max(0, term.cols - 1)), row, length);
+          // Incremental keeps the selected match active when it still matches.
+          search.findNext(query, { regex, caseSensitive: false, incremental: true, decorations: FIND_DECORATIONS });
+          revealCleanup = term.onData(() => {
+            if (!findOpenRef.current) searchRef.current?.clearDecorations();
+            revealCleanup?.dispose();
+            revealCleanup = null;
+          });
+        },
+      });
 
       // Focus the terminal on click so a following Cmd/Ctrl+V lands here even when
       // the tile was already active (the active effect only refocuses on change).
@@ -989,6 +1057,7 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
 
       const resizeObserver = new ResizeObserver(scheduleFit);
       resizeObserver.observe(container);
+      const unsubscribePreviewEnd = onLayoutPreviewEnd(scheduleFit);
 
       return () => {
         disposed = true;
@@ -1001,6 +1070,10 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
         transportResize.dispose();
         unregisterDrop();
         unregisterControl();
+        unregisterSearch();
+        unsubscribePreviewEnd();
+        revealCleanup?.dispose();
+        unregisterBroadcast();
         unregisterDictation?.();
         manualKey.dispose();
         container.removeEventListener("beforeinput", cancelDictationInput, true);

@@ -78,12 +78,12 @@ export const APP_COMMANDS = {
     tileId: {"type":"string","minLength":1,"maxLength":512,"pattern":"^[^\\u0000-\\u001f\\u007f]+$"},
     targetId: {"type":"string","minLength":1,"maxLength":512,"pattern":"^[^\\u0000-\\u001f\\u007f]+$"},
   }, ["tileId","targetId"]),
-  set_tile_span: command("Set a tile grid span.", {
+  set_tile_span: command("Set a tile grid span in columns and rows; half steps (0.5) are allowed.", {
     tileId: {"type":"string","minLength":1,"maxLength":512,"pattern":"^[^\\u0000-\\u001f\\u007f]+$"},
-    columns: {"type":"integer","minimum":1,"maximum":8},
-    rows: {"type":"integer","minimum":1,"maximum":8},
+    columns: {"type":"number","minimum":0.5,"maximum":8,"multipleOf":0.5},
+    rows: {"type":"number","minimum":0.5,"maximum":8,"multipleOf":0.5},
   }, ["tileId","columns","rows"]),
-  configure_appearance: command("Persist app/terminal appearance and clipboard preferences.", {
+  configure_appearance: command("Persist app/terminal appearance and clipboard preferences, and the gap between tiles (spacing in pixels; 0 joins them).", {
     theme: {"type":"string","enum":["dark","light"]},
     fontSize: {"type":"integer","minimum":9,"maximum":20},
     cursorBlink: {"type":"boolean"},
@@ -97,6 +97,7 @@ export const APP_COMMANDS = {
     textVisibility: {"type":"integer","minimum":0,"maximum":100},
     desktopBlur: {"type":"boolean"},
     desktopBlurRadius: {"type":"integer","minimum":0,"maximum":64},
+    spacing: {"type":"integer","minimum":0,"maximum":24},
   }, []),
   add_device: command("Add a managed SSH device; this does not provision its agent.", {
     name: {"type":"string","minLength":1,"maxLength":128,"pattern":"^[^\\u0000-\\u001f\\u007f]+$"},
@@ -128,7 +129,7 @@ export function validateAppCommand(action, args) {
       for (const item of value) check(schema.items, item, field);
       if (schema.uniqueItems && new Set(value.map(item => JSON.stringify(stableValue(item)))).size !== value.length) throw new Error(`${field} must contain unique items.`);
     } else if (schema.type === "number") {
-      if (typeof value !== "number" || !Number.isFinite(value) || value < schema.minimum || value > schema.maximum) throw new Error(`Invalid ${field}.`);
+      if (typeof value !== "number" || !Number.isFinite(value) || value < schema.minimum || value > schema.maximum || (schema.multipleOf && !Number.isInteger(value / schema.multipleOf))) throw new Error(`Invalid ${field}.`);
     } else if (schema.type === "string") {
       if (typeof value !== "string" || (schema.minLength && value.trim().length < schema.minLength) || value.length > (schema.maxLength ?? Infinity) || (schema.pattern && !new RegExp(schema.pattern).test(value)) || (schema.enum && !schema.enum.includes(value))) throw new Error(`Invalid ${field}.`);
     } else if (schema.type === "integer") {

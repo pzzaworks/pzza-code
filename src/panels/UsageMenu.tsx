@@ -1,21 +1,17 @@
 import { useStore } from "../state/store";
 import { deviceHost } from "../devices";
-import { accountSpendKey, loadDeviceSpend, loadDeviceUsage } from "../usageFallback";
+import { accountSpendKey, usageAccountKey, usageSelection, usageWindowKey } from "../usageFallback";
+import { Switch } from "../ui/Switch";
 import { useDelayedLoading } from "../ui/useDelayedLoading";
 import { AsyncButton } from "../ui/AsyncButton";
+import { Dropdown } from "../ui/Dropdown";
 import { ClaudeIcon, CodexIcon, OpenCodeIcon } from "../icons/BrandIcons";
 import type { ComponentType } from "react";
 import { UsageSpend } from "./UsageSpend";
-import { useCallback, useEffect, useRef, useState } from "react";
-import { AlertTriangle, Loader2, RefreshCw } from "lucide-react";
-import {
-  fetchUsage,
-  fetchSpend,
-  fixUsage,
-  type AccountUsage,
-  type AccountSpend,
-  type UsageWindow,
-} from "../serverApi";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { AlertTriangle, Gauge, Loader2, RefreshCw } from "lucide-react";
+import { fixUsage, type AccountUsage, type UsageWindow } from "../serverApi";
+import { refreshUsage, setUsageChipVisible, setUsageMode, setUsagePin, startUsagePolling, useUsage, type UsageMode } from "../state/usage";
 
 const PROVIDER: Record<string, { name: string; color: string; Icon: ComponentType<{ size?: number | string; className?: string }> }> = {
   claude: { name: "Claude", color: "#D97757", Icon: ClaudeIcon },
@@ -50,6 +46,17 @@ function fmtResetAbs(iso: string | null): string {
   return `${day} · ${time}`;
 }
 
+// Compact reset time for a row's single label line: "05:59" today, otherwise
+// "Thu 05:59". The full date stays in the row tooltip.
+function fmtResetShort(iso: string | null): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  const now = new Date();
+  const time = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const sameDay = d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
+  return sameDay ? time : `${d.toLocaleDateString([], { weekday: "short" })} ${time}`;
+}
+
 // Color always reflects how much is USED (the risk), regardless of what the
 // number shows - a nearly-exhausted window is red whether it reads "5% left"
 // or "95% used".
@@ -59,21 +66,43 @@ function barColor(used: number): string {
   return "#5fb37f";
 }
 
-type Mode = "left" | "used";
+type Mode = UsageMode;
 
-function Bar({ label, w, mode }: { label: string; w: UsageWindow | null; mode: Mode }) {
+// The row the top bar shows: pinned by the user, or picked automatically (the
+// highest usage) while nothing is pinned. Exactly one row is selected either way.
+interface BarPin { pinned: boolean; auto: boolean; account: string; onToggle: () => void }
+
+function Bar({ label, w, mode, pin }: { label: string; w: UsageWindow | null; mode: Mode; pin?: BarPin }) {
   if (!w) return null;
   const used = Math.min(100, Math.max(0, Math.round(w.utilization)));
   const shown = mode === "used" ? used : 100 - used;
+  // One line only: the text is a single ellipsized run, so the least important
+  // tail (the parenthesized reset date) is cut first; the tooltip has it all.
+  const full = `${label} ${shown}% ${mode}${w.resets_at ? ` · resets in ${fmtReset(w.resets_at)} (${fmtResetAbs(w.resets_at)})` : ""}`;
   return (
     <div className="usage-bar-row">
       <div className="usage-bar-top">
-        <span className="usage-bar-label">{label}</span>
-        <span className="usage-bar-pct">{shown}%</span>
-        {w.resets_at ? (
-          <span className="usage-bar-reset" title={`Resets ${fmtResetAbs(w.resets_at)}`}>
-            · {fmtReset(w.resets_at)} <span className="usage-bar-reset-abs">({fmtResetAbs(w.resets_at)})</span>
-          </span>
+        <span className="usage-bar-text" title={full}>
+          <span className="usage-bar-label">{label}</span>
+          <span className="usage-bar-pct">{shown}%</span>
+          {w.resets_at ? (
+            <span className="usage-bar-reset">
+              · {fmtReset(w.resets_at)} <span className="usage-bar-reset-abs">{fmtResetShort(w.resets_at)}</span>
+            </span>
+          ) : null}
+        </span>
+        {pin ? (
+          <button
+            type="button"
+            className={`usage-pin ${pin.pinned ? "on" : ""} ${pin.auto ? "is-auto" : ""}`}
+            aria-pressed={pin.pinned}
+            aria-label={`Show ${pin.account} ${label} in the top bar`}
+            title={pin.pinned ? "Shown in the top bar. Click to go back to Auto" : pin.auto ? "Shown in the top bar automatically (highest usage). Click to keep showing this one" : "Show this limit in the top bar"}
+            onClick={pin.onToggle}
+          >
+            {pin.auto ? <span className="usage-pin-auto">Auto</span> : null}
+            <span className="usage-radio" aria-hidden="true" />
+          </button>
         ) : null}
       </div>
       <div className="usage-bar">
@@ -83,60 +112,44 @@ function Bar({ label, w, mode }: { label: string; w: UsageWindow | null; mode: M
   );
 }
 
-const MODE_KEY = "pzza.usage.display";
-function loadMode(): Mode {
-  try {
-    return localStorage.getItem(MODE_KEY) === "used" ? "used" : "left";
-  } catch {
-    return "left";
-  }
-}
-
-// The last published cards outlive the dropdown, so reopening it shows every
-// account immediately while the devices are queried again.
-let lastAccounts: AccountUsage[] = [];
-
 // Agent usage for every connected device's Claude / Codex / OpenCode accounts.
+// Results live in the shared usage store, which the top bar chip reads too.
 export function UsageMenu() {
   const devices = useStore(store => store.activeDevices);
   const request = useRef(0);
   useEffect(() => () => { request.current++; }, []);
-  const [loading, setLoading] = useState(true);
+  const loading = useUsage(state => state.loading);
+  const accounts = useUsage(state => state.accounts);
+  const failed = useUsage(state => state.failed);
+  const mode = useUsage(state => state.mode);
+  const spend = useUsage(state => state.spend);
   const [spinning, setSpinning] = useState(false);
   const showSpinner = useDelayedLoading(loading);
   useEffect(() => { if (showSpinner) setSpinning(true); }, [showSpinner]);
-  const [accounts, setAccounts] = useState<AccountUsage[]>(lastAccounts);
-  const [failed, setFailed] = useState(false);
-  const [mode, setMode] = useState<Mode>(loadMode);
-  const [spend, setSpend] = useState<Record<string, AccountSpend>>({});
   const [fixing, setFixing] = useState<number | null>(null);
 
-  const changeMode = (m: Mode) => {
-    setMode(m);
-    try {
-      localStorage.setItem(MODE_KEY, m);
-    } catch {
-      /* ignore */
-    }
+  const changeMode = (m: Mode) => setUsageMode(m);
+
+  // Chip source: a pinned row while it still exists, otherwise Auto (the peak).
+  const pin = useUsage(state => state.pin);
+  const showInTopBar = useUsage(state => state.showInTopBar);
+  const selection = useMemo(() => usageSelection(accounts, pin), [accounts, pin]);
+  const pinFor = (account: AccountUsage, windowKey: string): BarPin => {
+    const accountKey = usageAccountKey(account);
+    const shown = !!selection && selection.accountKey === accountKey && selection.windowKey === windowKey;
+    const pinned = shown && !!selection?.pinned;
+    return {
+      pinned,
+      auto: shown && !selection?.pinned,
+      account: account.email || account.keyHint || account.label,
+      onToggle: () => setUsagePin(pinned ? null : { accountKey, windowKey }),
+    };
   };
 
   const load = useCallback((fresh = false) => {
     const current = ++request.current;
-    setLoading(true);
-    const sources = devices.filter(device => deviceHost(device)).map(device => ({ host: deviceHost(device), name: device.name }));
-    const usageRequest = loadDeviceUsage(sources, host => fetchUsage(fresh, host), (a) => {
-        if (request.current !== current) return;
-        lastAccounts = a; setAccounts(a); setFailed(false);
-        if (a.some(account => account.usage && !account.error)) setLoading(false);
-      }, lastAccounts)
-      .catch(() => { if (request.current === current) setFailed(true); });
-    // Device transcript scans resolve separately so they never hold up usage.
-    void loadDeviceSpend(sources, host => fetchSpend(fresh, host), (values) => {
-      if (request.current === current) setSpend(values);
-    });
-    void usageRequest.finally(() => {
+    void refreshUsage(devices, { fresh, spend: true }).finally(() => {
       if (request.current !== current) return;
-      setLoading(false);
       if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) setSpinning(false);
     });
   }, [devices]);
@@ -181,7 +194,6 @@ export function UsageMenu() {
           </button>
         </div>
       </div>
-
       {loading && accounts.length === 0 ? (
         <div className="usage-empty">
           {showSpinner ? <Loader2 size={15} className="sw-spin" /> : null} Loading...
@@ -198,7 +210,7 @@ export function UsageMenu() {
           const Brand = (p as { Icon?: ComponentType<{ size?: number | string; className?: string }> | null }).Icon ?? null;
           return (
             <div className="usage-card" key={i}>
-              <div className="usage-card-head">
+              <div className="usage-card-head" title={[p.name, acc.plan?.replace(/_/g, " "), acc.email || acc.keyHint, acc.sourceName].filter(Boolean).join(" · ")}>
                 {Brand ? (
                   <span className="usage-brand" style={{ color: p.color }}>
                     <Brand size={15} />
@@ -232,14 +244,15 @@ export function UsageMenu() {
                       {acc.usage.retryAt ? ` Retrying after ${new Date(acc.usage.retryAt).toLocaleTimeString()}.` : ""}
                     </div>
                   )}
-                  <Bar label="5h" w={acc.usage?.five_hour ?? null} mode={mode} />
-                  <Bar label="Weekly" w={acc.usage?.seven_day ?? null} mode={mode} />
+                  <Bar label="5h" w={acc.usage?.five_hour ?? null} mode={mode} pin={pinFor(acc, usageWindowKey("5h"))} />
+                  <Bar label="Weekly" w={acc.usage?.seven_day ?? null} mode={mode} pin={pinFor(acc, usageWindowKey("weekly"))} />
                   {acc.usage?.scoped.map((s) => (
                     <Bar
                       key={s.name}
                       label={s.name}
                       w={{ utilization: s.percent, resets_at: s.resets_at }}
                       mode={mode}
+                      pin={pinFor(acc, usageWindowKey({ scoped: s.name }))}
                     />
                   ))}
                   {(() => {
@@ -252,6 +265,48 @@ export function UsageMenu() {
           );
         })
       )}
+      <div className="usage-footer">
+        <span>Show percentage</span>
+        <Switch small on={showInTopBar} onToggle={() => setUsageChipVisible(!showInTopBar)} title="Show percentage" />
+      </div>
     </div>
+  );
+}
+
+// Top bar trigger for the usage panel. By default it is just the gauge icon.
+// With "Show percentage" on, it also shows one limit row (meter plus
+// percentage in the panel's Left/Used mode): the row pinned in the panel, or
+// (Auto) the most constrained current limit across every account. The
+// background refresh only runs while that info is shown.
+export function UsageTool() {
+  const hostKey = useStore(store => store.activeDevices.map(device => deviceHost(device)).join("\n"));
+  const showInTopBar = useUsage(state => state.showInTopBar);
+  useEffect(() => showInTopBar ? startUsagePolling(() => useStore.getState().activeDevices) : undefined, [hostKey, showInTopBar]);
+  const accounts = useUsage(state => state.accounts);
+  const mode = useUsage(state => state.mode);
+  const pin = useUsage(state => state.pin);
+  const row = useMemo(() => usageSelection(accounts, pin), [accounts, pin]);
+  const shown = row ? (mode === "used" ? row.used : 100 - row.used) : 0;
+  const visible = showInTopBar && row;
+  const summary = row ? `Agent usage (${row.pinned ? "pinned" : "Auto"}): ${row.accountName} ${row.window} ${shown}% ${mode === "used" ? "used" : "left"}` : undefined;
+  return (
+    <Dropdown
+      icon={Gauge}
+      title="Agent usage"
+      controlId="usage"
+      width={320}
+      tourId="usage"
+      badgeLabel={visible ? summary : undefined}
+      badge={visible ? (
+        <span className="usage-chip">
+          <span className="usage-chip-meter">
+            <span className="usage-chip-fill" style={{ width: `${shown}%`, background: barColor(row.used) }} />
+          </span>
+          <span className="usage-chip-pct">{shown}%</span>
+        </span>
+      ) : null}
+    >
+      <UsageMenu />
+    </Dropdown>
   );
 }

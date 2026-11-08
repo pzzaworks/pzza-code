@@ -12,6 +12,7 @@ import {
   Loader2,
   Plus,
   RefreshCw,
+  ServerCog,
   Trash2,
 } from "lucide-react";
 import { useStore } from "../state/store";
@@ -34,6 +35,7 @@ export function DevicesMenu() {
   const devices = useStore((s) => s.devices);
   const connectionHost = useStore((s) => s.connection.host);
   const addDevice = useStore((s) => s.addDevice);
+  const setWizardOpen = useStore((s) => s.setWizardOpen);
   const removeDevice = useStore((s) => s.removeDevice);
   const setDeviceDisabled = useStore((s) => s.setDeviceDisabled);
   const workspaces = useStore((s) => s.workspaces);
@@ -353,6 +355,11 @@ export function DevicesMenu() {
         >
           <Plus size={14} strokeWidth={2.2} />
           Add device
+        </button>
+        {/* No agent on the machine yet: install it over SSH, then it is added here. */}
+        <button className="btn btn-sm" onClick={() => setWizardOpen(true)}>
+          <ServerCog size={14} strokeWidth={2} />
+          Install agent over SSH
         </button>
         </div>
       </section>

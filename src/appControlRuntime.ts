@@ -57,3 +57,25 @@ export async function finishAppControlReport(id: string): Promise<void> {
   await run?.();
 }
 export function discardAppControlReport(id: string): void { afterReports.delete(id); }
+
+// One command from an in-app caller (command palette, terminal search,
+// snapshots): validated against the full schema, then the same local
+// confirmation and dispatcher as a remote app-control request. A declined
+// confirmation never reaches the dispatcher.
+export async function runConfirmedAppCommand(action: string, args: Record<string, unknown>, steps: {
+  confirm(action: string, args: Readonly<Record<string, unknown>>): Promise<boolean>;
+  execute(action: string, args: Record<string, unknown>): unknown;
+}): Promise<unknown> {
+  const validated = validateAppCommand(action, args);
+  const id = crypto.randomUUID();
+  try {
+    const result = await runAppControlExecution(id, async () => {
+      if (!await steps.confirm(action, validated)) throw new Error("The action was cancelled in the app.");
+      return steps.execute(action, validated);
+    });
+    await finishAppControlReport(id);
+    return result;
+  } finally {
+    discardAppControlReport(id);
+  }
+}

@@ -30,6 +30,12 @@ export interface ChromePalette {
   surfaceAlt: string;
   border: string;
   controlBorder: string;
+  // Translucent text-tinted lines, so they read the same on any surface
+  // (solid or glass): row and section separators, container and floating
+  // surface edges, and resting control edges.
+  divider: string;
+  hairline: string;
+  hairlineStrong: string;
   input: string;
   hover: string;
   selected: string;
@@ -88,6 +94,11 @@ export function luminance(hex: string): number {
   });
   return 0.2126 * r + 0.7152 * g + 0.0722 * b;
 }
+// A color at a given opacity, as rgb(r g b / a%).
+function translucent(hex: string, percent: number): string {
+  const [r, g, b] = toRgb(hex);
+  return `rgb(${r} ${g} ${b} / ${percent}%)`;
+}
 
 // Neutral gray with the same relative luminance, so every contrast ratio the
 // theme was tuned for survives. Accepts #rgb/#rrggbb and rgb(r g b / a).
@@ -123,6 +134,9 @@ export function deriveChrome(t: TerminalPalette, appearance: Theme["appearance"]
     surfaceAlt: "#f0f2f4",
     border: "#d1d9e0",
     controlBorder: "#818b98",
+    divider: translucent("#1f2328", 7),
+    hairline: translucent("#1f2328", 10),
+    hairlineStrong: translucent("#1f2328", 16),
     input: "#ffffff",
     hover: "#eaeef2",
     selected: "#ddf4ff",
@@ -146,6 +160,9 @@ export function deriveChrome(t: TerminalPalette, appearance: Theme["appearance"]
     surfaceAlt: mix(bg, fg, 0.11),
     border: mix(bg, fg, 0.17),
     controlBorder: mix(bg, fg, 0.32),
+    divider: translucent(fg, 6),
+    hairline: translucent(fg, 9),
+    hairlineStrong: translucent(fg, 14),
     input: mix(bg, fg, 0.08),
     hover: mix(bg, fg, 0.14),
     selected: mix(bg, fg, 0.17),
@@ -190,6 +207,9 @@ export function chromeToCssVars(c: ChromePalette): Record<string, string> {
     "--surface-alt": c.surfaceAlt,
     "--border": c.border,
     "--control-border": c.controlBorder,
+    "--divider": c.divider,
+    "--hairline": c.hairline,
+    "--hairline-strong": c.hairlineStrong,
     "--input": c.input,
     "--hover": c.hover,
     "--selected": c.selected,

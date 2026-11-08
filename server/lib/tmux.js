@@ -5,7 +5,9 @@ import { randomUUID } from "node:crypto";
 import { DEVBOX, IS_CLIENT } from "./config.js";
 import { sh, shQuote, SSH_TOKEN, deviceEnv } from "./shell.js";
 import { tmuxCommand } from "./tmux-client.js";
-import { ACTIVITY_PROBE_SCRIPT, detectSessionActivity, probeSessionActivity } from "./session-activity.js";
+import { ACTIVITY_PROBE_SCRIPT, detectSessionActivity, normalizeEffectiveModel, probeSessionActivity } from "./session-activity.js";
+import { findSessionModel } from "./session-cost.js";
+import { tmuxArgs } from "./tmux-client.js";
 
 const sessionsCommand = (host) =>
   `${tmuxCommand(host)} list-sessions -F '#{session_name}\t#{session_windows}\t#{session_attached}\t#{pane_current_command}\t#{pane_current_path}\t#{session_created}'`;
@@ -182,7 +184,7 @@ export function sessionActivity(host) {
         return resolve(detectSessionActivity(panes, []));
       }
     });
-  }) : probeSessionActivity()).then((rows) => {
+  }) : probeSessionActivity().then(withReportedModels)).then((rows) => {
     for (const [key, value] of activityCache) {
       if (Date.now() - value.at >= ACTIVITY_FRESH_MS) activityCache.delete(key);
     }
@@ -236,4 +238,50 @@ export function paneOutputActivity(host) {
       resolve(error ? [] : parsePaneOutputActivity(output));
     });
   });
+}
+
+// Local agent sessions: the model the agent's newest reply actually used,
+// read from its own transcript, is reported evidence and beats a configured
+// guess (settings often name an alias such as "opus", or nothing at all).
+// Lookups are cached per agent and folder briefly so the 1 s activity poll
+// does not walk transcript folders each time.
+const REPORTED_MODEL_TTL_MS = 15_000;
+const reportedModels = new Map();
+
+function localPaneFolders() {
+  return new Promise((resolve) => {
+    execFile("tmux", ["-u", ...tmuxArgs([]), "list-panes", "-a", "-F", "#{session_name}\t#{window_index}\t#{pane_active}\t#{session_created}\t#{pane_current_path}"],
+      { timeout: 3_000, maxBuffer: 1024 * 1024 }, (error, stdout) => {
+        const folders = new Map();
+        if (!error) for (const line of String(stdout).split("\n")) {
+          const [session, window, active, created, cwd] = line.split("\t");
+          if (active === "1" && cwd?.startsWith("/")) folders.set(`${session}\t${window}`, { cwd, since: Number(created) * 1000 || 0 });
+        }
+        resolve(folders);
+      });
+  });
+}
+
+async function reportedModel(provider, cwd, since) {
+  const key = `${provider}\t${cwd}`;
+  const cached = reportedModels.get(key);
+  if (cached && Date.now() - cached.at < REPORTED_MODEL_TTL_MS) return cached.model;
+  const model = normalizeEffectiveModel(await findSessionModel({ provider, cwd, since }).catch(() => null));
+  const found = model && model.provider === provider ? model.model : null;
+  reportedModels.set(key, { at: Date.now(), model: found });
+  if (reportedModels.size > 256) reportedModels.delete(reportedModels.keys().next().value);
+  return found;
+}
+
+export async function withReportedModels(rows) {
+  const agents = rows.filter((row) => row.command === "claude" || row.command === "codex");
+  if (!agents.length) return rows;
+  const folders = await localPaneFolders();
+  return Promise.all(rows.map(async (row) => {
+    if (row.command !== "claude" && row.command !== "codex") return row;
+    const pane = folders.get(`${row.session}\t${row.window}`);
+    if (!pane) return row;
+    const model = await reportedModel(row.command, pane.cwd, pane.since);
+    return model ? { ...row, effectiveModel: model, effectiveProvider: row.command, effectiveModelEvidence: "reported" } : row;
+  }));
 }

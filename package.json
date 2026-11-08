@@ -1,7 +1,7 @@
 {
   "name": "pzza-code",
   "private": true,
-  "version": "0.2.68",
+  "version": "0.2.70",
   "author": "Berke (pzzaworks)",
   "description": "Every terminal, every agent, one grid. A grid terminal manager for agentic coding - run, watch and orchestrate many terminals and AI coding agents across your machines.",
   "license": "MIT",
@@ -9,6 +9,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "fetch:onnxruntime": "sh scripts/fetch-onnxruntime.sh",
     "build:mcp": "npm ci --prefix mcp --ignore-scripts --no-audit --no-fund && esbuild mcp/server.js --bundle --platform=node --format=esm --target=node18 --outfile=build/mcp/server.js",
     "test:mcp": "npm run build:mcp && node --test mcp/test/*.test.js server/test/mcp.test.js",
     "test:ui": "node --test scripts/ui-safety.test.mjs",
@@ -18,6 +19,9 @@
     "tauri": "tauri"
   },
   "dependencies": {
+    "@codemirror/language": "^6.12.4",
+    "@codemirror/legacy-modes": "^6.5.4",
+    "@codemirror/merge": "^6.12.3",
     "@tauri-apps/api": "^2.1.1",
     "@tauri-apps/plugin-notification": "^2.4.0",
     "@tauri-apps/plugin-updater": "^2.11.0",

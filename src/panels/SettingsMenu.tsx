@@ -1,12 +1,17 @@
 import { AsyncButton } from "../ui/AsyncButton";
-import { Download, Loader2, RefreshCw, RotateCw, ServerCog } from "lucide-react";
-import { DEFAULT_TRANSPARENCY_OPTIONS, useStore } from "../state/store";
+import { Download, Loader2, RefreshCw, RotateCw } from "lucide-react";
+import { DEFAULT_TRANSPARENCY_OPTIONS, SPACING_RANGE, useStore } from "../state/store";
 import { useUpdates } from "../state/updates";
 import { HAS_TAURI } from "../tauriEnv";
-import { DICTATION_SUPPORTED, useDictation } from "../state/dictation";
+import { DICTATION_SUPPORTED, MAX_MY_LANGUAGES, SILENCE_STOP_CHOICES, speechLanguages, useDictation, type SilenceStopSeconds } from "../state/dictation";
+import { Slider } from "../ui/Slider";
+import { Segmented } from "../ui/Segmented";
+import type { TriggerMode } from "../state/keyTrigger";
+import { setPushToTalk, setPushToTalkMode, usePushToTalk } from "../state/pushToTalk";
 import dictationLicenses from "../dictation-licenses.txt?raw";
 import { ThemeSettings } from "./ThemeSettings";
-import { DictationLanguageSelect } from "../ui/DictationLanguageSelect";
+import { PromptSettings } from "./PromptSettings";
+import { DictationLanguageSelect, SpeechLanguagesSelect } from "../ui/DictationLanguageSelect";
 import { Select } from "../ui/Select";
 import { useEffect } from "react";
 import { confirmAction } from "../ui/ConfirmDialog";
@@ -14,14 +19,16 @@ import { confirmAction } from "../ui/ConfirmDialog";
 export const generalSections = [
   { id: "appearance", label: "Appearance" },
   { id: "terminal", label: "Terminal" },
+  { id: "prompts", label: "Saved prompts" },
   ...(DICTATION_SUPPORTED ? [{ id: "dictation" as const, label: "Dictation" }] : []),
 ] as const;
-export type GeneralSection = "appearance" | "terminal" | "dictation";
+export type GeneralSection = "appearance" | "terminal" | "prompts" | "dictation";
 export function SettingsMenu({ section }: { section: GeneralSection }) {
   return (
     <div className="settings-page general-settings">
       {section === "appearance" && <AppearanceSection />}
       {section === "terminal" && <TerminalSection />}
+      {section === "prompts" && <PromptSettings />}
       {section === "dictation" && <DictationSection />}
     </div>
   );
@@ -29,6 +36,8 @@ export function SettingsMenu({ section }: { section: GeneralSection }) {
 
 function DictationSection() {
   const state = useDictation();
+  const pushToTalk = usePushToTalk((s) => s.enabled);
+  const pushToTalkMode = usePushToTalk((s) => s.mode);
   useEffect(() => {
     const refresh = () => { void useDictation.getState().refreshInputDevices(); };
     refresh();
@@ -60,12 +69,28 @@ function DictationSection() {
       <progress aria-label="Speech model download" value={state.downloadedBytes} max={state.totalBytes} />
       <small>You can close Settings while this finishes.</small>
     </div> : <Row label="Speech recognition model" hint="Download once to enable dictation on this Mac."><AsyncButton className="btn btn-sm" loading={state.model === "checking"} icon={Download} onClick={() => void state.download()}>
-      Download · 574 MB
+      Download · 1.1 GB
     </AsyncButton></Row>}
     {state.model === "ready" && state.enabled ? <div className="dictation-language-setting settings-row">
       <div className="settings-row-copy"><span>Recognition language</span><span className="set-hint">Auto-detect, or choose the language you speak.</span></div>
       <DictationLanguageSelect value={state.language} disabled={state.recording !== null} onChange={state.setLanguage} />
     </div> : null}
+    {state.model === "ready" ? <div className="dictation-language-setting settings-row">
+      <div className="settings-row-copy"><span>My languages</span><span className="set-hint">{state.myLanguages ? "Detection picks among these, favoring the first (your main language) when unsure." : "From your Mac's languages and region. Detection picks among these; choose your own, main language first, to change them."}</span></div>
+      <span style={{ display: "flex", gap: 6, alignItems: "center", minWidth: 0 }}>
+        <SpeechLanguagesSelect values={speechLanguages()} max={MAX_MY_LANGUAGES} disabled={state.recording !== null} onChange={state.setMyLanguages} />
+        {state.myLanguages ? <button type="button" className="btn btn-sm" disabled={state.recording !== null} onClick={() => state.setMyLanguages(null)}>Use the Mac's</button> : null}
+      </span>
+    </div> : null}
+    {state.model === "ready" && state.enabled ? <Row label="Stop after silence" hint={state.silenceStop ? `Ends dictation after ${state.silenceStop} seconds of quiet once you have spoken. Pauses while you talk never end it; push to talk keeps its own timing.` : "Dictation keeps listening until you stop it."}>
+      <Segmented ariaLabel="Stop after silence" value={state.silenceStop} options={SILENCE_STOP_OPTIONS} onChange={state.setSilenceStop} />
+    </Row> : null}
+    {state.model === "ready" && state.enabled ? <Row label="Push to talk" hint={pushToTalkMode === "tap" ? "Tap Option alone to start dictating into the active terminal; tap again, or pause speaking, to stop. Typing an Option shortcut cancels it." : "Hold Option alone to dictate into the active terminal; release to stop. Typing an Option shortcut cancels it."}>
+      <button type="button" className={`switch ${pushToTalk ? "switch-on" : ""}`} role="switch" aria-label="Push to talk" aria-checked={pushToTalk} onClick={() => setPushToTalk(!pushToTalk)}><span className="switch-knob" /></button>
+    </Row> : null}
+    {state.model === "ready" && state.enabled && pushToTalk ? <Row label="Option key" hint="Hold to talk, or tap to start and stop.">
+      <Segmented ariaLabel="Push to talk mode" value={pushToTalkMode} options={TRIGGER_OPTIONS} onChange={setPushToTalkMode} />
+    </Row> : null}
     {state.error ? <p className="set-note dictation-error" role="alert">{state.error}</p> : null}
     {state.error && state.model === "ready" ? <button className="btn btn-sm" disabled={state.recording !== null} onClick={() => void state.download(true)}>Re-download model</button> : null}
     <p className="set-note">One download, no subscription or API key. Audio stays on your Mac. Stopping inserts text without submitting it.</p>
@@ -73,25 +98,8 @@ function DictationSection() {
   </Section>;
 }
 
-// Reopen the setup wizard (local agent health + add remote devices). The wizard
-// itself lives at the app root; the store flag lets any menu raise it.
-export function DeviceSetupSection({ close }: { close?: () => void }) {
-  const setWizardOpen = useStore((s) => s.setWizardOpen);
-  return (
-    <Section title="Device setup">
-      <Row label="Set up a device" hint="Check your local agent or connect a remote device."><button
-        className="btn btn-accent btn-sm"
-        onClick={() => {
-          setWizardOpen(true);
-          close?.();
-        }}
-      >
-        <ServerCog size={14} strokeWidth={2} />
-        Open setup wizard
-      </button></Row>
-    </Section>
-  );
-}
+const TRIGGER_OPTIONS: readonly { value: TriggerMode; label: string }[] = [{ value: "hold", label: "Hold" }, { value: "tap", label: "Tap" }];
+const SILENCE_STOP_OPTIONS: readonly { value: SilenceStopSeconds; label: string }[] = SILENCE_STOP_CHOICES.map((seconds) => ({ value: seconds, label: seconds ? `${seconds} s` : "Off" }));
 
 // Update controls on top of the shared update state: manual check / install /
 // restart, plus the automatic-updates switch.
@@ -154,7 +162,7 @@ function Section({ title, children }: { title: string; children: React.ReactNode
   );
 }
 
-function Row({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
+function Row({ label, hint, children }: { label: React.ReactNode; hint?: string; children: React.ReactNode }) {
   return (
     <div className="set-row">
       <div className="set-label">
@@ -174,6 +182,8 @@ function AppearanceSection() {
   const notice = useStore((state) => state.transparencyNotice);
   const gray = useStore((state) => state.grayscale);
   const setGray = useStore((state) => state.setGrayscale);
+  const spacing = useStore((state) => state.spacing);
+  const setSpacing = useStore((state) => state.setSpacing);
   return <Section title="Appearance">
     <div className="appearance-choice"><ThemeSettings /></div>
     <Row label="Grayscale mode" hint="Neutral gray interface; status and terminal colors stay">
@@ -183,6 +193,9 @@ function AppearanceSection() {
         <span className="switch-knob" />
       </button>
     </Row>
+    <Row label="Spacing" hint="Room around and between tiles; 0 joins them edge to edge. The mark is the default.">
+      <Slider label="Spacing" min={SPACING_RANGE.min} max={SPACING_RANGE.max} unit="px" value={spacing} snap={{ value: SPACING_RANGE.default, within: 1 }} onChange={setSpacing} />
+    </Row>
     <Row label="Semi-transparent mode" hint="Translucent surfaces and a blurred background">
       <button className={`switch ${enabled ? "switch-on" : ""}`} type="button"
         role="switch" aria-label="Semi-transparent mode" aria-checked={enabled}
@@ -190,16 +203,15 @@ function AppearanceSection() {
         <span className="switch-knob" />
       </button>
     </Row>
-    {enabled ? <Row label="Text visibility" hint={`${options.textVisibility === 100 ? "Maximum text contrast" : `${options.textVisibility}% · preserve text hierarchy`}. Filled controls retain contrast-safe text.`}>
-      <input aria-label="Text visibility" type="range" min={0} max={100} step={1} value={options.textVisibility} aria-valuetext={`${options.textVisibility}% visibility boost`}
-        onChange={(event) => setOptions({ textVisibility: Number(event.target.value) })} />
+    {enabled ? <Row label="Text visibility" hint="Raises text contrast over the background; 100% is maximum. Filled controls keep contrast-safe text.">
+      <Slider label="Text visibility" min={0} max={100} value={options.textVisibility} valueText={`${options.textVisibility}% visibility boost`}
+        onChange={(value) => setOptions({ textVisibility: value })} />
     </Row> : null}
     <details className="settings-disclosure transparency-details">
       <summary>Transparency controls</summary>
       <div className="settings-disclosure-body">
-      <Row label="App background opacity" hint={`${options.opacity}%`}>
-        <input aria-label="App background opacity" type="range" min={5} max={95} value={options.opacity}
-          onChange={(event) => setOptions({ opacity: Number(event.target.value) })} />
+      <Row label="App background opacity" hint="How solid the window background is">
+        <Slider label="App background opacity" min={5} max={95} value={options.opacity} onChange={(value) => setOptions({ opacity: value })} />
       </Row>
       <Row label="Desktop background blur" hint="Native blur behind the app window">
         <button type="button" className={`switch ${options.desktopBlur ? "switch-on" : ""}`} role="switch"
@@ -207,21 +219,18 @@ function AppearanceSection() {
           <span className="switch-knob" />
         </button>
       </Row>
-      <Row label="Panel background opacity" hint={`${options.surfaceOpacity}% · text stays opaque`}>
-        <input aria-label="Panel background opacity" type="range" min={5} max={100} value={options.surfaceOpacity}
-          onChange={(event) => setOptions({ surfaceOpacity: Number(event.target.value) })} />
+      <Row label="Panel background opacity" hint="Text stays opaque">
+        <Slider label="Panel background opacity" min={5} max={100} value={options.surfaceOpacity} onChange={(value) => setOptions({ surfaceOpacity: value })} />
       </Row>
-      {/mac/i.test(navigator.platform || navigator.userAgent) ? <Row label="Desktop blur strength" hint={`${options.desktopBlurRadius}px · macOS window background`}>
-        <input aria-label="Desktop blur strength" type="range" min={0} max={64} value={options.desktopBlurRadius}
-          disabled={!options.desktopBlur} onChange={(event) => setOptions({ desktopBlurRadius: Number(event.target.value) })} />
+      {/mac/i.test(navigator.platform || navigator.userAgent) ? <Row label="Desktop blur strength" hint="macOS window background">
+        <Slider label="Desktop blur strength" min={0} max={64} value={options.desktopBlurRadius} unit="px" disabled={!options.desktopBlur}
+          onChange={(value) => setOptions({ desktopBlurRadius: value })} />
       </Row> : null}
-      <Row label="Panel backdrop blur" hint={options.blur ? `${options.blur}px` : "Blur off"}>
-        <input aria-label="Panel backdrop blur" type="range" min={0} max={40} value={options.blur}
-          onChange={(event) => setOptions({ blur: Number(event.target.value) })} />
+      <Row label="Panel backdrop blur" hint="Blur behind menus and panels">
+        <Slider label="Panel backdrop blur" min={0} max={40} value={options.blur} format={(value) => (value ? `${value}px` : "Off")} onChange={(value) => setOptions({ blur: value })} />
       </Row>
-      <Row label="Saturation" hint={`${options.saturation}%`}>
-        <input aria-label="Saturation" type="range" min={50} max={180} value={options.saturation}
-          onChange={(event) => setOptions({ saturation: Number(event.target.value) })} />
+      <Row label="Saturation" hint="Color strength behind panels">
+        <Slider label="Saturation" min={50} max={180} value={options.saturation} onChange={(value) => setOptions({ saturation: value })} />
       </Row>
       <div className="settings-actions">
         <button type="button" className="btn btn-sm" onClick={() => setOptions(DEFAULT_TRANSPARENCY_OPTIONS)}>

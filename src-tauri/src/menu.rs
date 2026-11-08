@@ -3,6 +3,14 @@ use tauri::{
     Emitter, Manager,
 };
 
+// Off macOS Ctrl+K is the shell's kill-line; a native accelerator would take it
+// from every terminal, so there the web view handles the shortcut instead.
+const COMMAND_PALETTE_ACCELERATOR: Option<&str> = if cfg!(target_os = "macos") {
+    Some("CmdOrCtrl+K")
+} else {
+    None
+};
+
 pub fn install(app: &tauri::AppHandle) -> tauri::Result<()> {
     // Preserve the platform's standard editing, window, and application actions.
     let menu = Menu::default(app)?;
@@ -24,6 +32,16 @@ pub fn install(app: &tauri::AppHandle) -> tauri::Result<()> {
                 ("new-workspace", "New Workspace…", Some("CmdOrCtrl+Shift+N")),
             ],
             "View" => &[
+                (
+                    "command-palette",
+                    "Command Palette…",
+                    COMMAND_PALETTE_ACCELERATOR,
+                ),
+                (
+                    "search-terminals",
+                    "Search All Terminals…",
+                    Some("CmdOrCtrl+Shift+F"),
+                ),
                 (
                     "font-increase",
                     "Increase Terminal Font Size",
@@ -54,13 +72,20 @@ pub fn install(app: &tauri::AppHandle) -> tauri::Result<()> {
         }
         if title == "Help" {
             submenu.append(&PredefinedMenuItem::separator(app)?)?;
+            // The same sections and topics as the in-app Help (HELP_SECTIONS in
+            // src/panels/HelpModal.tsx), so every topic is one click away.
             let groups: &[(&str, &[(&str, &str)])] = &[
                 (
                     "Getting started",
                     &[
                         ("start", "Overview"),
+                        ("setup", "Setup & tour"),
+                        ("permissions", "Permissions & tools"),
                         ("topbar", "The top bar"),
-                        ("agent-tools", "Agent tools"),
+                        ("new-session", "New session"),
+                        ("agents", "Agents & modes"),
+                        ("palette", "Command palette"),
+                        ("settings", "Settings map"),
                     ],
                 ),
                 (
@@ -69,30 +94,75 @@ pub fn install(app: &tauri::AppHandle) -> tauri::Result<()> {
                         ("tiles", "Sessions & tiles"),
                         ("controls", "Tile controls"),
                         ("focus", "Focus & attention"),
-                        ("workspaces", "Workspaces"),
                         ("layout", "Layout & grid"),
-                        ("code", "Code editor"),
-                        ("shortcuts", "Keyboard shortcuts"),
+                        ("spacing", "Spacing"),
+                        ("workspaces", "Workspaces"),
+                        ("snapshots", "Snapshots"),
+                        ("restore", "Restore snapshots"),
+                        ("broadcast", "Broadcast"),
                     ],
                 ),
                 (
-                    "Agents",
+                    "Git & review",
                     &[
-                        ("usage", "Agent usage"),
+                        ("git", "Branch & PR"),
+                        ("ci", "Fix failing CI"),
+                        ("shared-branch", "Shared branch"),
+                        ("worktrees", "Worktrees"),
+                        ("land", "Open PR & merge"),
+                        ("changes", "Changes view"),
+                        ("review", "Review with agent"),
+                    ],
+                ),
+                (
+                    "Terminal & editor",
+                    &[
+                        ("links", "Open links"),
+                        ("paths", "Open file paths"),
+                        ("paste", "Paste images"),
+                        ("drop", "Drop files"),
+                        ("find", "Find & copy"),
+                        ("search", "Search terminals"),
+                        ("prompts", "Saved prompts"),
+                        ("code", "Code editor"),
+                    ],
+                ),
+                (
+                    "Agents & activity",
+                    &[
+                        ("quick-chat", "Quick Chat"),
+                        ("agent-tools", "Agent automation"),
+                        ("notifications", "Notifications"),
+                        ("usage", "Usage limits"),
+                        ("cost", "Session cost"),
                         ("multiaccount", "Multi-account"),
-                        ("paste", "Image paste"),
+                    ],
+                ),
+                (
+                    "Voice dictation",
+                    &[
+                        ("dictation", "Dictation"),
+                        ("languages", "Languages & mic"),
                     ],
                 ),
                 (
                     "Connections",
                     &[
-                        ("devices", "Devices & the agent"),
+                        ("devices", "Devices"),
+                        ("sync", "Sync"),
                         ("ports", "Ports"),
                         ("rdp", "Remote desktop"),
                         ("mcp", "MCP"),
                     ],
                 ),
-                ("Tips", &[("tips", "Tips")]),
+                (
+                    "Shortcuts & tips",
+                    &[
+                        ("shortcuts", "Shortcuts"),
+                        ("terminal-keys", "Terminal shortcuts"),
+                        ("tips", "Tips"),
+                    ],
+                ),
             ];
             for (label, topics) in groups {
                 let group = Submenu::new(app, *label, true)?;

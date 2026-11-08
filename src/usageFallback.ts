@@ -92,3 +92,87 @@ export async function loadDeviceUsage(
   }));
   if (!results.size) throw new Error("Usage is unavailable on the connected devices.");
 }
+
+// Stable identity of an account card, the same key mergeDeviceUsage dedupes on:
+// provider plus email, API key fingerprint or account label.
+export function usageAccountKey(account: AccountUsage): string {
+  return identity(account);
+}
+
+// One limit row of the usage panel (5h, Weekly or a scoped window of one account).
+export interface UsageRow {
+  accountKey: string;
+  provider: AccountUsage["provider"];
+  // What identifies the account to a person: email, key fingerprint or label.
+  accountName: string;
+  windowKey: string;
+  window: string;
+  used: number;
+}
+
+export function usageWindowKey(window: "5h" | "weekly" | { scoped: string }): string {
+  return typeof window === "string" ? window : `scoped:${window.scoped}`;
+}
+
+// Every limit row the panel shows, in panel order. Error cards carry no usage
+// and are skipped; utilization is clamped and rounded exactly like the bars.
+export function usageRows(accounts: AccountUsage[]): UsageRow[] {
+  const rows: UsageRow[] = [];
+  for (const account of accounts) {
+    if (account.error || !account.usage) continue;
+    const { five_hour, seven_day, scoped } = account.usage;
+    const windows = [
+      { windowKey: usageWindowKey("5h"), window: "5h", value: five_hour?.utilization },
+      { windowKey: usageWindowKey("weekly"), window: "Weekly", value: seven_day?.utilization },
+      ...scoped.map(entry => ({ windowKey: usageWindowKey({ scoped: entry.name }), window: entry.name, value: entry.percent })),
+    ];
+    for (const { windowKey, window, value } of windows) {
+      if (typeof value !== "number" || !Number.isFinite(value)) continue;
+      rows.push({
+        accountKey: identity(account),
+        provider: account.provider,
+        accountName: account.email || account.keyHint || account.label,
+        windowKey,
+        window,
+        used: Math.min(100, Math.max(0, Math.round(value))),
+      });
+    }
+  }
+  return rows;
+}
+
+// The most constrained limit: the highest current utilization across every
+// row the panel shows; null means nothing to show.
+export function usagePeak(accounts: AccountUsage[]): UsageRow | null {
+  let peak: UsageRow | null = null;
+  for (const row of usageRows(accounts)) if (!peak || row.used > peak.used) peak = row;
+  return peak;
+}
+
+// A limit row the user pinned as the top bar chip source.
+export interface UsagePin {
+  accountKey: string;
+  windowKey: string;
+}
+
+// Validate a stored pin; anything malformed reads as no pin (Auto).
+export function parseUsagePin(raw: unknown): UsagePin | null {
+  if (!raw || typeof raw !== "object") return null;
+  const value = raw as Record<string, unknown>;
+  const { accountKey, windowKey } = value;
+  if (typeof accountKey !== "string" || typeof windowKey !== "string") return null;
+  if (!accountKey || accountKey.length > 600 || !windowKey || windowKey.length > 200) return null;
+  return { accountKey, windowKey };
+}
+
+// The row the chip shows: the pinned row while it still exists with usage,
+// otherwise the automatic peak. A pin whose account or window disappeared
+// falls back to Auto without being cleared, so it returns with the account.
+export function usageSelection(accounts: AccountUsage[], pin: UsagePin | null): (UsageRow & { pinned: boolean }) | null {
+  if (pin) {
+    const row = usageRows(accounts).find(entry => entry.accountKey === pin.accountKey && entry.windowKey === pin.windowKey);
+    if (row) return { ...row, pinned: true };
+  }
+  const peak = usagePeak(accounts);
+  return peak ? { ...peak, pinned: false } : null;
+}
