@@ -44,6 +44,81 @@ mod native {
         active: Mutex<Option<Arc<Capture>>>,
         worker: Mutex<Option<std::thread::JoinHandle<()>>>,
         shutting_down: Arc<AtomicBool>,
+        // When dictation last prepared, recorded or finished: the start of idleness.
+        last_used: Mutex<Option<Instant>>,
+        idle_watch: AtomicBool,
+    }
+
+    // The loaded model holds over a gigabyte. It is released after this long
+    // without dictation and loaded again on the next use (the microphone
+    // records meanwhile, so nothing said is lost).
+    const IDLE_RELEASE: Duration = Duration::from_secs(10 * 60);
+    const IDLE_CHECK: Duration = Duration::from_secs(30);
+
+    /// Whether an idle model may be released: never while a recording or its
+    /// worker runs, nor before IDLE_RELEASE has passed since the last use.
+    fn idle_release_due(recording: bool, last_used: Option<Instant>, now: Instant, idle: Duration) -> bool {
+        !recording && last_used.is_none_or(|at| now.saturating_duration_since(at) >= idle)
+    }
+
+    impl SpeechState {
+        fn touch(&self) {
+            if let Ok(mut last_used) = self.last_used.lock() {
+                *last_used = Some(Instant::now());
+            }
+        }
+
+        /// Drops the loaded model when dictation has been idle for `idle`.
+        /// Every lock is only tried: a recording starting, a model loading or
+        /// a decode running all make this wait for a later check. Returns
+        /// whether the model was released.
+        fn release_if_idle(&self, now: Instant, idle: Duration) -> bool {
+            if self.shutting_down.load(Ordering::Acquire) {
+                return false;
+            }
+            // speech_start claims `active` before anything records, so holding
+            // it until the context is claimed keeps a recording out meanwhile.
+            let Ok(active) = self.active.try_lock() else { return false };
+            let Ok(worker) = self.worker.try_lock() else { return false };
+            let Ok(mut context) = self.context.try_lock() else { return false };
+            let recording = active.is_some() || worker.as_ref().is_some_and(|worker| !worker.is_finished());
+            // Read under the context lock: a preparation marks its use before
+            // letting go of it, so a model that just loaded is never taken.
+            let last_used = self.last_used.lock().map(|at| *at).unwrap_or(Some(now));
+            if !idle_release_due(recording, last_used, now, idle) {
+                return false;
+            }
+            drop(worker);
+            drop(active);
+            // Freed under the context lock: a recording that starts now loads
+            // a fresh model only after this one is gone.
+            let engine = context.take();
+            let released = engine.is_some();
+            drop(engine);
+            drop(context);
+            released
+        }
+    }
+
+    fn watch_idle(app: &AppHandle) {
+        let state = app.state::<SpeechState>();
+        if state.idle_watch.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let watcher = app.clone();
+        let started = std::thread::Builder::new().name("dictation-idle".into()).spawn(move || loop {
+            std::thread::sleep(IDLE_CHECK);
+            let state = watcher.state::<SpeechState>();
+            if state.shutting_down.load(Ordering::Acquire) {
+                return;
+            }
+            if state.release_if_idle(Instant::now(), IDLE_RELEASE) {
+                crate::voice_log::log(&watcher, "dictation model released after being idle; it loads again on the next use");
+            }
+        });
+        if started.is_err() {
+            state.idle_watch.store(false, Ordering::Release);
+        }
     }
 
     impl SpeechState {
@@ -271,6 +346,11 @@ mod native {
         error: Mutex<Option<String>>,
         received: AtomicBool,
         captured_samples: AtomicUsize,
+        // The voice activity model's speech probability for each 20 ms block
+        // of captured audio, counted from the recording's start (None where
+        // the model was not available). Recognition reads it to decode and
+        // type only what was spoken.
+        voice: Mutex<Vec<Option<f32>>>,
         finished: AtomicBool,
         #[cfg(test)]
         decoding: AtomicBool,
@@ -290,7 +370,7 @@ mod native {
                 stop: AtomicBool::new(false), cancel: Arc::new(AtomicBool::new(false)),
                 closed: AtomicBool::new(false), samples: Mutex::new(Vec::new()),
                 rate: Mutex::new(16_000), error: Mutex::new(None), received: AtomicBool::new(false),
-                captured_samples: AtomicUsize::new(0), finished: AtomicBool::new(false),
+                captured_samples: AtomicUsize::new(0), voice: Mutex::new(Vec::new()), finished: AtomicBool::new(false),
                 #[cfg(test)]
                 decoding: AtomicBool::new(false),
                 #[cfg(test)]
@@ -300,6 +380,27 @@ mod native {
                 #[cfg(test)]
                 stats: Mutex::new(Vec::new()),
             }
+        }
+
+        /// Records the speech probabilities of consecutive 20 ms blocks,
+        /// the first of which is block `first` of the recording.
+        fn record_voice(&self, first: usize, probabilities: &[Option<f32>]) {
+            if let Ok(mut voice) = self.voice.lock() {
+                voice.resize(first, None);
+                voice.extend_from_slice(probabilities);
+            }
+        }
+
+        /// The speech probability of each 20 ms frame of a decode window of
+        /// `samples` captured samples that starts `drained` samples into the
+        /// recording; None where the voice model has not analyzed the audio.
+        fn window_voice(&self, drained: usize, samples: usize, rate: u32) -> Vec<Option<f32>> {
+            let rate = rate.max(1) as usize;
+            let block = (rate / 50).max(1);
+            let Ok(voice) = self.voice.lock() else { return Vec::new(); };
+            (0..(samples * 50).div_ceil(rate))
+                .map(|frame| voice.get((drained + frame * rate / 50) / block).copied().flatten())
+                .collect()
         }
     }
 
@@ -470,6 +571,9 @@ mod native {
             }
             *context = Some(engine);
         }
+        state.touch();
+        drop(context);
+        watch_idle(app);
         Ok(())
     }
 
@@ -567,6 +671,9 @@ mod native {
                 std::thread::sleep(Duration::from_millis(50));
             }
             drop(stream);
+            // The final pass decodes everything up to the last sample, so the
+            // voice model hears that too: its verdict decides what is typed.
+            activity.update(&app, &capture);
             emit(&app, &capture, "finalizing", None, None, None);
             Ok::<(), String>(())
         })();
@@ -621,15 +728,16 @@ mod native {
             // Whole 20 ms blocks, which resample to exactly one 16 kHz frame
             // at every rate divisible by 50 (44.1 and 48 kHz included).
             let block = (self.rate / 50).max(1);
-            let fresh: Vec<f32> = {
+            let (from, fresh): (usize, Vec<f32>) = {
                 let Ok(samples) = capture.samples.lock() else { return false; };
                 // Recognition drains consumed audio from the front.
                 let drained = capture.captured_samples.load(Ordering::Acquire).saturating_sub(samples.len());
                 let from = self.analyzed.max(drained);
                 let whole = (drained + samples.len()).saturating_sub(from) / block * block;
                 self.analyzed = from + whole;
-                samples[from - drained..from - drained + whole].to_vec()
+                (from, samples[from - drained..from - drained + whole].to_vec())
             };
+            let mut voice = Vec::with_capacity(fresh.len() / block);
             for frame in super::resample(&fresh, self.rate as u32).chunks_exact(super::DictationActivity::FRAME) {
                 let energy = frame.iter().map(|sample| sample * sample).sum::<f32>() / frame.len() as f32;
                 let probability = match self.vad.as_mut().map(|vad| vad.push(frame)) {
@@ -641,10 +749,12 @@ mod native {
                     }
                     None => None,
                 };
+                voice.push(probability);
                 if let Some(hearing) = self.activity.frame(energy, probability) {
                     emit_flag(app, capture, "voice", hearing);
                 }
             }
+            capture.record_voice(from / block, &voice);
             self.activity.stop_due(capture.silence_stop_ms)
         }
     }
@@ -953,19 +1063,18 @@ mod native {
         finalizing: bool,
     ) -> Result<Transcript, String> {
         let rate = *capture.rate.lock().map_err(|_| "Audio lock failed")?;
-        let samples: Vec<f32> = capture
-            .samples
-            .lock()
-            .map_err(|_| "Audio lock failed")?
-            .iter()
-            .take(rate as usize * 27)
-            .copied()
-            .collect();
+        let (samples, drained) = {
+            let samples = capture.samples.lock().map_err(|_| "Audio lock failed")?;
+            // Consistent under the lock: the microphone counts what it appends while holding it.
+            let drained = capture.captured_samples.load(Ordering::Acquire).saturating_sub(samples.len());
+            (samples.iter().take(rate as usize * 27).copied().collect::<Vec<f32>>(), drained)
+        };
+        let voice = capture.window_voice(drained, samples.len(), rate);
         let state = app.state::<SpeechState>();
         let mut context = state.context.lock().map_err(|_| "Speech model lock failed")?;
         let engine = context.as_mut().ok_or("Speech model is not loaded")?;
         emit_processing(app, capture, true);
-        let result = transcribe_samples(engine, capture, language, window, &samples, rate, finalizing);
+        let result = transcribe_samples(engine, capture, language, window, &samples, &voice, rate, finalizing);
         emit_processing(app, capture, false);
         result
     }
@@ -976,6 +1085,9 @@ mod native {
         language: &str,
         window: &mut TranscriptWindow,
         samples: &[f32],
+        // The voice model's speech probability per 20 ms frame of `samples`
+        // (Capture::window_voice); missing or None frames fall back to the level.
+        voice: &[Option<f32>],
         rate: u32,
         finalizing: bool,
     ) -> Result<Transcript, String> {
@@ -984,12 +1096,12 @@ mod native {
         let boundary = utterance_boundary(&audio);
         let utterance_samples = boundary.map(|end| end * rate as usize / 16_000).unwrap_or(samples.len());
         if let Some(end) = boundary { audio.truncate(end); }
-        if window.confirmed.is_empty() && !super::has_speech(&audio) {
+        let speech = super::SpeechMask::new(&audio, voice);
+        if let Some(consumed) = unspoken_audio(window, &speech, audio.len(), boundary.map(|_| utterance_samples), samples.len(), rate, finalizing) {
             return Ok(Transcript {
                 preview: String::new(),
                 committed: String::new(),
-                // Keep a little preroll so a word beginning at this boundary is not lost.
-                consumed: if finalizing { samples.len() } else { samples.len().saturating_sub(rate as usize / 5) },
+                consumed,
                 #[cfg(test)]
                 raw_words: String::new(),
             });
@@ -1127,6 +1239,7 @@ mod native {
         }
         #[cfg(test)]
         let raw_words = word_text(&words);
+        drop_unspoken(&mut words, &speech);
         #[cfg(test)]
         let mut transcript = Transcript { raw_words, ..window.update(words, duration, commit_all) };
         #[cfg(not(test))]
@@ -1172,6 +1285,69 @@ mod native {
             let seconds = word.end.saturating_sub(word.start) as f32 / 16_000.0;
             seconds > 2.0 && (word.text.chars().count() as f32) < seconds * 4.0
         })
+    }
+
+    /// A pause after the last typed word (16 kHz samples) in which nothing is
+    /// speech ends the utterance: its audio is let go, a little preroll kept.
+    const UNSPOKEN_UTTERANCE_END: usize = 16_000;
+
+    /// The decoder invents text from silence and noise ("Thank you.",
+    /// "Altyazı M.K."), so a window is decoded only while something after
+    /// the last typed word is speech: before anything is typed, the whole
+    /// window; after that, the pause that follows the typed words, the final
+    /// pass's leftover included. Returns None to decode, else the captured
+    /// samples to let go without decoding (0 to wait for more audio).
+    /// `duration` is the window's 16 kHz length, cut at `boundary` (the
+    /// captured samples up to an utterance boundary) when there is one, and
+    /// `captured` its length in captured samples.
+    fn unspoken_audio(
+        window: &mut TranscriptWindow,
+        speech: &super::SpeechMask,
+        duration: usize,
+        boundary: Option<usize>,
+        captured: usize,
+        rate: u32,
+        finalizing: bool,
+    ) -> Option<usize> {
+        let typed_until = window.confirmed.last().map_or(0, |word| word.end);
+        if speech.speech_after(typed_until) {
+            return None;
+        }
+        let consumed = if let Some(boundary) = boundary {
+            // Audio after the boundary may already hold the next phrase.
+            boundary
+        } else if finalizing {
+            captured
+        } else if window.confirmed.is_empty() || duration.saturating_sub(typed_until) >= UNSPOKEN_UTTERANCE_END {
+            // Keep a little preroll so a word beginning at this boundary is not lost.
+            captured.saturating_sub(rate as usize / 5)
+        } else {
+            // A short pause after typed words: wait, keeping their context.
+            0
+        };
+        // Whatever is let go was typed or unspoken: the utterance is over.
+        if consumed > 0 { *window = TranscriptWindow::default(); }
+        Some(consumed)
+    }
+
+    /// Drops words the decoder made up from audio without speech: every word
+    /// with no speech within SpeechMask's margin, and, closer to speech, the
+    /// decoder's well-known silence phrases where the voice model heard
+    /// nothing at all in their audio. Text alone never removes a word.
+    fn drop_unspoken(words: &mut Vec<Word>, speech: &super::SpeechMask) {
+        words.retain(|word| speech.near_speech(word.start, word.end));
+        let mut index = 0;
+        while index < words.len() {
+            let phrase = (1..=super::SILENCE_PHRASE_WORDS.min(words.len() - index)).rev().find(|&size| {
+                let run = &words[index..index + size];
+                run.iter().all(|word| speech.unspoken(word.start, word.end))
+                    && super::silence_phrase(run.iter().map(|word| word.text.as_str()))
+            });
+            match phrase {
+                Some(size) => { words.drain(index..index + size); }
+                None => index += 1,
+            }
+        }
     }
 
     fn decoded_words(decoder: &WhisperState, duration: usize) -> Result<Vec<Word>, String> {
@@ -1646,6 +1822,123 @@ mod native {
             assert_eq!(window.update(words("five six seven eight nine ten"), 64_000, true).committed, "nine ten");
         }
 
+        // 16 kHz audio over the level gate, digital silence, and the voice
+        // model's verdict on `seconds` of audio.
+        fn loud(seconds: f32) -> Vec<f32> {
+            (0..(seconds * 16_000.0) as usize).map(|index| (index as f32 * 0.07).sin() * 0.1).collect()
+        }
+
+        fn quiet(seconds: f32) -> Vec<f32> {
+            vec![0.0; (seconds * 16_000.0) as usize]
+        }
+
+        fn heard(seconds: f32, probability: f32) -> Vec<Option<f32>> {
+            vec![Some(probability); (seconds * 50.0).round() as usize]
+        }
+
+        fn mask(audio: &[f32], voice: &[Vec<Option<f32>>]) -> super::super::SpeechMask {
+            super::super::SpeechMask::new(audio, &voice.concat())
+        }
+
+        const PREROLL: usize = 16_000 / 5;
+
+        #[test]
+        fn windows_without_speech_are_let_go_without_decoding() {
+            let skip = |window: &mut TranscriptWindow, audio: &[f32], speech: &super::super::SpeechMask, finalizing: bool| {
+                unspoken_audio(window, speech, audio.len(), None, audio.len(), 16_000, finalizing)
+            };
+            let mut window = TranscriptWindow::default();
+            // Silence, live and at the final pass.
+            let silence = quiet(2.0);
+            let silent = mask(&silence, &[heard(2.0, 0.02)]);
+            assert_eq!(skip(&mut window, &silence, &silent, false), Some(silence.len() - PREROLL));
+            assert_eq!(skip(&mut window, &silence, &silent, true), Some(silence.len()));
+            // Low noise over the level gate that the voice model calls noise;
+            // without the model the level decides, as it always did.
+            let noise: Vec<f32> = (0..32_000).map(|index| (((index * 7919) % 1000) as f32 / 1000.0 - 0.5) * 0.04).collect();
+            assert_eq!(skip(&mut window, &noise, &mask(&noise, &[heard(2.0, 0.1)]), false), Some(noise.len() - PREROLL));
+            assert_eq!(skip(&mut window, &noise, &mask(&noise, &[]), false), None);
+            // A 0.3 s tone burst in silence is decoded, by the level and by the model.
+            let burst = [quiet(0.5), loud(0.3), quiet(0.5)].concat();
+            assert_eq!(skip(&mut window, &burst, &mask(&burst, &[]), false), None);
+            assert_eq!(skip(&mut window, &burst, &mask(&burst, &[heard(0.5, 0.02), heard(0.3, 0.9), heard(0.5, 0.05)]), false), None);
+            // A boundary lets go of its utterance only, never the next phrase after it.
+            assert_eq!(unspoken_audio(&mut window, &silent, silence.len(), Some(12_800), 40_000, 16_000, false), Some(12_800));
+        }
+
+        #[test]
+        fn the_pause_after_typed_words_and_the_final_leftover_type_nothing() {
+            let typed = timed_words(&[("open", 8_000, 16_000), ("settings", 16_000, 32_000)]);
+            let typed_window = || TranscriptWindow { confirmed: typed.clone(), previous: typed.clone(), ..Default::default() };
+            // A short pause after typed words: nothing decoded or let go, their context kept.
+            let pause = [loud(2.0), quiet(0.6)].concat();
+            let pause_heard = mask(&pause, &[heard(2.0, 0.95), heard(0.6, 0.03)]);
+            let mut window = typed_window();
+            assert_eq!(unspoken_audio(&mut window, &pause_heard, pause.len(), None, pause.len(), 16_000, false), Some(0));
+            assert_eq!(window.confirmed.len(), 2);
+            // The same pause in the final pass's leftover: let go, nothing typed.
+            assert_eq!(unspoken_audio(&mut window, &pause_heard, pause.len(), None, pause.len(), 16_000, true), Some(pause.len()));
+            assert!(window.confirmed.is_empty() && window.previous.is_empty());
+            // A longer pause ends the utterance, live.
+            let long = [loud(2.0), quiet(1.2)].concat();
+            let mut window = typed_window();
+            assert_eq!(unspoken_audio(&mut window, &mask(&long, &[heard(2.0, 0.95), heard(1.2, 0.03)]), long.len(), None, long.len(), 16_000, false),
+                Some(long.len() - PREROLL));
+            assert!(window.confirmed.is_empty());
+            // Speech after the typed words is decoded, including the newest
+            // audio the voice model has not analyzed yet.
+            let next = [loud(2.0), quiet(0.6), loud(0.3)].concat();
+            let mut window = typed_window();
+            assert_eq!(unspoken_audio(&mut window, &mask(&next, &[heard(2.0, 0.95), heard(0.6, 0.03)]), next.len(), None, next.len(), 16_000, true), None);
+            assert_eq!(unspoken_audio(&mut window, &mask(&next, &[heard(2.0, 0.95), heard(0.6, 0.03), heard(0.3, 0.8)]), next.len(), None, next.len(), 16_000, false), None);
+            // Low noise after the typed words is not speech to the model.
+            let noisy: Vec<f32> = loud(2.0).into_iter().chain((0..24_000).map(|index| (((index * 7919) % 1000) as f32 / 1000.0 - 0.5) * 0.04)).collect();
+            let mut window = typed_window();
+            assert_eq!(unspoken_audio(&mut window, &mask(&noisy, &[heard(2.0, 0.95), heard(1.5, 0.12)]), noisy.len(), None, noisy.len(), 16_000, true), Some(noisy.len()));
+        }
+
+        #[test]
+        fn words_decoded_from_unspoken_audio_are_dropped() {
+            // One second of speech, then three of silence.
+            let audio = [loud(1.0), quiet(3.0)].concat();
+            let speech = mask(&audio, &[heard(1.0, 0.9), heard(3.0, 0.02)]);
+            let mut words = timed_words(&[
+                ("Open", 3_200, 8_000), ("settings.", 9_600, 16_000),
+                // A known silence phrase just after the speech, made-up words
+                // far from it, and a word timed into the padding after the window.
+                ("Thank", 20_000, 23_000), ("you.", 23_000, 26_000), ("Adobe", 40_000, 44_000), ("RG", 44_000, 48_000), ("you", 70_000, 72_000),
+            ]);
+            drop_unspoken(&mut words, &speech);
+            assert_eq!(word_text(&words), "Open settings.");
+            // Spoken, the same phrase stays, also when its timestamps run late into the pause.
+            let audio = [loud(2.0), quiet(1.0)].concat();
+            let speech = mask(&audio, &[heard(2.0, 0.9), heard(1.0, 0.02)]);
+            for late in [0, 3_000, 6_000] {
+                let mut words = timed_words(&[("Okay,", 0, 8_000), ("thank", 9_600 + late, 20_000 + late), ("you.", 20_000 + late, 32_000 + late)]);
+                drop_unspoken(&mut words, &speech);
+                assert_eq!(word_text(&words), "Okay, thank you.", "{late} samples late");
+            }
+            // Without the voice model the level decides, and text alone removes nothing.
+            let audio = [loud(1.0), quiet(3.0)].concat();
+            let mut words = timed_words(&[("Open", 3_200, 8_000), ("settings.", 9_600, 16_000), ("Thank", 20_000, 23_000), ("you.", 23_000, 26_000), ("Adobe", 40_000, 44_000)]);
+            drop_unspoken(&mut words, &mask(&audio, &[]));
+            assert_eq!(word_text(&words), "Open settings. Thank you.");
+        }
+
+        #[test]
+        fn voice_frames_follow_the_audio_a_window_starts_at() {
+            let capture = capture();
+            // At 48 kHz a 20 ms block is 960 samples. Blocks 3 and 4 were
+            // never analyzed (recognition drained them first).
+            capture.record_voice(0, &[Some(0.1), Some(0.2), None]);
+            capture.record_voice(5, &[Some(0.9), Some(0.8)]);
+            assert_eq!(capture.window_voice(1_920, 5_760, 48_000), vec![None, None, None, Some(0.9), Some(0.8), None]);
+            assert_eq!(capture.window_voice(0, 1_920, 48_000), vec![Some(0.1), Some(0.2)]);
+            // A later analysis of the same blocks replaces them.
+            capture.record_voice(1, &[Some(0.7)]);
+            assert_eq!(capture.window_voice(0, 2_880, 48_000), vec![Some(0.1), Some(0.7), None]);
+        }
+
         #[test]
         #[ignore = "Requires the installed speech model, float PCM audio and its original transcript"]
         fn real_model_streams_words_before_stop_and_recovers_after_cancel() {
@@ -1691,7 +1984,7 @@ mod native {
                 capture.samples.lock().unwrap().extend_from_slice(&samples[offset..end]);
                 offset = end;
                 let audio = capture.samples.lock().unwrap().clone();
-                let transcript = transcribe_samples(&mut engine, &capture, language, &mut window, &audio, rate, false).unwrap();
+                let transcript = transcribe_samples(&mut engine, &capture, language, &mut window, &audio, &[], rate, false).unwrap();
                 if !transcript.committed.is_empty() && offset < samples.len() {
                     live_updates += 1;
                 }
@@ -1703,7 +1996,7 @@ mod native {
             }
             while !capture.samples.lock().unwrap().is_empty() {
                 let audio = capture.samples.lock().unwrap().clone();
-                let transcript = transcribe_samples(&mut engine, &capture, language, &mut window, &audio, rate, true).unwrap();
+                let transcript = transcribe_samples(&mut engine, &capture, language, &mut window, &audio, &[], rate, true).unwrap();
                 assert!(transcript.consumed > 0, "Finalization must consume the remaining audio");
                 apply(&capture, &transcript, &mut committed).unwrap();
                 events.push(serde_json::json!({ "seconds": started.elapsed().as_secs_f64(),
@@ -1792,7 +2085,7 @@ mod native {
                     capture.samples.lock().unwrap().extend_from_slice(&samples[offset..available]);
                     offset = available;
                     let audio: Vec<f32> = capture.samples.lock().unwrap().iter().take(rate * 27).copied().collect();
-                    let transcript = transcribe_samples(engine, &capture, language, &mut window, &audio, rate as u32, false).unwrap();
+                    let transcript = transcribe_samples(engine, &capture, language, &mut window, &audio, &[], rate as u32, false).unwrap();
                     let preview = format!("{} {}", committed, transcript.preview);
                     apply(&capture, &transcript, &mut committed).unwrap();
                     events.push(ReplayEvent { seconds: started.elapsed().as_secs_f64(),
@@ -1803,7 +2096,7 @@ mod native {
             }
             while !capture.samples.lock().unwrap().is_empty() {
                 let audio: Vec<f32> = capture.samples.lock().unwrap().iter().take(rate * 27).copied().collect();
-                let transcript = transcribe_samples(engine, &capture, language, &mut window, &audio, rate as u32, true).unwrap();
+                let transcript = transcribe_samples(engine, &capture, language, &mut window, &audio, &[], rate as u32, true).unwrap();
                 apply(&capture, &transcript, &mut committed).unwrap();
                 events.push(ReplayEvent { seconds: started.elapsed().as_secs_f64(),
                     committed_words: normalized_words(&committed).len(), preview: normalized_words(&committed), finalizing: true });
@@ -1940,13 +2233,20 @@ mod native {
     fn run(app: AppHandle, capture: Arc<Capture>, language: String, input_device_id: Option<String>) {
         let result = (|| {
             emit(&app, &capture, "loading", None, None, None);
-            prepare(&app)?;
             if capture.stop.load(Ordering::Acquire) {
                 return Ok(String::new());
             }
             let audio_app = app.clone();
             let audio_capture = capture.clone();
             let microphone = std::thread::spawn(move || capture_audio(audio_app, audio_capture, input_device_id));
+            // The microphone starts listening while the model loads (after an
+            // idle release); decoding begins once it is ready, from the start
+            // of the recorded audio.
+            if let Err(error) = prepare(&app) {
+                capture.stop.store(true, Ordering::Release);
+                let _ = microphone.join();
+                return Err(error);
+            }
             let mut processed_samples = 0;
             let mut committed = String::new();
             let mut window = TranscriptWindow::default();
@@ -2028,6 +2328,8 @@ mod native {
             ));
             Ok(committed)
         })();
+        // Idleness counts from the end of the recording.
+        app.state::<SpeechState>().touch();
         // Release the singleton before notifying the interface so a new recording can start immediately.
         if let Ok(mut active) = app.state::<SpeechState>().active.lock() {
             *active = None;
@@ -2096,6 +2398,73 @@ mod native {
             assert!(state.shutdown(Duration::from_millis(10)).is_err());
             drop(held);
             state.shutdown(Duration::ZERO).unwrap();
+        }
+    }
+
+    #[cfg(test)]
+    mod idle_tests {
+        use super::*;
+        use std::sync::mpsc;
+
+        #[test]
+        fn idle_release_waits_for_the_recording_and_the_idle_period() {
+            let now = Instant::now() + Duration::from_secs(3600);
+            let idle = Duration::from_secs(600);
+            assert!(!idle_release_due(true, None, now, idle), "never while recording");
+            assert!(!idle_release_due(true, Some(now - Duration::from_secs(7200)), now, idle), "never while recording, however long ago");
+            assert!(!idle_release_due(false, Some(now - Duration::from_secs(599)), now, idle), "not before the idle period");
+            assert!(idle_release_due(false, Some(now - idle), now, idle));
+            assert!(idle_release_due(false, None, now, idle));
+        }
+
+        #[test]
+        fn idle_release_skips_recordings_running_workers_and_shutdown() {
+            let state = SpeechState::default();
+            let later = Instant::now() + Duration::from_secs(3600);
+            *state.active.lock().unwrap() = Some(Arc::new(Capture::new("idle-test".into())));
+            assert!(!state.release_if_idle(later, Duration::ZERO));
+            *state.active.lock().unwrap() = None;
+            let (finish, waiting) = mpsc::channel::<()>();
+            *state.worker.lock().unwrap() = Some(std::thread::spawn(move || { let _ = waiting.recv_timeout(Duration::from_secs(2)); }));
+            assert!(!state.release_if_idle(later, Duration::ZERO));
+            finish.send(()).unwrap();
+            state.worker.lock().unwrap().take().unwrap().join().unwrap();
+            // A held lock (a recording starting, a model loading) is waited out, never blocked on.
+            let held = state.active.lock().unwrap();
+            assert!(!state.release_if_idle(later, Duration::ZERO));
+            drop(held);
+            state.shutdown(Duration::ZERO).unwrap();
+            assert!(!state.release_if_idle(later, Duration::ZERO));
+        }
+
+        fn resident_megabytes() -> f64 {
+            let output = std::process::Command::new("ps").args(["-o", "rss=", "-p", &std::process::id().to_string()]).output().unwrap();
+            String::from_utf8_lossy(&output.stdout).trim().parse::<f64>().unwrap() / 1024.0
+        }
+
+        #[test]
+        #[ignore = "Requires the installed speech model (PZZA_DICTATION_TEST_MODEL)"]
+        fn real_model_is_released_only_when_idle_and_frees_its_memory() {
+            let model = std::env::var_os("PZZA_DICTATION_TEST_MODEL").expect("Set PZZA_DICTATION_TEST_MODEL");
+            let state = SpeechState::default();
+            let baseline = resident_megabytes();
+            *state.context.lock().unwrap() = Some(Engine::load(Path::new(&model), state.shutting_down.clone()).unwrap());
+            state.touch();
+            let loaded = resident_megabytes();
+            let later = Instant::now() + IDLE_RELEASE;
+            // A recording keeps the model however long ago it was last used.
+            *state.active.lock().unwrap() = Some(Arc::new(Capture::new("idle-recording".into())));
+            assert!(!state.release_if_idle(later, IDLE_RELEASE));
+            assert!(state.context.lock().unwrap().is_some());
+            *state.active.lock().unwrap() = None;
+            assert!(!state.release_if_idle(Instant::now(), IDLE_RELEASE), "recently used");
+            assert!(state.context.lock().unwrap().is_some());
+            assert!(state.release_if_idle(later, IDLE_RELEASE));
+            assert!(state.context.lock().unwrap().is_none());
+            let released = resident_megabytes();
+            eprintln!("dictation model memory: {baseline:.0} MB before load, {loaded:.0} MB loaded, {released:.0} MB after the idle release");
+            assert!(loaded - released > 0.5 * (loaded - baseline), "the release returns most of the model's memory");
+            state.shutdown(Duration::from_secs(5)).unwrap();
         }
     }
 
@@ -2607,10 +2976,18 @@ mod native {
             let mut committed = String::new();
             let mut passes = Vec::new();
             let (mut offset, mut consumed) = (0, 0);
-            let mut pass = |engine: &mut Engine, window: &mut TranscriptWindow, committed: &mut String, consumed: &mut usize, finalizing: bool| {
+            let voice = voice_probabilities(samples);
+            let mut pass = |engine: &mut Engine, window: &mut TranscriptWindow, committed: &mut String, consumed: &mut usize, finalizing: bool, offset: usize| {
+                // The capture thread analyzes the audio a little behind the
+                // microphone, and all of it before the final pass.
+                if let Some(voice) = &voice {
+                    let analyzed = if finalizing { offset } else { offset.saturating_sub(VOICE_LAG) };
+                    capture.record_voice(0, &voice[..(analyzed / 320).min(voice.len())]);
+                }
                 let audio: Vec<f32> = capture.samples.lock().unwrap().iter().take(RATE * 27).copied().collect();
+                let heard = capture.window_voice(*consumed, audio.len(), RATE as u32);
                 let before = capture.stats.lock().unwrap().len();
-                let transcript = transcribe_samples(engine, capture, "auto", window, &audio, RATE as u32, finalizing).unwrap();
+                let transcript = transcribe_samples(engine, capture, "auto", window, &audio, &heard, RATE as u32, finalizing).unwrap();
                 if let Some(stats) = capture.stats.lock().unwrap().get(before).cloned() { passes.push((*consumed, stats)); }
                 *consumed += transcript.consumed;
                 apply(capture, &transcript, committed).unwrap();
@@ -2622,16 +2999,39 @@ mod native {
                 if decode_due(available - offset, RATE) || available == samples.len() {
                     capture.samples.lock().unwrap().extend_from_slice(&samples[offset..available]);
                     offset = available;
-                    pass(engine, &mut window, &mut committed, &mut consumed, false);
+                    pass(engine, &mut window, &mut committed, &mut consumed, false, offset);
                     continue;
                 }
                 std::thread::sleep(DECODE_POLL);
             }
             while !capture.samples.lock().unwrap().is_empty() {
-                assert!(pass(engine, &mut window, &mut committed, &mut consumed, true) > 0, "Finalization must consume audio");
+                assert!(pass(engine, &mut window, &mut committed, &mut consumed, true, offset) > 0, "Finalization must consume audio");
             }
             let latency = (started.elapsed().as_secs_f64() - samples.len() as f64 / RATE as f64).max(0.0);
             (committed, passes, latency)
+        }
+
+        // How far the capture thread's voice analysis trails the microphone:
+        // its 50 ms polling plus the model's 32 ms window.
+        const VOICE_LAG: usize = RATE / 10;
+
+        // The voice model's speech probability for every 20 ms frame, as the
+        // capture thread computes it. None (the level alone decides, as when
+        // the model is unavailable) without ONNX Runtime and the model
+        // (PZZA_VAD_MODEL, else the installed one), or with
+        // PZZA_DICTATION_TEST_VAD=off.
+        fn voice_probabilities(samples: &[f32]) -> Option<Vec<Option<f32>>> {
+            if std::env::var("PZZA_DICTATION_TEST_VAD").is_ok_and(|value| value == "off") { return None; }
+            let model = std::env::var_os("PZZA_VAD_MODEL").map(std::path::PathBuf::from).unwrap_or_else(|| {
+                std::path::PathBuf::from(std::env::var("HOME").unwrap()).join("Library/Application Support/com.pzzacode.app/speech/silero_vad.onnx")
+            });
+            match crate::voice_vad::Vad::load(&model) {
+                Ok(mut vad) => Some(samples.chunks_exact(320).map(|frame| vad.push(frame).ok()).collect()),
+                Err(error) => {
+                    eprintln!("voice activity model unavailable, the level alone decides: {error}");
+                    None
+                }
+            }
         }
 
         const ENGLISH_MARKERS: &[&str] = &["the", "you", "your", "to", "do", "does", "need", "what", "is", "are", "it", "this", "that", "and", "of",
@@ -2866,6 +3266,53 @@ mod native {
             }
             assert_eq!(missing, 0, "the last words were lost when stopping right after them");
         }
+
+        // Speech followed by seconds of silence or room noise before Stop, and
+        // recordings with nothing said: nothing may be typed beyond the spoken
+        // words. A spoken "thank you" (a phrase the decoder also invents from
+        // silence) is still typed.
+        #[test]
+        #[ignore = "needs the installed speech model, the voice activity model and macOS voices"]
+        fn real_model_types_nothing_from_the_silence_after_speech() {
+            whisper_rs::install_logging_hooks();
+            let model = std::path::PathBuf::from(std::env::var("HOME").unwrap()).join("Library/Application Support/com.pzzacode.app/speech/ggml-large-v3-q5_0.bin");
+            let mut engine = Engine::load(&model, Arc::new(AtomicBool::new(false))).unwrap();
+            let sentences = [
+                (EN, "Please open the settings page and check the spacing value."),
+                (TR, "Bu dosyadaki hatayı düzeltip testleri tekrar çalıştır."),
+                (EN, "Okay, thank you."),
+                (TR, "Tamam, teşekkür ederim."),
+            ];
+            let mut failures = Vec::new();
+            for (noise_level, condition) in [(None, "silence"), (Some(-50.0), "room noise")] {
+                let mix = |speech: &[f32], seed: u64| -> Vec<f32> {
+                    let noise = room_noise(speech.len(), seed);
+                    speech.iter().zip(&noise).map(|(sample, noise)| sample + noise_level.map_or(0.0, |level| noise * decibels(level))).collect()
+                };
+                // Nothing said at all, then Stop.
+                let capture = Arc::new(Capture { languages: vec!["en".into(), "tr".into()], ..Capture::new("silent".into()) });
+                let (typed, _, _) = dictate(&mut engine, &capture, &mix(&vec![0.0; RATE * 6], 7));
+                eprintln!("SILENT {condition}: typed {typed:?}");
+                if !typed.trim().is_empty() { failures.push(format!("{condition} alone typed {typed:?}")); }
+                for (voice, text) in sentences {
+                    let mut speech = vec![0.0f32; RATE / 2];
+                    let spoken = say(voice, text, 0);
+                    let level = active_rms(&spoken);
+                    speech.extend(spoken.iter().map(|value| value / level * 0.1));
+                    speech.extend(std::iter::repeat_n(0.0, RATE * 5));
+                    let capture = Arc::new(Capture { languages: vec!["en".into(), "tr".into()], ..Capture::new("trailing".into()) });
+                    let (typed, _, _) = dictate(&mut engine, &capture, &mix(&speech, 11));
+                    let expected = normalized_words(text);
+                    let typed_words = normalized_words(&typed);
+                    // Recognition may vary a word; it may not add any after the last.
+                    let extra = typed_words.len() > expected.len()
+                        || typed_words.last() != expected.last();
+                    eprintln!("TRAILING {} {condition}: {text} typed {typed:?}", if extra { "FAIL" } else { "ok  " });
+                    if extra { failures.push(format!("{condition} after {text:?} typed {typed:?}")); }
+                }
+            }
+            assert!(failures.is_empty(), "{failures:#?}");
+        }
     }
 
     #[tauri::command]
@@ -3062,14 +3509,135 @@ fn normalize_level(audio: &mut [f32]) {
     }
 }
 
-fn has_speech(audio: &[f32]) -> bool {
-    // Require sustained energy rather than sending silence or a single click to the decoder.
-    audio
-        .chunks_exact(320)
-        .filter(|frame| frame.iter().map(|v| v * v).sum::<f32>() / 320.0 > 0.000025)
-        .take(10)
-        .count()
-        >= 10
+// ---- Dictation: which audio of a decode window is speech ----
+
+/// A frame the voice activity model gives at least this probability is
+/// speech here. Lower than the threshold that starts the live indicator
+/// (DictationActivity::SPEECH_ON): this decides what may be decoded and
+/// typed, so soft and distant speech must still count.
+#[cfg(any(target_os = "macos", test))]
+const VOICED_PROBABILITY: f32 = 0.3;
+/// Speech that makes a stretch of audio worth decoding: 60 ms the voice
+/// model heard as speech, or, in audio it has not analyzed, 200 ms of
+/// sustained level (rather than silence or a single click).
+#[cfg(any(target_os = "macos", test))]
+const VOICED_FRAMES: usize = 3;
+#[cfg(any(target_os = "macos", test))]
+const LOUD_FRAMES: usize = 10;
+/// Word timestamps can be off by a few hundred milliseconds, so a word
+/// counts as spoken when speech lies within this many frames (0.5 s) of it.
+#[cfg(any(target_os = "macos", test))]
+const WORD_MARGIN_FRAMES: usize = 25;
+/// Within that margin, a known silence phrase is dropped only when the voice
+/// model heard nothing for this many frames (0.2 s) around it too, so a
+/// spoken "thank you" with a late timestamp is still typed.
+#[cfg(any(target_os = "macos", test))]
+const UNSPOKEN_MARGIN_FRAMES: usize = 10;
+
+/// Speech in each 20 ms frame of a decode window's 16 kHz audio: the voice
+/// activity model's verdict where it analyzed the frame, else the level.
+#[cfg(any(target_os = "macos", test))]
+struct SpeechMask {
+    // Some(speech) where the voice model analyzed the frame.
+    heard: Vec<Option<bool>>,
+    // Mean square over -46 dBFS: the level gate used without the model.
+    loud: Vec<bool>,
+}
+
+#[cfg(any(target_os = "macos", test))]
+impl SpeechMask {
+    const FRAME: usize = 320;
+
+    /// `audio` is the (level-normalized) window and `probabilities` the voice
+    /// model's per frame; missing or None frames are judged by the level.
+    fn new(audio: &[f32], probabilities: &[Option<f32>]) -> Self {
+        let loud: Vec<bool> = audio.chunks_exact(Self::FRAME)
+            .map(|frame| frame.iter().map(|sample| sample * sample).sum::<f32>() / Self::FRAME as f32 > 0.000025)
+            .collect();
+        let heard = (0..loud.len())
+            .map(|frame| probabilities.get(frame).copied().flatten().map(|probability| probability >= VOICED_PROBABILITY))
+            .collect();
+        Self { heard, loud }
+    }
+
+    fn voiced(&self, frame: usize) -> bool {
+        self.heard[frame].unwrap_or(self.loud[frame])
+    }
+
+    /// Whether the audio from sample `from` on holds speech.
+    fn speech_after(&self, from: usize) -> bool {
+        let (mut heard, mut loud) = (0, 0);
+        for frame in from / Self::FRAME..self.loud.len() {
+            match self.heard[frame] {
+                Some(speech) => heard += usize::from(speech),
+                None => loud += usize::from(self.loud[frame]),
+            }
+        }
+        heard >= VOICED_FRAMES || loud >= LOUD_FRAMES
+    }
+
+    /// The frames of a word's audio (`start..end` in samples), clamped to
+    /// the window: a word timed into the padding after it maps to its end.
+    fn frames(&self, start: usize, end: usize) -> Option<std::ops::RangeInclusive<usize>> {
+        let last = self.loud.len().checked_sub(1)?;
+        let first = (start / Self::FRAME).min(last);
+        Some(first..=(end.saturating_sub(1) / Self::FRAME).clamp(first, last))
+    }
+
+    /// Whether speech lies within WORD_MARGIN_FRAMES of a word's audio.
+    fn near_speech(&self, start: usize, end: usize) -> bool {
+        self.frames(start, end).is_some_and(|span| {
+            let last = self.loud.len() - 1;
+            (span.start().saturating_sub(WORD_MARGIN_FRAMES)..=(span.end() + WORD_MARGIN_FRAMES).min(last))
+                .any(|frame| self.voiced(frame))
+        })
+    }
+
+    /// Whether the voice model analyzed a word's audio and the
+    /// UNSPOKEN_MARGIN_FRAMES around it, and heard no speech in any of it.
+    fn unspoken(&self, start: usize, end: usize) -> bool {
+        self.frames(start, end).is_some_and(|span| {
+            let last = self.loud.len() - 1;
+            (span.start().saturating_sub(UNSPOKEN_MARGIN_FRAMES)..=(span.end() + UNSPOKEN_MARGIN_FRAMES).min(last))
+                .all(|frame| self.heard[frame] == Some(false))
+        })
+    }
+}
+
+/// What speech models typically "hear" in silence: the closing lines of the
+/// subtitled videos they learned from. Removed only from audio the voice
+/// model heard no speech in (native::drop_unspoken), never by text alone.
+#[cfg(any(target_os = "macos", test))]
+const SILENCE_PHRASES: &[&str] = &[
+    "you", "bye", "bye bye", "thank you", "thank you very much", "thanks for watching", "thank you for watching",
+    "thank you so much for watching", "please subscribe", "subtitles by the amara.org community",
+    "izlediğiniz için teşekkür ederim", "izlediğiniz için teşekkürler", "teşekkür ederim", "teşekkürler",
+    "abone olmayı unutmayın", "altyazı m.k.",
+    "untertitel der amara.org-community", "untertitel im auftrag des zdf für funk 2017", "vielen dank", "danke fürs zuschauen",
+    "sous-titres réalisés para la communauté d'amara.org", "merci d'avoir regardé", "merci",
+    "gracias", "gracias por ver", "subtítulos realizados por la comunidad de amara.org", "obrigado",
+    "спасибо за просмотр", "продолжение следует", "ご視聴ありがとうございました", "谢谢观看", "시청해주셔서 감사합니다",
+];
+
+/// The most words in one SILENCE_PHRASES entry.
+#[cfg(any(target_os = "macos", test))]
+const SILENCE_PHRASE_WORDS: usize = 8;
+
+/// Lowercase words without surrounding punctuation, for SILENCE_PHRASES.
+/// Turkish "İ" lowercases to "i" plus a combining dot, which is dropped.
+#[cfg(any(target_os = "macos", test))]
+fn phrase_words<'a>(words: impl IntoIterator<Item = &'a str>) -> Vec<String> {
+    words.into_iter().flat_map(str::split_whitespace)
+        .map(|word| word.trim_matches(|character: char| !character.is_alphanumeric()).to_lowercase().replace('\u{307}', ""))
+        .filter(|word| !word.is_empty())
+        .collect()
+}
+
+/// Whether decoded words read exactly as one of SILENCE_PHRASES.
+#[cfg(any(target_os = "macos", test))]
+fn silence_phrase<'a>(words: impl IntoIterator<Item = &'a str>) -> bool {
+    let words = phrase_words(words);
+    !words.is_empty() && SILENCE_PHRASES.iter().any(|phrase| phrase_words([*phrase]) == words)
 }
 
 /// The speech languages PzzaCode supports, in priority order, read from the
@@ -3593,6 +4161,11 @@ mod tests {
             }
         }
     }
+    // Without the voice model's verdict, the level alone decides.
+    fn has_speech(audio: &[f32]) -> bool {
+        SpeechMask::new(audio, &[]).speech_after(0)
+    }
+
     #[test]
     fn silence_and_clicks_do_not_trigger_recognition() {
         assert!(!has_speech(&vec![0.0; 16_000]));
@@ -3600,6 +4173,62 @@ mod tests {
         click[500] = 1.0;
         assert!(!has_speech(&click));
         assert!(has_speech(&vec![0.02; 3_200]));
+    }
+
+    #[test]
+    fn the_voice_model_decides_where_it_listened_and_the_level_elsewhere() {
+        let probabilities = |parts: &[(usize, Option<f32>)]| parts.iter().flat_map(|(frames, probability)| vec![*probability; *frames]).collect::<Vec<_>>();
+        // Steady noise over the level gate (a fan, typing) that the model calls noise.
+        let noise: Vec<f32> = (0..32_000).map(|index| (((index * 7919) % 1000) as f32 / 1000.0 - 0.5) * 0.04).collect();
+        assert!(has_speech(&noise));
+        assert!(!SpeechMask::new(&noise, &probabilities(&[(100, Some(0.1))])).speech_after(0));
+        // Soft speech the level misses but the model hears.
+        let soft = vec![0.001; 32_000];
+        assert!(!has_speech(&soft));
+        assert!(SpeechMask::new(&soft, &probabilities(&[(40, Some(0.02)), (10, Some(0.6)), (50, Some(0.02))])).speech_after(0));
+        // A 40 ms blip of probability is not speech; 60 ms is.
+        assert!(!SpeechMask::new(&soft, &probabilities(&[(40, Some(0.02)), (2, Some(0.9)), (58, Some(0.02))])).speech_after(0));
+        assert!(SpeechMask::new(&soft, &probabilities(&[(40, Some(0.02)), (3, Some(0.9)), (57, Some(0.02))])).speech_after(0));
+        // Frames not analyzed yet (the newest audio) fall back to the level.
+        let mut tail = vec![0.0f32; 24_000];
+        tail.extend(vec![0.02; 8_000]);
+        assert!(SpeechMask::new(&tail, &probabilities(&[(75, Some(0.02))])).speech_after(0));
+        assert!(!SpeechMask::new(&tail, &probabilities(&[(100, Some(0.02))])).speech_after(0));
+        // Only audio from the given sample on counts.
+        let speech_then_quiet = SpeechMask::new(&vec![0.02; 32_000], &probabilities(&[(50, Some(0.9)), (50, Some(0.05))]));
+        assert!(speech_then_quiet.speech_after(0));
+        assert!(!speech_then_quiet.speech_after(16_000));
+    }
+
+    #[test]
+    fn words_near_speech_count_as_spoken_and_padding_maps_to_the_end() {
+        let mut probabilities = vec![Some(0.9); 50];
+        probabilities.extend(vec![Some(0.02); 100]);
+        let mask = SpeechMask::new(&vec![0.0; 48_000], &probabilities);
+        // Within half a second of the last voiced frame (frame 49, 1.0 s).
+        assert!(mask.near_speech(23_000, 26_000));
+        assert!(!mask.near_speech(26_000, 30_000));
+        // Zero-length and reversed spans, and spans past the window, stay in range.
+        assert!(mask.near_speech(10_000, 10_000));
+        assert!(!mask.near_speech(90_000, 80_000));
+        assert!(!SpeechMask::new(&[], &[]).near_speech(0, 1_000));
+        // Unspoken: the model heard nothing in the word and 0.2 s around it.
+        assert!(!mask.unspoken(17_000, 20_000));
+        assert!(mask.unspoken(20_000, 26_000));
+        assert!(!SpeechMask::new(&vec![0.0; 48_000], &[]).unspoken(20_000, 26_000), "without the model, never");
+    }
+
+    #[test]
+    fn silence_phrases_match_whole_phrases_in_any_case_and_punctuation() {
+        assert!(silence_phrase(["Thank", "you."]));
+        assert!(silence_phrase(["İzlediğiniz", "için", "teşekkür", "ederim."]));
+        assert!(silence_phrase(["Altyazı", "M.K."]));
+        assert!(silence_phrase(["ご視聴ありがとうございました"]));
+        assert!(!silence_phrase(["Thank", "you", "Berke."]));
+        assert!(!silence_phrase(["Open", "settings."]));
+        assert!(!silence_phrase(["..."]));
+        let longest = SILENCE_PHRASES.iter().map(|phrase| phrase_words([*phrase]).len()).max().unwrap();
+        assert_eq!(SILENCE_PHRASE_WORDS, longest);
     }
 
     #[test]

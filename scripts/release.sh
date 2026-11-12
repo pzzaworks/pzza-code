@@ -50,6 +50,11 @@ TARGZ="$BUNDLE/macos/PzzaCode.app.tar.gz"
 SIG="$TARGZ.sig"
 for f in "$APP" "$DMG" "$TARGZ" "$SIG"; do [ -e "$f" ] || { echo "missing artifact: $f"; exit 1; }; done
 
+# Boot the device agent exactly as the built app ships it. A bundle missing a
+# module would leave every user on "Agent unreachable", so it never gets published.
+echo "==> Checking the bundled agent starts"
+node scripts/agent-smoke.mjs "$APP/Contents/Resources/server"
+
 echo "==> Notarizing"
 # Pull the .p8 notary key from 1Password into a temp file for the duration of
 # the submit, then shred it - the private key never lands in the repo or a

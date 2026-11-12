@@ -233,7 +233,7 @@ test("opencode spend reads billed cost and tokens from the local session databas
     assert.equal(accounts.length, 1);
     const result = accounts[0];
     assert.equal(result.provider, 'opencode');
-    assert.equal(result.pricingBasis, 'opencode-billed');
+    assert.equal(result.pricingBasis, 'agent-recorded');
     assert.deepEqual([result.today.cost, result.today.tokens], [1.5, 1600]);
     assert.deepEqual([result.yesterday.cost, result.yesterday.tokens], [2.5, 3000]);
     assert.deepEqual([result.window.cost, result.window.tokens], [4.0, 4600]);
@@ -246,4 +246,76 @@ test("opencode spend reads billed cost and tokens from the local session databas
     env: { ...process.env, HOME: root, XDG_CONFIG_HOME: root, XDG_DATA_HOME: path.join(root, "data"), TZ: "UTC" }, timeout: 10_000,
   });
   assert.equal(stdout, "ok");
+});
+
+test("incremental transcript scans equal full scans across appends, partial lines, truncation and replacement", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "pzza-spend-incremental-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const { parseTranscript } = await import("../lib/spend-scan.js");
+  const { appendFile, stat, truncate, rename, utimes } = await import("node:fs/promises");
+  const claude = (n, model = "claude-opus-4-7", day = "2026-09-10") => JSON.stringify({
+    timestamp: `${day}T12:${String(n).padStart(2, "0")}:00Z`, cwd: "/Users/dev/app", requestId: `r${n}`,
+    message: { id: `m${n}`, model, usage: { input_tokens: 100 * n, output_tokens: 10 * n, cache_read_input_tokens: n, cache_creation_input_tokens: 2 * n } },
+  });
+  const codexContext = (model) => JSON.stringify({ timestamp: "2026-09-10T08:00:00Z", type: "turn_context", payload: { model, cwd: "/Users/dev/api" } });
+  const codex = (input, cached, output) => JSON.stringify({ timestamp: "2026-09-10T09:00:00Z", type: "event_msg",
+    payload: { type: "token_count", info: { total_token_usage: { input_tokens: input, cached_input_tokens: cached, output_tokens: output } } } });
+  const files = { claude: path.join(root, "claude.jsonl"), codex: path.join(root, "codex.jsonl") };
+  const entries = {};
+  let clock = Date.parse("2026-09-10T10:00:00Z");
+  // Each step moves the file's mtime forward, as a real write would.
+  const tick = async (file) => { clock += 1000; await utimes(file, clock / 1000, clock / 1000); };
+  const check = async (provider, label) => {
+    const file = files[provider];
+    const st = await stat(file);
+    const incremental = await parseTranscript(provider, file, st, entries[provider]);
+    const full = await parseTranscript(provider, file, st, undefined);
+    assert.deepEqual(incremental.days, full.days, `${provider} ${label}: buckets`);
+    assert.deepEqual(incremental.state.session, full.state.session, `${provider} ${label}: session`);
+    assert.equal(incremental.parsedBytes, full.parsedBytes, `${provider} ${label}: offset`);
+    entries[provider] = incremental;
+    return incremental;
+  };
+
+  await writeFile(files.claude, [claude(1), claude(2)].join("\n") + "\n");
+  await tick(files.claude);
+  await check("claude", "first scan");
+  // Appended records, a retry logged twice, and a record still being written.
+  await appendFile(files.claude, [claude(3), claude(3), claude(4, "claude-sonnet-4-6")].join("\n") + "\n" + claude(5).slice(0, 40));
+  await tick(files.claude);
+  const partial = await check("claude", "append with a partial line");
+  assert.ok(partial.parsedBytes < (await stat(files.claude)).size, "the unfinished line waits for the next scan");
+  await appendFile(files.claude, claude(5).slice(40) + "\n");
+  await tick(files.claude);
+  await check("claude", "partial line completed");
+  // Truncated: the file shrank, so everything is read again.
+  await truncate(files.claude, claude(1).length + 1);
+  await tick(files.claude);
+  const truncated = await check("claude", "truncated");
+  assert.deepEqual(Object.keys(truncated.days["2026-09-10"]), ["claude-opus-4-7"]);
+  // Rewritten in place with different, longer content: same inode, larger size.
+  await writeFile(files.claude, [claude(7), claude(8), claude(9)].join("\n") + "\n");
+  await tick(files.claude);
+  const rewritten = await check("claude", "rewritten in place");
+  assert.equal(rewritten.days["2026-09-10"]["claude-opus-4-7"][0], 2400, "only the new records count");
+  // Rotated: a new file moved over the old path, larger than the old offset.
+  const rotated = `${files.claude}.next`;
+  await writeFile(rotated, [claude(10), claude(11), claude(12), claude(13)].join("\n") + "\n");
+  await rename(rotated, files.claude);
+  await tick(files.claude);
+  const replaced = await check("claude", "rotated");
+  assert.equal(replaced.days["2026-09-10"]["claude-opus-4-7"][0], 4600);
+
+  // Codex counters are running totals; resumes keep the last totals.
+  await writeFile(files.codex, [codexContext("gpt-5.2"), codex(1000, 100, 10)].join("\n") + "\n");
+  await tick(files.codex);
+  await check("codex", "first scan");
+  await appendFile(files.codex, [codex(3000, 500, 40), codexContext("gpt-5.4"), codex(4000, 600, 50)].join("\n") + "\n");
+  await tick(files.codex);
+  await check("codex", "append");
+  await truncate(files.codex, codexContext("gpt-5.2").length + 1);
+  await appendFile(files.codex, codex(500, 0, 5) + "\n" + codex(900, 0, 9) + "\n" + codex(1200, 0, 12) + "\n");
+  await tick(files.codex);
+  const restarted = await check("codex", "truncated and regrown");
+  assert.deepEqual(restarted.days["2026-09-10"]["gpt-5.2"], [1200, 12, 0, 0, 0]);
 });

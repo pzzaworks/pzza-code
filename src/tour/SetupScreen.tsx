@@ -6,34 +6,12 @@ import { useStore } from "../state/store";
 import { SetupHealth, SetupPermissions, SetupRequirements, useRequirementsReady } from "./SetupSteps";
 import "./OnboardingTour.css";
 import "./SetupScreen.css";
+import { markSetupDone } from "./progress";
 
 // First launch opens setup before the UI tour: what PzzaCode needs on this
-// machine (permissions, tmux and Node.js), one step at a time.
-const DONE_KEY = "pzza.setup.done";
-// Installs that finished the earlier setup wizard or onboarding count as set up.
-const LEGACY_DONE_KEYS = ["pzza.setupDone", "pzza.onboarding.done"];
-
-export function setupPending(): boolean {
-  try {
-    if (localStorage.getItem(DONE_KEY)) return false;
-    if (LEGACY_DONE_KEYS.some(key => localStorage.getItem(key))) {
-      localStorage.setItem(DONE_KEY, "1");
-      return false;
-    }
-    return true;
-  } catch {
-    // Storage is unavailable: never block every launch with setup.
-    return false;
-  }
-}
-
-function markSetupDone() {
-  try {
-    localStorage.setItem(DONE_KEY, "1");
-  } catch {
-    /* private mode - nothing to remember */
-  }
-}
+// machine, one step at a time. Node.js and tmux install first; the privacy
+// permissions come after, because macOS can only grant tmux its permissions
+// once tmux exists.
 
 interface SetupStep {
   id: string;
@@ -51,13 +29,6 @@ function Requirements() {
 }
 
 const STEPS: SetupStep[] = [
-  ...(PERMISSIONS_SUPPORTED ? [{
-    id: "permissions",
-    icon: ShieldCheck,
-    title: "Privacy permissions",
-    body: "Allow what your tools need. Each Allow shows the macOS prompt or opens the right page in System Settings.",
-    content: SetupPermissions,
-  }] : []),
   {
     id: "requirements",
     icon: Package,
@@ -67,13 +38,20 @@ const STEPS: SetupStep[] = [
       : "PzzaCode needs tmux on this machine for terminals that keep running.",
     content: Requirements,
   },
+  ...(PERMISSIONS_SUPPORTED ? [{
+    id: "permissions",
+    icon: ShieldCheck,
+    title: "Privacy permissions",
+    body: "Allow what your tools and tmux need. Each Allow shows the macOS prompt or opens the right page in System Settings.",
+    content: SetupPermissions,
+  }] : []),
 ];
 
 function Welcome() {
   return <div className="setup-welcome">
     <p className="setup-lead">
-      Every terminal and every coding agent, on one grid. Setup allows what your tools need on this Mac and
-      installs what PzzaCode runs on; it takes about a minute.
+      Every terminal and every coding agent, on one grid. Setup installs what PzzaCode runs on and allows
+      what your tools need on this Mac; it takes about a minute.
     </p>
     <ol className="setup-plan">
       {STEPS.map((step) => {
@@ -94,7 +72,8 @@ const PAGES: SetupStep[] = [
 
 // Setup fills the window with one centered column: where you are in the
 // steps, the current step, and its Back / Continue right below it.
-// It cannot be skipped: Finish setup waits until the requirements are ready.
+// It cannot be skipped: the requirements step moves on (to the permissions, or
+// Finish setup where there are none) only once they are installed.
 export function SetupScreen({ open, onDone }: { open: boolean; onDone: () => void }) {
   const [index, setIndex] = useState(0);
   const primaryRef = useRef<HTMLButtonElement>(null);
@@ -114,9 +93,10 @@ export function SetupScreen({ open, onDone }: { open: boolean; onDone: () => voi
   if (!open) return null;
   const page = PAGES[index];
   const last = index === PAGES.length - 1;
+  const waiting = page.id === "requirements" && !ready;
   const go = (step: 1 | -1) => {
+    if (waiting && step === 1) return;
     if (last && step === 1) {
-      if (!ready) return;
       markSetupDone();
       onDone();
       return;
@@ -150,10 +130,10 @@ export function SetupScreen({ open, onDone }: { open: boolean; onDone: () => voi
             </div>
           </div>
           <div className="setup-actions">
-            {last && !ready ? <span className="setup-wait" role="status"><Loader2 size={13} className="sw-spin" aria-hidden="true" />Waiting for the requirements to finish installing</span> : null}
+            {waiting ? <span className="setup-wait" role="status"><Loader2 size={13} className="sw-spin" aria-hidden="true" />Waiting for the requirements to finish installing</span> : null}
             <span className="setup-spacer" />
             {index > 0 ? <button type="button" className="btn" onClick={() => go(-1)}>Back</button> : null}
-            <button type="button" ref={primaryRef} className="btn btn-accent" disabled={last && !ready} onClick={() => go(1)}>
+            <button type="button" ref={primaryRef} className="btn btn-accent" disabled={waiting} onClick={() => go(1)}>
               {last ? "Finish setup" : "Continue"}{last ? null : <ArrowRight size={14} aria-hidden="true" />}
             </button>
           </div>

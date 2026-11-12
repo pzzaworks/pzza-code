@@ -1,0 +1,186 @@
+/* Tasks: the top bar dropdown and the task window. The dropdown is built from
+   the other menus' classes (the Notifications panel, header row and cards,
+   the New session composer and ns-* controls, the Usage menu's section
+   titles and segmented switch); the window is the Checkpoints window
+   (cp-*). What follows only fills the gaps those leave, with the same tokens.
+   State reads from color: Working (blue), Needs you (amber), Review (green),
+   Done (muted, merged in purple). */
+
+:root {
+  --task-working: #2f6fd6;
+  --task-merged: #8250df;
+}
+:root[data-appearance="dark"] {
+  --task-working: #58a6ff;
+  --task-merged: #a371f7;
+}
+.task-tone-working { --tone: var(--task-working); }
+.task-tone-needs-you { --tone: var(--warning); }
+.task-tone-review { --tone: var(--success); }
+.task-tone-done, .task-tone-muted { --tone: var(--muted); }
+.task-tone-merged { --tone: var(--task-merged); }
+.task-tone-danger { --tone: var(--danger); }
+
+/* The status dot is the Usage menu's; it takes the task's tone and pulses while the agent works. */
+.usage-dot[class*="task-tone-"] { background: var(--tone); }
+.task-dot-live { box-shadow: 0 0 0 0 color-mix(in srgb, var(--tone) 55%, transparent); animation: task-pulse 1.8s ease-out infinite; }
+@keyframes task-pulse {
+  70% { box-shadow: 0 0 0 5px transparent; }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}
+@media (prefers-reduced-motion: reduce) { .task-dot-live { animation: none; } }
+
+.task-add { color: var(--success-foreground, var(--success)); font-variant-numeric: tabular-nums; }
+.task-del { color: var(--danger-foreground, var(--danger)); font-variant-numeric: tabular-nums; }
+.task-diffstat { display: inline-flex; align-items: baseline; gap: 5px; font-size: var(--fs-sm); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.task-phase { display: inline-flex; align-items: center; gap: 6px; min-width: 0; color: var(--text); font-size: var(--fs-sm); font-weight: 600; white-space: nowrap; }
+.task-phase-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.task-agents { display: inline-flex; align-items: center; gap: 3px; flex: 0 0 auto; color: var(--text); }
+.usage-brand.is-discarded { opacity: 0.45; }
+.task-chip-pr { color: var(--success-foreground, var(--success)); }
+.task-menu { position: fixed; z-index: 501; width: max-content; min-width: 170px; max-width: calc(100vw - 16px); padding: 5px; }
+.task-menu .menu-item { white-space: nowrap; }
+.task-menu .menu-item:disabled { opacity: 0.45; cursor: default; }
+.task-menu .task-menu-danger { color: var(--danger-foreground, var(--danger)); }
+.task-notice { display: flex; align-items: center; gap: 6px; margin-top: 10px; line-height: 1.45; }
+.task-notice > span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.task-notice.is-error { color: var(--danger-foreground, var(--danger)); }
+
+/* ------------------------------------------------------------------ panel */
+.tasks-panel { min-width: 0; }
+.tasks-panel:focus { outline: none; }
+/* Every view's header sits where the list's does: flush with the panel padding, 10px above the content. */
+.notification-actions.tasks-head { flex-wrap: nowrap; margin: 0; padding: 0 0 10px; }
+.tasks-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tasks-back { width: 24px; height: 24px; margin-right: -4px; flex: 0 0 auto; }
+.tasks-head-tools { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; }
+.tasks-waiting { font-family: inherit; white-space: nowrap; cursor: pointer; }
+.tasks-empty { flex-direction: column; align-items: flex-start; gap: 10px; line-height: 1.5; }
+.tasks-filter { margin-bottom: 10px; }
+.tasks-sections { display: flex; flex-direction: column; gap: 12px; }
+.tasks-section-toggle { display: inline-flex; align-items: center; gap: 4px; padding: 0; border: 0; background: transparent; color: inherit; font: inherit; letter-spacing: inherit; text-transform: inherit; cursor: pointer; }
+.tasks-section-toggle:hover { color: var(--text); }
+.usage-agent-chevron.is-open { transform: rotate(90deg); }
+.tasks-rows { padding: 0; }
+/* A row is a notification card: title, then agents and state, then the time. */
+.task-row-meta { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.notification-content .task-row-meta > span { font-size: var(--fs-sm); }
+.task-row-reason { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ------------------------------------------------------------ new task */
+.task-form { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.task-form .tasks-head { margin-bottom: 0; }
+/* The prompt can wrap, so its composer line grows; Start stays on the first line. */
+.ns-composer-line.task-composer-line { height: auto; min-height: 40px; align-items: flex-start; padding-block: 6px; }
+.task-composer-line > .muted-icon { flex: 0 0 auto; margin-top: 6px; }
+.task-form .ns-input.task-prompt-input { padding: 5px 0; font: inherit; font-size: var(--fs-md); line-height: 1.45; resize: none; }
+.task-form .ns-input.task-prompt-input[readonly] { color: var(--muted); }
+/* The mode switch is the Usage menu's Left/Used switch, one segment per mode. */
+.usage-seg.task-mode-seg { width: 100%; }
+.usage-seg.task-mode-seg > button { flex: 1 1 0; min-width: 0; padding-inline: 6px; }
+.ns-seg.ns-seg-extra.task-agent-seg { width: 100%; }
+.task-agent-seg > .cselect.ns-pill.task-agent-pick { flex: 1 1 auto; min-width: 0; justify-content: flex-start; }
+.task-agent-seg > .cselect.ns-pill.task-agent-pick .cselect-value { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.task-agent-seg > .cselect.ns-pill.task-agent-pick > svg:last-child { margin-left: auto; }
+/* A step or line label leads its bar like a segment, in the muted voice of the bar's hints. */
+.task-step-label { display: inline-flex; align-items: center; flex: 0 0 auto; padding: 0 10px; color: var(--muted); font-size: var(--fs-sm); white-space: nowrap; }
+.task-step-label.task-line-label { display: block; flex: 1 1 auto; min-width: 0; overflow: hidden; color: var(--text); line-height: 28px; text-overflow: ellipsis; }
+.task-step-label.task-line-label ~ .cselect.ns-pill.task-agent-pick { flex: 0 0 auto; }
+/* The remove button is a quiet icon button: no segment line, no ring, only a hover fill. */
+.ns-seg > .ns-clear.task-agent-remove { flex: 0 0 22px; width: 22px; height: 22px; margin: 0 4px; align-self: center; box-shadow: none; }
+.ns-seg > .ns-clear.task-agent-remove:hover:not(:disabled) { background: var(--surface-alt); color: var(--text); }
+.ns-seg > .ns-clear.task-agent-remove + .ns-clear.task-agent-remove { margin-left: 0; }
+.ns-seg > .ns-clear.task-agent-remove:disabled { opacity: 0.35; cursor: default; }
+.task-add-agent { align-self: flex-start; }
+/* An agent or mode icon keeps its size when the bar is tight; the label gives way instead. */
+.task-agent-seg > .cselect > svg { flex: 0 0 auto; }
+/* The chain's step editor: a bar per step (role, agent, mode, move, remove), a Custom step's instruction under its bar. */
+.task-steps { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.task-step-edit { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+/* The roles line up as a column; the step's mode shows as its icon (named in its tooltip) so the agent keeps its name. */
+.task-steps .task-agent-seg > .cselect.ns-pill.task-step-role { min-width: 92px; justify-content: space-between; }
+.task-steps .task-agent-seg > .cselect.ns-pill.ns-mode { gap: 3px; padding-inline: 8px; }
+.task-steps .task-agent-seg > .cselect.ns-pill.ns-mode .cselect-value { display: none; }
+.task-steps .ns-seg > .ns-clear.task-agent-remove { flex-basis: 20px; width: 20px; height: 20px; margin: 0 1px; }
+.task-steps .ns-seg > .cselect + .ns-clear.task-agent-remove { margin-left: 4px; }
+.task-steps .ns-seg > .ns-clear.task-agent-remove:last-child { margin-right: 4px; }
+.ns-seg.task-step-custom { padding: 0 10px; transition: border-color 0.12s; }
+.ns-seg.task-step-custom:focus-within { border-color: var(--accent); }
+.task-form .task-step-custom > .ns-input { font-size: var(--fs-md); }
+.task-form .task-many-note { margin: 0; }
+
+/* ------------------------------------------------------- one task, at a glance */
+.task-step { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.task-step > .tasks-head { margin-bottom: 0; }
+/* The task name heads the content under the header and renames in place. */
+.task-title { align-self: stretch; min-width: 0; max-width: 100%; padding: 0; overflow: hidden; border: 0; background: transparent; color: var(--text); font: inherit; font-size: var(--fs-md); font-weight: 600; line-height: 1.4; text-align: left; text-overflow: ellipsis; white-space: nowrap; cursor: text; }
+.task-title-input { width: 100%; font-size: var(--fs-md); font-weight: 600; }
+.task-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; min-width: 0; color: var(--muted); font-size: var(--fs-sm); }
+.task-meta-item { display: inline-flex; align-items: center; gap: 5px; min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.task-meta-item > svg { flex: 0 0 auto; }
+.task-attempt-lines { display: flex; flex-direction: column; gap: 4px; margin: 0; padding: 0; list-style: none; font-size: var(--fs-sm); }
+.task-attempt-lines > li { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.task-attempt-lines > li.is-discarded { opacity: 0.5; }
+.task-attempt-lines .task-diffstat { margin-left: auto; }
+.task-attempt-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.task-land { display: flex; flex-direction: column; gap: 0; }
+.task-gates-line { display: flex; align-items: center; gap: 7px; min-width: 0; min-height: 28px; font-size: var(--fs-sm); }
+.task-gates-icon { flex: 0 0 auto; }
+.is-ok > .task-gates-icon { color: var(--success-foreground, var(--success)); }
+.is-blocked > .task-gates-icon { color: var(--warning-foreground, var(--warning)); }
+.is-pending > .task-gates-icon { color: var(--muted); }
+.task-gates-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.task-gates-line > .btn { flex: 0 0 auto; }
+.task-actions { display: flex; align-items: center; gap: 6px; margin-top: 8px; }
+.usage-footer.task-actions { margin-top: 10px; }
+.task-actions > :first-child { flex: 1; min-width: 0; }
+.task-split { display: inline-flex; flex: 0 0 auto; }
+.task-split > .task-split-main { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+.task-split > .task-split-caret { width: 26px; padding: 0; border-left-width: 0; border-top-left-radius: 0; border-bottom-left-radius: 0; }
+.task-file-card { display: flex; flex-direction: column; gap: 8px; }
+.task-file-card .set-note { margin: 0; }
+
+/* ------------------------------------------------------------ task window */
+/* The task itself heads the window the way a checkpoint heads its details. */
+.task-window-head { flex: 0 0 auto; }
+.cp-detail-title.task-window-title { padding: 0; border: 0; background: transparent; color: inherit; font-family: inherit; text-align: left; cursor: text; }
+.task-window-head .task-title-input { font-size: var(--fs-lg); }
+.task-prompt { display: flex; align-items: flex-start; gap: 4px; min-width: 0; }
+.task-prompt > .cp-compare-note, .cp-compare-note.task-instruction { display: -webkit-box; flex: 1; min-width: 0; margin: 0; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-height: 1.5; overflow-wrap: anywhere; }
+.task-branch { padding: 0; border: 0; background: transparent; color: inherit; font: inherit; cursor: pointer; }
+.task-branch:hover .cp-detail-branch { color: var(--text); }
+.cp-item.is-discarded { opacity: 0.5; }
+.cp-node.usage-dot { width: 9px; height: 9px; }
+.task-detail-actions .btn { flex: 0 0 auto; }
+.task-discard-others { display: inline-flex; align-items: center; gap: 8px; color: var(--muted); font-size: var(--fs-sm); cursor: pointer; }
+.task-gates-section { display: flex; flex-direction: column; gap: 8px; margin-top: 4px; }
+.task-gates { display: flex; flex-direction: column; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.task-gate { display: flex; align-items: center; gap: 9px; min-width: 0; font-size: var(--fs-sm); }
+.task-gate > svg { flex: 0 0 auto; }
+.task-gate.is-ok > svg { color: var(--success-foreground, var(--success)); }
+.task-gate.is-blocked > svg { color: var(--warning-foreground, var(--warning)); }
+.task-gate.is-pending > svg, .task-gate.is-skipped > svg { color: var(--muted); }
+.task-gate-text { display: flex; flex-direction: column; flex: 1; min-width: 0; }
+.task-gate-label { color: var(--text); font-weight: 600; }
+.task-gate-detail { color: var(--muted); font-size: var(--fs-xs); overflow-wrap: anywhere; }
+.task-gate > .btn { flex: 0 0 auto; }
+.task-check-box { display: flex; flex-direction: column; gap: 6px; }
+.task-check-commands { color: var(--text); font-family: ui-monospace, "SF Mono", Menlo, monospace; overflow-wrap: anywhere; }
+.task-output-toggle { margin: 0; align-self: flex-start; }
+.task-check-output { max-height: 160px; margin: 0; padding: 8px; overflow: auto; border-radius: var(--r-sm); background: var(--glass-well, var(--surface-alt)); font-size: var(--fs-xs); line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
+.task-commits { margin: 3px 3px 0; padding: 4px 8px; font-size: var(--fs-sm); }
+.task-commits summary { display: flex; align-items: center; gap: 6px; color: var(--muted); cursor: pointer; }
+.task-commits ul { display: flex; flex-direction: column; gap: 4px; margin: 6px 0 2px; padding: 0; list-style: none; }
+.task-commits li { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.task-commits code { color: var(--muted); font-size: var(--fs-xs); }
+.cp-body.task-changes-body { padding-top: 10px; }
+.task-attempt-note { padding: 14px 2px; line-height: 1.55; overflow-wrap: anywhere; }
+.task-attempt-note.is-failed { color: var(--text); }
+.task-discard-item { display: flex; flex-direction: column; gap: 6px; }
+.task-discard-item .cp-note { padding: 4px 0; }
+
+/* ------------------------------------------------------------ Help demos */
+.doc-tasks-menu { width: min(360px, 100%); margin: 0 auto; text-align: left; }
+.doc-tasks-menu .task-row, .doc-tasks-menu .usage-seg > span { cursor: default; }
+.usage-seg.task-attempts > .task-attempt-seg { display: inline-flex; align-items: center; justify-content: center; gap: 6px; flex: 1 1 0; min-width: 0; padding: 4px 8px; border-radius: var(--r-sm); color: var(--muted); font-size: var(--fs-md); font-weight: 600; }
+.usage-seg.task-attempts > .task-attempt-seg.on { background: var(--surface-alt); color: var(--text); }

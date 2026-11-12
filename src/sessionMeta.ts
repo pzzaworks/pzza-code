@@ -1,7 +1,8 @@
-import type { ComponentType, CSSProperties } from "react";
+import { createElement, type ComponentType, type CSSProperties } from "react";
 import { Activity, Container, FolderOpen, SquareTerminal } from "lucide-react";
 import type { EffectiveModelEvidence, EffectiveModelProvider } from "./serverApi";
-import { ClaudeIcon, CodexIcon, OpenCodeIcon } from "./icons/BrandIcons";
+import { AgentIcon } from "./icons/AgentIcon";
+import { agentForProgram, sessionAgent, type SessionAgentId } from "../server/lib/session-agents.js";
 
 export type IconType = ComponentType<{
   size?: number | string;
@@ -50,27 +51,55 @@ export function sessionDisplayName(
 export type TileStatus = "idle" | "active" | "notify" | "failed";
 
 // Model attribution is allowed to override the launcher only when the
-// foreground probe supplied a normalized provider. Otherwise the CLI remains
-// the source of truth for terminal branding.
+// foreground probe supplied a normalized provider and the launcher is one of
+// that provider's own CLIs (or not a known agent). Any other agent keeps its
+// own branding whatever model it runs.
+const PROVIDER_LAUNCHERS = new Set(["claude", "codex"]);
+
+/** The catalog agent a launcher or pane command names, if any. */
+export function launcherAgent(command?: string | null): SessionAgentId | undefined {
+  const value = (command || "").toLowerCase().replace(/^-/, "").split("/").pop() || "";
+  return sessionAgent(value)?.id ?? agentForProgram(value);
+}
+
+function brandedAgent(command?: string, effectiveProvider?: EffectiveModelProvider | null): SessionAgentId | undefined {
+  const launcher = launcherAgent(command);
+  if (launcher && !PROVIDER_LAUNCHERS.has(launcher)) return launcher;
+  return sessionAgent(effectiveProvider)?.id ?? launcher;
+}
+
+const agentIcons = new Map<string, IconType>();
+
+/** An icon component for one catalog agent, stable per id. */
+export function agentIconType(id: SessionAgentId): IconType {
+  const existing = agentIcons.get(id);
+  if (existing) return existing;
+  const Icon: IconType = ({ size, className, style }) => style
+    ? createElement("span", { style: { display: "inline-flex", ...style } }, createElement(AgentIcon, { id, size, className }))
+    : createElement(AgentIcon, { id, size, className });
+  Icon.displayName = `AgentIcon(${id})`;
+  agentIcons.set(id, Icon);
+  return Icon;
+}
+
 export function sessionIcon(command?: string, effectiveProvider?: EffectiveModelProvider | null): IconType {
-  const launcher = (command || "").toLowerCase().split("/").pop() || "";
-  // An OpenCode terminal always shows the OpenCode brand, even when its
-  // effective model belongs to another provider.
-  if (launcher === "opencode") return OpenCodeIcon;
-  const value = effectiveProvider || launcher;
-  if (value === "claude") return ClaudeIcon;
-  if (value === "codex") return CodexIcon;
+  const agent = brandedAgent(command, effectiveProvider);
+  if (agent) return agentIconType(agent);
+  const value = (command || "").toLowerCase().split("/").pop() || "";
   if (["btop", "htop", "top"].includes(value)) return Activity;
   if (["yazi", "ranger", "nnn", "lf"].includes(value)) return FolderOpen;
   if (["docker", "lazydocker"].includes(value)) return Container;
   return SquareTerminal;
 }
 
+// Brand colors where the app has always tinted the mark; other agents use the
+// surrounding text color.
+const AGENT_COLORS: Partial<Record<SessionAgentId, string>> = { claude: "#D97757", codex: "#10A37F", opencode: "#94A3B8" };
+
 export function iconColor(command?: string, effectiveProvider?: EffectiveModelProvider | null): string | undefined {
+  const agent = brandedAgent(command, effectiveProvider);
+  if (agent) return AGENT_COLORS[agent];
   const Icon = sessionIcon(command, effectiveProvider);
-  if (Icon === ClaudeIcon) return "#D97757";
-  if (Icon === CodexIcon) return "#10A37F";
-  if (Icon === OpenCodeIcon) return "#94A3B8";
   if (Icon === Activity) return "#f9c74f";
   if (Icon === FolderOpen) return "#7aa2f7";
   if (Icon === Container) return "#2496ED";
@@ -78,11 +107,8 @@ export function iconColor(command?: string, effectiveProvider?: EffectiveModelPr
 }
 
 function launcherLabel(command?: string): string {
-  const value = (command || "").toLowerCase().split("/").pop() || "";
-  if (value === "claude") return "Claude CLI";
-  if (value === "codex") return "Codex CLI";
-  if (value === "opencode") return "OpenCode";
-  return command || "process";
+  const agent = launcherAgent(command);
+  return agent ? sessionAgent(agent)?.label ?? agent : command || "process";
 }
 
 export function sessionIconTooltip(
@@ -93,7 +119,7 @@ export function sessionIconTooltip(
 ): string {
   if (!command) return "Running process unavailable";
   if (!effectiveModel || !effectiveProvider || !effectiveModelEvidence) return `Launcher: ${launcherLabel(command)}. Effective model unavailable.`;
-  const provider = effectiveProvider === "codex" ? "Codex / OpenAI" : "Claude";
+  const provider = sessionAgent(effectiveProvider)?.label ?? effectiveProvider;
   const evidence = effectiveModelEvidence === "reported"
     ? "reported by the foreground process"
     : "configured by the foreground process or selected account";

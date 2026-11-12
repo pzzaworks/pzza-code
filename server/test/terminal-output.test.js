@@ -93,3 +93,49 @@ test("native bridge acknowledges parsed bytes and serializes UTF-8 input per ter
     else globalThis.__ptyAudit = previous;
   }
 });
+
+test("a lone chunk is written without a copy", () => {
+  const writes = [];
+  const scheduler = createOutputScheduler({ delay: () => 0, write: (bytes, done) => writes.push({ bytes, done }) });
+  const chunk = new Uint8Array([1, 2, 3]);
+  scheduler.push(chunk, () => {});
+  assert.equal(writes[0].bytes, chunk);
+  scheduler.dispose();
+});
+
+test("streaming output returns its credit in one acknowledgement per parsed write", async () => {
+  const calls = [];
+  const previous = globalThis.__ptyAudit;
+  globalThis.__ptyAudit = { invoke(command, args) {
+    calls.push({ command, args });
+    return Promise.resolve(command === "pty_spawn" ? 9 : undefined);
+  } };
+  try {
+    const compiled = await build({ entryPoints: ["src/terminal/ptyBridge.ts"], bundle: true, write: false, format: "esm", platform: "node", plugins: [{ name: "native-test", setup(b) {
+      b.onResolve({ filter: /^@tauri-apps\/api\/core$/ }, () => ({ path: "native", namespace: "test" }));
+      b.onLoad({ filter: /.*/, namespace: "test" }, () => ({ contents: "export class Channel {} export const invoke = (command,args) => globalThis.__ptyAudit.invoke(command,args);" }));
+    } }] });
+    const bridge = await import(`data:text/javascript;base64,${Buffer.from(compiled.outputFiles[0].text).toString("base64")}`);
+    // The parser finishes one write per frame while a streaming agent sends
+    // about four chunks per frame (250 chunks in a second).
+    const parsing = [];
+    const scheduler = createOutputScheduler({ delay: () => 0, write: (_bytes, done) => parsing.push(done) });
+    await bridge.spawnPty({ cmd: "test", args: [], cols: 80, rows: 24 }, scheduler.push, () => {});
+    const channel = calls[0].args.onData;
+    for (let index = 0; index < 250; index++) {
+      channel.onmessage(new Uint8Array(100).buffer);
+      if (index % 4 === 3) parsing.shift()();
+      await Promise.resolve();
+    }
+    while (parsing.length) { parsing.shift()(); await Promise.resolve(); }
+    const acks = calls.filter((call) => call.command === "pty_ack");
+    assert.equal(acks.reduce((sum, call) => sum + call.args.bytes, 0), 250 * 100);
+    assert.ok(acks.every((call) => call.args.id === 9));
+    // One per parsed write instead of one per chunk.
+    assert.ok(acks.length <= 64, `${acks.length} acknowledgements`);
+    scheduler.dispose();
+  } finally {
+    if (previous === undefined) delete globalThis.__ptyAudit;
+    else globalThis.__ptyAudit = previous;
+  }
+});

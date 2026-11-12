@@ -50,9 +50,14 @@ export function useModalFocus(open: boolean, dialog: RefObject<HTMLElement>, onC
     const onKey = (event: KeyboardEvent) => {
       if (!topmost()) return;
       if (event.key === "Escape") {
+        // A search field with text clears it first (its own handler), as the Select list does.
+        if (event.target instanceof HTMLInputElement && event.target.type === "search" && event.target.value && element.contains(event.target)) return;
+        const select = selectPortal();
+        // A list with a search typed in clears it first (Select handles that key).
+        const search = select?.querySelector("input");
+        if (search instanceof HTMLInputElement && search.value && select?.contains(document.activeElement)) return;
         event.preventDefault();
         event.stopImmediatePropagation();
-        const select = selectPortal();
         if (select) { select.dispatchEvent(new MouseEvent("mousedown", { bubbles: true })); focusFirst(); return; }
         if (!latest.current.pending) latest.current.onClose();
       } else if (event.key === "Tab") {

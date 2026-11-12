@@ -102,7 +102,7 @@ fn write_service(path: &Path, contents: &str) -> io::Result<()> {
     result
 }
 
-fn bounded_output(command: &mut Command) -> io::Result<Output> {
+pub(crate) fn bounded_output(command: &mut Command) -> io::Result<Output> {
     let mut child = command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -196,6 +196,41 @@ pub fn start() -> io::Result<()> {
     let _guard = START_LOCK
         .lock()
         .map_err(|_| io::Error::other("Local terminal startup interrupted"))?;
+    start_locked(Duration::from_secs(5))
+}
+
+/// Restarts the local tmux server so privacy grants made since it started
+/// reach new shells: macOS attributes them to the helper process, which only
+/// picks up a grant when it is started again. Every session on the server
+/// ends; callers save and recreate them. This app keeps its lease throughout,
+/// so the exiting helper never unregisters the service and other app
+/// instances keep their own leases.
+pub fn restart() -> io::Result<()> {
+    let _guard = START_LOCK
+        .lock()
+        .map_err(|_| io::Error::other("Local terminal startup interrupted"))?;
+    if APP_LEASE
+        .lock()
+        .map_err(|_| io::Error::other("Local terminal ownership interrupted"))?
+        .is_none()
+    {
+        return Err(io::Error::other("Local terminals are not running"));
+    }
+    let socket = socket_path();
+    let _ = bounded_output(client_command().arg("kill-server"));
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while UnixStream::connect(&socket).is_ok() {
+        if Instant::now() >= deadline {
+            return Err(io::Error::other("The local terminal server did not stop"));
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    // The old helper notices its tmux exit within one ownership poll; launchd
+    // starts the job again only once that process is gone.
+    start_locked(Duration::from_secs(15))
+}
+
+fn start_locked(timeout: Duration) -> io::Result<()> {
     let socket = socket_path();
     private_directory(socket.parent().unwrap())?;
     let lease = app_lease(socket.parent().unwrap())?;
@@ -229,7 +264,7 @@ pub fn start() -> io::Result<()> {
     }
     // Never boot out a loaded job during an update: it owns live terminals.
     // An idle helper unregisters itself; the next launch reads the current plist.
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + timeout;
     let mut next_start = Instant::now();
     loop {
         if UnixStream::connect(&socket).is_ok() && set_exit_empty(&socket, false).is_ok() {

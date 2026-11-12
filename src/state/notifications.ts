@@ -1,24 +1,51 @@
 import { create } from "zustand";
 import { deliverDesktopAlert } from "../desktopNotifications";
+import { sessionAgent, type SessionAgentId } from "../../server/lib/session-agents.js";
 
-export type NotificationCategory = "sync" | "terminal" | "devices" | "app";
+export type NotificationCategory = "sync" | "terminal" | "app";
 export const NOTIFICATION_EVENTS = {
-  "device-added": "Device added", "device-removed": "Device removed", "session-opened": "Session window opened", "agent-start-failed": "Agent start failed",
+  "agent-start-failed": "Agent start failed",
   "model-ready": "Voice model downloaded", "model-error": "Voice model download failed",
   "setup-installed": "Requirement installed", "setup-failed": "Requirement install failed",
   "sync-completed": "Sync completed", "sync-error": "Sync errors",
-  "terminal-bell": "Terminal attention signal", "terminal-command": "Terminal command result", "terminal-exit": "Terminal process exit",
-  "agent-finished": "Agent finished with changes",
+  "terminal-bell": "Terminal attention signal", "terminal-exit": "Terminal process exit",
+  "agent-finished": "Agent finished with changes", "agent-permission": "Agent asks for approval",
+  "task-start-failed": "Task start failed",
 } as const;
 export type NotificationEvent = keyof typeof NOTIFICATION_EVENTS;
 export const NOTIFICATION_EVENT_CATEGORIES: Record<NotificationEvent, NotificationCategory> = {
-  "session-opened": "app", "agent-start-failed": "app",
-  "model-ready": "app", "model-error": "app", "setup-installed": "app", "setup-failed": "app", "device-added": "devices", "device-removed": "devices",
-  "sync-completed": "sync", "sync-error": "sync", "terminal-bell": "terminal", "terminal-command": "terminal", "terminal-exit": "terminal", "agent-finished": "terminal",
+  "agent-start-failed": "app", "task-start-failed": "app",
+  "model-ready": "app", "model-error": "app", "setup-installed": "app", "setup-failed": "app",
+  "sync-completed": "sync", "sync-error": "sync", "terminal-bell": "terminal", "terminal-exit": "terminal", "agent-finished": "terminal", "agent-permission": "terminal",
 };
 export interface NotificationTarget { tileId?: string; section?: "sync" | "mcp" | "devices" | "general" | "quick-chat" }
 /** A follow-up a notice offers besides opening its target: the tile's uncommitted changes. */
-export interface NoticeAction { kind: "review-changes"; folder: string }
+/**
+ * How an approval prompt stopped waiting: answered from the app or in the
+ * terminal, its tile closed, an answer from the app was cut short, or its
+ * pane could not be confirmed to run that agent.
+ */
+export type PermissionOutcome = "answered" | "elsewhere" | "closed" | "interrupted" | "unverified";
+const PERMISSION_OUTCOMES: readonly string[] = ["answered", "elsewhere", "closed", "interrupted", "unverified"];
+/**
+ * A follow-up a notice offers besides opening its target: the tile's
+ * uncommitted changes, or the choices of an agent's approval prompt.
+ */
+export type NoticeAction =
+  | { kind: "review-changes"; folder: string }
+  | { kind: "permission"; promptId: string; agent: SessionAgentId; outcome?: PermissionOutcome; choice?: string };
+function savedAction(value: unknown): NoticeAction | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const action = value as Record<string, unknown>;
+  if (action.kind === "review-changes" && typeof action.folder === "string" && action.folder.startsWith("/") && action.folder.length <= 4096) return { kind: "review-changes", folder: action.folder };
+  const agent = action.kind === "permission" ? sessionAgent(action.agent) : undefined;
+  if (agent && typeof action.promptId === "string" && action.promptId.length <= 64) {
+    // A prompt cannot outlive the app session that saw it.
+    const outcome = typeof action.outcome === "string" && PERMISSION_OUTCOMES.includes(action.outcome) ? action.outcome as PermissionOutcome : "closed";
+    return { kind: "permission", promptId: action.promptId, agent: agent.id, outcome, choice: typeof action.choice === "string" ? action.choice.slice(0, 80) : undefined };
+  }
+  return undefined;
+}
 export interface Notice {
   event?: NotificationEvent;
   id: string; category: NotificationCategory; title: string; body: string;
@@ -38,8 +65,8 @@ interface NotificationState {
   configure(patch: Partial<Preferences>): void;
 }
 const storeName = "pzza.notifications.v1";
-const defaults: Preferences = { enabled: true, desktop: false, events: {}, categories: { sync: true, terminal: true, devices: true, app: true }, mutedUntil: 0 };
-const categories = ["sync", "terminal", "devices", "app"];
+const defaults: Preferences = { enabled: true, desktop: false, events: {}, categories: { sync: true, terminal: true, app: true }, mutedUntil: 0 };
+const categories = ["sync", "terminal", "app"];
 function initial(): { items: Notice[]; preferences: Preferences } {
   try {
     const saved: unknown = JSON.parse(localStorage.getItem(storeName) || "null");
@@ -58,9 +85,10 @@ function initial(): { items: Notice[]; preferences: Preferences } {
         if (item.target.section === "sync" || item.target.section === "mcp" || item.target.section === "devices" || item.target.section === "general" || item.target.section === "quick-chat") target.section = item.target.section;
       }
       const event = item.event && Object.hasOwn(NOTIFICATION_EVENTS, item.event) ? item.event : undefined;
-      const action = item.action && typeof item.action === "object" && item.action.kind === "review-changes" && typeof item.action.folder === "string" && item.action.folder.startsWith("/") && item.action.folder.length <= 4096
-        ? { kind: item.action.kind, folder: item.action.folder } : undefined;
-      return { ...item, event, target, action, dedupeKey: typeof item.dedupeKey === "string" ? item.dedupeKey.slice(0, 512) : undefined, source: typeof item.source === "string" && item.source ? item.source.slice(0, 160) : undefined };
+      const action = savedAction(item.action);
+      // A prompt still waiting at the last run is rescanned and announced afresh.
+      const read = item.read || (action?.kind === "permission" && !(item.action as { outcome?: unknown }).outcome);
+      return { ...item, read, event, target, action, dedupeKey: typeof item.dedupeKey === "string" ? item.dedupeKey.slice(0, 512) : undefined, source: typeof item.source === "string" && item.source ? item.source.slice(0, 160) : undefined };
     }) : [];
     const preferences = { ...defaults, categories: { ...defaults.categories } };
     if (raw.preferences && typeof raw.preferences === "object") {
@@ -76,12 +104,22 @@ function initial(): { items: Notice[]; preferences: Preferences } {
       }
       if (value.categories && typeof value.categories === "object") {
         const flags = value.categories as Record<string, unknown>;
-        for (const category of ["sync", "terminal", "devices", "app"] as const) if (typeof flags[category] === "boolean") preferences.categories[category] = flags[category];
+        for (const category of ["sync", "terminal", "app"] as const) if (typeof flags[category] === "boolean") preferences.categories[category] = flags[category];
       }
     }
     return { items, preferences };
   } catch { return { items: [], preferences: defaults }; }
 }
+// Tiles that own an unread notice, sorted. Subscribe through useShallow so a
+// new notice for an already waiting tile changes nothing.
+export function unreadTileIds(state: Pick<NotificationState, "items">): string[] {
+  const ids = new Set<string>();
+  for (const item of state.items) {
+    if (!item.read && item.target?.tileId) ids.add(item.target.tileId);
+  }
+  return [...ids].sort();
+}
+
 export const useNotifications = create<NotificationState>((set) => ({
   ...initial(),
   read: (id) => set(state => ({ items: state.items.map(item => !id || item.id === id ? { ...item, read: true } : item) })),

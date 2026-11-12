@@ -28,11 +28,15 @@ export function createOutputScheduler({ write, delay }: OutputOptions) {
     timer = undefined;
     if (disposed || writing || !pending.length) return;
     const chunks = pending;
-    const bytes = new Uint8Array(queuedBytes);
-    let offset = 0;
-    for (const chunk of chunks) {
-      bytes.set(chunk.bytes, offset);
-      offset += chunk.bytes.byteLength;
+    // A lone chunk is written as is; only several are joined into one buffer.
+    let bytes = chunks[0].bytes;
+    if (chunks.length > 1) {
+      bytes = new Uint8Array(queuedBytes);
+      let offset = 0;
+      for (const chunk of chunks) {
+        bytes.set(chunk.bytes, offset);
+        offset += chunk.bytes.byteLength;
+      }
     }
     pending = [];
     queuedBytes = 0;

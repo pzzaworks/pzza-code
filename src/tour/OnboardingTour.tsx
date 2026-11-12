@@ -4,34 +4,10 @@ import { motion, useReducedMotion } from "framer-motion";
 import { PartyPopper, type LucideIcon } from "lucide-react";
 import { SetupSummary } from "./SetupSteps";
 import "./OnboardingTour.css";
+import { markOnboardingDone } from "./progress";
 
 // The UI tour: a spotlight on each part of the window, then a summary. It
 // runs on first launch after setup (SetupScreen) and can be skipped any time.
-// Installs that completed the earlier setup wizard or tour count as done.
-const DONE_KEY = "pzza.onboarding.done";
-const LEGACY_DONE_KEYS = ["pzza.setupDone", "pzza.tour.seen"];
-
-export function onboardingPending(): boolean {
-  try {
-    if (localStorage.getItem(DONE_KEY)) return false;
-    if (LEGACY_DONE_KEYS.some(key => localStorage.getItem(key))) {
-      localStorage.setItem(DONE_KEY, "1");
-      return false;
-    }
-    return true;
-  } catch {
-    // Storage is unavailable: never trap the user in a tour on every launch.
-    return false;
-  }
-}
-
-function markOnboardingDone() {
-  try {
-    localStorage.setItem(DONE_KEY, "1");
-  } catch {
-    /* private mode - nothing to remember */
-  }
-}
 
 type Phase = "tour" | "done";
 
@@ -54,7 +30,7 @@ const ALL_STEPS: Step[] = [
     id: "workspaces",
     phase: "tour",
     title: "Workspaces",
-    body: "Browser-style tabs group your sessions into contexts, one project per workspace. All shows every tile at once.",
+    body: "Browser-style tabs group your sessions into contexts, one project per workspace. All shows every tile at once. Click a tab for its name, color and grid columns.",
     targets: ['[data-tour="workspaces"]', ".ws-tabs"],
   },
   {
@@ -70,13 +46,6 @@ const ALL_STEPS: Step[] = [
     title: "Quick Chat",
     body: "A dropdown chat with your saved agent. Hiding it never stops the conversation - it keeps running on its device.",
     targets: ['[data-tour="quick-chat"]'],
-  },
-  {
-    id: "layout",
-    phase: "tour",
-    title: "Grid layout",
-    body: "Columns per workspace, remembered per workspace. A lone tile fills the row on its own.",
-    targets: ['[data-tour="layout"]'],
   },
   {
     id: "usage",

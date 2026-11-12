@@ -80,7 +80,7 @@ test("new worktrees copy ignored .env files by default, never through links, and
   await assert.rejects(fs.lstat(path.join(dir, ".env.link")));
   await assert.rejects(fs.lstat(path.join(dir, "nested", ".env")), "only the repository root by default");
   assert.equal(result.agentStarted, true);
-  assert.deepEqual(typed, ["claude"], "no setup commands: the agent alone");
+  assert.deepEqual(typed, ["claude --permission-mode manual"], "no setup commands: the agent alone, in its asking mode");
 });
 
 test("on another device the copy step is one ssh call with quoted positional arguments", async (t) => {
@@ -118,7 +118,7 @@ test("configured setup copies listed files and runs approved commands before the
   const pending = await createDeviceSession({ name: "one", cwd: repo, worktree: true, agent: { id: "claude", mode: "default" } }, first.run, { approvalsFile });
   assert.deepEqual(pending.setup.copied.sort(), ["config/db.local.json", "notes.txt"]);
   assert.equal(pending.setup.unapproved, true);
-  assert.deepEqual(first.typed, ["claude"]);
+  assert.deepEqual(first.typed, ["claude --permission-mode manual"]);
   assert.equal((await worktreeSetup({ host: "", path: repo }, { approvalsFile })).approved, false);
 
   // Approving the exact list shown lets the next worktree run it.
@@ -130,7 +130,7 @@ test("configured setup copies listed files and runs approved commands before the
   assert.equal(ready.setup.unapproved, false);
   assert.equal(ready.agentStarted, true);
   assert.equal(second.typed.length, 1);
-  assert.match(second.typed[0], /^eval 'npm install' && eval .* && claude$/);
+  assert.match(second.typed[0], /^eval 'npm install' && eval .* && claude --permission-mode manual$/);
 
   // The typed line, run in a shell: setup in order, then the agent.
   const bin = path.join(root, "bin");
@@ -160,10 +160,10 @@ test("the setup endpoint reads defaults, saves validated JSON, and refuses links
   await git(repo, "worktree", "add", "-q", "-b", "pzza/x", path.join(root, "wt"));
   // Read from a worktree, the main checkout's file is used.
   assert.deepEqual(await worktreeSetup({ host: "", path: path.join(root, "wt") }, { approvalsFile }), {
-    main: repo, file: ".pzzacode/worktree.json", exists: false, error: null, copy: [".env*"], defaultCopy: true, run: [], approved: true,
+    main: repo, file: ".pzzacode/worktree.json", exists: false, error: null, copy: [".env*"], defaultCopy: true, run: [], approved: true, check: [], checkApproved: true,
   });
   const saved = await saveWorktreeSetup({ host: "", path: path.join(root, "wt"), copy: [".env", "secrets/*.pem"], run: ["pnpm install"] }, { approvalsFile });
-  assert.deepEqual(saved, { main: repo, file: ".pzzacode/worktree.json", exists: true, error: null, copy: [".env", "secrets/*.pem"], defaultCopy: false, run: ["pnpm install"], approved: true });
+  assert.deepEqual(saved, { main: repo, file: ".pzzacode/worktree.json", exists: true, error: null, copy: [".env", "secrets/*.pem"], defaultCopy: false, run: ["pnpm install"], approved: true, check: [], checkApproved: true });
   assert.deepEqual(JSON.parse(await fs.readFile(path.join(repo, ".pzzacode", "worktree.json"), "utf8")), { copy: [".env", "secrets/*.pem"], run: ["pnpm install"] });
   assert.deepEqual((await fs.readdir(path.join(repo, ".pzzacode"))), ["worktree.json"], "no temporary file is left behind");
   assert.equal((await fs.stat(approvalsFile)).mode & 0o777, 0o600);

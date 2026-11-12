@@ -39,9 +39,15 @@ export function rememberSessionAgent(tileId: string, choice: SessionAgentChoice 
   }
 }
 
-// "Claude Code · Plan" style label, or null when the session has no recorded agent.
-export function sessionAgentLabel(choice: SessionAgentChoice | undefined): { agent: string; mode: string } | null {
-  const agent = choice ? sessionAgent(choice.id) : undefined;
-  const mode = agent?.modes.find((item) => item.id === choice?.mode);
-  return agent && mode ? { agent: agent.label, mode: mode.label } : null;
+// The agent last seen running in each local session's active window, by
+// session name: what a snapshot records for sessions whose agent was not
+// started through the app. Kept in memory; the native side keeps its own copy.
+export const useDetectedAgents = create<{ agents: Record<string, string> }>(() => ({ agents: {} }));
+
+export function noteDetectedAgents(agents: Record<string, string>): void {
+  const previous = useDetectedAgents.getState().agents;
+  const keys = Object.keys(agents);
+  if (keys.length === Object.keys(previous).length && keys.every((key) => previous[key] === agents[key])) return;
+  useDetectedAgents.setState({ agents });
 }
+

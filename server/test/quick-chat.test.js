@@ -2,10 +2,11 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, writeFile, rm, symlink } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { closeQuickChat, openQuickChat, quickChatCommand, verifyQuickChat } from "../lib/quick-chat.js";
+import { SESSION_AGENTS } from "../lib/session-agents.js";
 
 function requireIsolatedTmuxSocket() {
   if (process.env.PZZA_TMUX_SOCKET) {
@@ -35,12 +36,14 @@ test("explicit local routing and strict remote SSH options", async () => {
   }
 });
 
-test("Quick Chat launches each CLI directly without a proxy launcher", () => {
-  for (const agent of ["claude", "codex", "opencode"]) {
-    const command = quickChatCommand(agent);
-    assert.match(command, new RegExp(`PZZA_QUICK_CHAT_LAUNCHER=${agent}`));
-    assert.match(command, new RegExp(`command -v ${agent}`));
-    assert.ok(command.indexOf("has-session") < command.indexOf(`command -v ${agent}`));
+test("Quick Chat launches each catalog CLI directly without a proxy launcher", () => {
+  for (const { id, command: binary } of SESSION_AGENTS) {
+    const command = quickChatCommand(id);
+    assert.match(command, new RegExp(`PZZA_QUICK_CHAT_LAUNCHER=${id} `));
+    assert.ok(command.includes(`"$folder"/'${binary}'`), id);
+    assert.ok(command.indexOf("has-session") < command.indexOf("agent_binary \"$folder\""));
+    // Every agent the managed session may carry is recognized, old records too.
+    assert.ok(command.includes(`PZZA_QUICK_CHAT_AGENT=${id}:PZZA_QUICK_CHAT_LAUNCHER=${id}|`) || command.includes(`PZZA_QUICK_CHAT_AGENT=${id}:PZZA_QUICK_CHAT_LAUNCHER=${id})`), id);
   }
   const codex = quickChatCommand("codex");
   assert.doesNotMatch(codex, /command -v pz/);
@@ -49,12 +52,74 @@ test("Quick Chat launches each CLI directly without a proxy launcher", () => {
   assert.doesNotMatch(codex, /-lic 'pz'/);
 });
 
+test("Quick Chat starts every agent in its safe default mode, never the CLI's own default", () => {
+  const launch = (agent) => quickChatCommand(agent).split("\n").find(line => line.includes("new-session"));
+  assert.match(launch("claude"), /quick-chat "\$executable" '--permission-mode' 'manual' /);
+  // Quick Chat starts in the home folder: Codex must not edit there without asking.
+  assert.match(launch("codex"), /quick-chat "\$executable" '--sandbox' 'read-only' '--ask-for-approval' 'on-request' /);
+  assert.match(launch("opencode"), / -e 'OPENCODE_CONFIG_CONTENT=\{"permission":\{"edit":"ask","bash":"ask","webfetch":"ask"\},"agent":\{"build":\{"permission":\{"edit":"ask","bash":"ask","webfetch":"ask"\}\}\}\}' .*quick-chat "\$executable" '--agent' 'build' /);
+  assert.match(launch("cursor"), /quick-chat "\$executable" '--mode' 'ask' /);
+  assert.match(launch("aider"), /quick-chat "\$executable" '--chat-mode' 'ask' /);
+  assert.match(launch("goose"), / -e 'GOOSE_MODE=approve' .*quick-chat "\$executable" 'session' /);
+  assert.match(launch("cline"), /'--auto-approve' 'false' /);
+  assert.match(launch("gemini"), /'--approval-mode' 'default' /);
+  assert.match(launch("kiro"), /quick-chat "\$executable" 'chat' /);
+  for (const agent of SESSION_AGENTS) {
+    assert.doesNotMatch(launch(agent.id), /dangerously|--yolo|'-y'|--force|--auto'|bypass/i, agent.id);
+  }
+  // Amp has no asking mode: its catalog entry is tagged bypass so the app can warn.
+  assert.equal(SESSION_AGENTS.find(agent => agent.id === "amp").modes[0].approval, "bypass");
+  // Fixed literals only: the agent id is the one free choice and must be in the catalog.
+  for (const agent of ["sh", "claude; id", "../codex", "", "CLAUDE"]) assert.throws(() => quickChatCommand(agent), /Choose a supported agent/);
+});
+
 test("Quick Chat falls back to well-known install locations off PATH", () => {
   const command = quickChatCommand("opencode");
   assert.match(command, /\.opencode\/bin/);
   assert.match(command, /\.local\/bin/);
-  assert.match(command, /\[\s*-x\s*"\$candidate"\s*\]/);
+  assert.match(command, /if agent_binary "\$candidate"; then/);
   assert.throws(() => quickChatCommand("sh"), /Choose a supported agent/);
+});
+
+test("Quick Chat never launches a same-named tool instead of the agent", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "pzza-quick-chat-lookup-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const fake = async (file, body) => {
+    await mkdir(path.dirname(file), { recursive: true });
+    await writeFile(file, `#!/bin/sh\n${body}\n`, { mode: 0o700 });
+  };
+  // A fake tmux: no session yet, records what new-session would start, then
+  // reports the session it "created". It takes the first known subcommand.
+  await fake(path.join(root, "tools", "tmux"), [
+    'for word in "$@"; do case "$word" in has-session|new-session|show-environment|display-message) command=$word; break ;; esac; done',
+    'case "$command" in',
+    '  has-session) exit 1 ;;',
+    '  new-session) printf "%s\\n" "$@" > "$HOME/started" ;;',
+    '  show-environment) for word in "$@"; do last=$word; done; printf "%s=%s\\n" "$last" "$PZZA_TEST_AGENT" ;;',
+    '  display-message) printf "\\$1:100:200\\n" ;;',
+    "esac",
+  ].join("\n"));
+  const foundry = path.join(root, "home", ".foundry", "bin");
+  await fake(path.join(foundry, "forge"), "exit 0");
+  const run = (agent, PATH) => new Promise((resolve) => {
+    const env = { ...process.env, HOME: path.join(root, "home"), PATH, PZZA_TEST_AGENT: agent };
+    execFile("sh", ["-c", quickChatCommand(agent)], { env, timeout: 10_000 }, (error) => resolve(error?.code ?? 0));
+  });
+  const started = () => readFile(path.join(root, "home", "started"), "utf8").catch(() => "");
+  const base = `${path.join(root, "tools")}:/usr/bin:/bin`;
+  // Only Foundry's forge is installed: ForgeCode is reported missing, nothing starts.
+  assert.equal(await run("forgecode", `${foundry}:${base}`), 42);
+  assert.equal(await started(), "");
+  // ForgeCode later on PATH is found past Foundry's forge.
+  const forgecode = path.join(root, "npm", "bin", "forge");
+  await fake(forgecode, "exit 0");
+  assert.equal(await run("forgecode", `${foundry}:${path.dirname(forgecode)}:${base}`), 0);
+  assert.ok((await started()).split("\n").includes(forgecode), await started());
+  // Homebrew's amp text editor is not Amp.
+  await fake(path.join(root, "brew", "Cellar", "amp", "1", "bin", "amp"), "exit 0");
+  await mkdir(path.join(root, "brew", "bin"), { recursive: true });
+  await symlink(path.join(root, "brew", "Cellar", "amp", "1", "bin", "amp"), path.join(root, "brew", "bin", "amp"));
+  assert.equal(await run("amp", `${path.join(root, "brew", "bin")}:${base}`), 42);
 });
 
 test("opencode sessions round-trip through open and verify", async () => {
@@ -83,7 +148,7 @@ test("real isolated tmux: concurrent opens reuse one process, preserve agent, an
   const bin = path.join(root, "bin");
   await mkdir(bin);
   // Test-only launchers hold the pane open without contacting a provider.
-  await writeFile(path.join(bin, "claude"), "#!/bin/sh\nexec sleep 60\n", { mode: 0o700 });
+  await writeFile(path.join(bin, "claude"), "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$HOME/claude-args\"\nexec sleep 60\n", { mode: 0o700 });
   await writeFile(path.join(bin, "codex"), "#!/bin/sh\nexec sleep 60\n", { mode: 0o700 });
   const env = { ...process.env, HOME: root, ZDOTDIR: root, TMUX: "", TMUX_TMPDIR: root, PATH: `${bin}:${process.env.PATH}` };
   const run = (command, args, options, callback) => execFile(command, args, { ...options, env }, callback);
@@ -96,6 +161,13 @@ test("real isolated tmux: concurrent opens reuse one process, preserve agent, an
     await tmux("set-option", "-g", "default-shell", "/bin/sh");
     const results = await Promise.all(Array.from({ length: 6 }, () => openQuickChat({ host: "", agent: "claude" }, run)));
     assert.ok(results.every(result => result.agent === "claude" && result.launcher === "claude" && result.identity === results[0].identity));
+    // The launcher received the catalog's ask mode, not Claude Code's auto default.
+    let started = "";
+    for (let attempt = 0; attempt < 50 && !started; attempt++) {
+      started = await readFile(path.join(root, "claude-args"), "utf8").catch(() => "");
+      if (!started) await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    assert.equal(started, "--permission-mode\nmanual\n");
     const existing = { host: "", agent: "claude", identity: results[0].identity };
     assert.deepEqual(await verifyQuickChat(existing, run), { verified: true });
     await assert.rejects(verifyQuickChat({ ...existing, agent: "codex" }, run), /not the expected managed/);

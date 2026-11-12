@@ -137,13 +137,13 @@ const TOOLS = [
   },
   {
     name: "get_usage",
-    description: "Claude/Codex account usage on this device (5h + weekly windows, per account).",
+    description: "Agent account usage on this device: 5h and weekly windows, named limits and prepaid balances, per account.",
     inputSchema: { type: "object", properties: {} },
     run: () => get("/usage"),
   },
   {
     name: "get_spend",
-    description: "Estimated spend per account (today / yesterday / trailing window).",
+    description: "Spend per agent from local session data (today / yesterday / trailing window): estimated from token rates, or the cost the agent recorded.",
     inputSchema: { type: "object", properties: {} },
     run: () => get("/spend"),
   },

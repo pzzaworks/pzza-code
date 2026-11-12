@@ -12,10 +12,6 @@ import { compileQuery, MAX_TOTAL_MATCHES, revealInTerminal, searchTerminals, typ
 // Search across every open terminal (Cmd+Shift+F, or the command palette).
 // Results are grouped by tile with the matching line and its neighbours;
 // Enter or a click activates the tile, scrolls to the line and marks it.
-export const OPEN_TERMINAL_SEARCH_EVENT = "pzza:search-terminals";
-export function openTerminalSearch(): void {
-  window.dispatchEvent(new Event(OPEN_TERMINAL_SEARCH_EVENT));
-}
 
 // Typing settles briefly before a search starts; each new query cancels the last.
 const DEBOUNCE_MS = 120;

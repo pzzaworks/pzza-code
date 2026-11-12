@@ -4,6 +4,12 @@
 // every match with the find decorations. Searching runs one terminal at a
 // time, yields to the UI between chunks and stops as soon as its signal aborts.
 
+// Opens the search panel (App listens), from the command palette or elsewhere.
+export const OPEN_TERMINAL_SEARCH_EVENT = "pzza:search-terminals";
+export function openTerminalSearch(): void {
+  window.dispatchEvent(new Event(OPEN_TERMINAL_SEARCH_EVENT));
+}
+
 export interface SearchLine { text: string; row: number }
 export interface RevealRequest { row: number; col: number; length: number; query: string; regex: boolean }
 export interface SearchTarget {

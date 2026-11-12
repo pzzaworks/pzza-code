@@ -1,9 +1,11 @@
+import { captureTurnCheckpoint } from "../checkpoints";
 import { deviceNameFor } from "../devices";
 import { fetchGitChanges, fetchSessionActivity } from "../serverApi";
 import { sessionDisplayName } from "../sessionMeta";
 import { noticeAllowed, notify, useNotifications, type NoticeAction } from "../state/notifications";
 import { useSessionAgents } from "../state/sessionAgents";
 import { useStore } from "../state/store";
+import { hasPendingPermission } from "../state/permissionPrompts";
 import { HAS_TAURI } from "../tauriEnv";
 import { changeSummary, filesChangedLabel, tileGitTarget } from "../tileGit";
 import { rowAgent } from "../ui/LiveSessionIcon";
@@ -18,6 +20,13 @@ export const AGENT_FINISHED_SETTLE_MS = 1500;
 const LOOKUP_TIMEOUT_MS = 10000;
 
 const pending = new Map<string, { timer: ReturnType<typeof setTimeout>; noticeId?: string }>();
+const settledListeners = new Set<(tileId: string) => void>();
+
+/** Calls `listener` with the tile each time an attention signal settles (tasks read it as "the agent waits"). */
+export function onAgentSignalSettled(listener: (tileId: string) => void): () => void {
+  settledListeners.add(listener);
+  return () => { settledListeners.delete(listener); };
+}
 
 /** Reports a terminal attention signal of a tile, and the notice it produced if any. */
 export function agentSignalled(tileId: string, noticeId: string | undefined): void {
@@ -28,6 +37,9 @@ export function agentSignalled(tileId: string, noticeId: string | undefined): vo
     noticeId: latest,
     timer: setTimeout(() => {
       pending.delete(tileId);
+      for (const listener of settledListeners) listener(tileId);
+      // A bell for an approval prompt is the agent pausing mid-turn, not finishing one.
+      if (!hasPendingPermission(tileId)) void captureTurnCheckpoint(tileId, latest).catch(() => { /* The next turn or a manual checkpoint saves it. */ });
       void announce(tileId, latest).catch(() => { /* A lookup that fails leaves the plain notice. */ });
     }, AGENT_FINISHED_SETTLE_MS),
   });
@@ -49,11 +61,12 @@ async function agentInTile(tileId: string): Promise<boolean> {
 }
 
 async function announce(tileId: string, noticeId: string | undefined): Promise<void> {
-  if (!noticeAllowed("terminal", "agent-finished")) return;
+  // An agent waiting on an approval prompt has not finished.
+  if (!noticeAllowed("terminal", "agent-finished") || hasPendingPermission(tileId)) return;
   const target = tileGitTarget(tileId);
   if (!target || !(await agentInTile(tileId))) return;
   const changes = await fetchGitChanges(target.host, target.folder, AbortSignal.timeout(LOOKUP_TIMEOUT_MS));
-  if (!changes.files.length || !noticeAllowed("terminal", "agent-finished")) return;
+  if (!changes.files.length || !noticeAllowed("terminal", "agent-finished") || hasPendingPermission(tileId)) return;
   const state = useStore.getState();
   const tile = state.tiles.find((candidate) => candidate.id === tileId);
   if (!tile) return;

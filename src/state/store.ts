@@ -1,4 +1,3 @@
-import { notify } from "./notifications";
 import { create } from "zustand";
 import { DEFAULT_THEME_ID, migrateThemeId, themeById } from "../theme/themes";
 import {
@@ -10,6 +9,7 @@ import {
 } from "../connection";
 import { fetchSessions, fetchWindows, type RemoteWindow } from "../serverApi";
 import { HAS_TAURI } from "../tauriEnv";
+import { validHiddenBarItems, type BarItemId } from "../barItems";
 import {
   ALL_WORKSPACE_ID,
   DEFAULT_WORKSPACES,
@@ -47,6 +47,7 @@ const TILETITLES_KEY = "pzza.tileTitles";
 const TILECODE_KEY = "pzza.tileCode";
 const TRANSPARENCY_KEY = "pzza.semiTransparent";
 const GRAYSCALE_KEY = "pzza.grayscale";
+const HIDDEN_BAR_ITEMS_KEY = "pzza.hiddenBarItems";
 const SPACING_KEY = "pzza.spacing";
 /** Room around and between tiles, in px: the same value everywhere. */
 export const SPACING_RANGE = { min: 0, max: 24, default: 10, joined: 0, smallestGap: 4 } as const;
@@ -116,6 +117,9 @@ interface ConsoleState {
   semiTransparent: boolean;
   grayscale: boolean;
   setGrayscale: (enabled: boolean) => void;
+  // Top bar tools and status bar items turned off in Settings > Appearance.
+  hiddenBarItems: BarItemId[];
+  setBarItemShown: (id: BarItemId, shown: boolean) => void;
   spacing: number;
   setSpacing: (value: number) => void;
   setSemiTransparent: (enabled: boolean) => void;
@@ -183,11 +187,12 @@ interface ConsoleState {
   tileTitles: Record<string, string>;
   renameTile: (id: string, title: string) => void;
 
-  // Grid columns are per-workspace. `setColumns` applies to the active one.
+  // Grid columns are per-workspace.
   // AUTO_COLUMNS (0) picks the columns from the tile count and window size.
   workspaceColumns: Record<string, number>;
   defaultColumns: number;
-  setColumns: (n: number) => void;
+  // Columns for a workspace (the active one unless named).
+  setColumns: (n: number, workspaceId?: string) => void;
 
   // Terminal appearance (applied live to every tile).
   fontSize: number;
@@ -308,6 +313,13 @@ export const useStore = create<ConsoleState>((set, get) => ({
   setGrayscale: (enabled) => {
     persist(GRAYSCALE_KEY, enabled);
     set({ grayscale: enabled });
+  },
+  hiddenBarItems: validHiddenBarItems(load<unknown>(HIDDEN_BAR_ITEMS_KEY, [])),
+  setBarItemShown: (id, shown) => {
+    const hidden = get().hiddenBarItems.filter(item => item !== id);
+    const next = shown ? hidden : [...hidden, id];
+    persist(HIDDEN_BAR_ITEMS_KEY, next);
+    set({ hiddenBarItems: next });
   },
   spacing: validSpacing(load<unknown>(SPACING_KEY, SPACING_RANGE.default)),
   setSpacing: (value) => {
@@ -468,16 +480,13 @@ export const useStore = create<ConsoleState>((set, get) => ({
     const devices = [...get().devices, device];
     persist(DEVICES_KEY, devices);
     set(deviceLists(devices));
-    notify({ category: "devices", event: "device-added", title: "Device added", body: `${trimmed} was added to your devices.`, target: { section: "devices" } });
   },
   removeDevice: (id) => {
     if (id === "this-mac") return; // the local machine is always present
-    const removed = get().devices.find(device => device.id === id);
-    if (!removed) return;
+    if (!get().devices.some(device => device.id === id)) return;
     const devices = get().devices.filter((d) => d.id !== id);
     persist(DEVICES_KEY, devices);
     set(deviceLists(devices));
-    notify({ category: "devices", event: "device-removed", title: "Device removed", body: `${removed.name} was removed from this app.`, target: { section: "devices" } });
   },
   setDeviceDisabled: (id, disabled) => {
     if (id === THIS_MAC.id) return; // the local machine always stays enabled
@@ -540,8 +549,8 @@ export const useStore = create<ConsoleState>((set, get) => ({
   // without either the canvas arranges itself.
   defaultColumns: load<number>(COLUMNS_KEY, AUTO_COLUMNS),
   workspaceColumns: load<Record<string, number>>(WSCOLUMNS_KEY, {}),
-  setColumns: (n) => {
-    const id = get().activeWorkspaceId;
+  setColumns: (n, workspaceId) => {
+    const id = workspaceId ?? get().activeWorkspaceId;
     const workspaceColumns = { ...get().workspaceColumns, [id]: n };
     persist(WSCOLUMNS_KEY, workspaceColumns);
     set((state) => ({ workspaceColumns, refreshNonce: state.refreshNonce + 1 }));

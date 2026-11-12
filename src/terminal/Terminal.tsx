@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
@@ -28,10 +28,16 @@ import { createDictationComposition } from "./dictationComposition";
 import { notify } from "../state/notifications";
 import { createTerminalSignals } from "./notificationSignals";
 import { agentSignalled } from "./agentFinished";
+import { createPermissionWatcher, hasPendingPermission } from "../state/permissionPrompts";
+import type { Screen } from "./permissionPrompts";
+import { paneForeground } from "./permissionForeground";
+import { createPaneModeGate } from "./paneModeGate";
+import { leavePaneMode, paneInMode, paneLines, type PaneTarget } from "./paneMode";
 import { createTerminalAppController, registerTerminalAppControl, validateTerminalPaste } from "../appControlTerminal";
 import { IS_MAC } from "../shortcuts";
 import { layoutPreviewActive, onLayoutPreviewEnd } from "../grid/layoutPreview";
 import { ChevronDown, ChevronUp, ClipboardPaste, Copy, Eraser, TextSelect, X } from "lucide-react";
+import type { SessionAgentId } from "../../server/lib/session-agents.js";
 
 // Cmd-click (Ctrl-click off macOS) opens a link in this machine's default browser, whichever
 // device the session runs on: the native opener runs on the app host and only
@@ -101,7 +107,7 @@ interface Props {
   window?: number;
   active?: boolean;
   onStatus?: (s: TileStatus) => void;
-  managedChat?: { agent: "claude" | "codex" | "opencode"; identity: string };
+  managedChat?: { agent: SessionAgentId; identity: string };
   onAttachment?: (status: AttachmentStatus) => void;
   retryToken?: number;
 }
@@ -112,6 +118,8 @@ interface Props {
 // apart over many rows, pushing the last line past the tile's clipped edge.
 // Cap simultaneous GPU contexts; additional visible terminals use xterm's DOM renderer.
 const MAX_WEBGL_TERMINALS = 8;
+// GPU renderers a pre-warming off-screen tile leaves free for tiles on screen.
+const PREWARM_HEADROOM = 2;
 let liveWebglTerminals = 0;
 const LINE_RATIO = 1.15;
 const snappedLineHeight = (fontSize: number) => Math.round(fontSize * LINE_RATIO) / fontSize;
@@ -119,7 +127,7 @@ const snappedLineHeight = (fontSize: number) => Math.round(fontSize * LINE_RATIO
 // One live terminal tile. xterm owns its own WebGL canvas, so it lives outside
 // React's reconcile loop. Transport depends on where the app runs: Rust PTY
 // under Tauri, the devbox WebSocket server in a plain browser.
-export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, active, onStatus, managedChat, onAttachment, retryToken = 0 }: Props) {
+function TerminalView({ tileId, name, host, cmd, args, cwd, window: win, active, onStatus, managedChat, onAttachment, retryToken = 0 }: Props) {
   const attachmentStatusRef = useRef(onAttachment);
   attachmentStatusRef.current = onAttachment;
   const retryRef = useRef<(() => void) | null>(null);
@@ -430,8 +438,13 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
       // The renderer follows visibility directly: acquire the moment the tile
       // is seen, release exactly at suspend time. No separate timer, so a
       // stale timeout can never strip a visible tile's renderer mid-paint.
+      // A visible tile always asks for a GPU renderer. A tile just outside the
+      // view (see tileNear) warms one up ahead of a scroll, but only while slots
+      // remain free for the tiles on screen.
       const updateRendererVisibility = () => {
-        if (tileVisible && document.visibilityState === "visible") acquireRenderer();
+        if (document.visibilityState !== "visible") return;
+        if (tileVisible) acquireRenderer();
+        else if (tileNear && liveWebglTerminals < MAX_WEBGL_TERMINALS - PREWARM_HEADROOM) acquireRenderer();
       };
 
       // Resize veil helpers: "fade" covers the short redraw RTT of an
@@ -573,6 +586,8 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
       let gotData = false;
       // Current tiles attach to persistent tmux sessions rather than owning their commands.
       const notificationSignals = createTerminalSignals(tileId, (notification) => {
+        // An approval prompt on screen has its own, richer notice.
+        if (notification.event === "terminal-bell" && hasPendingPermission(tileId)) return;
         const state = useStore.getState();
         const tile = state.tiles.find((candidate) => candidate.id === tileId);
         const label = sessionDisplayName(tile ?? { id: tileId, name, session: name, host, window: win }, state.tileTitles)
@@ -612,6 +627,17 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
       // machine. The bell and erase paths capture on demand, so this
       // speculative per-write refresh only needs to run at most once a second.
       let lastCaptureAt = 0;
+      // While it draws (output, typing, the cursor), a semi-transparent tile
+      // re-blurs its glass every frame: WebKit did not refresh that blur where
+      // the WebGL canvas redrew, so the lines being drawn looked wrong behind.
+      // It stops shortly after drawing does (see .term-surface[data-drawing]).
+      let drawingTimer: ReturnType<typeof setTimeout> | undefined;
+      const drawingListener = term.onRender(() => {
+        if (!useStore.getState().semiTransparent) return;
+        container.dataset.drawing = "";
+        clearTimeout(drawingTimer);
+        drawingTimer = setTimeout(() => { delete container.dataset.drawing; }, 700);
+      });
       const outputCaptureListener = term.onWriteParsed(() => {
         const now = performance.now();
         if (now - lastCaptureAt < 1000) return;
@@ -626,7 +652,6 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
       }));
       const messageListener = term.parser.registerOscHandler(9, (data) => notificationSignals.osc9(data));
       const titledMessageListener = term.parser.registerOscHandler(777, (data) => notificationSignals.osc777(data));
-      const completionListener = term.parser.registerOscHandler(133, (data) => notificationSignals.osc133(data));
 
       // The bundled Nerd Font symbols load asynchronously. Because the @font-face
       // has a restricted unicode-range, we must ask for it with actual icon glyphs
@@ -665,6 +690,11 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
       const t2 = setTimeout(safeFit, 250);
 
       let tileVisible = container.getClientRects().length > 0;
+      // Within about one canvas height of the view: close enough that a scroll
+      // will reach it, so it stays attached (or re-attaches) ahead of time
+      // instead of reconnecting and repainting while it scrolls into view.
+      let tileNear = tileVisible;
+      const keepAttached = () => (tileVisible || tileNear) && document.visibilityState === "visible";
       const output = createOutputScheduler({
         write: (bytes, consumed) => term.write(bytes, () => {
           // First parsed bytes after a snap fit: fade the cover if it ever
@@ -706,16 +736,16 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
         clearTimeout(suspendTimer);
         clearTimeout(resumeTimer);
         if (disposed) return;
-        if (tileVisible && document.visibilityState === "visible") {
+        if (keepAttached()) {
           if (transportSuspended && canSuspend) {
             // Resume is async: keep the suspended flag until the attach
             // actually starts, so a hide during the stagger window can't leave
             // the tile unattached and un-suspended.
             resumeTimer = setTimeout(() => {
               if (disposed || !transportSuspended) return;
-              if (!tileVisible || document.visibilityState !== "visible") return;
+              if (!keepAttached()) return;
               transportSuspended = false;
-              acquireRenderer();
+              updateRendererVisibility();
               // Re-attach: tmux repaints the whole pane, then fit + repaint.
               void attachTransport().catch((error: unknown) => transportFailed(error instanceof Error ? error.message : "Terminal attachment failed."));
             }, resumeDelayFor(tileId, activeRef.current === true));
@@ -727,7 +757,7 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
           // churns tmux attachments.
           suspendTimer = setTimeout(() => {
             if (disposed || transportSuspended) return;
-            if (tileVisible && document.visibilityState === "visible") return;
+            if (keepAttached()) return;
             transportSuspended = true;
             clearTimeout(idleTimer);
             onStatus?.("idle");
@@ -762,6 +792,15 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
         scheduleSuspendCheck();
       });
       visibilityObserver.observe(container);
+      // The canvas is the scroll container, so it must be the root: with the
+      // viewport as root its clipping would cancel the margin.
+      const nearRoot = container.closest<HTMLElement>(".canvas");
+      const nearObserver = nearRoot ? new IntersectionObserver(([entry]) => {
+        tileNear = entry.isIntersecting;
+        updateRendererVisibility();
+        scheduleSuspendCheck();
+      }, { root: nearRoot, rootMargin: "100% 0px" }) : null;
+      nearObserver?.observe(container);
       const onVisibilityChange = () => {
         updateRendererVisibility();
         scheduleSuspendCheck();
@@ -778,8 +817,31 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
       let pasteController = new AbortController();
       let unregisterDictation: (() => void) | undefined;
       let recovery: ReturnType<typeof createAttachmentRecovery> | undefined;
+      // Every byte to the pane goes through this gate: once a wheel-up or drag
+      // may have put the tmux pane in copy-mode (mouse on), the next typed
+      // input first leaves the mode, so it reaches the program, not the mode.
+      const paneTarget: PaneTarget = { host, session: name, window: win };
+      const modeGate = createPaneModeGate({
+        write: text => {
+          if (HAS_TAURI) return tauriId === null ? Promise.reject(new Error("Terminal connection closed while sending input.")) : writePty(tauriId, text);
+          return ws?.write(text) ? Promise.resolve() : Promise.reject(new Error("Terminal connection closed while sending input."));
+        },
+        leave: () => leavePaneMode(paneTarget),
+      });
+      // The pane is checked once per attachment, on its first output: a pane
+      // left in copy-mode (an app restart, another client) is found here.
+      let probedEpoch = -1;
+      const probePaneMode = (epoch: number) => {
+        if (probedEpoch === epoch) return;
+        probedEpoch = epoch;
+        const generation = modeGate.generation();
+        void paneInMode(paneTarget).then(inMode => {
+          if (!disposed && epoch === connectionEpoch) modeGate.settle(generation, inMode);
+        }, () => { /* Unknown: the next typed input leaves any mode first. */ });
+      };
       const detachTransport = () => {
         connectionEpoch++;
+        modeGate.reset(new Error("Terminal connection closed while sending input."));
         exited = true;
         attachmentReady = !managedChat;
         pasteController.abort();
@@ -807,9 +869,11 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
         if (disposed || signal?.aborted) return;
         exited = false;
         const epoch = ++connectionEpoch;
+        modeGate.mark();
         const current = () => !disposed && !signal?.aborted && epoch === connectionEpoch;
         const data = (bytes: Uint8Array, consumed: () => void) => {
           if (!current()) { consumed(); return; }
+          probePaneMode(epoch);
           gotData = true;
           attachmentReady = true;
           recovery?.ready();
@@ -846,13 +910,10 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
         }
       };
       const inputListener = term.onData(text => {
-        if (disposed || exited || !attachmentReady) return;
+        if (disposed || exited || !attachmentReady || (HAS_TAURI && tauriId === null)) return;
         notificationSignals.input(text);
         const epoch = connectionEpoch;
-        if (HAS_TAURI) {
-          if (tauriId === null) return;
-          lastWrite = writePty(tauriId, text);
-        } else lastWrite = ws?.write(text) ? Promise.resolve() : Promise.reject(new Error("Terminal connection closed while sending input."));
+        lastWrite = modeGate.send(text);
         void lastWrite.catch((error: unknown) => {
           if (!disposed && epoch === connectionEpoch) transportFailed(error instanceof Error ? error.message : "Terminal input failed.");
         });
@@ -966,17 +1027,72 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
         if (!connected()) throw new Error("The terminal is disconnected.");
         notificationSignals.input(value);
         cancelDictationInput();
-        if (HAS_TAURI && tauriId !== null) await writePty(tauriId, value);
-        else if (!ws?.write(value)) throw new Error("Terminal input could not be sent.");
+        await modeGate.send(value);
       };
-      // Broadcast: the line goes through the guarded paste path (one line,
-      // no control characters), then Enter is sent separately so it submits
-      // even in bracketed paste mode. Queued with other pastes, in order.
+      // Broadcast: the text goes through the guarded paste path (no control
+      // characters; line breaks only in bracketed paste mode, where an agent's
+      // input box takes them as one message), then Enter is sent separately so
+      // it submits. Queued with other pastes, in order.
       const unregisterBroadcast = registerBroadcastTarget(tileId, text => enqueuePaste(async () => {
-        validateTerminalPaste(text, term.modes.bracketedPasteMode, true);
+        if (/[\n\t]/.test(text) && !term.modes.bracketedPasteMode) throw new Error("This terminal takes one line at a time; a shell would run each line on its own.");
+        validateTerminalPaste(text, term.modes.bracketedPasteMode);
         await insert(text, false);
         await sendRaw("\r");
       }));
+
+      // Coding-agent approval prompts on the visible screen (the bottom
+      // `rows` lines of the active buffer, which is what tmux last drew).
+      // Backgrounds are read on demand: some agents mark the highlighted
+      // choice only with color.
+      const visibleScreen = (): Screen => {
+        const buffer = term.buffer.active;
+        const top = buffer.baseY;
+        const rows: string[] = [];
+        for (let row = top; row < top + term.rows; row++) {
+          rows.push(buffer.getLine(row)?.translateToString(true, 0, term.cols).replace(/[\x00-\x1f\x7f-\x9f]/g, "") ?? "");
+        }
+        // The cell at a string index of a visible row.
+        const cellAt = (row: number, index: number) => {
+          const line = buffer.getLine(top + row);
+          if (!line) return undefined;
+          let offset = 0;
+          for (let column = 0; column < term.cols; column++) {
+            const cell = line.getCell(column);
+            if (!cell) return undefined;
+            if (cell.getWidth() === 0) continue;
+            if (offset >= index) return cell;
+            offset += cell.getChars().length || 1;
+          }
+          return undefined;
+        };
+        const background = (row: number, index: number) => {
+          const cell = cellAt(row, index);
+          if (!cell) return undefined;
+          return cell.isInverse() ? `inverse:${cell.getFgColorMode()}:${cell.getFgColor()}` : `${cell.getBgColorMode()}:${cell.getBgColor()}`;
+        };
+        const style = (row: number, index: number) => {
+          const cell = cellAt(row, index);
+          return cell ? `${cell.getFgColorMode()}:${cell.getFgColor()}:${cell.isBold() ? "bold" : ""}` : undefined;
+        };
+        return { rows, background, style, cols: term.cols };
+      };
+      const permissionWatcher = managedChat ? null : createPermissionWatcher(tileId, {
+        screen: visibleScreen,
+        freshScreen: async () => {
+          output.flush();
+          await new Promise<void>(resolve => term.write("", resolve));
+          return visibleScreen();
+        },
+        // Queued behind pastes, so an answer never interleaves with one.
+        send: value => enqueuePaste(() => sendRaw(value)),
+        focused: () => document.hasFocus() && container.contains(document.activeElement),
+        foreground: fresh => paneForeground(host, name, win, fresh),
+        // The tile's buffer holds only the screen (tmux draws on the
+        // alternate screen), so rows above it come from tmux's history.
+        paneLines: () => paneLines(paneTarget),
+      });
+      const permissionScanListener = permissionWatcher ? term.onWriteParsed(() => permissionWatcher.schedule()) : null;
+      permissionWatcher?.schedule();
 
       const unregisterControl = registerTerminalAppControl(tileId, createTerminalAppController({
         state: () => ({ connected: connected(), cols: term.cols, rows: term.rows, bufferLines: term.buffer.active.length, viewportY: term.buffer.active.viewportY, hasSelection: term.hasSelection(), bracketedPasteMode: term.modes.bracketedPasteMode }),
@@ -1067,6 +1183,7 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
         searchRef.current = null;
         window.removeEventListener("pzza:quick-chat-cancel", cancelRecovery);
         inputListener.dispose();
+        modeGate.reset(new Error("The terminal closed before this input was sent."));
         transportResize.dispose();
         unregisterDrop();
         unregisterControl();
@@ -1074,6 +1191,8 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
         unsubscribePreviewEnd();
         revealCleanup?.dispose();
         unregisterBroadcast();
+        permissionScanListener?.dispose();
+        permissionWatcher?.dispose();
         unregisterDictation?.();
         manualKey.dispose();
         container.removeEventListener("beforeinput", cancelDictationInput, true);
@@ -1097,10 +1216,11 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
         notificationSignals.dispose();
         bellListener.dispose();
         outputCaptureListener.dispose();
+        drawingListener.dispose();
+        clearTimeout(drawingTimer);
         eraseCaptureListeners.forEach(listener => listener.dispose());
         messageListener.dispose();
         titledMessageListener.dispose();
-        completionListener.dispose();
         pasteController.abort();
         cancelAnimationFrame(raf);
         cancelAnimationFrame(fitRaf);
@@ -1117,6 +1237,7 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
         } catch { /* store unavailable in preview */ }
         output.dispose();
         visibilityObserver.disconnect();
+        nearObserver?.disconnect();
         document.removeEventListener("visibilitychange", onVisibilityChange);
         releaseRenderer();
         flushOutputRef.current = null;
@@ -1278,3 +1399,22 @@ export function Terminal({ tileId, name, host, cmd, args, cwd, window: win, acti
     ) : null}
   </div>;
 }
+
+// The terminal's session effect runs once per mount and reads cmd, args and
+// onStatus from that first render, so a parent re-render (a tile drag preview,
+// a status change elsewhere in the grid) that only brings a new args array with
+// the same entries or a new onStatus closure changes nothing here and skips
+// the render. Every other prop still re-renders on any change.
+function sameTerminalProps(previous: Props, next: Props): boolean {
+  for (const key of Object.keys({ ...previous, ...next }) as (keyof Props)[]) {
+    if (key === "onStatus") continue;
+    if (key === "args") {
+      if (previous.args.length !== next.args.length || previous.args.some((value, index) => value !== next.args[index])) return false;
+      continue;
+    }
+    if (!Object.is(previous[key], next[key])) return false;
+  }
+  return true;
+}
+
+export const Terminal = memo(TerminalView, sameTerminalProps);

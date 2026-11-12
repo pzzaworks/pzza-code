@@ -1,8 +1,11 @@
 import { validateTerminalPaste } from "../appControlTerminal";
+import { hasPendingPermission } from "../state/permissionPrompts";
 
-// Per-tile writers for broadcasting one line to several terminals. Each
-// terminal registers a writer that pastes through its normal guarded paste
-// path and then submits Enter, so broadcast input is never a raw byte stream.
+// Per-tile writers for broadcasting text to several terminals. Each terminal
+// registers a writer that pastes through its normal guarded paste path and
+// then submits Enter, so broadcast input is never a raw byte stream. A writer
+// refuses multi-line text unless its terminal is in bracketed paste mode
+// (an agent's input box): a plain shell would run each line on its own.
 type Writer = (text: string) => Promise<void>;
 const writers = new Map<string, Writer>();
 
@@ -11,14 +14,20 @@ export function registerBroadcastTarget(tileId: string, writer: Writer): () => v
   return () => { if (writers.get(tileId) === writer) writers.delete(tileId); };
 }
 
-export interface BroadcastResult { tileId: string; error: string | null }
+export interface BroadcastResult { tileId: string; error: string | null; skipped?: boolean }
 
-// Sends `text` followed by Enter to every tile. One line only: the text is
-// validated once before anything is sent, so a bad line reaches no terminal.
-export async function broadcastLine(tileIds: readonly string[], text: string): Promise<BroadcastResult[]> {
+export const BROADCAST_PENDING_APPROVAL = "Waiting on an approval prompt, so nothing was sent. Answer it first.";
+
+// Sends `text` followed by Enter to every tile. The text is validated once
+// before anything is sent, so a bad message reaches no terminal; `multiline`
+// allows line breaks, which each terminal still accepts only in bracketed
+// paste mode. A tile waiting on an approval prompt is skipped: the text and
+// its Enter would answer the prompt instead of reaching the agent.
+export async function broadcastLine(tileIds: readonly string[], text: string, { multiline = false } = {}): Promise<BroadcastResult[]> {
   if (!text.trim()) throw new Error("Type something to send.");
-  validateTerminalPaste(text, false, true);
+  validateTerminalPaste(text, multiline, !multiline);
   return Promise.all(tileIds.map(async (tileId) => {
+    if (hasPendingPermission(tileId)) return { tileId, error: BROADCAST_PENDING_APPROVAL, skipped: true };
     const writer = writers.get(tileId);
     if (!writer) return { tileId, error: "This terminal is not connected yet." };
     try {

@@ -3,19 +3,20 @@ import { useModalFocus } from "../ui/Modal";
 import { registerAppControlHandler, registerAppControlState } from "../appControlRuntime";
 import { createPortal } from "react-dom";
 import { Info, ChevronDown, Bell, Blocks, CircleQuestionMark, FolderSync, HardDrive, MessageSquare, Settings, Wrench, X } from "lucide-react";
-import { SettingsMenu, generalSections, type GeneralSection } from "./SettingsMenu";
-import { DevicesMenu } from "./DevicesMenu";
-import { ProjectsMenu } from "./ProjectsMenu";
+import { generalSections, type GeneralSection } from "./settingsSections";
 import { QuickChatSettings } from "./QuickChat";
 import { PortsMenu } from "./PortsMenu";
 import { RdpMenu } from "./RdpMenu";
-import { McpMenu } from "./McpMenu";
 import { useStore } from "../state/store";
 import { hasRemoteDevice } from "../devices";
-import { HelpContent, HelpNav, HELP_SECTIONS, isHelpTopic, type HelpTopic, type HelpRequest } from "./HelpModal";
-import { About } from "./About";
+import { HELP_SECTIONS, isHelpTopic, type HelpTopic, type HelpRequest } from "./helpTopics";
+import { About, DevicesMenu, HelpContent, HelpNav, McpMenu, ProjectsMenu, SETTINGS_PAGES, SettingsMenu, SetupSettings } from "../lazySurfaces";
+import { useSurfacesLoaded } from "../lazySurface";
 import { NotificationsSettings } from "./Notifications";
-import { SetupSettings } from "./SetupSettings";
+// Styles of the pages that load later (see lazySurfaces), kept in the main
+// stylesheet in their original cascade order.
+import "../ui/Slider.css";
+import "../ui/Segmented.css";
 import "./SettingsHub.css";
 
 const sections = [
@@ -88,16 +89,20 @@ export function SettingsHub({ open, section, onSectionChange, onOpen, onClose, s
   useEffect(() => {
     dialog.current?.querySelector(".settings-hub-content")?.scrollTo({ top: 0 });
   }, [section, generalSection, notificationPage, helpTopic, syncPage]);
-  useModalFocus(open, dialog, onClose);
+  // Settings shows once all of its pages are loaded (usually already, see
+  // preloadWhenIdle), so it never opens on an empty page.
+  const pagesReady = useSurfacesLoaded(SETTINGS_PAGES, open);
+  const shown = open && pagesReady;
+  useModalFocus(shown, dialog, onClose);
   useEffect(() => {
     if ((open && section === "sync") || syncRequest > 0) setSyncVisited(true);
     if (open && section === "mcp") setMcpVisited(true);
     if (open && section === "ports") setPortsVisited(true);
   }, [open, section, syncRequest]);
 
-  if (!open && !syncVisited && !mcpVisited && !portsVisited && syncRequest === 0) return null;
+  if (!shown && !syncVisited && !mcpVisited && !portsVisited && syncRequest === 0) return null;
   return createPortal(
-    <div className="modal-backdrop pzza-portal settings-hub-backdrop" hidden={!open} onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+    <div className="modal-backdrop pzza-portal settings-hub-backdrop" hidden={!shown} onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
       <div className="modal settings-hub" role="dialog" aria-modal="true" aria-labelledby="settings-hub-title" ref={dialog} tabIndex={-1}>
         <div className="modal-head">
           <span className="modal-title" id="settings-hub-title"><Settings size={16} /> Settings</span>
@@ -120,18 +125,18 @@ export function SettingsHub({ open, section, onSectionChange, onOpen, onClose, s
           </nav>
           <div className="settings-hub-main">
             <div className="settings-hub-content">
-              {open && section === "general" ? <SettingsMenu section={generalSection} /> : null}
-              {open && section === "notifications" ? <NotificationsSettings page={notificationPage} /> : null}
-              {open && section === "setup" ? <SetupSettings /> : null}
-              {open && section === "quick-chat" ? <QuickChatSettings /> : null}
-              {open && section === "devices" ? <DevicesMenu /> : null}
+              {shown && section === "general" ? <SettingsMenu section={generalSection} /> : null}
+              {shown && section === "notifications" ? <NotificationsSettings page={notificationPage} /> : null}
+              {shown && section === "setup" ? <SetupSettings /> : null}
+              {shown && section === "quick-chat" ? <QuickChatSettings /> : null}
+              {shown && section === "devices" ? <DevicesMenu /> : null}
               {/* The same sync instance owns the scan across navigation and closing. */}
-              {syncVisited || syncRequest > 0 || (open && section === "sync") ? <div hidden={!open || section !== "sync"}><ProjectsMenu active={open && section === "sync"} page={syncPage} syncRequest={syncRequest} onSyncingChange={onSyncingChange} /></div> : null}
-              {portsVisited || (open && section === "ports") ? <div hidden={!open || section !== "ports"}><PortsMenu active={open && section === "ports"} /></div> : null}
-              {open && section === "remote" ? <RdpMenu close={onClose} /> : null}
-              {mcpVisited || (open && section === "mcp") ? <div hidden={!open || section !== "mcp"}><McpMenu /></div> : null}
-              {open && section === "about" ? <About /> : null}
-              {open && section === "help" ? <HelpContent topic={helpTopic} request={helpRequest} onNavigate={setHelpTopic} /> : null}
+              {syncVisited || syncRequest > 0 || (shown && section === "sync") ? <div hidden={!shown || section !== "sync"}><ProjectsMenu active={shown && section === "sync"} page={syncPage} syncRequest={syncRequest} onSyncingChange={onSyncingChange} /></div> : null}
+              {portsVisited || (shown && section === "ports") ? <div hidden={!shown || section !== "ports"}><PortsMenu active={shown && section === "ports"} /></div> : null}
+              {shown && section === "remote" ? <RdpMenu close={onClose} /> : null}
+              {mcpVisited || (shown && section === "mcp") ? <div hidden={!shown || section !== "mcp"}><McpMenu /></div> : null}
+              {shown && section === "about" ? <About /> : null}
+              {shown && section === "help" ? <HelpContent topic={helpTopic} request={helpRequest} onNavigate={setHelpTopic} /> : null}
             </div>
           </div>
         </div>

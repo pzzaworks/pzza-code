@@ -1,6 +1,9 @@
 // Opt-in native lifecycle regression. Each child uses a nonpersistent webview,
 // an isolated sidecar port/config root, and an explicitly private tmux socket.
 #[cfg(target_os = "macos")]
+#[path = "../src/agent_catalog.rs"]
+mod agent_catalog;
+#[cfg(target_os = "macos")]
 #[path = "../src/agent.rs"]
 mod agent;
 #[cfg(target_os = "macos")]

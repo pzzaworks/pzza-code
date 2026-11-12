@@ -6,7 +6,7 @@ import type { RemoteSession } from "./connection";
 import type { DeviceOs } from "./devices";
 import { HAS_TAURI } from "./tauriEnv";
 import { createAgentConnection } from "./agentConnection";
-import type { SessionAgentChoice } from "../server/lib/session-agents.js";
+import { sessionAgent, type SessionAgentChoice, type SessionAgentId } from "../server/lib/session-agents.js";
 
 function serverPort(): number {
   try {
@@ -115,13 +115,15 @@ export function wsUrl(): string {
   return q ? `${SERVER_WS}?${q}` : SERVER_WS;
 }
 
-export type EffectiveModelProvider = "claude" | "codex";
+export type EffectiveModelProvider = SessionAgentId;
 export type EffectiveModelEvidence = "reported" | "configured";
 
 export interface SessionActivity {
   session: string;
   window: number;
   active: boolean;
+  /** Panes in the window; absent when the device could not say. */
+  panes?: number;
   command: string;
   effectiveModel: string | null;
   effectiveProvider: EffectiveModelProvider | null;
@@ -131,6 +133,38 @@ export async function fetchSessionActivity(host?: string, signal?: AbortSignal):
   const response = await agentFetch(`${SERVER_HTTP}/sessions/activity${host !== undefined ? `?host=${encodeURIComponent(host)}` : ""}`, { signal });
   if (!response.ok) throw new Error("Session activity unavailable");
   return response.json();
+}
+
+// Whether a tile's tmux pane is in a mode (copy-mode after a wheel-up), or
+// leave it (leave: true, which resolves false once tmux confirmed it).
+export async function fetchPaneMode(session: string, window: number | undefined, host: string | undefined, leave: boolean, signal?: AbortSignal): Promise<boolean> {
+  const response = await agentFetch(`${SERVER_HTTP}/session/pane-mode`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: session, window, host, leave }),
+    signal,
+  });
+  if (!response.ok) throw new Error("The terminal pane mode is unavailable.");
+  const data: unknown = await response.json();
+  if (!data || typeof data !== "object" || !("inMode" in data) || typeof data.inMode !== "boolean") throw new Error("Invalid pane mode response.");
+  return data.inMode;
+}
+
+// A tile's tmux pane: its recent history and visible rows, oldest first.
+export async function fetchPaneLines(session: string, window: number | undefined, host: string | undefined, signal?: AbortSignal): Promise<string[]> {
+  const response = await agentFetch(`${SERVER_HTTP}/session/pane-lines`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: session, window, host }),
+    signal,
+  });
+  if (!response.ok) throw new Error("The terminal pane history is unavailable.");
+  const data: unknown = await response.json();
+  const lines: unknown = data && typeof data === "object" && "lines" in data ? data.lines : undefined;
+  if (!Array.isArray(lines)) throw new Error("Invalid pane history response.");
+  const text = lines.filter((line): line is string => typeof line === "string");
+  if (text.length !== lines.length) throw new Error("Invalid pane history response.");
+  return text;
 }
 
 // Branch and dirty state for up to 64 folders on one device (null: not a repo).
@@ -392,11 +426,12 @@ export async function createSession(
   host?: string,
   agent?: SessionAgentChoice,
   worktree?: boolean,
+  base?: string,
 ): Promise<{ agentStarted?: boolean; cwd?: string; setup?: WorktreeSetupReport; setupStarted?: boolean }> {
   const response = await agentFetch(`${SERVER_HTTP}/create`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name, cwd, account, host, agent, worktree: worktree || undefined }),
+    body: JSON.stringify({ name, cwd, account, host, agent, worktree: worktree || undefined, base: worktree && base ? base : undefined }),
     // A worktree also copies its setup files before the session starts.
     signal: AbortSignal.timeout(worktree ? 80000 : 20000),
   });
@@ -432,8 +467,8 @@ function parseWorktreeSetupReport(value: unknown): WorktreeSetupReport | undefin
   return { copied: value.copied, skipped, run: value.run, unapproved: value.unapproved, error: typeof value.error === "string" ? value.error : null };
 }
 
-export type QuickChatAgent = "claude" | "codex" | "opencode";
-export type QuickChatLauncher = "claude" | "codex" | "opencode";
+export type QuickChatAgent = SessionAgentId;
+export type QuickChatLauncher = SessionAgentId;
 export interface QuickChatSession {
   session: string;
   host: string;
@@ -448,7 +483,7 @@ function isQuickChatResponse(value: unknown, host: string): value is QuickChatSe
   return Boolean(value && typeof value === "object" &&
     "session" in value && value.session === "pzza-quick-chat" &&
     "host" in value && value.host === host &&
-    "agent" in value && (value.agent === "claude" || value.agent === "codex" || value.agent === "opencode") &&
+    "agent" in value && sessionAgent(value.agent) !== undefined &&
     "launcher" in value && value.launcher === value.agent &&
     "identity" in value && typeof value.identity === "string" && /^\$[0-9]+:[0-9]+:[0-9]+$/.test(value.identity));
 }
@@ -466,7 +501,7 @@ export async function openQuickChat(host: string, agent: QuickChatAgent): Promis
   return value;
 }
 
-export async function verifyQuickChat(host: string, agent: "claude" | "codex" | "opencode", identity: string, signal?: AbortSignal): Promise<void> {
+export async function verifyQuickChat(host: string, agent: QuickChatAgent, identity: string, signal?: AbortSignal): Promise<void> {
   if (!/^\$[0-9]+:[0-9]+:[0-9]+$/.test(identity)) throw new Error("Quick Chat session identity is unavailable.");
   await withRequestDeadline(15000, signal, async boundedSignal => {
     const response = await agentFetch(`${SERVER_HTTP}/quick-chat/verify`, {
@@ -515,6 +550,11 @@ export interface UsageWindow {
   utilization: number;
   resets_at: string | null;
 }
+export interface UsageBalance {
+  name: string;
+  amount: number;
+  unit: "usd" | "credits";
+}
 export interface UsageScoped {
   name: string;
   percent: number;
@@ -523,7 +563,7 @@ export interface UsageScoped {
 export interface AccountUsage {
   sourceHost?: string;
   sourceName?: string;
-  provider: "claude" | "codex" | "opencode";
+  provider: SessionAgentId;
   label: string;
   email?: string;
   keyHint?: string;
@@ -536,10 +576,15 @@ export interface AccountUsage {
     updatedAt?: number;
     stale?: boolean;
     retryAt?: number | null;
+    // "session": read from the agent's own session files because its usage
+    // endpoint could not be reached; updatedAt is when the agent recorded it.
+    source?: "session";
+    // Prepaid balances (credits or dollars left), shown as amounts, not bars.
+    balances?: UsageBalance[];
   } | null;
   error: string | null;
 }
-// Claude/Codex account usage on the connected device (5h + weekly windows).
+// Agent account usage on the connected device: 5h and weekly windows, named limits and balances.
 // `fresh` re-reads accounts; provider cooldowns still apply.
 export async function fetchUsage(fresh = false, host = ""): Promise<AccountUsage[]> {
   const params = new URLSearchParams({ host, ...(fresh ? { fresh: "1" } : {}) });
@@ -641,9 +686,12 @@ export interface SpendDay extends SpendWindow {
 }
 export interface AccountSpend {
   sourceHost?: string;
-  provider: "claude" | "codex" | "opencode";
+  provider: SessionAgentId;
   label: string;
-  pricingBasis: "standard-api-short-context" | "opencode-billed";
+  // "agent-recorded": the cost the agent itself stored with each session.
+  pricingBasis: "standard-api-short-context" | "agent-recorded";
+  // False when the agent records cost but no token counts (Crush).
+  tokensTracked?: false;
   today: SpendWindow;
   yesterday: SpendWindow;
   window: SpendWindow;
@@ -662,7 +710,7 @@ export async function fetchSpend(fresh = false, host = ""): Promise<AccountSpend
 // transcript on this device (matched by folder and start time, best effort).
 export interface SessionCost {
   found: boolean;
-  provider: "claude" | "codex";
+  provider: SessionAgentId;
   startedAt?: number;
   lastAt?: number;
   subagents?: number;
@@ -672,13 +720,18 @@ export interface SessionCost {
   cost?: number | null;
   pricedCost?: number;
   unpricedModels?: string[];
+  pricingBasis?: AccountSpend["pricingBasis"];
 }
-export async function fetchSessionCost(provider: "claude" | "codex", cwd: string, since: number, signal?: AbortSignal): Promise<SessionCost> {
+export async function fetchSessionCost(provider: SessionAgentId, cwd: string, since: number, signal?: AbortSignal): Promise<SessionCost> {
   const params = new URLSearchParams({ provider, cwd, since: String(Math.max(0, Math.floor(since))) });
   const res = await agentFetch(`${SERVER_HTTP}/session/cost?${params}`, { signal });
-  if (!res.ok) throw new Error(`session cost ${res.status}`);
+  if (!res.ok) {
+    const value: unknown = await res.json().catch(() => null);
+    throw new Error(value && typeof value === "object" && "error" in value && typeof value.error === "string" ? value.error : `session cost ${res.status}`);
+  }
   return res.json();
 }
+
 
 export interface Doctor {
   role: "source" | "client";
@@ -690,6 +743,8 @@ export interface Doctor {
   stateDir: string;
   stateWritable: boolean;
   sshReachable?: boolean;
+  /** Coding agent CLIs found on the device; absent from older device agents. */
+  agents?: { id: SessionAgentId; path: string | null }[];
 }
 // Environment diagnostics for the setup wizard. Throws if the agent is unreachable.
 export async function fetchDoctor(): Promise<Doctor> {
@@ -1069,12 +1124,17 @@ function isGitRecord(value: unknown): value is Record<string, unknown> {
 }
 const isStringOrNull = (value: unknown): value is string | null => value === null || typeof value === "string";
 
-async function postGitReview(endpoint: string, body: Record<string, unknown>, fallback: string, signal?: AbortSignal): Promise<unknown> {
+/** A failed Git request, with the rest of the error body (for example the checkpoint a failed restore saved). */
+export class GitRequestError extends Error {
+  constructor(message: string, readonly details: Record<string, unknown>) { super(message); }
+}
+
+export async function postGitReview(endpoint: string, body: Record<string, unknown>, fallback: string, signal?: AbortSignal): Promise<unknown> {
   const response = await agentFetch(`${SERVER_HTTP}/git/${endpoint}`, {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal,
   });
   const value: unknown = await response.json().catch(() => null);
-  if (!response.ok) throw new Error(isGitRecord(value) && typeof value.error === "string" ? value.error : fallback);
+  if (!response.ok) throw new GitRequestError(isGitRecord(value) && typeof value.error === "string" ? value.error : fallback, isGitRecord(value) ? value : {});
   return value;
 }
 

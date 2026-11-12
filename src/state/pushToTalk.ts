@@ -71,8 +71,11 @@ export function initializePushToTalk(supported = DICTATION_SUPPORTED): () => voi
     begin: () => {
       const dictation = useDictation.getState();
       if (!dictation.enabled || dictation.model !== "ready" || dictation.recording) return;
-      const tileId = useStore.getState().activeId;
-      if (!tileId || !useStore.getState().tiles.some(tile => tile.id === tileId)) return;
+      // A focused field that takes dictation (the broadcast composer) is the
+      // target; otherwise the active tile is.
+      const focused = document.activeElement instanceof HTMLElement ? document.activeElement.closest<HTMLElement>("[data-dictation-target]")?.dataset.dictationTarget : undefined;
+      const tileId = focused ?? useStore.getState().activeId;
+      if (!tileId || (!focused && !useStore.getState().tiles.some(tile => tile.id === tileId))) return;
       owned = tileId;
       silence = usePushToTalk.getState().mode === "tap" ? new SilenceStop({ maxMs: TAP_MAX_MS }) : null;
       // Push to talk keeps its own ending: the key release, or tap mode's pause.

@@ -1,0 +1,2 @@
+{"type":"metadata","protocol_version":"1.5","created_at":1794302420000,"min_protocol_version":"1.5"}
+{"type":"usage.record","agentId":"agent-1","model":"kimi-code/kimi-for-coding","usage":{"inputOther":100,"output":10,"inputCacheCreation":0},"usageScope":"turn","time":1794302430000}

@@ -414,6 +414,61 @@
   color: var(--muted);
 }
 
+.tour-agent-missing {
+  margin-top: 10px;
+  font-size: var(--fs-sm);
+}
+
+.tour-agent-missing > summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-weight: 550;
+}
+
+.tour-agent-missing > .tour-group-note {
+  margin: 8px 0 4px;
+}
+
+.tour-agent-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.tour-agent-row {
+  display: grid;
+  grid-template-columns: minmax(120px, 160px) minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-height: 30px;
+}
+
+.tour-agent-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 550;
+  min-width: 0;
+}
+
+.tour-agent-command {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: var(--fs-xs);
+  color: var(--muted);
+  user-select: all;
+}
+
+.tour-agent-actions {
+  display: inline-flex;
+  gap: 4px;
+}
+
 .tour-callout {
   display: flex;
   align-items: center;
@@ -665,3 +720,27 @@
   -webkit-backdrop-filter: var(--glass-filter);
   backdrop-filter: var(--glass-filter);
 }
+
+/* Allow all: the start button sits on its own line; the step in progress
+   wraps its actions under the text on narrow widths. */
+.tour-guide-start:empty {
+  display: none;
+}
+
+.tour-guide {
+  flex-wrap: wrap;
+}
+
+.tour-guide > span {
+  min-width: 220px;
+}
+
+.tour-guide-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+/* The dim around the tour matches a dialog's backdrop in semi-transparent mode,
+   so the glass cards read as glass instead of sitting on near-black. */
+:root[data-transparency="on"] .tour-dim { background: rgb(0 0 0 / 28%); }
+:root[data-transparency="on"][data-appearance="light"] .tour-dim { background: rgb(35 46 63 / 28%); }

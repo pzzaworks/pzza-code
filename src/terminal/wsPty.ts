@@ -1,4 +1,5 @@
 import { wsUrl } from "../serverApi";
+import type { SessionAgentId } from "../../server/lib/session-agents.js";
 
 export interface WsPtyHandle {
   write(data: string): boolean;
@@ -20,7 +21,7 @@ export function openWsPty(
   onClose?: () => void,
   window?: number,
   host?: string,
-  managedChat?: { agent: "claude" | "codex" | "opencode"; identity: string },
+  managedChat?: { agent: SessionAgentId; identity: string },
 ): WsPtyHandle {
   const ws = new WebSocket(wsUrl());
   ws.binaryType = "arraybuffer";

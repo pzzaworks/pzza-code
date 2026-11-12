@@ -5,19 +5,31 @@ import { Switch } from "../ui/Switch";
 import { useDelayedLoading } from "../ui/useDelayedLoading";
 import { AsyncButton } from "../ui/AsyncButton";
 import { Dropdown } from "../ui/Dropdown";
-import { ClaudeIcon, CodexIcon, OpenCodeIcon } from "../icons/BrandIcons";
-import type { ComponentType } from "react";
-import { UsageSpend } from "./UsageSpend";
+import { AgentIcon } from "../icons/AgentIcon";
+import { sessionAgent } from "../../server/lib/session-agents.js";
+import { estimateLabel, fmtCost, fmtTokens, UsageSpend } from "./UsageSpend";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, Gauge, Loader2, RefreshCw } from "lucide-react";
-import { fixUsage, type AccountUsage, type UsageWindow } from "../serverApi";
+import { AlertTriangle, ChevronRight, Gauge, Loader2, RefreshCw } from "lucide-react";
+import { fixUsage, type AccountSpend, type AccountUsage, type UsageBalance, type UsageWindow } from "../serverApi";
 import { refreshUsage, setUsageChipVisible, setUsageMode, setUsagePin, startUsagePolling, useUsage, type UsageMode } from "../state/usage";
 
-const PROVIDER: Record<string, { name: string; color: string; Icon: ComponentType<{ size?: number | string; className?: string }> }> = {
-  claude: { name: "Claude", color: "#D97757", Icon: ClaudeIcon },
-  codex: { name: "Codex", color: "#10A37F", Icon: CodexIcon },
-  opencode: { name: "OpenCode", color: "#94A3B8", Icon: OpenCodeIcon },
+// The names and brand tints the panel has always used for these agents; every
+// other agent shows its catalog name, in the text color with an accent trend.
+const BRANDS: Partial<Record<string, { name: string; color: string }>> = {
+  claude: { name: "Claude", color: "#D97757" },
+  codex: { name: "Codex", color: "#10A37F" },
+  opencode: { name: "OpenCode", color: "#94A3B8" },
 };
+
+function agentBrand(provider: string, fallback: string): { name: string; color: string; trend: string } {
+  const brand = Object.hasOwn(BRANDS, provider) ? BRANDS[provider] : undefined;
+  return { name: brand?.name ?? sessionAgent(provider)?.label ?? fallback, color: brand?.color ?? "var(--text)", trend: brand?.color ?? "var(--accent)" };
+}
+
+// Agents whose cards come from a signed-in account. Their spend shows inside
+// that card; an account the panel hides (a free plan, lapsed credentials)
+// keeps its spend hidden too.
+const ACCOUNT_AGENTS = new Set(["claude", "codex"]);
 
 function fmtReset(iso: string | null): string {
   if (!iso) return "";
@@ -96,8 +108,8 @@ function Bar({ label, w, mode, pin }: { label: string; w: UsageWindow | null; mo
             type="button"
             className={`usage-pin ${pin.pinned ? "on" : ""} ${pin.auto ? "is-auto" : ""}`}
             aria-pressed={pin.pinned}
-            aria-label={`Show ${pin.account} ${label} in the top bar`}
-            title={pin.pinned ? "Shown in the top bar. Click to go back to Auto" : pin.auto ? "Shown in the top bar automatically (highest usage). Click to keep showing this one" : "Show this limit in the top bar"}
+            aria-label={`Show ${pin.account} ${label} in the menu bar`}
+            title={pin.pinned ? "Shown in the menu bar. Click to go back to Auto" : pin.auto ? "Shown in the menu bar automatically (highest usage). Click to keep showing this one" : "Show this limit in the menu bar"}
             onClick={pin.onToggle}
           >
             {pin.auto ? <span className="usage-pin-auto">Auto</span> : null}
@@ -112,7 +124,55 @@ function Bar({ label, w, mode, pin }: { label: string; w: UsageWindow | null; mo
   );
 }
 
-// Agent usage for every connected device's Claude / Codex / OpenCode accounts.
+// A prepaid balance (credits or dollars left): an amount, not a percentage bar.
+function Balance({ balance }: { balance: UsageBalance }) {
+  const value = balance.unit === "usd" ? fmtCost(balance.amount) : `${Math.round(balance.amount).toLocaleString()} credits`;
+  return (
+    <div className="usage-bar-row usage-balance">
+      <span className="usage-bar-label">{balance.name}</span>
+      <span className="usage-balance-val">{value} left</span>
+    </div>
+  );
+}
+
+// Agents with local usage but no limits card, one compact row each that opens
+// into the same spend details a card shows.
+function OtherAgents({ entries, deviceName }: { entries: AccountSpend[]; deviceName: (host: string) => string | undefined }) {
+  if (!entries.length) return null;
+  return (
+    <section className="usage-others" aria-label="Other agents, last 30 days">
+      <div className="usage-section-title">
+        <span>Other agents</span>
+        <span className="usage-section-note">Last 30 days</span>
+      </div>
+      {entries.map((sp) => {
+        const brand = agentBrand(sp.provider, sp.label);
+        const device = sp.sourceHost ? deviceName(sp.sourceHost) ?? sp.sourceHost : undefined;
+        const tokens = sp.tokensTracked !== false ? ` · ${fmtTokens(sp.window.tokens)} tokens` : "";
+        return (
+          <div className="usage-agent" key={`${sp.sourceHost ?? ""}\n${sp.provider}\n${sp.label}`} data-agent={sp.provider}>
+            <UsageSpend
+              spend={sp}
+              color={brand.trend}
+              agentName={brand.name}
+              summary={
+                <span className="usage-agent-head" title={`${brand.name}${device ? ` on ${device}` : ""}: ${estimateLabel(sp.window)}${tokens} in the last 30 days`}>
+                  <ChevronRight size={12} className="usage-agent-chevron" aria-hidden="true" />
+                  <span className="usage-brand" style={{ color: brand.color }}><AgentIcon id={sp.provider} size={14} /></span>
+                  <span className="usage-agent-name">{brand.name}</span>
+                  {device ? <span className="usage-plan">{device}</span> : null}
+                  <span className="usage-agent-total"><b>{estimateLabel(sp.window)}</b></span>
+                </span>
+              }
+            />
+          </div>
+        );
+      })}
+    </section>
+  );
+}
+
+// Agent usage for every connected device's agent accounts and local usage.
 // Results live in the shared usage store, which the top bar chip reads too.
 export function UsageMenu() {
   const devices = useStore(store => store.activeDevices);
@@ -123,6 +183,13 @@ export function UsageMenu() {
   const failed = useUsage(state => state.failed);
   const mode = useUsage(state => state.mode);
   const spend = useUsage(state => state.spend);
+  // Spend of agents without a card here: local usage of agents that have no
+  // limits to show, in the order the devices reported them.
+  const others = useMemo(() => {
+    const carded = new Set(accounts.map(accountSpendKey));
+    return Object.values(spend).filter(sp => !ACCOUNT_AGENTS.has(sp.provider) && !carded.has(accountSpendKey(sp)));
+  }, [accounts, spend]);
+  const deviceName = useCallback((host: string) => devices.find(device => deviceHost(device) === host)?.name, [devices]);
   const [spinning, setSpinning] = useState(false);
   const showSpinner = useDelayedLoading(loading);
   useEffect(() => { if (showSpinner) setSpinning(true); }, [showSpinner]);
@@ -172,8 +239,8 @@ export function UsageMenu() {
 
   return (
     <div className="menu-body usage-menu">
-      <div className="usage-head">
-        <span className="menu-title">Agent usage</span>
+      <div className="usage-head menu-head">
+        <span className="menu-head-title">Agent usage</span>
         <div className="usage-tools">
           <div className="usage-seg" role="group" title="Show remaining or used">
             <button
@@ -194,7 +261,7 @@ export function UsageMenu() {
           </button>
         </div>
       </div>
-      {loading && accounts.length === 0 ? (
+      {loading && accounts.length === 0 && others.length === 0 ? (
         <div className="usage-empty">
           {showSpinner ? <Loader2 size={15} className="sw-spin" /> : null} Loading...
         </div>
@@ -202,22 +269,18 @@ export function UsageMenu() {
         <div className="usage-empty">
           <AlertTriangle size={15} className="sw-warn" /> Agent unreachable.
         </div>
-      ) : accounts.length === 0 ? (
-        <div className="usage-empty muted">No signed-in agent accounts found on available devices.</div>
+      ) : accounts.length === 0 && others.length === 0 ? (
+        <div className="usage-empty muted">No agent accounts or local agent usage found on available devices.</div>
       ) : (
-        accounts.map((acc, i) => {
-          const p = PROVIDER[acc.provider] ?? { name: acc.label, color: "var(--accent)", Icon: null };
-          const Brand = (p as { Icon?: ComponentType<{ size?: number | string; className?: string }> | null }).Icon ?? null;
+        <>
+        {accounts.map((acc, i) => {
+          const p = agentBrand(acc.provider, acc.label);
           return (
             <div className="usage-card" key={i}>
               <div className="usage-card-head" title={[p.name, acc.plan?.replace(/_/g, " "), acc.email || acc.keyHint, acc.sourceName].filter(Boolean).join(" · ")}>
-                {Brand ? (
-                  <span className="usage-brand" style={{ color: p.color }}>
-                    <Brand size={15} />
-                  </span>
-                ) : (
-                  <span className="usage-dot" style={{ background: p.color }} />
-                )}
+                <span className="usage-brand" style={{ color: p.color }}>
+                  <AgentIcon id={acc.provider} size={15} />
+                </span>
                 <span className="usage-name">{p.name}</span>
                 {acc.plan ? <span className="usage-plan">{acc.plan.replace(/_/g, " ")}</span> : null}
                 {acc.email ? (
@@ -240,7 +303,9 @@ export function UsageMenu() {
                 <>
                   {acc.usage?.stale && (
                     <div className="muted usage-stale" role="status">
-                      Showing last successful usage{acc.usage.updatedAt ? ` from ${new Date(acc.usage.updatedAt).toLocaleTimeString()}` : ""}.
+                      {acc.usage.source === "session"
+                        ? `Usage service unreachable. Showing the limits ${p.name} recorded${acc.usage.updatedAt ? ` at ${new Date(acc.usage.updatedAt).toLocaleTimeString()}` : ""}.`
+                        : `Showing last successful usage${acc.usage.updatedAt ? ` from ${new Date(acc.usage.updatedAt).toLocaleTimeString()}` : ""}.`}
                       {acc.usage.retryAt ? ` Retrying after ${new Date(acc.usage.retryAt).toLocaleTimeString()}.` : ""}
                     </div>
                   )}
@@ -255,15 +320,18 @@ export function UsageMenu() {
                       pin={pinFor(acc, usageWindowKey({ scoped: s.name }))}
                     />
                   ))}
+                  {acc.usage?.balances?.map((balance) => <Balance key={balance.name} balance={balance} />)}
                   {(() => {
                     const sp = spend[accountSpendKey(acc)];
-                    return sp ? <UsageSpend spend={sp} color={p.color} /> : null;
+                    return sp ? <UsageSpend spend={sp} color={p.trend} agentName={p.name} /> : null;
                   })()}
                 </>
               )}
             </div>
           );
-        })
+        })}
+        <OtherAgents entries={others} deviceName={deviceName} />
+        </>
       )}
       <div className="usage-footer">
         <span>Show percentage</span>

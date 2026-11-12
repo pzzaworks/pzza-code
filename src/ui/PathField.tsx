@@ -12,8 +12,11 @@ function startDir(value: string, mode: "folder" | "file", start?: string, placeh
   return undefined;
 }
 
-export function PathField({ value, onChange, mode = "folder", host = "", hosts, start, placeholder = "Choose…", title, pickerTitle, className = "", disabled = false, fixedHost = false }: {
+export function PathField({ value, label, onChange, mode = "folder", host = "", hosts, start, placeholder = "Choose…", title, pickerTitle, className = "", disabled = false, fixedHost = false }: {
+  // The real path; the picker opens there. Never a shortened display form.
   value: string;
+  // What the field shows instead of the path, such as a shortened one.
+  label?: string;
   onChange: (path: string, host: string) => void;
   mode?: "folder" | "file";
   host?: string;
@@ -30,7 +33,7 @@ export function PathField({ value, onChange, mode = "folder", host = "", hosts, 
   useEffect(() => { setOpen(false); }, [host, disabled]);
   return <>
     <button type="button" className={`path-field ${value ? "" : "path-field-empty"} ${className}`} disabled={disabled} onClick={() => setOpen(true)} title={title ?? (mode === "folder" ? "Choose a folder" : "Choose a file")}>
-      <FolderOpen size={13} className="path-field-icon" /><span className="path-field-value">{value || placeholder}</span>
+      <FolderOpen size={13} className="path-field-icon" /><span className="path-field-value">{(value && label) || value || placeholder}</span>
     </button>
     <FilePicker key={host} open={open && !disabled} onClose={() => setOpen(false)} onPick={(path, selectedHost) => {
       if (!disabled && (!fixedHost || selectedHost === host)) onChange(path, selectedHost);

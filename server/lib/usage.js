@@ -5,6 +5,8 @@ import { execFile } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
+import { CLI_LIMITS, limitBinaries, runCliLimit } from "./agent-usage/cli-limits.js";
+import { codexRolloutLimits, codexRolloutUsage } from "./agent-usage/codex.js";
 import { discoverAccounts, readClaudeOAuth, readClaudeIdentity, readCodexCreds, readOpencodeKeys, maskApiKey } from "./accounts.js";
 
 export const USAGE_FRESH_MS = 5 * 60 * 1000; // the endpoints 429 if polled harder
@@ -254,8 +256,11 @@ export async function opencodeAccountUsage(acc, fresh, keysFile) {
 // Codex usage. A 401/403 from the usage endpoint means the token is expired
 // or the account has no usable Codex entitlement (e.g. no Pro plan) - either
 // way there is nothing useful to render, so hide the card instead of showing
-// a bare "usage 401" row (mirrors the no-creds behavior above).
-async function codexAccountUsage(acc, fresh) {
+// a bare "usage 401" row (mirrors the no-creds behavior above). When the
+// endpoint is down or rate limited, the rate-limit windows Codex itself wrote
+// to its newest session rollout stand in, if they are newer than the last
+// sample from the endpoint. Exported for unit tests.
+export async function codexAccountUsage(acc, fresh, { fetchUsage = fetchCodexUsage, now = Date.now } = {}) {
   if (!fs.existsSync(path.join(acc.dir, "auth.json"))) return null;
   let creds;
   try {
@@ -266,20 +271,51 @@ async function codexAccountUsage(acc, fresh) {
   if (!creds?.accessToken) return null;
   if (isFreePlan(creds.plan)) return null;
   const entry = { provider: "codex", label: acc.label, email: creds.email, plan: creds.plan, usage: null, error: null };
+  const fromRollouts = async (newerThan) => {
+    const local = await codexRolloutLimits(acc.dir, now()).then((sample) => codexRolloutUsage(sample, now()), () => null);
+    if (!local || local.usage.updatedAt <= newerThan) return null;
+    const plan = entry.plan ?? local.plan ?? undefined;
+    if (isFreePlan(plan)) return null;
+    return { ...entry, plan, usage: { ...local.usage, stale: true, retryAt: null, source: "session" } };
+  };
   try {
-    return { ...entry, usage: await limitedUsage(credentialKey("codex", creds.accessToken, creds.accountId), () => fetchCodexUsage(creds), { fresh }) };
+    const usage = await limitedUsage(credentialKey("codex", creds.accessToken, creds.accountId), () => fetchUsage(creds), { fresh });
+    if (usage.stale) return (await fromRollouts(usage.updatedAt ?? 0)) ?? { ...entry, usage };
+    return { ...entry, usage };
   } catch (e) {
     if (e?.status === 401 || e?.status === 403) return null;
+    const local = await fromRollouts(0);
+    if (local) return local;
     throw e;
   }
+}
+
+// Balances of agents that print them from a CLI subcommand (Kilo, Auggie),
+// for each one installed here. A command that fails or reports nothing usable
+// (signed out, no plan) leaves no card. Exported for unit tests.
+export async function cliLimitUsage(fresh, { binaries = limitBinaries, run } = {}) {
+  const found = await binaries();
+  const entries = [];
+  for (const item of CLI_LIMITS) {
+    const binary = found.get(item.id);
+    if (!binary) continue;
+    try {
+      const sample = await limitedUsage(`cli:${item.id}:${binary}`, () => runCliLimit(item, binary, run).then(({ plan, usage }) => ({ ...usage, accountPlan: plan })), { fresh });
+      const { accountPlan, ...usage } = sample;
+      entries.push({ provider: item.id, label: item.label, ...(accountPlan ? { plan: accountPlan } : {}), usage, error: null });
+    } catch {
+      /* not signed in, no plan, or not reporting: nothing to show */
+    }
+  }
+  return entries;
 }
 
 // Fetch every account's usage from the provider APIs (in parallel) and cache it.
 async function refreshUsage(fresh) {
   const accounts = discoverAccounts();
   const data = (
-    await Promise.all(
-      accounts.map(async (acc) => {
+    await Promise.all([
+      ...accounts.map(async (acc) => {
         try {
           if (acc.provider === "claude") return await claudeAccountUsage(acc, fresh);
           if (acc.provider === "opencode") return await opencodeAccountUsage(acc, fresh);
@@ -289,7 +325,8 @@ async function refreshUsage(fresh) {
           return { provider: acc.provider, label: acc.label, usage: null, error: String(e.message || e) };
         }
       }),
-    )
+      cliLimitUsage(fresh),
+    ])
   ).flat().filter(Boolean);
   usageCache = { at: Date.now(), data, failed: data.some((a) => a.error || a.usage?.stale) };
   return data;

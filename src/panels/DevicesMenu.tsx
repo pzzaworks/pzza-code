@@ -22,6 +22,7 @@ import { scanDevice, killSession, fetchSshHosts, type SshHost } from "../serverA
 import type { RemoteSession } from "../connection";
 import { sessionDisplayName, sessionAge } from "../sessionMeta";
 import { deviceHost, type Device } from "../devices";
+import { visibleInterval } from "../visibility";
 
 interface ScanState {
   loading: boolean;
@@ -47,10 +48,8 @@ export function DevicesMenu() {
   const closeTile = useStore((s) => s.closeTile);
 
   const [now, setNow] = useState(Date.now);
-  useEffect(() => {
-    const timer = window.setInterval(() => setNow(Date.now()), 30_000);
-    return () => window.clearInterval(timer);
-  }, []);
+  // Relative times ("seen 3m ago") only tick while the window is visible.
+  useEffect(() => visibleInterval(() => setNow(Date.now()), 30_000), []);
 
   const [name, setName] = useState("");
   const [host, setHost] = useState("");

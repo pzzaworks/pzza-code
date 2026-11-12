@@ -1,10 +1,10 @@
 import { create } from "zustand";
 import { useStore } from "./store";
-import { useSessionAgents } from "./sessionAgents";
+import { useDetectedAgents, useSessionAgents } from "./sessionAgents";
 import { createSessionInApp } from "../sessionActions";
 import { runLocalAppCommand } from "../appControl";
 import { fetchGitStatus } from "../serverApi";
-import { sessionAgent, sessionAgentCommand } from "../../server/lib/session-agents.js";
+import { agentCanAutoResume, sessionAgent, sessionAgentCommand, type SessionAgentChoice } from "../../server/lib/session-agents.js";
 import { runningAgent, sessionAtShell } from "../ui/LiveSessionIcon";
 import { DEFAULT_WORKSPACE_ID, wsKeyOf } from "../workspaces";
 import {
@@ -52,6 +52,21 @@ const tileOf = (entry: Pick<SnapshotSession, "host" | "session">) => useStore.ge
 
 type AppState = ReturnType<typeof useStore.getState>;
 
+// The agent each tile's session runs: the one it was started with, or the one
+// detected running in a local session (its recorded mode when it is the same
+// agent, else the agent's default mode).
+function tileAgents(state: AppState): Record<string, SessionAgentChoice> {
+  const agents = { ...useSessionAgents.getState().agents };
+  const detected = useDetectedAgents.getState().agents;
+  for (const tile of state.tiles) {
+    if (tile.host) continue;
+    const agent = sessionAgent(detected[tile.session ?? tile.name] ?? "");
+    const recorded = agents[tile.id];
+    if (agent && recorded?.id !== agent.id) agents[tile.id] = { id: agent.id, mode: agent.defaultMode };
+  }
+  return agents;
+}
+
 // What a snapshot of the workspace would hold right now: its sessions with
 // their layout, and its columns. Null when the workspace has no sessions.
 function captureWorkspace(state: AppState, workspaceId: string): Pick<WorkspaceSnapshot, "sessions" | "columns"> | null {
@@ -61,7 +76,7 @@ function captureWorkspace(state: AppState, workspaceId: string): Pick<WorkspaceS
     workspaceId,
     devices: state.devices,
     sessionPaths: Object.fromEntries(state.allSessions.map(session => [session.name, session.path])),
-    agents: useSessionAgents.getState().agents,
+    agents: tileAgents(state),
     spans: state.tileSpan,
     titles: state.tileTitles,
     hidden: state.hiddenTiles,
@@ -155,30 +170,50 @@ function autoSave(state: AppState, workspaceId: string, name = AUTO_SNAPSHOT_NAM
   if (branches) void recordBranches(snapshot.id);
 }
 
+// The state a snapshot is captured from (see captureWorkspace).
+const CAPTURED = ["tiles", "workspaces", "sessionWs", "devices", "allSessions", "tileSpan", "tileTitles", "hiddenTiles", "tileCode", "workspaceColumns", "defaultColumns"] as const satisfies readonly (keyof AppState)[];
+
 /**
- * Keeps an auto-saved snapshot of every workspace: every few minutes when it
- * changed, when the window closes, and of a workspace about to be deleted
- * (taken from the state just before, as "Before deleting"). Returns a stop.
+ * Keeps an auto-saved snapshot of every workspace: within a few minutes of a
+ * change, when the window hides or closes, and of a workspace about to be
+ * deleted (taken from the state just before, as "Before deleting"). Saving is
+ * driven by changes, so an idle window never wakes up for it. Returns a stop.
  */
 export function startSnapshotAutosave(): () => void {
+  // One save AUTOSAVE_MS after the first change since the last save.
+  let timer: number | undefined;
   const saveAll = (branches: boolean) => {
+    window.clearTimeout(timer);
+    timer = undefined;
     const state = useStore.getState();
     for (const workspace of state.workspaces) autoSave(state, workspace.id, AUTO_SNAPSHOT_NAME, branches);
   };
-  const timer = window.setInterval(() => saveAll(true), AUTOSAVE_MS);
+  const changed = () => { timer ??= window.setTimeout(() => saveAll(true), AUTOSAVE_MS); };
   // The window is going away: no time to ask Git for branches.
-  const onHide = () => saveAll(false);
-  window.addEventListener("pagehide", onHide);
+  const onClose = () => saveAll(false);
+  // Hidden, timers may be held back: save a pending change right away.
+  const onVisibility = () => { if (document.visibilityState === "hidden" && timer !== undefined) saveAll(true); };
+  window.addEventListener("pagehide", onClose);
+  document.addEventListener("visibilitychange", onVisibility);
   const unsubscribe = useStore.subscribe((state, previous) => {
+    if (CAPTURED.some(key => state[key] !== previous[key])) changed();
     if (state.workspaces.length >= previous.workspaces.length) return;
     for (const workspace of previous.workspaces) {
       if (!state.workspaces.some(entry => entry.id === workspace.id)) autoSave(previous, workspace.id, `${BEFORE_DELETING}${workspace.name}`.slice(0, 80));
     }
   });
+  const unsubscribeAgents = useSessionAgents.subscribe(changed);
+  // An agent starting or quitting in a session is a change too.
+  const unsubscribeDetected = useDetectedAgents.subscribe(changed);
+  // Whatever loaded before autosave started counts as a change too.
+  changed();
   return () => {
-    window.clearInterval(timer);
-    window.removeEventListener("pagehide", onHide);
+    window.clearTimeout(timer);
+    window.removeEventListener("pagehide", onClose);
+    document.removeEventListener("visibilitychange", onVisibility);
     unsubscribe();
+    unsubscribeAgents();
+    unsubscribeDetected();
   };
 }
 
@@ -242,7 +277,10 @@ export async function relaunchWorkspaceSnapshot(id: string, options: { continueC
       workspaceId = useStore.getState().activeWorkspaceId;
       result.createdWorkspace = name;
     }
-    const agentOf = (entry: SnapshotSession) => (entry.agent && options.continueChats ? { ...entry.agent, resume: true } : entry.agent);
+    // Only an agent whose "last conversation" is per folder continues; one whose
+    // last conversation may come from another folder (or that cannot continue
+    // from the command line) starts fresh in its recorded mode.
+    const agentOf = (entry: SnapshotSession) => (entry.agent && options.continueChats && agentCanAutoResume(sessionAgent(entry.agent.id)) ? { ...entry.agent, resume: true } : entry.agent);
     for (const entry of launch) {
       const device = snapshotDevice(entry, useStore.getState().activeDevices);
       if (!device) {
@@ -296,6 +334,16 @@ export async function relaunchWorkspaceSnapshot(id: string, options: { continueC
   } finally {
     useWorkspaceSnapshots.setState({ relaunching: null });
   }
+}
+
+/** The agent each local session has in the auto-saved snapshots, newest first, by session name. */
+export function autoSavedLocalAgents(): Map<string, SessionAgentChoice> {
+  const agents = new Map<string, SessionAgentChoice>();
+  const snapshots = useWorkspaceSnapshots.getState().snapshots.filter(snapshot => snapshot.auto).sort((left, right) => right.createdAt - left.createdAt);
+  for (const snapshot of snapshots) {
+    for (const entry of snapshot.sessions) if (!entry.host && entry.agent && !agents.has(entry.session)) agents.set(entry.session, entry.agent);
+  }
+  return agents;
 }
 
 /** A short list of a workspace's snapshots, for app control. */

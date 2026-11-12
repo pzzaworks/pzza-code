@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import type { SessionAgentId } from "../../server/lib/session-agents.js";
 import { HAS_TAURI } from "../tauriEnv";
 
 // macOS privacy permissions. Terminals (and the tmux server behind them) run
@@ -19,17 +20,19 @@ export interface PermissionInfo {
   short: string;
   /** macOS applies the grant to running processes only after a relaunch. */
   needsRestart: boolean;
+  /** Terminals get the grant only once the local tmux server restarts (see sessionRefresh). */
+  refreshSessions: boolean;
 }
 
 export const PERMISSIONS: readonly PermissionInfo[] = [
-  { id: "fullDiskAccess", subject: "app", label: "Full Disk Access", reason: "Lets terminals and agents read protected folders such as Desktop, Documents, Downloads, Mail and iCloud Drive without repeated prompts.", short: "Read Desktop, Documents, Downloads and iCloud Drive", needsRestart: true },
-  { id: "microphone", subject: "app", label: "Microphone", reason: "On-device dictation and command-line tools that record audio.", short: "Dictation and tools that record audio", needsRestart: false },
-  { id: "screenRecording", subject: "app", label: "Screen Recording", reason: "Screenshots and screen capture from terminal tools and agents.", short: "Screenshots and screen capture from tools", needsRestart: true },
-  { id: "accessibility", subject: "app", label: "Accessibility", reason: "Tools that drive the keyboard, mouse or other app windows.", short: "Tools that drive the keyboard, mouse and windows", needsRestart: false },
-  { id: "automation", subject: "app", label: "Automation", reason: "AppleScript and osascript controlling System Events and other apps.", short: "AppleScript control of other apps", needsRestart: false },
-  { id: "tmuxFullDiskAccess", subject: "tmux", label: "Full Disk Access", reason: "Drag tmux from the Finder window into the list.", short: "Drag tmux into the list", needsRestart: false },
-  { id: "tmuxAccessibility", subject: "tmux", label: "Accessibility", reason: "Drag tmux from the Finder window into the list.", short: "Drag tmux into the list", needsRestart: false },
-  { id: "tmuxScreenRecording", subject: "tmux", label: "Screen Recording", reason: "Drag tmux from the Finder window into the list.", short: "Drag tmux into the list", needsRestart: false },
+  { id: "fullDiskAccess", subject: "app", label: "Full Disk Access", reason: "Lets terminals and agents read protected folders such as Desktop, Documents, Downloads, Mail and iCloud Drive without repeated prompts.", short: "Read Desktop, Documents, Downloads and iCloud Drive", needsRestart: true, refreshSessions: true },
+  { id: "microphone", subject: "app", label: "Microphone", reason: "On-device dictation and command-line tools that record audio.", short: "Dictation and tools that record audio", needsRestart: false, refreshSessions: false },
+  { id: "screenRecording", subject: "app", label: "Screen Recording", reason: "Screenshots and screen capture from terminal tools and agents.", short: "Screenshots and screen capture from tools", needsRestart: true, refreshSessions: true },
+  { id: "accessibility", subject: "app", label: "Accessibility", reason: "Tools that drive the keyboard, mouse or other app windows.", short: "Tools that drive the keyboard, mouse and windows", needsRestart: false, refreshSessions: true },
+  { id: "automation", subject: "app", label: "Automation", reason: "AppleScript and osascript controlling System Events and other apps.", short: "AppleScript control of other apps", needsRestart: false, refreshSessions: false },
+  { id: "tmuxFullDiskAccess", subject: "tmux", label: "Full Disk Access", reason: "Drag tmux from the Finder window into the list.", short: "Drag tmux into the list", needsRestart: false, refreshSessions: true },
+  { id: "tmuxAccessibility", subject: "tmux", label: "Accessibility", reason: "Drag tmux from the Finder window into the list.", short: "Drag tmux into the list", needsRestart: false, refreshSessions: true },
+  { id: "tmuxScreenRecording", subject: "tmux", label: "Screen Recording", reason: "Drag tmux from the Finder window into the list.", short: "Drag tmux into the list", needsRestart: false, refreshSessions: true },
 ];
 
 export async function permissionStatuses(): Promise<Partial<Record<PermissionId, PermissionStatus>>> {
@@ -50,7 +53,7 @@ export interface SetupStatus {
   node: string | null;
   tmux: string | null;
   agentRunning: boolean;
-  agents: { id: "claude" | "codex" | "opencode"; path: string | null }[];
+  agents: { id: SessionAgentId; path: string | null }[];
 }
 export type SetupItem = "homebrew" | "node" | "tmux";
 

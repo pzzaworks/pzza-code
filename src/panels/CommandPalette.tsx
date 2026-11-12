@@ -11,14 +11,15 @@ import { announceMenu } from "../ui/menuBus";
 import { runLocalAppCommand } from "../appControl";
 import { readAppControlRuntime } from "../appControlRuntime";
 import { fuzzyMatch } from "../fuzzyMatch";
-import { HELP_PAGES, HELP_SECTIONS } from "./HelpModal";
-import { generalSections } from "./SettingsMenu";
+import { HELP_PAGES } from "./HelpModal";
+import { HELP_SECTIONS } from "./helpTopics";
+import { generalSections } from "./settingsSections";
 import { readRecentFolders } from "./SessionMenu";
 import { requestNewSession } from "../state/newSession";
 import { DICTATION_SUPPORTED } from "../state/dictation";
 import { confirmEditorDiscard } from "../editorChanges";
 import { ALL_WORKSPACE_ID, DEFAULT_WORKSPACE_ID, wsKeyOf } from "../workspaces";
-import { workspaceIcon } from "../workspaceIcons";
+import { useWorkspaceIconSet, workspaceIcon } from "../workspaceIcons";
 import { AUTO_COLUMNS } from "../grid/autoLayout";
 import { deviceForHost, deviceHost, deviceNameFor } from "../devices";
 import { sessionDisplayName, sessionIcon, type IconType } from "../sessionMeta";
@@ -27,10 +28,15 @@ import { BUILTIN_THEMES } from "../theme/themes";
 import { SPACING_RANGE } from "../state/store";
 import { HAS_TAURI } from "../tauriEnv";
 import { altBadge, COMMAND_PALETTE_SHORTCUT, ctrlBadge, IS_MAC, NEW_SESSION_SHORTCUT, NEW_WORKSPACE_SHORTCUT } from "../shortcuts";
-import { MessageSquareText, TextSearch } from "lucide-react";
+import { ListPlus, ListTodo, MessageSquareText, TextSearch } from "lucide-react";
+import { TASK_SURFACES } from "../lazySurfaces";
+import { whenLoaded } from "../lazySurface";
+import { useTasksUi } from "../tasks/taskStore";
+import { TASKS_SHORTCUT } from "../shortcuts";
 import { usePrompts } from "../state/prompts";
 import { sendPromptToTile } from "../terminal/broadcast";
-import { openTerminalSearch } from "./TerminalSearch";
+import { runningAgent } from "../ui/LiveSessionIcon";
+import { openTerminalSearch } from "../terminal/terminalSearch";
 import { SEARCH_TERMINALS_SHORTCUT } from "../shortcuts";
 
 type GroupId = "sessions" | "workspaces" | "actions" | "folders" | "help";
@@ -134,6 +140,7 @@ function usePaletteItems(open: boolean): PaletteItem[] {
   const spacing = useStore(s => s.spacing);
   const prompts = usePrompts(s => s.prompts);
   const columns = useStore(s => s.workspaceColumns[s.activeWorkspaceId] ?? s.defaultColumns);
+  const iconSet = useWorkspaceIconSet();
   return useMemo(() => {
     if (!open) return [];
     const command = (action: string, args: Record<string, unknown> = {}) => () => runLocalAppCommand(action, args);
@@ -167,6 +174,8 @@ function usePaletteItems(open: boolean): PaletteItem[] {
     action("new-workspace", Plus, "New workspace", command("navigate", { target: "new_workspace" }), { shortcut: NEW_WORKSPACE_SHORTCUT.label, keywords: "create" });
     action("add-device", Server, "Add a device", command("navigate", { target: "setup" }), { keywords: "ssh remote machine agent install" });
     action("quick-chat", MessageSquare, "Open Quick Chat", command("open_quick_chat"), { keywords: "agent ask" });
+    action("tasks", ListTodo, "Show tasks", () => whenLoaded(TASK_SURFACES, () => useTasksUi.getState().show()), { shortcut: TASKS_SHORTCUT.label, keywords: "sidebar board worktree agents review merge" });
+    action("new-task", ListPlus, "New task", () => whenLoaded(TASK_SURFACES, () => useTasksUi.getState().show({ kind: "new" })), { keywords: "agent worktree best of n compare prompt" });
 
     const active = tiles.find(tile => tile.id === activeId);
     if (active) {
@@ -196,6 +205,12 @@ function usePaletteItems(open: boolean): PaletteItem[] {
       if (fullTileId) await runLocalAppCommand("set_fullscreen", { tileId: fullTileId, enabled: false });
       window.dispatchEvent(new Event("pzza:broadcast-visible"));
     }, { detail: `${visible.length} tiles`, keywords: "send line all sessions select" });
+    const agents = visible.filter(tile => runningAgent(tile.session ?? tile.name, tile.window, tile.host) !== undefined);
+    if (agents.length >= 2) action("broadcast-agents", Radio, "Broadcast to every agent", async () => {
+      const fullTileId = (readAppControlRuntime().canvas as { fullTileId?: string | null } | undefined)?.fullTileId;
+      if (fullTileId) await runLocalAppCommand("set_fullscreen", { tileId: fullTileId, enabled: false });
+      window.dispatchEvent(new Event("pzza:broadcast-agents"));
+    }, { detail: `${agents.length} agent tiles`, keywords: "send prompt all agents coding select multi" });
 
     action("auto-arrange", LayoutDashboard, "Auto arrange tiles", command("auto_arrange", { workspaceId: activeWorkspaceId }),
       { detail: columns === AUTO_COLUMNS ? "Fits the window · columns are auto" : "Fits the window, even rows", keywords: "layout grid reset sizes fit tidy balance columns" });
@@ -229,7 +244,7 @@ function usePaletteItems(open: boolean): PaletteItem[] {
     for (const section of HELP_SECTIONS) for (const topic of section.topics) items.push({ id: `help:${topic}`, group: "help", icon: HELP_PAGES[topic].icon, label: HELP_PAGES[topic].label,
       detail: section.label, keywords: `docs guide ${topic}`, run: command("open_help", { topic }) });
     return items;
-  }, [open, tiles, tileTitles, workspaces, activeWorkspaceId, activeId, sessionWs, hiddenTiles, devices, activeDevices, allSessions, tileCode, themeId, semiTransparent, grayscale, spacing, columns, prompts]);
+  }, [open, tiles, tileTitles, workspaces, activeWorkspaceId, activeId, sessionWs, hiddenTiles, devices, activeDevices, allSessions, tileCode, themeId, semiTransparent, grayscale, spacing, columns, prompts, iconSet]);
 }
 
 interface Props {

@@ -6,24 +6,32 @@ import { useStore } from "../state/store";
 import { tileTitle, sessionDisplayName } from "../sessionMeta";
 import { Select } from "../ui/Select";
 import { HAS_TAURI } from "../tauriEnv";
+import { useAutoGrow } from "../ui/useAutoGrow";
 import { createSessionInApp, useSessionCreation } from "../sessionActions";
 import { fetchAccounts, type Account } from "../serverApi";
 import { SESSION_NAME_MAX_LENGTH } from "../../server/lib/session-name.js";
-import { SESSION_AGENTS, SESSION_PROMPT_MAX_LENGTH, sessionAgent, type SessionAgentChoice } from "../../server/lib/session-agents.js";
+import { SESSION_PROMPT_MAX_LENGTH, agentCanContinue, agentTakesPrompt, sessionAgent, sessionAgentMode, sessionPromptError, type SessionAgentChoice, type SessionAgentMode } from "../../server/lib/session-agents.js";
+import { agentSelectOptions, continueHint } from "../agentChoices";
 import { consumeNewSessionRequest, useNewSessionRequest } from "../state/newSession";
 import { deviceHost } from "../devices";
 import { PathField } from "../ui/PathField";
 import { compactPath } from "../grid/compactPath";
-import { ClaudeIcon, CodexIcon, OpenCodeIcon } from "../icons/BrandIcons";
+import { AgentIcon } from "../icons/AgentIcon";
+import { DEFAULT_WORKSPACE_ID } from "../workspaces";
 
 const DEVICE_KEY = "pzza.session.device";
 // The name length is only worth showing when it gets close to the limit.
 const SESSION_NAME_COUNTER_FROM = 100;
 
-const AGENT_ICONS: Record<SessionAgentChoice["id"], typeof ClaudeIcon> = { claude: ClaudeIcon, codex: CodexIcon, opencode: OpenCodeIcon };
-const MODE_ICONS: Record<string, LucideIcon> = { default: ShieldCheck, acceptEdits: FilePen, plan: ListChecks, auto: Sparkles, readOnly: Eye, bypass: ShieldOff };
+const MODE_ICONS: Record<string, LucideIcon> = { acceptEdits: FilePen, plan: ListChecks, readOnly: Eye };
+const APPROVAL_ICONS: Record<SessionAgentMode["approval"], LucideIcon> = { ask: ShieldCheck, restricted: Eye, auto: Sparkles, bypass: ShieldOff };
+/** The icon the new-session form (and the Tasks form) shows for an agent mode. */
+export const modeIcon = (mode: SessionAgentMode): LucideIcon => MODE_ICONS[mode.id] ?? APPROVAL_ICONS[mode.approval];
+
 
 const RECENT_FOLDERS_KEY = "pzza.session.recentFolders.v1";
+// Quick folders under the form: this tile's folder and recent ones, at most three.
+const RECENT_SHORTCUTS = 3;
 const RECENT_FOLDERS_MAX = 5;
 
 export function readRecentFolders(): Record<string, string[]> {
@@ -67,8 +75,9 @@ function readFolderAgents(): Record<string, SessionAgentChoice | null> {
     for (const [key, choice] of Object.entries(value)) {
       if (choice === null) { out[key] = null; continue; }
       if (!choice || typeof choice !== "object" || !("id" in choice) || !("mode" in choice)) continue;
+      // A mode the catalog no longer has falls back to the agent's default mode.
       const agent = sessionAgent(choice.id);
-      if (agent && agent.modes.some((mode) => mode.id === choice.mode)) out[key] = { id: agent.id, mode: String(choice.mode) };
+      if (agent) out[key] = { id: agent.id, mode: sessionAgentMode(agent, choice.mode).id };
     }
     return out;
   } catch {
@@ -106,6 +115,9 @@ export function SessionMenu({ close }: { close: () => void }) {
   const openWindow = useStore((s) => s.openWindow);
   const workspaces = useStore((s) => s.workspaces);
   const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
+  // The All view is not a workspace a session can join: start in the default one.
+  const targetWorkspaceId = workspaces.some((w) => w.id === activeWorkspaceId) ? activeWorkspaceId
+    : (workspaces.find((w) => w.id === DEFAULT_WORKSPACE_ID) ?? workspaces[0])?.id ?? DEFAULT_WORKSPACE_ID;
   const devices = useStore((s) => s.activeDevices);
   const activeId = useStore((s) => s.activeId);
   const allSessions = useStore((s) => s.allSessions);
@@ -114,7 +126,7 @@ export function SessionMenu({ close }: { close: () => void }) {
   const nameLimitId = useId();
   const creating = useSessionCreation(state => state.operation?.status === "running");
   const [creationError, setCreationError] = useState<string | null>(null);
-  const [wsId, setWsId] = useState(activeWorkspaceId);
+  const [wsId, setWsId] = useState(targetWorkspaceId);
   const [savedDeviceId, setDeviceId] = useState(() => {
     try {
       return localStorage.getItem(DEVICE_KEY) ?? devices[0]?.id ?? "";
@@ -136,13 +148,23 @@ export function SessionMenu({ close }: { close: () => void }) {
   const agentDefinition = agent ? sessionAgent(agent.id) : undefined;
 
   const [prompt, setPrompt] = useState("");
+  const promptRef = useRef<HTMLTextAreaElement>(null);
+  useAutoGrow(promptRef, prompt, { maxLines: 4 });
   const [resume, setResume] = useState(false);
   const [worktree, setWorktree] = useState(false);
+  const takesPrompt = agentTakesPrompt(agentDefinition);
+  const canContinue = agentCanContinue(agentDefinition);
+  // Some agents start a prompted session with another subcommand, which cannot continue.
+  const continueBlocked = !!agentDefinition?.prompt.baseArgs && prompt.trim().length > 0;
+  useEffect(() => {
+    if (!takesPrompt) setPrompt("");
+    if (!canContinue) setResume(false);
+  }, [agent?.id]);
   // A folder chosen together with its device (a canvas drop) survives the
   // device switch that would otherwise reset the folder.
   const pendingFolder = useRef<string | null>(null);
 
-  useEffect(() => setWsId(activeWorkspaceId), [activeWorkspaceId]);
+  useEffect(() => setWsId(targetWorkspaceId), [targetWorkspaceId]);
   useEffect(() => {
     setFolder(pendingFolder.current ?? "");
     pendingFolder.current = null;
@@ -158,7 +180,7 @@ export function SessionMenu({ close }: { close: () => void }) {
   const folderShortcuts = [
     ...(activeFolder?.startsWith("/") ? [{ path: activeFolder, label: "This tile's folder", current: true }] : []),
     ...recentFolders(deviceId).filter((path) => path !== activeFolder).map((path) => ({ path, label: folderLabel(path), current: false })),
-  ].slice(0, 4);
+  ].slice(0, RECENT_SHORTCUTS);
 
   useEffect(() => {
     if (HAS_TAURI) return;
@@ -227,8 +249,12 @@ export function SessionMenu({ close }: { close: () => void }) {
     if (!name.trim() || creating) return;
     setCreationError(null);
     const account = accounts.find(item => item.dir === accDir);
+    const withPrompt = takesPrompt && prompt.trim().length > 0;
+    // Same rule the server applies, shown before anything is created.
+    const promptError = withPrompt ? sessionPromptError(prompt.trim()) : null;
+    if (promptError) { setCreationError(promptError); return; }
     try {
-      const launch = agent ? { ...agent, ...(resume ? { resume: true } : {}), ...(prompt.trim() ? { prompt: prompt.trim() } : {}) } : undefined;
+      const launch = agent ? { ...agent, ...(resume && canContinue && !continueBlocked ? { resume: true } : {}), ...(withPrompt ? { prompt: prompt.trim() } : {}) } : undefined;
       await createSessionInApp({ name, deviceId, workspaceId: wsId, cwd: folder || undefined, worktree: worktree && !!folder, agent: launch, account: account ? { provider: account.provider, dir: account.dir } : undefined });
       if (folder) { rememberFolder(deviceId, folder); rememberFolderAgent(deviceId, folder, agent); }
       setName(""); setAccDir(""); setFolder(""); setPrompt(""); setResume(false); setWorktree(false); close();
@@ -236,12 +262,13 @@ export function SessionMenu({ close }: { close: () => void }) {
   };
 
   const nameTooLong = name.length >= SESSION_NAME_COUNTER_FROM;
-  const bypass = agent?.mode === "bypass";
+  const selectedMode = agentDefinition && agent ? sessionAgentMode(agentDefinition, agent.mode) : undefined;
+  const bypass = selectedMode?.approval === "bypass";
 
   return (
     <div className="menu-body new-session-form">
       {/* Command bar: one composer box for the name and, with an agent, its first prompt. */}
-      <div className={`ns-composer ${agent ? "has-prompt" : ""}`}>
+      <div className={`ns-composer ${agent && takesPrompt ? "has-prompt" : ""}`}>
         <div className="ns-composer-line">
           <SquareTerminal size={16} className="muted-icon" />
           <input
@@ -262,8 +289,9 @@ export function SessionMenu({ close }: { close: () => void }) {
             <CornerDownLeft size={12} strokeWidth={2.2} />
           </button>
         </div>
-        {agent ? (
+        {agent && takesPrompt ? (
           <textarea
+            ref={promptRef}
             className="ns-prompt"
             rows={1}
             disabled={creating}
@@ -280,7 +308,7 @@ export function SessionMenu({ close }: { close: () => void }) {
       </div>
 
       {/* Where and what, as one segmented bar: device, folder, terminal or agent. */}
-      <div className="ns-seg" role="group" aria-label="Session device, folder and agent">
+      <div className={`ns-seg ${workspaces.length > 1 ? "ns-seg-grid" : ""}`} role="group" aria-label="Session device, folder, agent and workspace">
         <Select
           value={deviceId}
           disabled={creating}
@@ -292,7 +320,8 @@ export function SessionMenu({ close }: { close: () => void }) {
         <span className={`ns-pill-path ${folder ? "has-value" : ""}`}>
           <PathField
             key={deviceId}
-            value={folder ? compactPath(folder) : ""}
+            value={folder}
+            label={folder ? compactPath(folder) : undefined}
             mode="folder"
             host={host}
             fixedHost
@@ -317,39 +346,48 @@ export function SessionMenu({ close }: { close: () => void }) {
           className="ns-pill"
           onChange={(id) => {
             const next = sessionAgent(id);
-            chooseAgent(next ? { id: next.id, mode: agent?.id === next.id ? agent.mode : next.modes[0].id } : null);
+            chooseAgent(next ? { id: next.id, mode: agent?.id === next.id ? agent.mode : next.defaultMode } : null);
           }}
           options={[
             { value: "", label: "Terminal", icon: <SquareTerminal size={13} /> },
-            ...SESSION_AGENTS.map((a) => {
-              const Icon = AGENT_ICONS[a.id];
-              return { value: a.id, label: a.label, icon: <Icon size={13} /> };
-            }),
+            ...agentSelectOptions().map((option) => ({ ...option, icon: <AgentIcon id={option.value} size={13} /> })),
           ]}
         />
+
+          {workspaces.length > 1 ? (
+            <Select
+              value={wsId}
+              disabled={creating}
+              ariaLabel="Session workspace"
+              placeholder="Select workspace"
+              className="ns-pill"
+              onChange={setWsId}
+              options={workspaces.map((w) => ({ value: w.id, label: w.name, icon: <LayoutGrid size={13} /> }))}
+            />
+          ) : null}
       </div>
 
       {/* Options that apply only sometimes: the agent's mode, continuing its last
-          conversation, a worktree, and workspace or account when there is a choice. */}
-      {agent || folder || workspaces.length > 1 || accounts.length > 0 ? (
+          conversation, a worktree, and the account when there is a choice. */}
+      {agent || folder || accounts.length > 0 ? (
         <div className="ns-seg ns-seg-extra" role="group" aria-label="Session options">
-          {agent && agentDefinition ? (
+          {agent && agentDefinition && selectedMode && agentDefinition.modes.length > 1 ? (
             <Select
-              value={agent.mode}
+              value={selectedMode.id}
               disabled={creating}
               className={`ns-pill ns-mode ${bypass ? "ns-mode-danger" : ""}`}
               ariaLabel={`${agentDefinition.label} mode`}
-              title={`${agentDefinition.label} mode: ${agentDefinition.modes.find((m) => m.id === agent.mode)?.description ?? ""}`}
+              title={`${agentDefinition.label} mode: ${selectedMode.description}`}
               onChange={(mode) => chooseAgent({ id: agent.id, mode })}
               options={agentDefinition.modes.map((m) => {
-                const Icon = MODE_ICONS[m.id] ?? ShieldCheck;
+                const Icon = modeIcon(m);
                 return { value: m.id, label: m.label, sub: m.description, icon: <Icon size={13} /> };
               })}
             />
           ) : null}
-          {agent ? (
-            <button type="button" className={`ns-toggle ${resume ? "on" : ""}`} aria-pressed={resume} aria-label="Continue last" disabled={creating} onClick={() => setResume(!resume)}
-              title="Continue the most recent conversation in this folder instead of starting a new one">
+          {agent && agentDefinition && canContinue ? (
+            <button type="button" className={`ns-toggle ${resume && !continueBlocked ? "on" : ""}`} aria-pressed={resume && !continueBlocked} aria-label="Continue last" disabled={creating || continueBlocked} onClick={() => setResume(!resume)}
+              title={continueBlocked ? `${agentDefinition.label} cannot continue a conversation with a starting prompt` : continueHint(agentDefinition)}>
               <History size={12} /> Continue
             </button>
           ) : null}
@@ -358,16 +396,6 @@ export function SessionMenu({ close }: { close: () => void }) {
               title="New worktree: a git worktree on a new pzza/<name> branch next to the repository, so parallel agents never share a checkout">
               <GitBranch size={12} /> Worktree
             </button>
-          ) : null}
-          {workspaces.length > 1 ? (
-            <Select
-              value={wsId}
-              disabled={creating}
-              ariaLabel="Session workspace"
-              className="ns-pill"
-              onChange={setWsId}
-              options={workspaces.map((w) => ({ value: w.id, label: w.name, icon: <LayoutGrid size={13} /> }))}
-            />
           ) : null}
           {accounts.length > 0 ? (
             <Select
@@ -390,7 +418,7 @@ export function SessionMenu({ close }: { close: () => void }) {
         </div>
       ) : null}
 
-      {bypass ? <p className="ns-warning" role="note"><ShieldOff size={11} /> Bypass runs every command without asking</p> : null}
+      {bypass ? <p className="ns-warning" role="note"><ShieldOff size={11} /> {selectedMode?.label ?? "Bypass"} runs every command without asking</p> : null}
 
       {/* Errors, else recent folders: one quiet line, only when there is one. */}
       {creationError || folderShortcuts.length > 0 ? <div className="ns-actions">

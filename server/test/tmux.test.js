@@ -8,6 +8,7 @@ import test from "node:test";
 import { ACTIVITY_PROBE_SCRIPT, configuredModelSelection, detectSessionActivity, foregroundModelSelection, interpreterEntrypoint, normalizeEffectiveModel, processModelSelectors } from "../lib/session-activity.js";
 import { sessionActivity } from "../lib/tmux.js";
 import { shQuote } from "../lib/shell.js";
+import { SESSION_AGENTS, agentForProgram } from "../lib/session-agents.js";
 
 const pane = (overrides = {}) => ({ session: "renamed session", window: 0, active: true, paneActive: true, pid: 10, tty: "/dev/pts/1", command: "bash", ...overrides });
 const processRow = (overrides = {}) => ({ pid: 10, ppid: 1, pgid: 10, tpgid: 20, tty: "pts/1", command: "bash", executable: "/bin/bash", ...overrides });
@@ -39,8 +40,8 @@ test("foreground detection is scoped to active pane, window, tty and ancestry", 
     processRow({ pid: 50, ppid: 40, pgid: 50, tty: "ttys001", executable: "/bin/codex" }),
     processRow({ pid: 22, ppid: 10, pgid: 20, tty: "pts/other", executable: "/bin/claude" })];
   assert.deepEqual(detectSessionActivity(panes, processes), [
-    { session: "renamed session", window: 0, active: true, command: "bash", effectiveModel: null, effectiveProvider: null, effectiveModelEvidence: null },
-    { session: "renamed session", window: 1, active: false, command: "codex", effectiveModel: null, effectiveProvider: null, effectiveModelEvidence: null },
+    { session: "renamed session", window: 0, active: true, panes: 2, command: "bash", effectiveModel: null, effectiveProvider: null, effectiveModelEvidence: null },
+    { session: "renamed session", window: 1, active: false, panes: 1, command: "codex", effectiveModel: null, effectiveProvider: null, effectiveModelEvidence: null },
   ]);
 });
 
@@ -83,6 +84,7 @@ test("effective model metadata uses exact foreground selectors and selected-acco
     session: "renamed session",
     window: 0,
     active: true,
+    panes: 1,
     command: "claude",
     effectiveModel: "gpt-5.1",
     effectiveProvider: "codex",
@@ -177,7 +179,7 @@ test("activity requests deduplicate in flight, cache briefly, refresh after expi
     assert.equal(command, "ssh");
     assert.ok(args.includes("ControlPath=~/.ssh/pzza-mux-%C"));
     // The node-less fallback must keep tabs intact and know every agent label.
-    assert.match(args.at(-1), /else tmux -u list-panes .*\bin claude\|codex\|opencode\|/);
+    assert.match(args.at(-1), /else tmux -u list-panes .*\bin claude\) command=claude ;; codex\) command=codex ;; opencode\) command=opencode ;; /);
     assert.ok(options.timeout <= 10_000);
     callbacks.push(callback);
   });
@@ -222,6 +224,29 @@ test("activity requests deduplicate in flight, cache briefly, refresh after expi
 
 const execute = promisify(childProcess.execFile);
 const run = (command, args, options = {}) => execute(command, args, { timeout: 5_000, ...options });
+
+test("the node-less activity fallback maps every catalog program name to its agent id", async (t) => {
+  for (const agent of SESSION_AGENTS) {
+    for (const name of agent.detect.programs) assert.match(name, /^[A-Za-z0-9._-]+$/, `${agent.id}: ${name}`);
+  }
+  let script = "";
+  const mock = t.mock.method(childProcess, "execFile", (command, args) => { script = args.at(-1); });
+  syncBuiltinESMExports();
+  try { void sessionActivity("fallback-device"); } finally { mock.mock.restore(); syncBuiltinESMExports(); }
+  const fallback = script.slice(script.indexOf("; else ") + "; else ".length, script.lastIndexOf("; fi"));
+  // A stand-in tmux prints one active pane per program name.
+  const root = await mkdtemp("/tmp/pzza-fallback-");
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const programs = [...SESSION_AGENTS.flatMap(agent => agent.detect.programs), "zsh", "secret-tool"];
+  const listing = programs.map((name, index) => `work\t${index}\t1\t1\t${name}`).join("\n");
+  await writeFile(path.join(root, "tmux"), `#!/bin/sh\nprintf '%s\\n' ${shQuote(listing)}\n`, { mode: 0o700 });
+  const { stdout } = await run("sh", ["-c", fallback], { env: { ...process.env, PATH: `${root}:${process.env.PATH}` } });
+  const labels = stdout.trim().split("\n").map(line => line.split("\t")[3]);
+  programs.forEach((name, index) => {
+    const expected = name === "zsh" ? "zsh" : name === "secret-tool" ? "" : agentForProgram(name) ?? (["python", "python3"].includes(name) ? name : "");
+    assert.equal(labels[index] ?? "", expected, name);
+  });
+});
 
 test("real isolated tmux probe tracks foreground wrapper, background exclusion and return to shell", async (t) => {
   const root = await mkdtemp("/tmp/pzza-activity-");
@@ -346,8 +371,8 @@ test("receiver scans, icons and termination distinguish explicit local from defa
     { command: "sh", host: "", timeout: 15_000 },
     { command: "ssh", host: "default-device", timeout: 15_000 },
     { command: "ssh", host: "other-device", timeout: 15_000 },
+    // No panes listed: there is no terminal whose processes need reading.
     { command: "tmux", host: "", timeout: 3_000 },
-    { command: "ps", host: "", timeout: 3_000 },
     { command: "ssh", host: "default-device", timeout: 9_000 },
     { command: "ssh", host: "other-device", timeout: 9_000 },
   ]);
@@ -419,6 +444,105 @@ test("duplicate routes to the source host, names the copy readably and reports f
     await assert.rejects(duplicateSession("source", undefined, "-bad-host"), /invalid host/);
     assert.equal(calls.length, 4);
   } finally {
+    mock.mock.restore();
+    syncBuiltinESMExports();
+  }
+});
+
+const scopedProcessLine = (pid, ppid, pgid, tpgid, tty, command) =>
+  `${pid} ${ppid} ${pgid} ${tpgid} ${tty} ${process.platform === "darwin" ? "Tue Nov 10 16:07:42 2026 " : ""}${command}\n`;
+
+test("activity probe reads only pane terminals and falls back to every process when a chain leaves them", async (t) => {
+  const { probeSessionSnapshot, processSnapshotComplete } = await import("../lib/session-activity.js");
+  const calls = [];
+  let scoped = "";
+  const mock = t.mock.method(childProcess, "execFile", (command, args, options, callback) => {
+    calls.push(command === "ps" ? `ps ${args[0]}` : command);
+    if (command === "tmux") return callback(null, "work\t0\t1\t1\t500\t/dev/ttys009\tzsh\t1700000000\t/tmp\n");
+    if (command === "ps" && args[0] === "-t") {
+      assert.equal(args[1], "/dev/ttys009");
+      return callback(null, scoped);
+    }
+    if (command === "ps" && args[0] === "-ax") return callback(null, scopedProcessLine(500, 400, 500, 500, "ttys009", "-zsh"));
+    callback(new Error("unexpected"));
+  });
+  syncBuiltinESMExports();
+  try {
+    // The pane root is missing from its own terminal: read every process.
+    const fallback = await probeSessionSnapshot([], undefined);
+    assert.deepEqual(calls.splice(0), ["tmux", "ps -t", "ps -ax"]);
+    assert.equal(fallback.rows[0].command, "zsh");
+    assert.deepEqual(fallback.panes.map((pane) => [pane.cwd, pane.created]), [["/tmp", 1700000000]]);
+    scoped = scopedProcessLine(500, 400, 500, 500, "ttys009", "-zsh");
+    assert.deepEqual((await probeSessionSnapshot([], undefined)).rows, fallback.rows);
+    assert.deepEqual(calls.splice(0), ["tmux", "ps -t"]);
+  } finally {
+    mock.mock.restore();
+    syncBuiltinESMExports();
+  }
+
+  const panes = [pane({ pid: 10, tty: "/dev/pts/1" })];
+  const shell = processRow();
+  assert.equal(processSnapshotComplete(panes, [shell, processRow({ pid: 20, ppid: 10, pgid: 20 })]), true);
+  // An orphan reparented to init ends its chain the same way in both snapshots.
+  assert.equal(processSnapshotComplete(panes, [shell, processRow({ pid: 20, ppid: 1, pgid: 20 })]), true);
+  assert.equal(processSnapshotComplete(panes, [shell, processRow({ pid: 20, ppid: 77, pgid: 20 })]), false);
+  assert.equal(processSnapshotComplete(panes, [processRow({ pid: 20, ppid: 10, pgid: 20 })]), false);
+});
+
+test("real activity probe matches a full process snapshot and reads each agent process once", { skip: process.platform !== "darwin", timeout: 20_000 }, async (t) => {
+  const { probeSessionSnapshot } = await import("../lib/session-activity.js");
+  const root = await mkdtemp("/tmp/pzza-scoped-");
+  const socket = path.join(root, "socket");
+  const realTmux = (await run("sh", ["-c", "command -v tmux"])).stdout.trim();
+  const realPs = (await run("sh", ["-c", "command -v ps"])).stdout.trim();
+  const tmux = (...args) => run(realTmux, ["-S", socket, ...args]);
+  t.after(async () => {
+    await tmux("kill-server").catch(() => {});
+    await rm(root, { recursive: true, force: true });
+  });
+  const bin = path.join(root, "bin");
+  await mkdir(bin);
+  await writeFile(path.join(bin, "tmux"), `#!/bin/sh\nexec ${shQuote(realTmux)} -S ${shQuote(socket)} "$@"\n`, { mode: 0o700 });
+  // The baseline reads every process on the device, as the probe used to.
+  await writeFile(path.join(bin, "ps"), `#!/bin/sh\nif [ "$1" = "-t" ]; then shift 2; exec ${shQuote(realPs)} -ax "$@"; fi\nexec ${shQuote(realPs)} "$@"\n`, { mode: 0o700 });
+  const scripts = [];
+  for (const [packageName, filename, signal] of [["@anthropic-ai/claude-code", "cli.js", "claude-ready"], ["@openai/codex", "bin/codex.js", "codex-ready"]]) {
+    const script = path.join(root, "node_modules", packageName, filename);
+    await mkdir(path.dirname(script), { recursive: true });
+    await writeFile(script, `require("node:child_process").execFileSync(${JSON.stringify(realTmux)}, ["-S", ${JSON.stringify(socket)}, "wait-for", "-S", ${JSON.stringify(signal)}]); setInterval(() => {}, 1000);\n`);
+    scripts.push(script);
+  }
+  await tmux("-f", "/dev/null", "new-session", "-d", "-s", "agents", "bash --noprofile --norc");
+  await tmux("send-keys", "-t", "agents:0", `${shQuote(process.execPath)} ${shQuote(scripts[0])} --model claude-sonnet-4-5`, "Enter");
+  await tmux("wait-for", "claude-ready");
+  await tmux("new-window", "-t", "agents", "bash --noprofile --norc");
+  await tmux("send-keys", "-t", "agents:1", `${shQuote(process.execPath)} ${shQuote(scripts[1])}`, "Enter");
+  await tmux("wait-for", "codex-ready");
+  await tmux("new-window", "-t", "agents", "bash --noprofile --norc");
+  const baseline = JSON.parse((await run(process.execPath, ["-e", ACTIVITY_PROBE_SCRIPT], { env: { ...process.env, PATH: `${bin}:${process.env.PATH}` } })).stdout);
+  assert.deepEqual(baseline.map((row) => [row.window, row.command, row.effectiveModel]), [[0, "claude", "claude-sonnet-4-5"], [1, "codex", null], [2, "bash", null]]);
+
+  const original = childProcess.execFile;
+  const spawned = [];
+  const mock = t.mock.method(childProcess, "execFile", (command, args, options, callback) => {
+    spawned.push(command === "ps" ? `ps ${args[0]}` : command);
+    return original(command, args, options, callback);
+  });
+  // Both agent processes count as settled, so their reads are remembered.
+  const clock = t.mock.method(Date, "now", () => Date.prototype.getTime.call(new Date()) + 11_000);
+  syncBuiltinESMExports();
+  try {
+    const cache = new Map();
+    const first = await probeSessionSnapshot(["-S", socket], cache);
+    assert.deepEqual(spawned.splice(0), ["tmux", "ps -t", "python3", "ps -ww"]);
+    const second = await probeSessionSnapshot(["-S", socket], cache);
+    assert.deepEqual(spawned.splice(0), ["tmux", "ps -t"]);
+    assert.deepEqual(first.rows, baseline);
+    assert.deepEqual(second.rows, baseline);
+    assert.equal(cache.size, 2);
+  } finally {
+    clock.mock.restore();
     mock.mock.restore();
     syncBuiltinESMExports();
   }

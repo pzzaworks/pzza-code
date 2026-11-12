@@ -81,7 +81,7 @@ pub fn install(app: &tauri::AppHandle) -> tauri::Result<()> {
                         ("start", "Overview"),
                         ("setup", "Setup & tour"),
                         ("permissions", "Permissions & tools"),
-                        ("topbar", "The top bar"),
+                        ("topbar", "The menu bar"),
                         ("new-session", "New session"),
                         ("agents", "Agents & modes"),
                         ("palette", "Command palette"),
@@ -130,11 +130,12 @@ pub fn install(app: &tauri::AppHandle) -> tauri::Result<()> {
                 (
                     "Agents & activity",
                     &[
+                        ("tasks", "Tasks"),
+                        ("best-of-n", "Task modes"),
                         ("quick-chat", "Quick Chat"),
                         ("agent-tools", "Agent automation"),
                         ("notifications", "Notifications"),
                         ("usage", "Usage limits"),
-                        ("cost", "Session cost"),
                         ("multiaccount", "Multi-account"),
                     ],
                 ),

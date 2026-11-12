@@ -1,7 +1,8 @@
-import { activityAgent, LiveSessionIcon, useSessionActivity } from "../ui/LiveSessionIcon";
+import { activityAgent, LiveSessionIcon, runningAgent, useSessionActivity } from "../ui/LiveSessionIcon";
 import { useDelayedLoading } from "../ui/useDelayedLoading";
 import { DeviceIcon } from "../ui/DeviceIcon";
-import { useCallback, useEffect, useRef, useState, type CSSProperties, type HTMLAttributes, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type HTMLAttributes, type ReactNode } from "react";
+import { useShallow } from "zustand/react/shallow";
 import { createPortal } from "react-dom";
 import { MotionConfig, motion } from "framer-motion";
 import {
@@ -34,7 +35,7 @@ import { useStore } from "../state/store";
 import { deviceForHost, deviceNameFor } from "../devices";
 import { Modal } from "../ui/Modal";
 import { copyToClipboard, Terminal } from "../terminal/Terminal";
-import { TileCodePanel } from "./TileCodePanel";
+import { TileCodePanel } from "../lazySurfaces";
 import { CodeSplitHandle } from "./CodeSplitHandle";
 import { duplicateSession, fetchSessionPath, killSession, type GitFolderStatus, type GitRemoteInfo } from "../serverApi";
 import { openWebPage } from "../tileGit";
@@ -54,8 +55,9 @@ import { ctrlBadge, digitFromCode, IS_MAC } from "../shortcuts";
 import { useDictation } from "../state/dictation";
 import { DictationButton } from "../ui/Dictation";
 import { useExclusiveMenu } from "../ui/menuBus";
-import { useNotifications } from "../state/notifications";
-import { sessionAgentLabel, useSessionAgents } from "../state/sessionAgents";
+import { unreadTileIds, useNotifications } from "../state/notifications";
+import { useSessionRefresh } from "../state/sessionRefresh";
+import { STATUS_BAR_ID, type BarItemId } from "../barItems";
 import { MAX_TILE_ROWS, TileResizeHandles } from "./TileResizeHandles";
 import { useGitStatus } from "./gitStatus";
 import { sendFailingChecks, useGitRemote, useSharedBranch } from "./gitRemote";
@@ -63,11 +65,10 @@ import { useTileEdges } from "./tileEdges";
 import { arrangeTiles, useCanvasSize } from "./autoLayout";
 import { setLayoutPreview } from "./layoutPreview";
 import { compactPath } from "./compactPath";
-import { BroadcastBar } from "./BroadcastBar";
-import { formatCost, formatDuration, formatTokens, useSessionCost, type CostProvider } from "./sessionCost";
-import type { SessionCost } from "../serverApi";
+import { BroadcastBar, useBroadcastPresence } from "./BroadcastBar";
+import { CheckpointsChip, TileCheckpoints } from "./Checkpoints";
 import { moveAgentToWorktree } from "../sessionActions";
-import { mergeWorktree, openWorktreePr, useWorktreeInfo, type LandResult } from "../worktreeLand";
+import { landWorktree, useWorktreeInfo, useWorktreeTaskTitle, type LandKind, type LandResult } from "../worktreeLand";
 import { installFolderDrops, useFolderDrag } from "../terminal/folderDrop";
 
 const HEADER_ACTIONS = [
@@ -92,17 +93,20 @@ function SessionHeader({ status, icon, title, shortcut, device, actions, ...even
   device: { host?: string; name: string };
   actions?: Record<HeaderAction, ReactNode>;
 }) {
+  // Items can be turned off in Settings; the title and Close always stay.
+  const hidden: readonly string[] = useStore((s) => s.hiddenBarItems);
+  const shown = (id: HeaderAction | "device" | "shortcut") => id === "close" || !hidden.includes(`header:${id}`);
   return <div className="tile-head" {...events}>
     <span className={`stat stat-${status}`} title={status} />
     <span className="tile-icon">{icon}</span>
     {title}
-    {shortcut ? <kbd className="kbd tile-kbd" title="Activate">{ctrlBadge(shortcut)}</kbd> : null}
-    <span className="tile-device" title={`Running on ${device.name}`}>
+    {shortcut && shown("shortcut") ? <kbd className="kbd tile-kbd" title="Activate">{ctrlBadge(shortcut)}</kbd> : null}
+    {shown("device") ? <span className="tile-device" title={`Running on ${device.name}`}>
       <DeviceIcon host={device.host} size={11} /><span className="tile-device-name">{device.name}</span>
-    </span>
+    </span> : null}
     <div className="tile-head-spacer" />
     <div className="tile-actions">
-      {HEADER_ACTIONS.map(({ id, Icon }) => <span key={id} className={`tile-action tile-action-${id}`}>
+      {HEADER_ACTIONS.filter(({ id }) => shown(id)).map(({ id, Icon }) => <span key={id} className={`tile-action tile-action-${id}`}>
         {actions ? actions[id] : <span className={`tile-btn ${id === "close" ? "tile-btn-danger" : ""}`}><Icon size={id === "close" ? 14 : 13} /></span>}
       </span>)}
     </div>
@@ -178,36 +182,61 @@ function FooterGit({ git, remote, shared, onReview, onIsolate, isolating, onSend
 }
 
 // Footer actions for a tile working in a linked worktree (not the main
-// checkout): push its branch and open a pull request while it has none, and
-// merge it into the base in the main checkout, refused while the worktree has
-// uncommitted changes. The outcome, with the pull request link, shows in a
-// small dialog; the new pull request then appears in the branch chip.
+// checkout): open a pull request while it has none, and merge it into the
+// base in the main checkout. Both take the shared landing path: a task's
+// worktree opens that task's land checks, any other passes the generic
+// checks (agent idle, no approval waiting, nothing uncommitted) first.
+// Success shows in place, as the folder's Copied does: the button turns into
+// a check for a moment, and a new pull request appears in the branch chip.
+// Only a failure opens a dialog.
+const LANDED_MS = 1400;
 function FooterWorktree({ host, path, git, hasPullRequest }: { host: string; path: string; git: GitFolderStatus; hasPullRequest: boolean }) {
   const info = useWorktreeInfo(host, path, git.detached ? undefined : git.branch);
-  const [busy, setBusy] = useState<"pr" | "merge" | null>(null);
-  const [result, setResult] = useState<{ kind: "pr" | "merge"; outcome: LandResult } | null>(null);
+  const task = useWorktreeTaskTitle(host, path);
+  const [busy, setBusy] = useState<LandKind | null>(null);
+  const [landed, setLanded] = useState<LandKind | null>(null);
+  const [failure, setFailure] = useState<{ kind: LandKind; outcome: LandResult } | null>(null);
+  useEffect(() => {
+    if (!landed) return;
+    const timer = setTimeout(() => setLanded(null), LANDED_MS);
+    return () => clearTimeout(timer);
+  }, [landed]);
   if (!info?.linked || !info.branch || info.branch !== git.branch) return null;
   const { branch, base } = info;
-  const start = (kind: "pr" | "merge", action: () => Promise<LandResult | null>) => {
+  const start = (kind: LandKind) => {
     if (busy) return;
     setBusy(kind);
-    void action().then((outcome) => { if (outcome) setResult({ kind, outcome }); }).finally(() => setBusy(null));
+    setLanded(null);
+    void landWorktree({ kind, host, path, branch, base }, { interactive: true })
+      .then((outcome) => {
+        if (!outcome) return;
+        if (outcome.failed) setFailure({ kind, outcome });
+        else setLanded(kind);
+      })
+      .finally(() => setBusy(null));
   };
   const stop = (event: { stopPropagation(): void }) => event.stopPropagation();
-  const url = result?.outcome.url;
+  const icon = (kind: LandKind, Icon: LucideIcon) => busy === kind ? <Loader2 size={11} className="async-spinner" aria-hidden="true" />
+    : landed === kind ? <CircleCheck size={11} className="tile-strip-check is-passing" aria-hidden="true" />
+      : <Icon size={11} aria-hidden="true" />;
+  // A task's worktree lands from its task, behind the task's own checks.
+  const viaTask = task ? `\nPart of the task "${task}": opens its land checks` : "";
+  const prLabel = landed === "pr" ? "Pull request opened" : "Open pull request";
+  const mergeLabel = landed === "merge" ? `Merged into ${base}` : `Merge into ${base}`;
+  const url = failure?.outcome.url;
   return <span className="tile-strip-wt">
-    {hasPullRequest ? null : <button type="button" className="tile-strip-wt-action" aria-label="Open pull request" disabled={busy !== null} aria-busy={busy === "pr" || undefined}
-      title={`Open pull request\nPushes ${branch} and runs gh pr create --fill`} onMouseDown={stop} onClick={() => start("pr", () => openWorktreePr(host, path))}>
-      {busy === "pr" ? <Loader2 size={11} className="async-spinner" aria-hidden="true" /> : <GitPullRequestCreateArrow size={11} aria-hidden="true" />}
+    {hasPullRequest ? null : <button type="button" className="tile-strip-wt-action" aria-label={prLabel} disabled={busy !== null} aria-busy={busy === "pr" || undefined}
+      title={`${prLabel}${viaTask || `\nPushes ${branch} and runs gh pr create --fill`}`} onMouseDown={stop} onClick={() => start("pr")}>
+      {icon("pr", GitPullRequestCreateArrow)}
     </button>}
-    {base ? <button type="button" className="tile-strip-wt-action" aria-label={`Merge into ${base}`} disabled={git.dirty || busy !== null} aria-busy={busy === "merge" || undefined}
-      title={git.dirty ? `Merge into ${base}\nCommit or discard this worktree's changes first` : `Merge into ${base}\nMerges ${branch} in the main checkout after a confirmation`}
-      onMouseDown={stop} onClick={() => start("merge", () => mergeWorktree(host, path, branch, base))}>
-      {busy === "merge" ? <Loader2 size={11} className="async-spinner" aria-hidden="true" /> : <GitMerge size={11} aria-hidden="true" />}
+    {base ? <button type="button" className="tile-strip-wt-action" aria-label={mergeLabel} disabled={(git.dirty && !task) || busy !== null} aria-busy={busy === "merge" || undefined}
+      title={viaTask ? `${mergeLabel}${viaTask}` : git.dirty ? `${mergeLabel}\nCommit or discard this worktree's changes first` : `${mergeLabel}\nMerges ${branch} in the main checkout after a confirmation`}
+      onMouseDown={stop} onClick={() => start("merge")}>
+      {icon("merge", GitMerge)}
     </button> : null}
-    <Modal open={result !== null} onClose={() => setResult(null)} title={result?.kind === "merge" ? "Merge worktree" : "Pull request"} size="sm">
-      <p role={result?.outcome.failed ? "alert" : "status"} className="tile-strip-wt-result">
-        {result?.outcome.text}
+    <Modal open={failure !== null} onClose={() => setFailure(null)} title={failure?.kind === "merge" ? "Merge worktree" : "Pull request"} size="sm">
+      <p role="alert" className="tile-strip-wt-result">
+        {failure?.outcome.text}
         {url ? <>{" "}<button type="button" className="wt-link" onClick={() => openWebPage(url)}>{url}</button></> : null}
       </p>
     </Modal>
@@ -235,30 +264,6 @@ function FooterPath({ path }: { path: string }) {
   </button>;
 }
 
-// The agent session's estimated cost and run time ("$1.24 · 38m"), with the
-// token breakdown on hover. While the agent runs the time counts up to now;
-// after it exits it is the span from its first to its last priced reply.
-function FooterCost({ cost, running }: { cost: SessionCost; running: boolean }) {
-  if (cost.startedAt === undefined || cost.lastAt === undefined) return null;
-  const until = running ? Date.now() : cost.lastAt;
-  const duration = formatDuration(until - cost.startedAt);
-  const priced = cost.pricedCost ?? 0;
-  const money = cost.cost != null ? formatCost(cost.cost) : priced > 0 ? `${formatCost(priced)}+` : null;
-  const tokens = cost.tokens;
-  const clock = (at: number) => new Date(at).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
-  const title = [
-    `${cost.provider === "codex" ? "Codex" : "Claude Code"} session, matched by folder and start time (best effort)`,
-    running ? `Running ${duration} since ${clock(cost.startedAt)}` : `Ran ${duration}, last reply ${clock(cost.lastAt)}`,
-    cost.cost != null ? `Estimated ${formatCost(cost.cost)} at standard API prices`
-      : `${formatCost(priced)} priced; no price for ${(cost.unpricedModels ?? []).join(", ")}`,
-    tokens ? `Input ${formatTokens(tokens.input)} · Output ${formatTokens(tokens.output)} · Cache read ${formatTokens(tokens.cacheRead)} · Cache write ${formatTokens(tokens.cacheWrite)}` : "",
-    [cost.models?.join(", "), cost.subagents ? `${cost.subagents} subagent${cost.subagents === 1 ? "" : "s"}` : ""].filter(Boolean).join(" · "),
-  ].filter(Boolean).join("\n");
-  return <span className="tile-strip-cost" title={title} aria-label={`Agent session ${money ? `${money}, ` : ""}${duration}`}>
-    {money ? `${money} · ${duration}` : duration}
-  </span>;
-}
-
 // One-line footer carrying what tmux's status line used to show. Left: what is
 // running now (command, agent and mode), the tmux session and its Git branch;
 // right: the folder and when the session started. Every value comes from live
@@ -269,9 +274,7 @@ function TileStatusStrip({ tileId, session, window: windowIndex, host, gitHost, 
   tileId: string; session: string; window?: number; host?: string; gitHost: string; visible: boolean; path?: string; createdAt?: number | null;
   workspaceId: string; workspace: string;
 }) {
-  const agent = sessionAgentLabel(useSessionAgents((s) => s.agents[tileId]));
   const activity = useSessionActivity(session, windowIndex, host);
-  const command = activity?.command;
   // Only tiles running a coding agent claim their branch; a plain shell in
   // the same folder is not a conflict.
   const runningAgent = activityAgent(activity);
@@ -300,26 +303,17 @@ function TileStatusStrip({ tileId, session, window: windowIndex, host, gitHost, 
       .catch((error: unknown) => setChecksError(error instanceof Error ? error.message : "Could not send the failing checks."))
       .finally(() => setSendingChecks(false));
   } : undefined;
-  // Cost reads this device's transcripts, so only local tiles ask. The agent
-  // the tile was started with still names the provider after the agent exits.
-  const recordedAgent = useSessionAgents((s) => s.agents[tileId]?.id);
-  const costProvider = [runningAgent, recordedAgent].find((id): id is CostProvider => id === "claude" || id === "codex");
-  const sessionCost = useSessionCost(costProvider, path, createdAt, visible && !host);
-  const RunningIcon = sessionIcon(command, activity?.effectiveProvider);
+  // Status bar items can be turned off in Settings > Appearance.
+  const hiddenBarItems = useStore((s) => s.hiddenBarItems);
+  const shown = (id: BarItemId) => !hiddenBarItems.includes(id);
   return <div className="tile-strip">
-    <span className="tile-strip-target" title="tmux session">{windowIndex === undefined ? session : `${session}:${windowIndex}`}</span>
-    {git ? <FooterGit git={git} remote={remote} shared={shared} onReview={() => { if (path) useStore.getState().openTileChanges(tileId, path); }} onIsolate={isolate} isolating={isolating}
+    {shown("status:session") ? <span className="tile-strip-target" title="tmux session">{windowIndex === undefined ? session : `${session}:${windowIndex}`}</span> : null}
+    {git && shown("status:git") ? <FooterGit git={git} remote={remote} shared={shared} onReview={() => { if (path) useStore.getState().openTileChanges(tileId, path); }} onIsolate={isolate} isolating={isolating}
       onSendChecks={sendChecks} sendingChecks={sendingChecks} /> : null}
-    {git && path ? <FooterWorktree host={gitHost} path={path} git={git} hasPullRequest={!!remote?.pr && remote.pr.state !== "CLOSED"} /> : null}
-    {command || agent ? <span className="tile-strip-running" title="Running now">
-      {/* The running program's logo (Claude, Codex, OpenCode, a shell...) leads the item. */}
-      {command ? <RunningIcon size={11} className="tile-strip-logo" /> : null}
-      {command ? <code className="tile-strip-command">{command}</code> : null}
-      {agent ? <span className="tile-strip-agent" title="Started with">{agent.agent} · {agent.mode}</span> : null}
-    </span> : null}
-    {sessionCost ? <FooterCost cost={sessionCost} running={!!runningAgent} /> : null}
-    {path ? <FooterPath path={path} /> : null}
-    {createdAt ? <time className="tile-strip-time" dateTime={new Date(createdAt).toISOString()} title={`Session started ${new Date(createdAt).toLocaleString()}`}>
+    {git && path && shown("status:git") ? <CheckpointsChip tileId={tileId} host={gitHost} path={path} visible={visible} /> : null}
+    {git && path && shown("status:worktree") ? <FooterWorktree host={gitHost} path={path} git={git} hasPullRequest={!!remote?.pr && remote.pr.state !== "CLOSED"} /> : null}
+    {path && shown("status:path") ? <FooterPath path={path} /> : null}
+    {createdAt && shown("status:started") ? <time className="tile-strip-time" dateTime={new Date(createdAt).toISOString()} title={`Session started ${new Date(createdAt).toLocaleString()}`}>
       started {startedLabel(createdAt)}
     </time> : null}
     <Modal open={isolateError !== null} onClose={() => setIsolateError(null)} title="Move to a worktree" size="sm">
@@ -398,9 +392,18 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
   const activeId = useStore((s) => s.activeId);
   const closeTile = useStore((s) => s.closeTile);
   const connection = useStore((s) => s.connection);
+  // Local terminals step aside while their tmux server restarts or lost
+  // sessions are restored, then attach again (a new key per refresh). At
+  // launch they wait for the check for lost sessions, so attaching cannot
+  // create empty sessions under their names first.
+  const refreshingLocal = useSessionRefresh((s) => s.running);
+  const restoringLocal = useSessionRefresh((s) => s.restoring);
+  const launchCheckLocal = useSessionRefresh((s) => s.pending);
+  const localGeneration = useSessionRefresh((s) => s.generation);
   const sessionWs = useStore((s) => s.sessionWs);
   const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
   const workspaces = useStore((s) => s.workspaces);
+  const statusBarShown = useStore((s) => !s.hiddenBarItems.includes(STATUS_BAR_ID));
   const hiddenTiles = useStore((s) => s.hiddenTiles);
   const hideTile = useStore((s) => s.hideTile);
   const tileSpan = useStore((s) => s.tileSpan);
@@ -416,11 +419,8 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
   // Tiles with unread terminal notifications get a solid green dot; everything
   // else stays grey. Viewing the tile marks its notifications read, which also
   // clears the workspace tab dot when no other unread remains there.
-  const notificationItems = useNotifications((s) => s.items);
-  const unreadTileIds = new Set<string>();
-  for (const item of notificationItems) {
-    if (!item.read && item.target?.tileId) unreadTileIds.add(item.target.tileId);
-  }
+  const unreadTiles = useNotifications(useShallow(unreadTileIds));
+  const unreadTileSet = useMemo(() => new Set(unreadTiles), [unreadTiles]);
   const activateTile = useCallback((id: string) => {
     useStore.getState().setActive(id);
     useNotifications.getState().readTile(id);
@@ -431,7 +431,11 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
   useEffect(() => {
     if (!recordingTileId) return;
     const source = tiles.find((entry) => entry.id === recordingTileId);
-    if (!source || activeId !== recordingTileId || hiddenTiles.includes(recordingTileId) ||
+    // Dictation into something that is not a tile (the broadcast composer, Quick
+    // Chat) is that surface's own; a closed tile already cancels it by
+    // unregistering its target.
+    if (!source) return;
+    if (activeId !== recordingTileId || hiddenTiles.includes(recordingTileId) ||
         (activeWorkspaceId !== ALL_WORKSPACE_ID && (sessionWs[wsKeyOf(source)] ?? DEFAULT_WORKSPACE_ID) !== activeWorkspaceId)) {
       void useDictation.getState().cancel();
     }
@@ -467,12 +471,17 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
     return () => window.removeEventListener("keydown", onKey);
   }, [tileMenuOpen, closeTileMenus]);
 
+  // Only a failure shows on the dot (output activity does not), so the
+  // active/idle flips of every output burst are folded to "idle" here and
+  // never re-render the grid.
   const [statuses, setStatuses] = useState<Record<string, TileStatus>>({});
-  const setStatus = useCallback(
-    (id: string, s: TileStatus) =>
-      setStatuses((prev) => (prev[id] === s ? prev : { ...prev, [id]: s })),
-    [],
-  );
+  const shownStatuses = useRef(statuses);
+  const setStatus = useCallback((id: string, s: TileStatus) => {
+    const shown: TileStatus = s === "failed" ? "failed" : "idle";
+    if ((shownStatuses.current[id] ?? "idle") === shown) return;
+    shownStatuses.current = { ...shownStatuses.current, [id]: shown };
+    setStatuses(shownStatuses.current);
+  }, []);
 
   // One maximized tile fills the canvas; the rest stay mounted but hidden.
   const [fullId, setFullId] = useState<string | null>(null);
@@ -733,12 +742,23 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
     setSelectedIds((current) => current.includes(id) ? current.filter((item) => item !== id) : [...current, id]);
   }, []);
   const clearSelection = useCallback(() => setSelectedIds([]), []);
-  // The command palette selects every visible tile for a broadcast.
+  // Tiles in this workspace with a coding agent in the foreground, read from
+  // the activity rows the tiles already poll.
+  const agentTileIds = useCallback(() => wsTilesRef.current
+    .filter((tile) => runningAgent(tile.session ?? tile.name, tile.window, tile.host) !== undefined)
+    .map((tile) => tile.id), []);
+  const selectAgents = useCallback(() => setSelectedIds((current) => [...new Set([...current, ...agentTileIds()])]), [agentTileIds]);
+  // The command palette selects every visible tile, or every agent tile, for a broadcast.
   useEffect(() => {
     const selectVisible = () => setSelectedIds(wsTilesRef.current.map((tile) => tile.id));
+    const selectAgentTiles = () => setSelectedIds(agentTileIds());
     window.addEventListener("pzza:broadcast-visible", selectVisible);
-    return () => window.removeEventListener("pzza:broadcast-visible", selectVisible);
-  }, []);
+    window.addEventListener("pzza:broadcast-agents", selectAgentTiles);
+    return () => {
+      window.removeEventListener("pzza:broadcast-visible", selectVisible);
+      window.removeEventListener("pzza:broadcast-agents", selectAgentTiles);
+    };
+  }, [agentTileIds]);
   useEffect(() => {
     if (!selectedIds.length) return;
     const onKey = (event: KeyboardEvent) => { if (escapeIsFree(event)) clearSelection(); };
@@ -769,6 +789,21 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
   const effFull = fullInActiveWs ? fullId : null;
   // Only tiles currently on screen take part in a broadcast.
   const selectedTiles = wsTiles.filter((tile) => selectedIds.includes(tile.id) && (!effFull || tile.id === effFull));
+  // The composer slides away with its last chips once fewer than two tiles are selected.
+  const broadcast = useBroadcastPresence(selectedTiles.length >= 2
+    ? selectedTiles.map((entry) => ({ id: entry.id, name: sessionDisplayName(entry, tileTitles), agent: runningAgent(entry.session ?? entry.name, entry.window, entry.host) }))
+    : null);
+  // Everything that can move a tile: the (previewed) order and spans, the
+  // columns, the visible set, the maximized tile, the workspace, the spacing
+  // and the broadcast bar. Tiles measure for their move animation only when
+  // this changes, never on an unrelated render of the grid.
+  const layoutDependency = [
+    activeWorkspaceId, effFull ?? "", arrangement.columns, tracks, spacing, selectedTiles.length >= 2 ? "broadcast" : "",
+    previewTiles.map((entry) => {
+      const span = arrangement.spans.get(entry.id);
+      return `${entry.id}:${span?.c ?? ""}x${span?.r ?? ""}`;
+    }).join("\0"),
+  ].join("\n");
 
   const duplicate = async (source: (typeof tiles)[number]) => {
     if (duplicationPending.current) throw new Error("A session duplication is already running.");
@@ -854,6 +889,7 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
   const tile = (t: (typeof tiles)[number]) => {
     const base = t.session ?? t.name;
     const { cmd, args } = attachCommand(sessionConnection(t.host, connection), base, t.cwd, t.window);
+    const isLocal = !sessionConnection(t.host, connection).host;
     const rs = allSessions.find((s) => s.name === base);
     const fullPath = t.path ?? rs?.path;
     const codeOpen = tileCode[t.id]?.open ?? false;
@@ -863,7 +899,7 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
     const status = statuses[t.id] ?? "idle";
     // Grey by default; solid green only while this tile owns unread
     // notifications. Output activity no longer blinks the dot.
-    const hasUnread = unreadTileIds.has(t.id);
+    const hasUnread = unreadTileSet.has(t.id);
     const displayStatus = hasUnread ? "notify" : status === "failed" ? "failed" : "idle";
     const displayName = sessionDisplayName(t, tileTitles);
     const isRenaming = renaming?.id === t.id;
@@ -948,6 +984,7 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
             : {}),
         }}
         layout={visible && !effFull ? "position" : false}
+        layoutDependency={layoutDependency}
         // Fullscreen fades in without scaling: zooming the tile stretches the
         // terminal text and always reads as broken. Opacity alone is smooth.
         initial={isFull ? { opacity: 0 } : false}
@@ -1053,6 +1090,7 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
               title={codeLabel}
               aria-label={codeLabel}
               onMouseDown={(e) => e.stopPropagation()}
+              onPointerEnter={() => void TileCodePanel.preload()}
               onClick={(e) => {
                 e.stopPropagation();
                 toggleCode();
@@ -1125,7 +1163,10 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
         />
         {borderBg ? <div className="tile-color-border" aria-hidden="true" style={{ background: borderBg }} /> : null}
         <div className={`tile-body ${codeOpen ? `tile-body-code-${tileCode[t.id]?.layout ?? "side-by-side"}` : ""}`}>
-          <Terminal
+          {(refreshingLocal || launchCheckLocal) && isLocal ? <div className="term-surface term-refreshing" role="status">
+            {refreshingLocal && !launchCheckLocal ? <><Loader2 size={14} className="sw-spin" aria-hidden="true" /> {restoringLocal ? "Restoring session…" : "Refreshing session…"}</> : null}
+          </div> : <Terminal
+            key={isLocal ? `${t.id}:${localGeneration}` : t.id}
             tileId={t.id}
             name={base}
             host={t.host ?? connection.host ?? undefined}
@@ -1135,12 +1176,15 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
             window={t.window}
             active={activeId === t.id}
             onStatus={(s) => setStatus(t.id, s)}
-          />
+          />}
           {codeOpen ? <TileCodePanel tileId={t.id} /> : null}
           {codeOpen ? <CodeSplitHandle tileId={t.id} /> : null}
         </div>
+        <TileCheckpoints tileId={t.id} session={base} window={t.window} host={t.host} gitHost={t.host ?? connection.host ?? ""} path={fullPath ?? (t.cwd?.startsWith("/") ? t.cwd : undefined)} />
+        {statusBarShown ? <>
         <TileStatusStrip tileId={t.id} session={base} window={t.window} host={t.host} gitHost={t.host ?? connection.host ?? ""} visible={visible} path={fullPath ?? (t.cwd?.startsWith("/") ? t.cwd : undefined)} createdAt={rs?.createdAt}
           workspaceId={tileWs} workspace={workspaces.find((w) => w.id === tileWs)?.name ?? tileWs} />
+        </> : null}
         {visible && !effFull ? (
           <TileResizeHandles
             span={{ c: trackSpan.c / columnTracks, r: trackSpan.r / 2 }}
@@ -1161,7 +1205,7 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
       </Modal>
       <div
         ref={gridRef}
-        className={`grid ${effFull ? "grid-full" : ""} ${selectedTiles.length >= 2 ? "grid-with-broadcast" : ""}`}
+        className={`grid ${effFull ? "grid-full" : ""} ${broadcast.shown ? "grid-with-broadcast" : ""}`}
         style={{
           gridTemplateColumns: effFull
             ? "minmax(0, 1fr)"
@@ -1172,8 +1216,11 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
         {/* Reduced motion: tiles jump to their new places instead of gliding. */}
         <MotionConfig reducedMotion="user">{tiles.map(tile)}</MotionConfig>
       </div>
-      {selectedTiles.length >= 2 ? (
-        <BroadcastBar tiles={selectedTiles.map((entry) => ({ id: entry.id, name: sessionDisplayName(entry, tileTitles) }))} onClear={clearSelection} />
+      {broadcast.shown ? (
+        <BroadcastBar
+          tiles={broadcast.shown} leaving={broadcast.leaving}
+          agentTiles={agentTileIds()} onSelectAgents={selectAgents} onRemove={toggleSelected} onClear={clearSelection}
+        />
       ) : null}
       {folderDrag.folder ? (
         // Fixed to the canvas's visible box so a scrolled canvas is still fully covered.

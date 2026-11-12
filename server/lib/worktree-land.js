@@ -27,6 +27,11 @@ for ref in "$(git symbolic-ref -q refs/remotes/origin/HEAD 2>/dev/null)" refs/he
   if [ -n "$ref" ] && git show-ref --verify -q "$ref" 2>/dev/null; then base=$ref; break; fi
 done
 base=$(printf '%s' "$base" | sed -e 's|^refs/heads/||' -e 's|^refs/remotes/origin/||')
+if [ -n "$branch" ]; then
+  # A task worktree records the branch it started from; PRs and merges target it.
+  saved=$(git config --get "branch.$branch.pzzabase" 2>/dev/null)
+  case $saved in ''|-*) ;; *) git show-ref --verify -q "refs/heads/$saved" 2>/dev/null && base=$saved ;; esac
+fi
 main=$(git worktree list --porcelain 2>/dev/null </dev/null | sed -n '1s/^worktree //p')
 `;
 

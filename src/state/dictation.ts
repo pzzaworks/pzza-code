@@ -138,6 +138,19 @@ interface TranscriptTarget {
 }
 const targets = new Map<string, TranscriptTarget>();
 let finalizingId: string | undefined;
+// How long the final pass may take before the recording is closed with the
+// words already typed: a pass that never answers must not leave the control
+// spinning on "Finishing" for good.
+const FINAL_PASS_LIMIT_MS = 25_000;
+function watchFinalPass(id: string): void {
+  setTimeout(() => {
+    const current = useDictation.getState().recording;
+    if (!current || current.id !== id || current.phase !== "finalizing") return;
+    targets.get(current.tileId)?.clearPreview();
+    useDictation.setState({ recording: { ...current, phase: "error", level: 0, processing: false, error: "Dictation took too long to finish. The words already typed were kept." } });
+    void invoke<void>("speech_stop", { id, cancel: true }).catch(() => {});
+  }, FINAL_PASS_LIMIT_MS);
+}
 // `writing` is the transcript an in-flight paste will complete, or null when idle.
 let delivery: { id: string; text: string; transcript: string; pending: Promise<void>; failed: boolean; writing: string | null } =
   { id: "", text: "", transcript: "", pending: Promise.resolve(), failed: false, writing: null };
@@ -240,6 +253,22 @@ async function prepare(): Promise<void> {
   return preparation;
 }
 
+// The native side releases the speech model after a long idle period. A
+// pointer resting on (or focus reaching) a microphone button reloads it ahead
+// of the click, at most this often.
+const PREWARM_MS = 30_000;
+let prewarmedAt = 0;
+
+/** Loads the speech model ahead of a likely recording, such as the microphone button being hovered. */
+export function prewarmDictation(): void {
+  const state = useDictation.getState();
+  if (!DICTATION_SUPPORTED || !state.enabled || state.model !== "ready" || state.recording || preparation) return;
+  const now = Date.now();
+  if (now - prewarmedAt < PREWARM_MS) return;
+  prewarmedAt = now;
+  void prepare();
+}
+
 export function initializeDictation(): Promise<void> {
   if (!DICTATION_SUPPORTED) return Promise.resolve();
   if (initialization) return initialization;
@@ -273,7 +302,7 @@ export function initializeDictation(): Promise<void> {
         if (payload.kind === "listening" && current.phase === "loading") targets.get(current.tileId)?.focus();
         useDictation.setState({ recording: { ...current, phase: payload.kind, ...(payload.kind === "finalizing" ? { voice: false, level: 0 } : {}) } });
         // Silence can end the recording natively; the caret then shows the final pass.
-        if (payload.kind === "finalizing") renderPreview(current.id);
+        if (payload.kind === "finalizing") { renderPreview(current.id); watchFinalPass(current.id); }
       }
     }));
     cleanups.push(await listen<DownloadEvent>("dictation-download", ({ payload }) => {
@@ -377,6 +406,7 @@ export const useDictation = create<DictationState>((set, get) => ({
     targets.get(current.tileId)?.focus();
     set({ recording: { ...current, phase: "finalizing", level: 0, voice: false } });
     renderPreview(current.id);
+    watchFinalPass(current.id);
     try { await invoke<void>("speech_stop", { id: current.id, cancel: false }); }
     catch (error) {
       if (get().recording?.id === current.id) set({ recording: { ...current, phase: "error", level: 0, processing: false, error: message(error) } });

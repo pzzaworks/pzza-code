@@ -1,0 +1,2 @@
+{"sessionId":"sub-1","projectHash":"3b4c1f0d9a8e7b6c5d4e3f2a1b0c9d8e7f6a5b4c3d2e1f0a9b8c7d6e5f4a3b2c","startTime":"2026-11-10T09:16:00.000Z","lastUpdated":"2026-11-10T09:16:00.000Z","kind":"subagent","directories":["/Users/dev/proj"]}
+{"id":"9b8a7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d","timestamp":"2026-11-10T09:16:30.000Z","type":"gemini","content":"Searched.","thoughts":[],"tokens":{"input":1000,"output":100,"cached":0,"thoughts":0,"tool":0,"total":1100},"model":"gemini-2.5-flash"}

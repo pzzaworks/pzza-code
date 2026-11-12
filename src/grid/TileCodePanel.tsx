@@ -6,7 +6,7 @@ import { Decoration, EditorView, keymap, type DecorationSet } from "@codemirror/
 import { StateEffect, StateField } from "@codemirror/state";
 import { highlightSelectionMatches, openSearchPanel, searchKeymap } from "@codemirror/search";
 import { githubDark, githubLight } from "@uiw/codemirror-theme-github";
-import { editorLanguage } from "./editorLanguage";
+import { useEditorLanguage } from "./editorLanguageLoader";
 import { Eye, FolderOpen, Loader2, PanelLeft, Pencil, Save, X } from "lucide-react";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
@@ -394,14 +394,16 @@ export function TileCodePanel({ tileId }: { tileId: string }) {
     };
   }, [path, host]);
 
+  // Highlighting by file name first (Dockerfile, Makefile, .env, ...), then
+  // extension. The text shows once both the file and its language are in.
+  const highlighting = useEditorLanguage(isBinary ? null : path);
+  const shown = loaded && highlighting.ready;
   const extensions = useMemo(() => {
-    // Highlighting by file name first (Dockerfile, Makefile, .env, ...), then extension.
-    const lang = path ? editorLanguage(path) : null;
     // Cmd/Ctrl+F find panel plus selection-match highlights, alongside the
     // go-to-definition hover field.
     const base = [gotoHoverField, keymap.of(searchKeymap), highlightSelectionMatches()];
-    return lang ? [...base, lang] : base;
-  }, [path]);
+    return highlighting.language ? [...base, highlighting.language] : base;
+  }, [highlighting.language]);
 
   const html = useMemo(
     () => (preview && isMd ? DOMPurify.sanitize(marked.parse(content) as string) : ""),
@@ -652,14 +654,14 @@ export function TileCodePanel({ tileId }: { tileId: string }) {
   }, [applyHover]);
 
   useEffect(() => {
-    if (!jump || !loaded || jump.path !== path) return;
+    if (!jump || !shown || jump.path !== path) return;
     const view = viewRef.current;
     if (!view || view.state.doc.lines === 0) return;
     const at = view.state.doc.line(Math.max(1, Math.min(jump.line, view.state.doc.lines)));
     view.dispatch({ selection: { anchor: at.from }, scrollIntoView: true });
     view.focus();
     setJump(null);
-  }, [jump, loaded, path, content]);
+  }, [jump, shown, path, content]);
 
   // Changes view: git status of the folder's repository, plus one file's diff.
   useEffect(() => onFileMutation((mutation) => {
@@ -880,7 +882,7 @@ export function TileCodePanel({ tileId }: { tileId: string }) {
             </div>
           ) : isPdf ? (
             <iframe className="code-preview-pdf" src={fileRawUrl(path, host)} title={baseName(path)} />
-          ) : !loaded ? (
+          ) : !shown ? (
             <div className="code-status">
               <Loader2 size={16} className="sw-spin" /> Loading…
             </div>

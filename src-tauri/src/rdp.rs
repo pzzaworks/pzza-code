@@ -12,8 +12,14 @@ use std::time::{Duration, Instant};
 #[derive(Default)]
 struct DesktopState {
     closing: bool,
-    sessions: HashMap<String, Option<Launched>>,
+    sessions: HashMap<String, Option<OpenDesktop>>,
     processes: HashMap<u32, Arc<Mutex<Child>>>,
+}
+
+// A connected desktop: what the launch found and the viewer showing it.
+struct OpenDesktop {
+    launched: Launched,
+    viewer: u32,
 }
 
 #[derive(Default)]
@@ -44,7 +50,7 @@ impl DesktopManager {
             return Err(failure("RDP_TASK_FAILED"));
         }
         match state.sessions.get(key) {
-            Some(Some(launched)) => return Ok(DesktopStart::Existing(launched.clone())),
+            Some(Some(open)) => return Ok(DesktopStart::Existing(open.launched.clone())),
             Some(None) => return Err(failure("RDP_TASK_FAILED")),
             None => {}
         }
@@ -107,12 +113,14 @@ impl DesktopManager {
 }
 
 impl DesktopSession {
-    fn opened(&self, launched: Launched) -> Result<(), RdpFailure> {
+    fn opened(&self, launched: Launched, viewer: u32) -> Result<(), RdpFailure> {
         let mut state = self.manager.state.lock().unwrap();
         if state.closing {
             return Err(failure("RDP_TASK_FAILED"));
         }
-        state.sessions.insert(self.key.clone(), Some(launched));
+        state
+            .sessions
+            .insert(self.key.clone(), Some(OpenDesktop { launched, viewer }));
         Ok(())
     }
 }
@@ -139,6 +147,51 @@ pub fn rdp_is_open(keychain_service: String) -> bool {
         .get(&keychain_service)
         .is_some_and(Option::is_some)
 }
+
+// Brings the open desktop window for this device (its Keychain key) to the
+// front. False when none is open, so the caller can open one instead.
+#[tauri::command]
+pub fn rdp_focus(keychain_service: String) -> bool {
+    let viewer = desktops()
+        .state
+        .lock()
+        .unwrap()
+        .sessions
+        .get(&keychain_service)
+        .and_then(|open| open.as_ref().map(|open| open.viewer));
+    let Some(viewer) = viewer else {
+        return false;
+    };
+    activate_viewer(viewer);
+    true
+}
+
+// The viewer is a separate GUI process (sdl-freerdp), not a window of this
+// app: activate it through AppKit by its process id. Best effort; a viewer
+// that just quit is reaped by its launch thread.
+#[cfg(target_os = "macos")]
+fn activate_viewer(pid: u32) {
+    use objc2::runtime::{AnyClass, AnyObject};
+    let Ok(pid) = libc::pid_t::try_from(pid) else {
+        return;
+    };
+    let Some(class) = AnyClass::get(c"NSRunningApplication") else {
+        return;
+    };
+    objc2::rc::autoreleasepool(|_| unsafe {
+        let app: *mut AnyObject =
+            objc2::msg_send![class, runningApplicationWithProcessIdentifier: pid];
+        if app.is_null() {
+            return;
+        }
+        // NSApplicationActivateAllWindows | NSApplicationActivateIgnoringOtherApps
+        let options: usize = (1 << 0) | (1 << 1);
+        let _: bool = objc2::msg_send![&*app, activateWithOptions: options];
+    });
+}
+
+#[cfg(not(target_os = "macos"))]
+fn activate_viewer(_pid: u32) {}
 
 pub fn shutdown() -> Result<(), String> {
     desktops().shutdown(Duration::from_secs(5))
@@ -743,7 +796,7 @@ fn launch_blocking(opts: RdpOptions) -> Result<Launched, RdpFailure> {
         port: remote_port,
         mode,
     };
-    session.opened(launched.clone())?;
+    session.opened(launched.clone(), viewer.id)?;
     thread::spawn(move || {
         let _ = viewer.wait();
         drop(viewer);
@@ -786,6 +839,30 @@ mod tests {
     }
 
     #[test]
+    fn focus_reports_only_connected_desktops() {
+        let key = "pzzacode-rdp-focus-test";
+        let DesktopStart::Launch(session) = desktops().reserve(key).unwrap() else {
+            panic!("Expected a new session")
+        };
+        // Still connecting: nothing to bring forward yet.
+        assert!(!rdp_focus(key.into()));
+        // A process id no viewer can have, so the test never activates an app.
+        session
+            .opened(
+                Launched {
+                    port: 3389,
+                    mode: "Remote Login".into(),
+                },
+                u32::MAX,
+            )
+            .unwrap();
+        assert!(rdp_focus(key.into()));
+        assert!(!rdp_focus("pzzacode-rdp-focus-other".into()));
+        drop(session);
+        assert!(!rdp_focus(key.into()));
+    }
+
+    #[test]
     fn shutdown_cancels_pending_launches_and_rejects_new_children() {
         let manager = Arc::new(DesktopManager::default());
         let DesktopStart::Launch(session) = manager.reserve("pending").unwrap() else {
@@ -797,10 +874,13 @@ mod tests {
         let worker = thread::spawn(move || {
             process.wait().unwrap();
             assert!(session
-                .opened(Launched {
-                    port: 3389,
-                    mode: "Remote Login".into()
-                })
+                .opened(
+                    Launched {
+                        port: 3389,
+                        mode: "Remote Login".into()
+                    },
+                    process.id
+                )
                 .is_err());
             drop(process);
             drop(session);
@@ -913,10 +993,13 @@ pub mod testing {
             .unwrap();
         *CHILDREN.lock().unwrap() = vec![viewer.id, tunnel.id];
         session
-            .opened(Launched {
-                port: 3389,
-                mode: "Remote Login".into(),
-            })
+            .opened(
+                Launched {
+                    port: 3389,
+                    mode: "Remote Login".into(),
+                },
+                viewer.id,
+            )
             .unwrap();
         thread::spawn(move || {
             let _ = viewer.wait();

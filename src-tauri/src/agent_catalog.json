@@ -1,0 +1,761 @@
+{
+  "agents": [
+    {
+      "id": "claude",
+      "binaries": [
+        "claude"
+      ],
+      "installDirs": [
+        ".local/bin"
+      ],
+      "excludePaths": [],
+      "requirePaths": []
+    },
+    {
+      "id": "codex",
+      "binaries": [
+        "codex"
+      ],
+      "installDirs": [],
+      "excludePaths": [],
+      "requirePaths": []
+    },
+    {
+      "id": "opencode",
+      "binaries": [
+        "opencode"
+      ],
+      "installDirs": [
+        ".opencode/bin"
+      ],
+      "excludePaths": [],
+      "requirePaths": []
+    },
+    {
+      "id": "gemini",
+      "binaries": [
+        "gemini"
+      ],
+      "installDirs": [],
+      "excludePaths": [],
+      "requirePaths": []
+    },
+    {
+      "id": "cursor",
+      "binaries": [
+        "cursor-agent"
+      ],
+      "installDirs": [
+        ".local/bin"
+      ],
+      "excludePaths": [],
+      "requirePaths": []
+    },
+    {
+      "id": "copilot",
+      "binaries": [
+        "copilot"
+      ],
+      "installDirs": [],
+      "excludePaths": [],
+      "requirePaths": []
+    },
+    {
+      "id": "pi",
+      "binaries": [
+        "pi"
+      ],
+      "installDirs": [],
+      "excludePaths": [],
+      "requirePaths": []
+    },
+    {
+      "id": "cline",
+      "binaries": [
+        "cline"
+      ],
+      "installDirs": [],
+      "excludePaths": [],
+      "requirePaths": []
+    },
+    {
+      "id": "goose",
+      "binaries": [
+        "goose"
+      ],
+      "installDirs": [
+        ".local/bin"
+      ],
+      "excludePaths": [
+        {
+          "text": "/Cellar/goose/",
+          "end": false
+        }
+      ],
+      "requirePaths": []
+    },
+    {
+      "id": "antigravity",
+      "binaries": [
+        "agy"
+      ],
+      "installDirs": [
+        ".local/bin"
+      ],
+      "excludePaths": [],
+      "requirePaths": []
+    },
+    {
+      "id": "qwen",
+      "binaries": [
+        "qwen"
+      ],
+      "installDirs": [],
+      "excludePaths": [],
+      "requirePaths": []
+    },
+    {
+      "id": "crush",
+      "binaries": [
+        "crush"
+      ],
+      "installDirs": [],
+      "excludePaths": [],
+      "requirePaths": []
+    },
+    {
+      "id": "kilo",
+      "binaries": [
+        "kilo"
+      ],
+      "installDirs": [],
+      "excludePaths": [],
+      "requirePaths": []
+    },
+    {
+      "id": "grok",
+      "binaries": [
+        "grok"
+      ],
+      "installDirs": [
+        ".grok/bin"
+      ],
+      "excludePaths": [],
+      "requirePaths": [
+        {
+          "text": "/.grok/",
+          "end": false
+        },
+        {
+          "text": "/@xai-official/grok/",
+          "end": false
+        },
+        {
+          "text": "/grok-native",
+          "end": true
+        }
+      ]
+    },
+    {
+      "id": "amp",
+      "binaries": [
+        "amp"
+      ],
+      "installDirs": [
+        ".amp/bin"
+      ],
+      "excludePaths": [],
+      "requirePaths": [
+        {
+          "text": "/.amp/bin/amp",
+          "end": true
+        },
+        {
+          "text": "/@ampcode/cli/",
+          "end": false
+        },
+        {
+          "text": "/Cellar/ampcode/",
+          "end": false
+        }
+      ]
+    },
+    {
+      "id": "droid",
+      "binaries": [
+        "droid"
+      ],
+      "installDirs": [
+        ".local/bin"
+      ],
+      "excludePaths": [],
+      "requirePaths": []
+    },
+    {
+      "id": "kiro",
+      "binaries": [
+        "kiro-cli"
+      ],
+      "installDirs": [
+        ".local/bin"
+      ],
+      "excludePaths": [],
+      "requirePaths": []
+    },
+    {
+      "id": "codebuddy",
+      "binaries": [
+        "codebuddy"
+      ],
+      "installDirs": [
+        ".local/bin"
+      ],
+      "excludePaths": [],
+      "requirePaths": []
+    },
+    {
+      "id": "kimi",
+      "binaries": [
+        "kimi"
+      ],
+      "installDirs": [
+        ".kimi-code/bin"
+      ],
+      "excludePaths": [],
+      "requirePaths": []
+    },
+    {
+      "id": "devin",
+      "binaries": [
+        "devin"
+      ],
+      "installDirs": [
+        ".local/bin"
+      ],
+      "excludePaths": [],
+      "requirePaths": []
+    },
+    {
+      "id": "vibe",
+      "binaries": [
+        "vibe"
+      ],
+      "installDirs": [
+        ".local/bin"
+      ],
+      "excludePaths": [],
+      "requirePaths": []
+    },
+    {
+      "id": "aider",
+      "binaries": [
+        "aider"
+      ],
+      "installDirs": [
+        ".local/bin"
+      ],
+      "excludePaths": [],
+      "requirePaths": []
+    },
+    {
+      "id": "warp",
+      "binaries": [
+        "warp"
+      ],
+      "installDirs": [],
+      "excludePaths": [
+        {
+          "text": "Warp.app/",
+          "end": false
+        }
+      ],
+      "requirePaths": []
+    },
+    {
+      "id": "auggie",
+      "binaries": [
+        "auggie"
+      ],
+      "installDirs": [],
+      "excludePaths": [],
+      "requirePaths": []
+    },
+    {
+      "id": "letta",
+      "binaries": [
+        "letta"
+      ],
+      "installDirs": [],
+      "excludePaths": [],
+      "requirePaths": []
+    },
+    {
+      "id": "qoder",
+      "binaries": [
+        "qodercli",
+        "qoder"
+      ],
+      "installDirs": [],
+      "excludePaths": [],
+      "requirePaths": []
+    },
+    {
+      "id": "forgecode",
+      "binaries": [
+        "forge"
+      ],
+      "installDirs": [],
+      "excludePaths": [
+        {
+          "text": "/.foundry/",
+          "end": false
+        }
+      ],
+      "requirePaths": []
+    },
+    {
+      "id": "rovodev",
+      "binaries": [
+        "acli"
+      ],
+      "installDirs": [],
+      "excludePaths": [],
+      "requirePaths": []
+    },
+    {
+      "id": "junie",
+      "binaries": [
+        "junie"
+      ],
+      "installDirs": [
+        ".local/bin"
+      ],
+      "excludePaths": [],
+      "requirePaths": []
+    }
+  ],
+  "resume": [
+    {
+      "command": "claude -c --permission-mode manual",
+      "programs": [
+        "claude"
+      ],
+      "versionProgram": true
+    },
+    {
+      "command": "claude -c --permission-mode acceptEdits",
+      "programs": [
+        "claude"
+      ],
+      "versionProgram": true
+    },
+    {
+      "command": "claude -c --permission-mode plan",
+      "programs": [
+        "claude"
+      ],
+      "versionProgram": true
+    },
+    {
+      "command": "claude -c --permission-mode auto",
+      "programs": [
+        "claude"
+      ],
+      "versionProgram": true
+    },
+    {
+      "command": "claude -c --permission-mode dontAsk",
+      "programs": [
+        "claude"
+      ],
+      "versionProgram": true
+    },
+    {
+      "command": "claude -c --dangerously-skip-permissions",
+      "programs": [
+        "claude"
+      ],
+      "versionProgram": true
+    },
+    {
+      "command": "codex resume --last --sandbox read-only --ask-for-approval on-request",
+      "programs": [
+        "codex"
+      ],
+      "versionProgram": false
+    },
+    {
+      "command": "codex resume --last --sandbox workspace-write --ask-for-approval on-request",
+      "programs": [
+        "codex"
+      ],
+      "versionProgram": false
+    },
+    {
+      "command": "codex resume --last --approve-for-me",
+      "programs": [
+        "codex"
+      ],
+      "versionProgram": false
+    },
+    {
+      "command": "codex resume --last --dangerously-bypass-approvals-and-sandbox",
+      "programs": [
+        "codex"
+      ],
+      "versionProgram": false
+    },
+    {
+      "command": "env 'OPENCODE_CONFIG_CONTENT={\"permission\":{\"edit\":\"ask\",\"bash\":\"ask\",\"webfetch\":\"ask\"},\"agent\":{\"build\":{\"permission\":{\"edit\":\"ask\",\"bash\":\"ask\",\"webfetch\":\"ask\"}}}}' opencode -c --agent build",
+      "programs": [
+        "opencode"
+      ],
+      "versionProgram": false
+    },
+    {
+      "command": "opencode -c --agent plan",
+      "programs": [
+        "opencode"
+      ],
+      "versionProgram": false
+    },
+    {
+      "command": "opencode -c --auto",
+      "programs": [
+        "opencode"
+      ],
+      "versionProgram": false
+    },
+    {
+      "command": "gemini --resume latest --approval-mode default",
+      "programs": [
+        "gemini"
+      ],
+      "versionProgram": false
+    },
+    {
+      "command": "gemini --resume latest --approval-mode auto_edit",
+      "programs": [
+        "gemini"
+      ],
+      "versionProgram": false
+    },
+    {
+      "command": "gemini --resume latest --approval-mode plan",
+      "programs": [
+        "gemini"
+      ],
+      "versionProgram": false
+    },
+    {
+      "command": "gemini --resume latest --approval-mode yolo",
+      "programs": [
+        "gemini"
+      ],
+      "versionProgram": false
+    },
+    {
+      "command": "pi --continue --tools read,grep,find,ls",
+      "programs": [
+        "pi"
+      ],
+      "versionProgram": false
+    },
+    {
+      "command": "pi --continue",
+      "programs": [
+        "pi"
+      ],
+      "versionProgram": false
+    },
+    {
+      "command": "agy -c",
+      "programs": [
+        "agy"
+      ],
+      "versionProgram": false
+    },
+    {
+      "command": "agy -c --mode accept-edits",
+      "programs": [
+        "agy"
+      ],
+      "versionProgram": false
+    },
+    {
+      "command": "agy -c --mode plan",
+      "programs": [
+        "agy"
+      ],
+      "versionProgram": false
+    },
+    {
+      "command": "agy -c --dangerously-skip-permissions",
+      "programs": [
+        "agy"
+      ],
+      "versionProgram": false
+    },
+    {
+      "command": "qwen --continue --approval-mode default",
+      "programs": [
+        "qwen"
+      ],
+      "versionProgram": false
+    },
+    {
+      "command": "qwen --continue --approval-mode plan",
+      "programs": [
+        "qwen"
+      ],
+      "versionProgram": false
+    },
+    {
+      "command": "qwen --continue --approval-mode auto-edit",
+      "programs": [
+        "qwen"
+      ],
+      "versionProgram": false
+    },
+    {
+      "command": "qwen --continue --approval-mode auto",
+      "programs": [
+        "qwen"
+      ],
+      "versionProgram": false
+    },
+    {
+      "command": "qwen --continue --approval-mode yolo",
+      "programs": [
+        "qwen"
+      ],
+      "versionProgram": false
+    },
+    {
+      "command": "crush --continue",
+      "programs": [
+        "crush"
+      ],
+      "versionProgram": false
+    },
+    {
+      "command": "crush --continue -y",
+      "programs": [
+        "crush"
+      ],
+      "versionProgram": false
+    },
+    {
+      "command": "env 'KILO_CONFIG_CONTENT={\"permission\":{\"edit\":\"ask\",\"bash\":\"ask\",\"webfetch\":\"ask\"},\"agent\":{\"code\":{\"permission\":{\"edit\":\"ask\",\"bash\":\"ask\",\"webfetch\":\"ask\"}}}}' kilo --continue",
+      "programs": [
+        "kilo",
+        ".kilo"
+      ],
+      "versionProgram": false
+    },
+    {
+      "command": "kilo --continue --auto",
+      "programs": [
+        "kilo",
+        ".kilo"
+      ],
+      "versionProgram": false
+    },
+    {
+      "command": "grok -c",
+      "programs": [
+        "grok"
+      ],
+      "versionProgram": false
+    },
+    {
+      "command": "grok -c --always-approve",
+      "programs": [
+        "grok"
+      ],
+      "versionProgram": false
+    },
+    {
+      "command": "droid --resume --last",
+      "programs": [
+        "droid"
+      ],
+      "versionProgram": false
+    },
+    {
+      "command": "droid --resume --last --auto low",
+      "programs": [
+        "droid"
+      ],
+      "versionProgram": false
+    },
+    {
+      "command": "droid --resume --last --auto medium",
+      "programs": [
+        "droid"
+      ],
+      "versionProgram": false
+    },
+    {
+      "command": "droid --resume --last --auto high",
+      "programs": [
+        "droid"
+      ],
+      "versionProgram": false
+    },
+    {
+      "command": "kiro-cli chat --resume",
+      "programs": [
+        "kiro-cli",
+        "kiro"
+      ],
+      "versionProgram": false
+    },
+    {
+      "command": "kiro-cli chat --resume --trust-all-tools",
+      "programs": [
+        "kiro-cli",
+        "kiro"
+      ],
+      "versionProgram": false
+    },
+    {
+      "command": "kimi --continue",
+      "programs": [
+        "kimi"
+      ],
+      "versionProgram": false
+    },
+    {
+      "command": "kimi --continue --plan",
+      "programs": [
+        "kimi"
+      ],
+      "versionProgram": false
+    },
+    {
+      "command": "kimi --continue --yolo",
+      "programs": [
+        "kimi"
+      ],
+      "versionProgram": false
+    },
+    {
+      "command": "kimi --continue --auto",
+      "programs": [
+        "kimi"
+      ],
+      "versionProgram": false
+    },
+    {
+      "command": "devin --continue --permission-mode normal",
+      "programs": [
+        "devin"
+      ],
+      "versionProgram": false
+    },
+    {
+      "command": "devin --continue --permission-mode accept-edits",
+      "programs": [
+        "devin"
+      ],
+      "versionProgram": false
+    },
+    {
+      "command": "devin --continue --permission-mode smart",
+      "programs": [
+        "devin"
+      ],
+      "versionProgram": false
+    },
+    {
+      "command": "devin --continue --permission-mode dangerous",
+      "programs": [
+        "devin"
+      ],
+      "versionProgram": false
+    },
+    {
+      "command": "vibe --continue --agent ask",
+      "programs": [
+        "vibe-rs"
+      ],
+      "versionProgram": false
+    },
+    {
+      "command": "vibe --continue",
+      "programs": [
+        "vibe-rs"
+      ],
+      "versionProgram": false
+    },
+    {
+      "command": "vibe --continue --agent smart-approve",
+      "programs": [
+        "vibe-rs"
+      ],
+      "versionProgram": false
+    },
+    {
+      "command": "vibe --continue --auto-approve",
+      "programs": [
+        "vibe-rs"
+      ],
+      "versionProgram": false
+    },
+    {
+      "command": "aider --restore-chat-history --chat-mode ask",
+      "programs": [
+        "aider",
+        "python",
+        "python3",
+        "Python"
+      ],
+      "versionProgram": false
+    },
+    {
+      "command": "aider --restore-chat-history",
+      "programs": [
+        "aider",
+        "python",
+        "python3",
+        "Python"
+      ],
+      "versionProgram": false
+    },
+    {
+      "command": "aider --restore-chat-history --architect --no-auto-accept-architect",
+      "programs": [
+        "aider",
+        "python",
+        "python3",
+        "Python"
+      ],
+      "versionProgram": false
+    },
+    {
+      "command": "aider --restore-chat-history --yes-always",
+      "programs": [
+        "aider",
+        "python",
+        "python3",
+        "Python"
+      ],
+      "versionProgram": false
+    },
+    {
+      "command": "acli rovodev run --restore",
+      "programs": [
+        "atlassian_cli_rovodev"
+      ],
+      "versionProgram": false
+    },
+    {
+      "command": "acli rovodev run --restore --yolo",
+      "programs": [
+        "atlassian_cli_rovodev"
+      ],
+      "versionProgram": false
+    }
+  ]
+}

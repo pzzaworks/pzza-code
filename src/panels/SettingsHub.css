@@ -292,7 +292,7 @@
 .managed-device-details { padding: 6px 10px 14px 28px; }
 .managed-session { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; padding: 11px 8px; border-top: 1px solid var(--divider); }
 .managed-session:hover { background: var(--hover); }
-:root[data-appearance="light"] .modal.settings-hub { --muted: #59636e; }
+:root[data-appearance="light"] .modal.settings-hub { --muted: var(--visibility-settings-muted); }
 :root[data-appearance="light"] .settings-hub-content :is(input.input, textarea.input, .field-input, .cselect) { background: var(--input); border-color: var(--hairline-strong); }
 :root[data-appearance="light"] .settings-hub-content .switch { border-color: var(--control-border); }
 :root[data-appearance="light"] .settings-hub-content .switch-on { background: var(--accent); border-color: var(--accent); }
@@ -300,11 +300,12 @@
 :root[data-appearance="light"] .settings-hub-content .switch-on .switch-knob { background: #ffffff; }
 :root[data-appearance="light"] .settings-hub-nav { background: var(--bg); }
 :root[data-appearance="light"] .settings-hub-content .btn-on { background: var(--selected); color: var(--selected-text); }
+:root[data-appearance="light"] .appearance-option.selected { border-color: color-mix(in srgb, var(--selected-edge) 45%, transparent); color: var(--text); }
 @container (max-width: 430px) {
   .settings-hub-content .dictation-language-setting > .cselect { flex-basis: 180px; }
 }
 
-:root[data-appearance="light"] .settings-hub-content :is(input.input, textarea.input, .field-input, .cselect):hover { border-color: #b6bec8; }
+:root[data-appearance="light"] .settings-hub-content :is(input.input, textarea.input, .field-input, .cselect):hover { border-color: color-mix(in srgb, var(--control-border) 45%, var(--border)); }
 :root[data-appearance="light"] .settings-hub-content :is(input.input, textarea.input, .field-input, .cselect):focus-visible { border-color: var(--focus-ring); outline-color: var(--focus-ring); }
 /* Sub-page names truncate rather than wrap. */
 .settings-hub-sublink { gap: 6px; }
@@ -322,9 +323,10 @@
   flex-direction: column;
   gap: 14px;
 }
-.setup-settings-intro { display: flex; align-items: center; gap: 12px; }
-.setup-settings-intro p { flex: 1; min-width: 0; margin: 0; color: var(--muted); font-size: var(--fs-md); line-height: 1.5; }
+.setup-settings-intro { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 12px; }
+.setup-settings-intro p { flex: 1; min-width: 220px; margin: 0; color: var(--muted); font-size: var(--fs-md); line-height: 1.5; }
 .setup-settings-intro .btn { flex: 0 0 auto; }
+.setup-settings-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
 .setup-settings-groups { display: flex; flex-direction: column; gap: 8px; }
 .setup-settings-group { border: 1px solid var(--hairline); border-radius: var(--r-lg); overflow: hidden; }
 .setup-settings-head {
@@ -352,3 +354,23 @@
 .setup-settings-group.is-open .setup-settings-chevron { transform: rotate(90deg); }
 .setup-settings-body { padding: 14px; border-top: 1px solid var(--divider); }
 @media (prefers-reduced-motion: reduce) { .setup-settings-chevron { transition: none; } }
+/* Menu buttons (Settings > General): a titled card per bar, one row per item
+   with its switch, like the Setup cards. A disabled card (status bar off)
+   fades and its switches rest. */
+.settings-hub-content .bar-item-settings + .bar-item-settings { margin-top: 20px; }
+/* The card's own switch lines up with its rows' switches: their 12px padding plus the 1px border. */
+.settings-hub-content .bar-item-settings-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin: 0 0 8px; padding-right: 13px; }
+.settings-hub-content .bar-item-list { border: 1px solid var(--hairline); border-radius: var(--r-lg); overflow: hidden; transition: opacity 0.15s ease; }
+.settings-hub-content .bar-item-list.is-disabled { opacity: 0.5; }
+.settings-hub-content .bar-item-row { display: flex; align-items: center; gap: 12px; min-height: 42px; padding: 6px 12px 6px 14px; }
+.settings-hub-content .bar-item-row + .bar-item-row { border-top: 1px solid var(--divider); }
+.settings-hub-content .bar-item-icon { flex: 0 0 auto; color: var(--muted); }
+.settings-hub-content .bar-item-label { display: flex; flex: 1 1 auto; flex-direction: column; gap: 1px; min-width: 0; font-size: var(--fs-md); }
+.settings-hub-content .bar-item-row .switch:disabled { cursor: default; }
+@media (prefers-reduced-motion: reduce) { .settings-hub-content .bar-item-list { transition: none; } }
+/* Light: setup cards sit in the panel's own surface instead of a solid white
+   that glares against the translucent Settings glass. */
+:root[data-appearance="light"] .setup-settings {
+  --tour-card: var(--surface);
+  --tour-well: color-mix(in srgb, var(--surface-alt) 45%, var(--surface));
+}

@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { Search } from "lucide-react";
-import { ALL_ICON_NAMES, CURATED_ICONS, workspaceIcon } from "../workspaceIcons";
+import { CURATED_ICONS, workspaceIcon } from "../workspaceIcons";
+import { ALL_ICON_NAMES } from "../workspaceIconSet";
 
 // Icon picker with a search box over the full lucide set (~1800 icons). Without
 // a query it shows a curated default list; typing filters every icon by name.

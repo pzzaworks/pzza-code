@@ -1,16 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { useShallow } from "zustand/react/shallow";
 import { Check, LayoutGrid, Plus } from "lucide-react";
 import { useStore } from "../state/store";
 import { Modal } from "../ui/Modal";
 import { useExclusiveMenu } from "../ui/menuBus";
 import { ALL_WORKSPACE_ID, DEFAULT_WORKSPACE_ID, WORKSPACE_COLORS, wsKeyOf } from "../workspaces";
 import { altBadge, digitFromCode, NEW_WORKSPACE_SHORTCUT } from "../shortcuts";
-import { workspaceIcon, DEFAULT_WORKSPACE_ICON } from "../workspaceIcons";
-import { IconPicker } from "../ui/IconPicker";
+import { useWorkspaceIconSet, workspaceIcon, DEFAULT_WORKSPACE_ICON } from "../workspaceIcons";
+import { IconPicker, WorkspaceSettings } from "../lazySurfaces";
+import { whenLoaded } from "../lazySurface";
 import { SESSION_DND, SESSION_TILE_DND, sessionDisplayName } from "../sessionMeta";
-import { WorkspaceSettings } from "../panels/WorkspaceSettings";
-import { useNotifications } from "../state/notifications";
+import { unreadTileIds, useNotifications } from "../state/notifications";
 import { countLabel } from "../panels/Notifications";
 
 const WORKSPACE_DND = "application/x-pzza-workspace";
@@ -31,8 +32,7 @@ export function WorkspaceTabs({ openRequest = 0 }: { openRequest?: number }) {
   const sessionWs = useStore((s) => s.sessionWs);
   const tiles = useStore((s) => s.tiles);
   const tileTitles = useStore((s) => s.tileTitles);
-  const notificationItems = useNotifications((s) => s.items);
-  const unreadItems = useMemo(() => notificationItems.filter((item) => !item.read), [notificationItems]);
+  const unreadTiles = useNotifications(useShallow(unreadTileIds));
 
   // Sessions waiting on the user, per workspace: a tile waits while it owns an
   // unread terminal notification (the same rule that turns its status dot
@@ -43,10 +43,9 @@ export function WorkspaceTabs({ openRequest = 0 }: { openRequest?: number }) {
     const byTileId = new Map(tiles.map((tile) => [tile.id, sessionWs[wsKeyOf(tile)] ?? DEFAULT_WORKSPACE_ID]));
     const tilesByWs = new Map<string, Set<string>>();
     const all = new Set<string>();
-    for (const item of unreadItems) {
-      const tileId = item.target?.tileId;
-      const wsId = tileId ? byTileId.get(tileId) : undefined;
-      if (!tileId || !wsId) continue;
+    for (const tileId of unreadTiles) {
+      const wsId = byTileId.get(tileId);
+      if (!wsId) continue;
       all.add(tileId);
       const waiting = tilesByWs.get(wsId) ?? new Set<string>();
       waiting.add(tileId);
@@ -55,7 +54,7 @@ export function WorkspaceTabs({ openRequest = 0 }: { openRequest?: number }) {
     const counts = new Map<string, number>([[ALL_WORKSPACE_ID, all.size]]);
     for (const [wsId, waiting] of tilesByWs) counts.set(wsId, waiting.size);
     return counts;
-  }, [tiles, sessionWs, unreadItems]);
+  }, [tiles, sessionWs, unreadTiles]);
   const waitingBadge = (wsId: string, name: string) => {
     const count = waitingWorkspaces.get(wsId) ?? 0;
     if (!count) return null;
@@ -68,6 +67,12 @@ export function WorkspaceTabs({ openRequest = 0 }: { openRequest?: number }) {
 
   const [settingsFor, setSettingsFor] = useState<string | null>(null);
   const [settingsRect, setSettingsRect] = useState<DOMRect | null>(null);
+  // Workspace settings (with the icon set) load on first use; it opens once loaded.
+  const openSettingsFor = (id: string, rect: DOMRect) => whenLoaded([WorkspaceSettings], () => {
+    setSettingsFor(id);
+    setSettingsRect(rect);
+  });
+  useWorkspaceIconSet();
   const [addOpen, setAddOpen] = useState(false);
   const [addRect, setAddRect] = useState<DOMRect | null>(null);
   const [name, setName] = useState("");
@@ -110,8 +115,15 @@ export function WorkspaceTabs({ openRequest = 0 }: { openRequest?: number }) {
       const left = Math.min(Math.max(centered, regionL), regionR - width);
       strip.style.left = `${Math.round(left)}px`;
       strip.style.maxWidth = `${Math.floor(width)}px`;
+      // A strip that changed width (the window or the tool cluster resized)
+      // brings the active tab back into view, as switching to it does.
+      if (Math.floor(width) !== lastWidth) {
+        lastWidth = Math.floor(width);
+        scroll.querySelector<HTMLElement>(".ws-tab-active")?.scrollIntoView({ block: "nearest", inline: "nearest" });
+      }
       markEdges();
     };
+    let lastWidth = -1;
     // A clipped strip fades out on each side that has tabs scrolled out of view.
     const markEdges = () => {
       scroll.toggleAttribute("data-more-start", scroll.scrollLeft > 1);
@@ -281,6 +293,8 @@ export function WorkspaceTabs({ openRequest = 0 }: { openRequest?: number }) {
                 dragOver === w.id ? "ws-tab-drop" : ""
               } ${workspaceDrop?.id === w.id ? `ws-tab-reorder-${workspaceDrop.placement}` : ""}`}
               draggable
+              // A click on the active tab opens its settings.
+              onPointerEnter={active ? () => void WorkspaceSettings.preload() : undefined}
               onDragStart={(e) => {
                 draggedWorkspace.current = w.id;
                 e.dataTransfer.setData(WORKSPACE_DND, w.id);
@@ -296,9 +310,8 @@ export function WorkspaceTabs({ openRequest = 0 }: { openRequest?: number }) {
               onClick={(e) => {
                 if (performance.now() - dragEndedAt.current < 200) return;
                 if (active) {
-                  const wasOpen = settingsFor === w.id;
-                  setSettingsFor(wasOpen ? null : w.id);
-                  if (!wasOpen) setSettingsRect(e.currentTarget.getBoundingClientRect());
+                  if (settingsFor === w.id) setSettingsFor(null);
+                  else openSettingsFor(w.id, e.currentTarget.getBoundingClientRect());
                 } else {
                   setWorkspace(w.id);
                   setSettingsFor(null);
@@ -310,8 +323,7 @@ export function WorkspaceTabs({ openRequest = 0 }: { openRequest?: number }) {
                 e.preventDefault();
                 e.stopPropagation();
                 setAddOpen(false);
-                setSettingsFor(w.id);
-                setSettingsRect(e.currentTarget.getBoundingClientRect());
+                openSettingsFor(w.id, e.currentTarget.getBoundingClientRect());
               }}
               title={w.name}
               onDragOver={(e) => {
@@ -381,12 +393,13 @@ export function WorkspaceTabs({ openRequest = 0 }: { openRequest?: number }) {
         ? createPortal(
             <div className="menu menu-panel pzza-portal creation-panel new-workspace-panel" style={dropStyle(addRect, 420)}>
               <div className="menu-body">
-                <div className="menu-title">New workspace <kbd className="kbd" aria-hidden="true">{NEW_WORKSPACE_SHORTCUT.label}</kbd></div>
+                <div className="menu-head"><span className="menu-head-title">New workspace</span><kbd className="kbd" aria-hidden="true">{NEW_WORKSPACE_SHORTCUT.label}</kbd></div>
                 <div className="ws-chip">
                   <button
                     className={`ws-chip-avatar ${pickerOpen ? "on" : ""}`}
                     style={{ color }}
-                    onClick={() => setPickerOpen((v) => !v)}
+                    onPointerEnter={() => void IconPicker.preload()}
+                    onClick={() => whenLoaded([IconPicker], () => setPickerOpen((v) => !v))}
                     title="Icon & color"
                   >
                     {(() => {

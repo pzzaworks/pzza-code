@@ -8,7 +8,7 @@ import path from "node:path";
 import { createDeviceSession } from "../lib/session-create.js";
 import { shQuote } from "../lib/shell.js";
 import { SESSION_NAME_MAX_LENGTH } from "../lib/session-name.js";
-import { sessionAgentCommand } from "../lib/session-agents.js";
+import { SESSION_AGENTS, agentCanAutoResume, sessionAgentCommand, sessionAgentResumeCommand } from "../lib/session-agents.js";
 import { validateAppCommand } from "../lib/app-control-schema.js";
 const exec = promisify(execFile);
 
@@ -98,10 +98,16 @@ test("agent launches accept only catalog agents and modes before executing", asy
   for (const agent of [null, "claude", { id: "claude" }, { id: "claude", mode: "yolo" }, { id: "bash", mode: "default" }, { id: "codex", mode: "default", args: "--x" }, { id: "claude; rm -rf ~", mode: "default" }]) {
     await assert.rejects(createDeviceSession({ name: "valid", agent }, run), { status: 400 });
   }
+  // A backslash could end fish's single quoting early, so the prompt is refused before anything runs.
+  await assert.rejects(createDeviceSession({ name: "valid", agent: { id: "claude", mode: "default", prompt: "x\\' ; touch /tmp/pwned ; echo \\'" } }, run),
+    { status: 400, message: "The starting prompt can't contain backslashes." });
   assert.equal(called, false);
   assert.equal(sessionAgentCommand({ id: "claude", mode: "bypass" }), "claude --dangerously-skip-permissions");
-  assert.equal(sessionAgentCommand({ id: "codex", mode: "readOnly" }), "codex --sandbox read-only");
-  assert.equal(sessionAgentCommand({ id: "opencode", mode: "default" }), "opencode");
+  assert.equal(sessionAgentCommand({ id: "codex", mode: "default" }), "codex --sandbox workspace-write --ask-for-approval on-request");
+  assert.equal(sessionAgentCommand({ id: "opencode", mode: "default" }), "env 'OPENCODE_CONFIG_CONTENT={\"permission\":{\"edit\":\"ask\",\"bash\":\"ask\",\"webfetch\":\"ask\"},\"agent\":{\"build\":{\"permission\":{\"edit\":\"ask\",\"bash\":\"ask\",\"webfetch\":\"ask\"}}}}' opencode --agent build");
+  // Safe defaults ask, whatever the CLI itself starts in.
+  assert.equal(sessionAgentCommand({ id: "claude", mode: "default" }), "claude --permission-mode manual");
+  assert.equal(sessionAgentCommand({ id: "codex", mode: "readOnly" }), "codex --sandbox read-only --ask-for-approval on-request");
 });
 
 test("a created session types the agent command into its own tmux target, locally and over SSH", async () => {
@@ -123,7 +129,7 @@ test("a created session types the agent command into its own tmux target, locall
     assert.equal(remote.agentStarted, true);
     assert.equal(calls[1].command, "ssh");
     assert.ok(calls[1].args.includes("StrictHostKeyChecking=yes"));
-    assert.equal(calls[1].args.at(-1), "'tmux' '-u' 'send-keys' '-t' '=remote:' '-l' 'codex' ';' 'send-keys' '-t' '=remote:' 'Enter'");
+    assert.equal(calls[1].args.at(-1), "'tmux' '-u' 'send-keys' '-t' '=remote:' '-l' 'codex --sandbox workspace-write --ask-for-approval on-request' ';' 'send-keys' '-t' '=remote:' 'Enter'");
     assert.ok(!calls[1].args.at(-1).includes("/tmp/local-session-service"));
     const failed = await createDeviceSession({ name: "remote", host: "devbox", agent: { id: "codex", mode: "default" } }, (command, args, options, callback) => {
       if (command === "ssh" && args.at(-1).includes("python3")) return { stdin: { on() {}, end() { callback(null, JSON.stringify({ ok: true })); } } };
@@ -136,12 +142,37 @@ test("a created session types the agent command into its own tmux target, locall
 
 test("agent commands add resume flags and a single quoted starting prompt", () => {
   assert.equal(sessionAgentCommand({ id: "claude", mode: "plan", resume: true, prompt: "fix the login bug" }), "claude -c --permission-mode plan 'fix the login bug'");
-  assert.equal(sessionAgentCommand({ id: "codex", mode: "readOnly", resume: true }), "codex resume --last --sandbox read-only");
-  assert.equal(sessionAgentCommand({ id: "opencode", mode: "default", prompt: "it's $(whoami) `id`" }), "opencode --prompt 'it'\\''s $(whoami) `id`'");
-  for (const prompt of ["", "   ", "two\nlines", "tab\tinside", "x".repeat(4001), 42]) {
+  assert.equal(sessionAgentCommand({ id: "codex", mode: "readOnly", resume: true }), "codex resume --last --sandbox read-only --ask-for-approval on-request");
+  assert.equal(sessionAgentCommand({ id: "opencode", mode: "default", prompt: "it's $(whoami) `id`" }), "env 'OPENCODE_CONFIG_CONTENT={\"permission\":{\"edit\":\"ask\",\"bash\":\"ask\",\"webfetch\":\"ask\"},\"agent\":{\"build\":{\"permission\":{\"edit\":\"ask\",\"bash\":\"ask\",\"webfetch\":\"ask\"}}}}' opencode --agent build" + " --prompt 'it'\\''s $(whoami) `id`'");
+  for (const prompt of ["", "   ", "two\nlines", "tab\tinside", "x".repeat(4001), 42, "--dangerously-skip-permissions", " -p x", "x\\' ; touch /tmp/pwned ; echo \\'"]) {
     assert.throws(() => sessionAgentCommand({ id: "claude", mode: "default", prompt }));
   }
   assert.throws(() => sessionAgentCommand({ id: "claude", mode: "default", resume: "yes" }));
+});
+
+test("restarted terminals resume every folder-scoped catalog agent in its recorded mode", () => {
+  assert.deepEqual(SESSION_AGENTS.slice(0, 3).map(agent => agent.id), ["claude", "codex", "opencode"]);
+  for (const agent of SESSION_AGENTS) {
+    if (!agentCanAutoResume(agent)) {
+      // "Last conversation" reaches past this folder (or needs an id): never resumed by itself.
+      assert.equal(sessionAgentResumeCommand(agent.id), null, agent.id);
+      continue;
+    }
+    for (const mode of agent.modes) {
+      const command = sessionAgentResumeCommand(agent.id, { id: agent.id, mode: mode.id });
+      assert.equal(command, sessionAgentCommand({ id: agent.id, mode: mode.id, resume: true }));
+      assert.ok(command.includes(agent.resume.args.join(" ")), agent.id);
+    }
+    // Detected without a record, or recorded as another agent: the default mode.
+    const fallback = sessionAgentCommand({ id: agent.id, mode: agent.defaultMode, resume: true });
+    assert.equal(sessionAgentResumeCommand(agent.id), fallback);
+    const other = SESSION_AGENTS.find(item => item.id !== agent.id);
+    assert.equal(sessionAgentResumeCommand(agent.id, { id: other.id, mode: other.modes.at(-1).id }), fallback);
+    assert.equal(sessionAgentResumeCommand(agent.id, { id: agent.id, mode: "unknown" }), fallback);
+  }
+  assert.equal(sessionAgentResumeCommand("claude"), "claude -c --permission-mode manual");
+  assert.equal(sessionAgentResumeCommand("codex", { id: "codex", mode: "readOnly" }), "codex resume --last --sandbox read-only --ask-for-approval on-request");
+  assert.throws(() => sessionAgentResumeCommand("bash"));
 });
 
 test("worktree sessions create a sibling worktree on a new branch and start there", { timeout: 20000 }, async () => {
