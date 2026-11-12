@@ -7,6 +7,7 @@ import {
   COPY_SETUP_SCRIPT, DEFAULT_COPY_PATTERNS, MAIN_CONFIG_SH, WORKTREE_SETUP_LIMITS,
   parseCopyOutput, readSetupSections, scriptSections, setupApproved, setupCommandLine,
 } from "./worktree-setup.js";
+import { validBranchName } from "./worktree-land.js";
 
 export const SESSION_CREATE_TARGET = String.raw`
 import json, os, re, stat, subprocess, sys
@@ -80,12 +81,22 @@ const SSH_OPTIONS = ["-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=3", "-o"
 // Gives a session its own git worktree next to the repository
 // (<repo>.worktrees/<slug>) on a new branch pzza/<slug>, so parallel agents in
 // one repository never edit the same checkout. Paths and the slug are
-// positional arguments, never part of the script text. After the path it
-// prints the main checkout and its worktree setup file (see worktree-setup.js).
+// positional arguments, never part of the script text. An optional third
+// argument names a local base branch to start from (refs/heads/ is spelled
+// out so a tag of the same name never wins); it is recorded as
+// branch.pzza/<slug>.pzzabase, which pull requests and merges then target.
+// After the path it prints the main checkout and its worktree setup file (see
+// worktree-setup.js).
 export const WORKTREE_SCRIPT = String.raw`top=$(git -C "$1" rev-parse --show-toplevel 2>/dev/null) || exit 3
 dir="$(dirname "$top")/$(basename "$top").worktrees/$2"
 [ -e "$dir" ] && exit 4
-git -C "$top" worktree add -q -b "pzza/$2" "$dir" >/dev/null 2>&1 || exit 5
+if [ -n "$3" ]; then
+  git -C "$top" show-ref --verify -q "refs/heads/$3" 2>/dev/null || exit 6
+  git -C "$top" worktree add -q -b "pzza/$2" "$dir" "refs/heads/$3" >/dev/null 2>&1 || exit 5
+  git -C "$top" config "branch.pzza/$2.pzzabase" "$3" >/dev/null 2>&1
+else
+  git -C "$top" worktree add -q -b "pzza/$2" "$dir" >/dev/null 2>&1 || exit 5
+fi
 printf '%s\n' "$dir"
 ` + MAIN_CONFIG_SH;
 
@@ -93,14 +104,16 @@ export function worktreeSlug(name) {
   return name.toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9_-]/g, "").replace(/^-+|-+$/g, "").slice(0, 60);
 }
 
-function createWorktree(host, cwd, slug, run) {
+function createWorktree(host, cwd, slug, base, run) {
+  const scriptArgs = [cwd, slug, ...(base ? [base] : [])];
   const [file, args] = host
-    ? ["ssh", [...SSH_OPTIONS, host, ["sh", "-c", WORKTREE_SCRIPT, "pzza-worktree", cwd, slug].map(shQuote).join(" ")]]
-    : ["/bin/sh", ["-c", WORKTREE_SCRIPT, "pzza-worktree", cwd, slug]];
+    ? ["ssh", [...SSH_OPTIONS, host, ["sh", "-c", WORKTREE_SCRIPT, "pzza-worktree", ...scriptArgs].map(shQuote).join(" ")]]
+    : ["/bin/sh", ["-c", WORKTREE_SCRIPT, "pzza-worktree", ...scriptArgs]];
   const failures = {
     3: ["The chosen folder is not inside a git repository.", 400],
     4: ["A worktree for this session name already exists. Choose another name.", 400],
     5: [`git could not create the worktree. The branch pzza/${slug} may already exist.`, 400],
+    6: [`The base branch ${base} does not exist in this repository.`, 400],
   };
   return new Promise((resolve, reject) => {
     run(file, args, { timeout: 20000, maxBuffer: WORKTREE_SETUP_LIMITS.configBytes + 16384, env: deviceEnv(host) }, (error, output) => {
@@ -143,8 +156,9 @@ async function prepareWorktree(host, dir, setup, run, approvals) {
 
 export async function createDeviceSession(body, run = execFile, approvals = {}) {
   const invalid = message => Promise.reject(Object.assign(new Error(message), { status: 400 }));
-  if (!body || typeof body !== "object" || Array.isArray(body) || Object.keys(body).some(key => !["name", "cwd", "account", "host", "agent", "worktree"].includes(key))) return invalid("Invalid session request.");
+  if (!body || typeof body !== "object" || Array.isArray(body) || Object.keys(body).some(key => !["name", "cwd", "account", "host", "agent", "worktree", "base"].includes(key))) return invalid("Invalid session request.");
   if (body.worktree !== undefined && typeof body.worktree !== "boolean") return invalid("Invalid worktree choice.");
+  if (body.base !== undefined && (body.worktree !== true || !validBranchName(body.base))) return invalid("Choose an existing local branch as the base of a new worktree.");
   if (body.worktree && (typeof body.cwd !== "string" || !body.cwd.startsWith("/"))) return invalid("Choose a folder inside a git repository to create a worktree.");
   let name;
   try { name = normalizeSessionName(body.name); } catch (error) { return invalid(error.message); }
@@ -158,7 +172,7 @@ export async function createDeviceSession(body, run = execFile, approvals = {}) 
   const host = body.host ?? "";
   const slug = body.worktree ? worktreeSlug(name) : "";
   if (body.worktree && !slug) return invalid("Use letters or numbers in the session name to name its worktree.");
-  const worktree = body.worktree ? await createWorktree(host, body.cwd, slug, run) : null;
+  const worktree = body.worktree ? await createWorktree(host, body.cwd, slug, body.base, run) : null;
   const cwd = worktree ? worktree.dir : body.cwd;
   const setup = worktree ? await prepareWorktree(host, worktree.dir, worktree.setup, run, approvals) : null;
   // Approved setup commands run first, in the terminal, and the agent after them.

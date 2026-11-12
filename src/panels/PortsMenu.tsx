@@ -29,6 +29,7 @@ import {
   openUrl,
   type ForwardStatus,
 } from "../forward";
+import { visibleInterval, visibleTimeout } from "../visibility";
 
 const POLL_MS = 4000;
 
@@ -108,11 +109,12 @@ export function useForwardedCount(enabled: boolean): number | null {
     };
     const onVisibility = () => { if (document.visibilityState === "visible") void tick(); };
     void tick();
-    const timer = window.setInterval(() => void tick(), FORWARD_COUNT_POLL_MS);
+    // Returning to the window refreshes already (onVisibility).
+    const stop = visibleInterval(() => void tick(), FORWARD_COUNT_POLL_MS, { catchUp: false });
     document.addEventListener("visibilitychange", onVisibility);
     return () => {
       alive = false;
-      window.clearInterval(timer);
+      stop();
       document.removeEventListener("visibilitychange", onVisibility);
     };
   }, [enabled]);
@@ -263,7 +265,7 @@ function usePortDetails(host?: string, enabled = true, revision = 0) {
     setDetails([]); setUnavailable(false); setLoading(enabled);
     if (!enabled) return;
     const controller = new AbortController();
-    let timer: ReturnType<typeof setTimeout> | undefined;
+    let cancelTimer: (() => void) | undefined;
     const refresh = async () => {
       try {
         const result = await fetchPortDetails(host, controller.signal);
@@ -271,11 +273,11 @@ function usePortDetails(host?: string, enabled = true, revision = 0) {
       } catch {
         if (!controller.signal.aborted) setUnavailable(true);
       } finally {
-        if (!controller.signal.aborted) { setLoading(false); timer = setTimeout(refresh, POLL_MS); }
+        if (!controller.signal.aborted) { setLoading(false); cancelTimer = visibleTimeout(refresh, POLL_MS); }
       }
     };
     void refresh();
-    return () => { controller.abort(); clearTimeout(timer); };
+    return () => { controller.abort(); cancelTimer?.(); };
   }, [host, enabled, revision]);
   return { details, unavailable, loading };
 }
@@ -386,7 +388,7 @@ function ServerPorts({ pollingActive, showControls, onLoadingChange, route, refr
   useEffect(() => {
     if (!caps || !pollingActive) return;
     let alive = true;
-    let timer: ReturnType<typeof setTimeout>;
+    let cancelTimer: (() => void) | undefined;
     const tick = async () => {
       const version = mutationVersion.current;
       try {
@@ -402,12 +404,12 @@ function ServerPorts({ pollingActive, showControls, onLoadingChange, route, refr
         }
         if (alive) setError("");
       } catch { if (alive) setError("Could not refresh ports. Retrying…"); }
-      finally { if (alive) { setLoading(false); timer = setTimeout(tick, POLL_MS); } }
+      finally { if (alive) { setLoading(false); cancelTimer = visibleTimeout(tick, POLL_MS); } }
     };
     void tick();
     return () => {
       alive = false;
-      clearTimeout(timer);
+      cancelTimer?.();
     };
   }, [caps, pollingActive, refreshToken]);
 

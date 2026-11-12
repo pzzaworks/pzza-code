@@ -49,3 +49,6 @@
   pointer-events: none;
 }
 .set-slider-mark.is-on { background: var(--text); }
+:root[data-appearance="light"] .set-slider-track input[type="range"]::-webkit-slider-runnable-track {
+  background: linear-gradient(to right, var(--text) 0 var(--fill), var(--track) var(--fill) 100%);
+}

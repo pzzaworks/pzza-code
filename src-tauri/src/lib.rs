@@ -1,7 +1,9 @@
 mod agent;
+mod agent_catalog;
 mod terminal_drop;
 mod shutdown;
 mod menu;
+mod pane_mode;
 mod appearance;
 mod forward;
 mod permissions;
@@ -11,6 +13,7 @@ mod speech;
 mod speech_model;
 mod sshmux;
 mod sys;
+mod session_refresh;
 mod setup;
 mod tmux;
 mod voice_io;
@@ -75,6 +78,11 @@ pub fn run() {
             pty::pty_resize,
             pty::pty_kill,
             tmux::tmux_list_sessions,
+            pane_mode::tmux_pane_mode,
+            pane_mode::tmux_pane_lines,
+            session_refresh::local_tmux_refresh_sessions,
+            session_refresh::local_tmux_restore_sessions,
+            session_refresh::local_tmux_record_sessions,
             setup::setup_status,
             setup::setup_install,
             forward::forward_scan,
@@ -83,6 +91,7 @@ pub fn run() {
             forward::forward_release,
             rdp::rdp_launch,
             rdp::rdp_is_open,
+            rdp::rdp_focus,
             agent::agent_token,
             agent::agent_instance,
             terminal_drop::read_dropped_file,

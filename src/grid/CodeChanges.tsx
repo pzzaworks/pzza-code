@@ -8,7 +8,8 @@ import { Columns2, FolderTree, GitCompareArrows, Loader2, MessageSquare, Message
 import { foldLine, reviewLinesLabel, reviewMessages, useDiffReview, useTileReview, type ReviewComment, type ReviewLines } from "./diffReview";
 import { fetchGitChanges, fetchGitDiff, type GitChangedFile, type GitChangeStatus, type GitChanges, type GitFileDiff } from "../serverApi";
 import type { TileCodeView } from "../state/store";
-import { editorLanguage } from "./editorLanguage";
+import { useEditorLanguage } from "./editorLanguageLoader";
+import { visibleInterval } from "../visibility";
 
 const POLL_MS = 5000;
 
@@ -76,8 +77,7 @@ export function useGitChanges(host: string, folder: string | undefined, live: bo
     if (!live) { wasLive.current = false; return; }
     if (!wasLive.current) refresh(true);
     wasLive.current = true;
-    const timer = setInterval(() => { if (document.visibilityState === "visible") refresh(false); }, POLL_MS);
-    return () => clearInterval(timer);
+    return visibleInterval(() => refresh(false), POLL_MS);
   }, [live, refresh]);
 
   return state;
@@ -444,7 +444,7 @@ export function CodeDiffView({ state, file, theme, ask }: {
   }, []);
   const marks = useMemo(() => (tileId ? { old: reviewMarks(tileId, file.path, "old"), new: reviewMarks(tileId, file.path, "new") } : null), [tileId, file.path]);
   const splitSides = useMemo(() => (marks ? { a: [sides.a, marks.old], b: [sides.b, marks.new] } : sides), [sides, marks]);
-  const language = useMemo(() => editorLanguage(file.path), [file.path]);
+  const { ready: languageReady, language } = useEditorLanguage(file.path);
   const extensions = useMemo(() => {
     if (!diff || diff.binary) return [];
     const merge = unifiedMergeView({ original: diff.before ?? "", mergeControls: false, collapseUnchanged: COLLAPSE, diffConfig: { override: lineDiff } });
@@ -503,7 +503,7 @@ export function CodeDiffView({ state, file, theme, ask }: {
   const stop = (event: { stopPropagation(): void }) => event.stopPropagation();
   const boxLabel = (lines: DiffLineSelection) => (boxMode === "comment" ? `Comment on ${diffLinesLabel(lines)}` : `Ask the agent about ${diffLinesLabel(lines)}`);
 
-  if (state.status === "idle" || state.status === "loading") {
+  if (state.status === "idle" || state.status === "loading" || (!languageReady && state.status === "ready" && !!diff && !diff.binary)) {
     return <div className="code-status"><Loader2 size={16} className="sw-spin" /> Loading changes…</div>;
   }
   if (state.status === "error" || !diff) return <div className="code-status code-err" role="alert">{state.error ?? "File changes unavailable"}</div>;

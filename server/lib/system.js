@@ -7,6 +7,44 @@ import { execFile } from "node:child_process";
 import { DEVBOX, IS_CLIENT, PORT, STATE_DIR } from "./config.js";
 import { SSH_TOKEN, runCheck } from "./shell.js";
 import { tmuxArgs } from "./tmux-client.js";
+import { SESSION_AGENTS, agentBinaryAllowed } from "./session-agents.js";
+
+// Lists every executable of each catalog binary on PATH, in PATH order, then
+// in its per-user install folders, so a same-named tool earlier on PATH does
+// not hide the agent. One shell runs every lookup; names arrive as arguments,
+// never as code.
+const AGENT_LOOKUP_SCRIPT = `set -f
+while [ "$#" -ge 3 ]; do
+  id=$1; binary=$2; folders=$3; shift 3
+  saved=$IFS; IFS=:
+  for folder in $PATH; do
+    case "$folder" in /*) if [ -f "$folder/$binary" ] && [ -x "$folder/$binary" ]; then printf '%s\\t%s\\n' "$id" "$folder/$binary"; fi ;; esac
+  done
+  for folder in $folders; do
+    if [ -n "$folder" ] && [ -f "$HOME/$folder/$binary" ] && [ -x "$HOME/$folder/$binary" ]; then printf '%s\\t%s\\n' "$id" "$HOME/$folder/$binary"; fi
+  done
+  IFS=$saved
+done`;
+
+/** Which catalog agents are installed on this device: each id with its binary's path, or null. */
+export function installedAgents(run = execFile) {
+  const lookups = SESSION_AGENTS.flatMap(agent => agent.binaries.flatMap(binary => [agent.id, binary, agent.installDirs.join(":")]));
+  return new Promise((resolve) => {
+    run("sh", ["-c", AGENT_LOOKUP_SCRIPT, "agent-lookup", ...lookups], { timeout: 5_000, maxBuffer: 256 * 1024 }, (error, stdout) => {
+      const paths = new Map();
+      for (const line of error ? [] : String(stdout).split("\n")) {
+        const [id, found] = line.split("\t");
+        const agent = SESSION_AGENTS.find(item => item.id === id);
+        if (!agent || !found?.startsWith("/") || paths.has(id)) continue;
+        // A same-named tool (Foundry's forge, the goose migration tool) is not the agent.
+        let real = found;
+        try { real = fs.realpathSync(found); } catch { /* a dangling link still reports its own path */ }
+        if (agentBinaryAllowed(agent, [found, real])) paths.set(id, found);
+      }
+      resolve(SESSION_AGENTS.map(agent => ({ id: agent.id, path: paths.get(agent.id) ?? null })));
+    });
+  });
+}
 
 export async function doctor() {
   const tmuxVersion = await runCheck("tmux", tmuxArgs(["-V"]));
@@ -26,6 +64,8 @@ export async function doctor() {
     nodePty: true, // the module imported, so the native binding loaded
     stateDir: STATE_DIR,
     stateWritable,
+    // Optional coding agents; nothing is installed from here.
+    agents: await installedAgents(),
   };
   if (IS_CLIENT) {
     result.sshReachable = await new Promise((resolve) => {

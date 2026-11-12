@@ -18,13 +18,17 @@ export interface SessionCreationInput {
   agent?: SessionAgentChoice;
   // Create a git worktree on a new branch for this session (requires cwd in a repository).
   worktree?: boolean;
+  // The local branch the new worktree branch starts from (worktree only); the repository's HEAD when absent.
+  base?: string;
 }
+/** What a created session got: its folder (the new worktree, if any) and what the worktree setup copied. */
+export interface SessionCreated { tileId: string; cwd?: string; setup?: WorktreeSetupReport }
 interface Creation {
   id: string; status: "running" | "completed" | "failed"; name: string; host: string; workspaceId: string; tileId?: string;
 }
 export const useSessionCreation = create<{ operation: Creation | null; error: string | null }>(() => ({ operation: null, error: null }));
 
-export function createSessionInApp(input: SessionCreationInput): Promise<string> {
+export function createSessionInApp(input: SessionCreationInput, created?: (details: SessionCreated) => void): Promise<string> {
   const state = useStore.getState();
   const name = normalizeSessionName(input.name);
   const device = state.activeDevices.find(item => item.id === input.deviceId);
@@ -40,7 +44,7 @@ export function createSessionInApp(input: SessionCreationInput): Promise<string>
   useSessionCreation.setState({ operation, error: null });
   return (async () => {
     try {
-      const result = await createSession(name, input.cwd, input.account, host, input.agent, input.worktree);
+      const result = await createSession(name, input.cwd, input.account, host, input.agent, input.worktree, input.worktree ? input.base : undefined);
       const cwd = result.cwd ?? input.cwd;
       const current = useStore.getState();
       const destination = current.workspaces.some(item => item.id === workspaceId) ? workspaceId : DEFAULT_WORKSPACE_ID;
@@ -48,10 +52,10 @@ export function createSessionInApp(input: SessionCreationInput): Promise<string>
       rememberSessionAgent(tileId, input.agent && { id: input.agent.id, mode: input.agent.mode });
       current.assignSession(tileId, destination); current.setWorkspace(destination);
       current.openSession(name, cwd, host);
-      notify({ category: "app", event: "session-opened", title: "Session window opened", body: `${name} on ${device.name}.`, target: { tileId } });
       if (result.setup) notifyWorktreeSetup(result.setup, result.setupStarted, name, tileId);
       if (input.agent && result.agentStarted === false) notify({ category: "app", event: "agent-start-failed", title: "Agent did not start", body: `${sessionAgent(input.agent.id)?.label ?? "The agent"} could not be started in ${name}. The terminal is open; start it manually.`, target: { tileId } });
       useSessionCreation.setState({ operation: { ...operation, status: "completed", tileId } });
+      created?.({ tileId, cwd, setup: result.setup });
       void current.loadSessions().catch(() => {});
       return tileId;
     } catch (error) {
@@ -61,22 +65,23 @@ export function createSessionInApp(input: SessionCreationInput): Promise<string>
   })();
 }
 
-// Says what a new worktree's repository setup did: files copied from the main
-// checkout and commands started before the agent, or why commands were held
-// back (not approved yet, an unreadable setup file, keys that did not reach
-// the terminal).
+// Says when a new worktree's repository setup needs attention: why commands
+// were held back (not approved yet, an unreadable setup file, keys that did
+// not reach the terminal), with what it did copy and run for context. A setup
+// that went through is visible in the new tile, so it adds no notice.
 function notifyWorktreeSetup(setup: WorktreeSetupReport, started: boolean | undefined, name: string, tileId: string): void {
+  const problem = setup.unapproved || setup.error !== null || started === false;
+  if (!problem) return;
   const parts: string[] = [];
   if (setup.copied.length) parts.push(`Copied ${setup.copied.length === 1 ? setup.copied[0] : `${setup.copied.length} files`} from the main checkout.`);
   if (setup.run.length) parts.push(started === false ? "The setup commands could not be typed into the terminal." : `Running ${setup.run.length === 1 ? setup.run[0] : `${setup.run.length} setup commands`} before the agent.`);
   if (setup.unapproved) parts.push("Its setup commands are not approved on this device yet; review them in Workspace settings → Worktrees.");
   if (setup.error) parts.push(setup.error);
   if (!parts.length) return;
-  const problem = setup.unapproved || setup.error !== null || started === false;
-  notify({ category: "app", title: problem ? "Worktree setup needs attention" : "Worktree set up", body: `${name}: ${parts.join(" ")}`, target: { tileId } });
+  notify({ category: "app", title: "Worktree setup needs attention", body: `${name}: ${parts.join(" ")}`, target: { tileId } });
 }
 
-const WORKTREE_COLLISION =/worktree for this session name already exists|may already exist/i;
+export const WORKTREE_COLLISION =/worktree for this session name already exists|may already exist/i;
 
 // Offers to start a tile's running agent again in a fresh git worktree of the
 // same repository, through the regular worktree session flow (new branch
@@ -92,7 +97,7 @@ export async function moveAgentToWorktree(input: { tileId: string; session: stri
   if (!device) throw new Error("This tile's device is not configured or is turned off.");
   // Keep the mode the session was started with when it is the same agent.
   const remembered = useSessionAgents.getState().agents[input.tileId];
-  const mode = remembered?.id === definition.id && definition.modes.some(item => item.id === remembered.mode) ? remembered.mode : definition.modes[0].id;
+  const mode = remembered?.id === definition.id && definition.modes.some(item => item.id === remembered.mode) ? remembered.mode : definition.defaultMode;
   const modeLabel = definition.modes.find(item => item.id === mode)?.label ?? mode;
   const accepted = await confirmAction({
     title: "Move this session to its own worktree?",

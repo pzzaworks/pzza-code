@@ -16,10 +16,8 @@ import {
   CircleQuestionMark,
   CircleX,
   ClipboardPaste,
-  Coins,
   Columns2,
   Columns3,
-  Columns4,
   Copy,
   CornerDownLeft,
   Download,
@@ -75,6 +73,7 @@ import {
   Save,
   Search,
   Send,
+  SendHorizontal,
   ServerCog,
   Settings as SettingsIcon,
   ShieldCheck,
@@ -91,13 +90,18 @@ import {
   X,
   type LucideIcon,
 } from "lucide-react";
-import { ALT_LABEL, altBadge, COMMAND_PALETTE_SHORTCUT, ctrlBadge, IS_MAC, NEW_SESSION_SHORTCUT, NEW_WORKSPACE_SHORTCUT, SEARCH_TERMINALS_SHORTCUT } from "../shortcuts";
-import { ClaudeIcon, CodexIcon, OpenCodeIcon } from "../icons/BrandIcons";
-import { SESSION_AGENTS, SESSION_PROMPT_MAX_LENGTH } from "../../server/lib/session-agents.js";
+import { ListTodo, Trophy } from "lucide-react";
+import { ALT_LABEL, altBadge, COMMAND_PALETTE_SHORTCUT, ctrlBadge, IS_MAC, NEW_SESSION_SHORTCUT, NEW_WORKSPACE_SHORTCUT, SEARCH_TERMINALS_SHORTCUT, TASKS_SHORTCUT } from "../shortcuts";
+import { ClaudeIcon, CodexIcon } from "../icons/BrandIcons";
+import { AgentIcon } from "../icons/AgentIcon";
+import { SESSION_AGENTS, SESSION_PROMPT_MAX_LENGTH, defaultSessionAgentMode, type SessionAgentDefinition, type SessionAgentMode } from "../../server/lib/session-agents.js";
+import { agentStartNotes, agentsByTier } from "../agentChoices";
 import { SESSION_NAME_MAX_LENGTH } from "../../server/lib/session-name.js";
+import { HELP_ORDER, HELP_SECTIONS, sectionOf, type HelpRequest, type HelpTopic } from "./helpTopics";
 // The demos reuse these components' own classes; load their styles here too.
 import "../ui/Dictation.css";
 import "../tour/OnboardingTour.css";
+import "../tasks/Tasks.css";
 
 const CMD = IS_MAC ? "⌘" : "Ctrl";
 const SHIFT = IS_MAC ? "⇧" : "Shift";
@@ -246,18 +250,11 @@ const StripGitDemo = ({ git }: { git: StripGit }) => (
   </span>
 );
 
-// The one-line footer under every terminal; Git and cost demos leave out the
-// agent label so their own items keep the room.
-const TileStripDemo = ({ git = "plain", cost }: { git?: StripGit; cost?: string }) => (
+// The one-line footer under every terminal.
+const TileStripDemo = ({ git = "plain" }: { git?: StripGit }) => (
   <div className="tile-strip doc-tile-strip">
     <span className="tile-strip-target">api</span>
     <StripGitDemo git={git} />
-    <span className="tile-strip-running">
-      <ClaudeIcon size={11} className="tile-strip-logo" />
-      <code className="tile-strip-command">claude</code>
-      {git === "plain" && !cost ? <span className="tile-strip-agent">Claude Code · Accept edits</span> : null}
-    </span>
-    {cost ? <span className="tile-strip-cost">{cost}</span> : null}
     <span className="tile-strip-path">
       <span>~/…/api</span>
     </span>
@@ -266,12 +263,12 @@ const TileStripDemo = ({ git = "plain", cost }: { git?: StripGit; cost?: string 
 );
 
 // A whole tile: header, a few terminal lines and the footer strip.
-const TileDemo = ({ children, git, cost }: { children: ReactNode; git?: StripGit; cost?: string }) => (
+const TileDemo = ({ children, git }: { children: ReactNode; git?: StripGit }) => (
   <div className="doc-demo">
     <div className="doc-tile">
       <TileHeadDemo />
       <div className="doc-tile-body">{children}</div>
-      <TileStripDemo git={git} cost={cost} />
+      <TileStripDemo git={git} />
     </div>
   </div>
 );
@@ -349,7 +346,7 @@ const McpDemo = () => (
 );
 
 const PortsDemo = () => (
-  <Panel caption="Top bar · Port manager">
+  <Panel caption="Menu bar · Port manager">
     <div className="menu-body">
       <div className="ports-tabs">
         <div className="usage-seg">
@@ -417,10 +414,10 @@ const UsageCard = ({ brand, name, plan, email, children }: { brand: "claude" | "
 
 // `accounts` shows two Claude accounts side by side, each with its email.
 const UsageDemo = ({ accounts }: { accounts?: boolean }) => (
-  <Panel caption="Top bar · Agent usage">
+  <Panel caption="Menu bar · Agent usage">
     <div className="menu-body usage-menu">
-      <div className="usage-head">
-        <span className="menu-title">Agent usage</span>
+      <div className="usage-head menu-head">
+        <span className="menu-head-title">Agent usage</span>
         <div className="usage-tools">
           <span className="usage-seg">
             <span className="on">Left</span>
@@ -450,7 +447,7 @@ const UsageDemo = ({ accounts }: { accounts?: boolean }) => (
 );
 
 const NotificationsDemo = () => (
-  <Panel caption="Top bar · Notifications" wide>
+  <Panel caption="Menu bar · Notifications" wide>
     <div className="menu-body latest-notifications">
       <div className="notification-list">
         {[
@@ -513,20 +510,14 @@ const DevicesDemo = () => (
 );
 
 const LayoutDemo = () => (
-  <Panel caption="Top bar · Grid layout">
+  <Panel caption="Workspace menu · Layout">
     <div className="menu-body">
-      <div className="menu-head-title">
-        Layout <span className="menu-head-ws">Main</span>
+      <div className="field">
+        <span className="field-label">Layout</span>
+        <div className="usage-seg ws-columns">
+          {["Auto", "2", "3", "4"].map((label) => <button key={label} type="button" tabIndex={-1} aria-hidden="true" className={label === "3" ? "on" : ""}>{label}</button>)}
+        </div>
       </div>
-      {[
-        { Icon: Columns2, label: "2 columns", on: false },
-        { Icon: Columns3, label: "3 columns", on: true },
-        { Icon: Columns4, label: "4 columns", on: false },
-      ].map(({ Icon, label, on }) => (
-        <span key={label} className={`menu-item ${on ? "menu-item-on" : ""}`}>
-          <Icon size={16} strokeWidth={1.9} /> {label}
-        </span>
-      ))}
     </div>
   </Panel>
 );
@@ -542,7 +533,7 @@ const RdpDemo = () => (
 
 // The new-session form as it opens from the top bar, with Claude Code chosen.
 const NewSessionDemo = () => (
-  <Panel caption="Top bar · New session" wide>
+  <Panel caption="Menu bar · New session" wide>
     <div className="menu-body new-session-form">
       <div className="ns-composer has-prompt">
         <div className="ns-composer-line">
@@ -569,7 +560,7 @@ const AgentPills = () => (
         </span>
         <span className="ns-clear"><X size={11} /></span>
       </span>
-      <Pick className="ns-pill" icon={<ClaudeIcon size={13} />} label="Claude Code" />
+      <Pick className="ns-pill" icon={<AgentIcon id="claude" size={13} />} label="Claude Code" />
     </div>
     <AgentOptions />
   </>
@@ -671,16 +662,17 @@ const SetupDemo = () => (
       <section className="tour-group">
         <div className="tour-group-head">
           <span className="tour-group-title">Coding agents</span>
-          <span className="tour-group-meta">optional</span>
+          <span className="tour-group-meta">optional · 2 of {SESSION_AGENTS.length} installed</span>
         </div>
         <div className="tour-chips">
-          {[{ name: "Claude Code", found: true }, { name: "Codex", found: true }, { name: "OpenCode", found: false }].map((agent) => (
-            <span key={agent.name} className={`tour-chip ${agent.found ? "is-found" : ""}`}>
-              {agent.found ? <Check size={11} /> : null}{agent.name}
-              <span className="tour-chip-state">{agent.found ? "found" : "not found"}</span>
+          {SESSION_AGENTS.slice(0, 2).map((agent) => (
+            <span key={agent.id} className="tour-chip is-found">
+              <Check size={11} /><AgentIcon id={agent.id} size={12} />{agent.label}
+              <span className="tour-chip-state">found</span>
             </span>
           ))}
         </div>
+        <details className="tour-agent-missing"><summary>Not installed ({SESSION_AGENTS.length - 2})</summary></details>
       </section>
     </div>
   </Panel>
@@ -691,9 +683,9 @@ const SetupGroupsDemo = () => (
   <Panel caption="Settings · Setup" wide>
     <div className="setup-settings-groups">
       {[
+        { Icon: Package, title: "Tools PzzaCode runs on", state: "Installed", tone: "ok" },
         { Icon: ShieldCheck, title: "PzzaCode permissions", state: "5 of 5 allowed", tone: "ok" },
         { Icon: ShieldCheck, title: "tmux permissions", state: "2 of 3 allowed", tone: "action" },
-        { Icon: Package, title: "Tools PzzaCode runs on", state: "Installed", tone: "ok" },
       ].map(({ Icon, title, state, tone }) => (
         <section key={title} className="setup-settings-group">
           <span className="setup-settings-head">
@@ -713,12 +705,19 @@ const BroadcastDemo = () => (
     <TileHeadDemo title="api" shortcut={1} selected actions={false} />
     <TileHeadDemo title="web" shortcut={2} selected actions={false} />
     <div className="broadcast-bar doc-broadcast">
-      <Radio size={14} className="broadcast-icon" />
-      <span className="broadcast-targets">api, web</span>
-      <span className="broadcast-input doc-broadcast-input">git pull --rebase</span>
-      <span className="tile-btn"><MessageSquareText size={14} /></span>
-      <span className="btn btn-sm broadcast-send"><Send size={13} />Send</span>
-      <span className="tile-btn"><X size={14} /></span>
+      <div className="broadcast-head">
+        <span className="broadcast-title"><Radio size={14} className="broadcast-icon" />Broadcast</span>
+        <span className="broadcast-targets">
+          <span className="broadcast-chip"><AgentIcon id="claude" size={12} /><span className="broadcast-chip-name">api</span><span className="broadcast-chip-remove"><X size={11} /></span></span>
+          <span className="broadcast-chip"><AgentIcon id="codex" size={12} /><span className="broadcast-chip-name">web</span><span className="broadcast-chip-remove"><X size={11} /></span></span>
+        </span>
+        <span className="tile-btn broadcast-close"><X size={14} /></span>
+      </div>
+      <div className="broadcast-compose">
+        <span className="broadcast-prompts"><span className="tile-btn"><MessageSquareText size={14} /></span></span>
+        <span className="broadcast-input doc-broadcast-input">Run the tests and fix what fails</span>
+        <span className="tile-btn broadcast-send"><SendHorizontal size={15} /></span>
+      </div>
     </div>
   </div>
 );
@@ -926,6 +925,59 @@ const ReviewDemo = () => (
 );
 
 // Workspace settings → Worktrees with one merged and one open worktree.
+
+// The Tasks dropdown's list, built from its own classes, non-interactive.
+const TasksDemo = () => (
+  <Panel caption="Menu bar · Tasks">
+    <div className="menu-body tasks-panel doc-tasks-menu">
+      <div className="usage-head menu-head tasks-head">
+        <span className="menu-head-title">Tasks</span>
+        <div className="usage-tools">
+          <span className="perm-waiting-count"><span className="usage-dot task-tone-needs-you" />1 needs you</span>
+          <span className="usage-refresh"><Plus size={15} /></span>
+        </div>
+      </div>
+      <div className="tasks-sections">
+        {([
+          ["needs-you", "Needs you", "Add rate limiting to checkout", ["claude", "codex", "gemini"], "Approval needed", null, "2m"],
+        ] as const).map(([tone, section, title, agents, reason, stats, ago]) => (
+          <div key={tone} className="usage-others tasks-section">
+            <div className="usage-section-title"><span>{section}</span><span className="usage-section-note">1</span></div>
+            <div className="usage-agent">
+              <span className={`task-row task-tone-${tone}`}>
+                <span className="usage-agent-head"><span className={`usage-dot task-tone-${tone}`} /><span className="usage-agent-name">{title}</span><span className="usage-agent-total muted">{ago}</span></span>
+                <span className="task-row-meta">
+                  <span className="task-agents">{agents.map((id) => <span key={id} className="usage-brand"><AgentIcon id={id} size={12} /></span>)}</span>
+                  {stats ? <span className="task-diffstat"><span className="task-add">+{stats[0]}</span><span className="task-del">−{stats[1]}</span></span> : <span className="task-row-reason">{reason}</span>}
+                </span>
+              </span>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  </Panel>
+);
+
+// The new-task form in Chain mode: the mode switch and the editable steps.
+const TaskModesDemo = () => (
+  <Panel caption="Menu bar · Tasks · New task">
+    <div className="menu-body tasks-panel doc-tasks-menu">
+      <div className="new-session-form task-form">
+        <div className="usage-seg task-mode-seg">
+          {["One", "Parallel", "Chain", "Race"].map((mode) => <span key={mode} className={mode === "Chain" ? "on" : ""}>{mode}</span>)}
+        </div>
+        {([["Plan", "claude", "Claude Code"], ["Build", "codex", "Codex"], ["Review", "gemini", "Gemini CLI"]] as const).map(([role, id, name]) => (
+          <div key={role} className="ns-seg ns-seg-extra task-agent-seg">
+            <Pick label={role} className="ns-pill task-step-role" />
+            <Pick icon={<AgentIcon id={id} size={13} />} label={name} className="ns-pill task-agent-pick" />
+          </div>
+        ))}
+      </div>
+    </div>
+  </Panel>
+);
+
 const WorktreesDemo = () => (
   <Panel caption="Workspace settings · Worktrees" wide>
     <div className="menu-body">
@@ -956,10 +1008,10 @@ const WorktreesDemo = () => (
 );
 
 const QuickChatDemo = () => (
-  <Panel caption="Top bar · Quick Chat" wide>
+  <Panel caption="Menu bar · Quick Chat" wide>
     <div className="doc-quickchat">
       <div className="quick-chat-header">
-        <div><strong>Quick Chat</strong><span className="muted">This Mac · Claude</span></div>
+        <div><span className="menu-head-title">Quick Chat</span><span className="muted">This Mac · Claude</span></div>
         <div className="quick-chat-actions"><span className="icon-btn"><X size={15} /></span></div>
       </div>
       <div className="doc-tile-body">
@@ -998,65 +1050,55 @@ const LanguagesDemo = () => (
   </Panel>
 );
 
-const CostDemo = () => (
-  <div className="doc-demo doc-stack">
-    <div className="doc-tile">
-      <TileStripDemo cost="$1.24 · 38m" />
-    </div>
-    <div className="doc-hovercard">
-      <span>Claude Code session, matched by folder and start time (best effort)</span>
-      <span>Running 38m since 16:02</span>
-      <span>Estimated $1.24 at standard API prices</span>
-      <span>Input 1.2M · Output 48K · Cache read 9.1M · Cache write 310K</span>
-    </div>
-  </div>
-);
+const APPROVAL_ICONS: Record<SessionAgentMode["approval"], LucideIcon> = { ask: ShieldCheck, restricted: Eye, auto: Sparkles, bypass: ShieldOff };
 
-const MODE_ICONS: Record<string, LucideIcon> = { default: ShieldCheck, acceptEdits: FilePen, plan: ListChecks, auto: Sparkles, readOnly: Eye, bypass: ShieldOff };
-const AGENT_ICONS = { claude: ClaudeIcon, codex: CodexIcon, opencode: OpenCodeIcon } as const;
+// The agents shown before the rest of the catalog is unfolded.
+const FEATURED_AGENTS = 4;
 
-// Each agent's permission modes, read from the same catalog the form uses.
-const AgentModes = () => (
+const AgentModeRows = ({ agents }: { agents: readonly SessionAgentDefinition[] }) => (
   <table className="doc-keys doc-modes">
     <tbody>
-      {SESSION_AGENTS.map((agent) => {
-        const Icon = AGENT_ICONS[agent.id];
-        return agent.modes.map((mode, index) => {
-          const ModeIcon = MODE_ICONS[mode.id] ?? ShieldCheck;
-          return (
-            <tr key={`${agent.id}-${mode.id}`}>
-              <td>{index === 0 ? <span className="doc-inline"><Icon size={13} /> {agent.label}</span> : null}</td>
-              <td className={mode.id === "bypass" ? "doc-danger" : ""}><span className="doc-inline"><ModeIcon size={12} /> {mode.label}</span></td>
-              <td>{mode.description}</td>
-            </tr>
-          );
-        });
+      {agents.map((agent) => {
+        const modes = [defaultSessionAgentMode(agent), ...agent.modes.filter((mode) => mode.id !== agent.defaultMode)];
+        return (
+          <tr key={agent.id}>
+            <td><span className="doc-inline"><AgentIcon id={agent.id} size={13} /> {agent.label}</span></td>
+            <td>
+              {modes.map((mode, index) => {
+                const ModeIcon = APPROVAL_ICONS[mode.approval];
+                return (
+                  <span key={mode.id} className={`doc-inline ${mode.approval === "bypass" ? "doc-danger" : ""}`} title={mode.description}>
+                    {index > 0 ? " · " : null}<ModeIcon size={12} /> {index === 0 ? <b>{mode.label}</b> : mode.label}
+                  </span>
+                );
+              })}
+            </td>
+            <td>{agentStartNotes(agent)}</td>
+          </tr>
+        );
       })}
     </tbody>
   </table>
 );
 
-
-// --- the catalog -------------------------------------------------------------
-
-export const HELP_SECTIONS = [
-  { id: "getting-started", label: "Getting started", icon: Rocket, topics: ["start", "setup", "permissions", "topbar", "new-session", "agents", "palette", "settings"] },
-  { id: "workspace", label: "Workspace", icon: LayoutGrid, topics: ["tiles", "controls", "focus", "layout", "spacing", "workspaces", "snapshots", "restore", "broadcast"] },
-  { id: "git", label: "Git & review", icon: GitBranch, topics: ["git", "ci", "shared-branch", "worktrees", "land", "changes", "review"] },
-  { id: "terminal", label: "Terminal & editor", icon: SquareTerminal, topics: ["links", "paths", "paste", "drop", "find", "search", "prompts", "code"] },
-  { id: "agents", label: "Agents & activity", icon: Bot, topics: ["quick-chat", "agent-tools", "notifications", "usage", "cost", "multiaccount"] },
-  { id: "voice", label: "Voice dictation", icon: Mic, topics: ["dictation", "languages"] },
-  { id: "connections", label: "Connections", icon: Blocks, topics: ["devices", "sync", "ports", "rdp", "mcp"] },
-  { id: "tips", label: "Shortcuts & tips", icon: Lightbulb, topics: ["shortcuts", "terminal-keys", "tips"] },
-] as const;
-export type HelpTopic = typeof HELP_SECTIONS[number]["topics"][number];
-export type HelpSection = typeof HELP_SECTIONS[number]["id"];
-export interface HelpRequest { topic: string; serial: number }
-
-// Every page in reading order, for previous / next.
-const HELP_ORDER: readonly HelpTopic[] = HELP_SECTIONS.flatMap((section): readonly HelpTopic[] => section.topics);
-export const isHelpTopic = (value: string): value is HelpTopic => HELP_ORDER.some((topic) => topic === value);
-const sectionOf = (topic: HelpTopic) => HELP_SECTIONS.find((section) => section.topics.some((id) => id === topic)) ?? HELP_SECTIONS[0];
+// Each agent's permission modes, read from the same catalog the form uses.
+// The default mode comes first; red modes never ask. The long tail of the
+// catalog folds away so the page stays one focused screen.
+const AgentModes = () => {
+  const agents = agentsByTier();
+  const rest = agents.slice(FEATURED_AGENTS);
+  return (
+    <>
+      <AgentModeRows agents={agents.slice(0, FEATURED_AGENTS)} />
+      {rest.length ? (
+        <details className="doc-more">
+          <summary>{rest.length} more agents</summary>
+          <AgentModeRows agents={rest} />
+        </details>
+      ) : null}
+    </>
+  );
+};
 
 // One focused page: what you can do and why (blurb), a demo, the steps and
 // details, then a couple of tips.
@@ -1105,14 +1147,14 @@ export const HELP_PAGES: Record<HelpTopic, HelpPage> = {
   },
   setup: {
     label: "Setup & tour",
-    blurb: "A short first-launch setup gets permissions and tools in place, then a guided tour shows every control where it lives.",
+    blurb: "A short first-launch setup gets tools and permissions in place, then a guided tour shows every control where it lives.",
     icon: ListChecks,
     demo: <SetupDemo />,
     body: (
       <Steps>
-        <Step><b>Privacy permissions</b> (Mac): each <b>Allow</b> shows the macOS prompt or opens the right page in System Settings.</Step>
         <Step><b>What PzzaCode runs on</b>: Node.js and tmux install themselves with Homebrew; <b>Install Homebrew</b> opens Terminal for your password.</Step>
-        <Step><b>Coding agents</b> lists the CLIs found (optional). <b>Finish setup</b> starts the tour; <Kbd>Esc</Kbd> skips it.</Step>
+        <Step><b>Privacy permissions</b> (Mac), once tmux is installed: each <b>Allow</b> shows the macOS prompt or opens the right page in System Settings.</Step>
+        <Step><b>Finish setup</b> starts the tour the first time; <Kbd>Esc</Kbd> skips it.</Step>
       </Steps>
     ),
     tips: [
@@ -1126,14 +1168,14 @@ export const HELP_PAGES: Record<HelpTopic, HelpPage> = {
     demo: <SetupGroupsDemo />,
     body: (
       <>
+        <Row ui={<Package size={15} className="muted-icon" />} name="Tools">
+          Homebrew, Node.js, tmux.
+        </Row>
         <Row ui={<ShieldCheck size={15} className="muted-icon" />} name="PzzaCode permissions">
           Full Disk Access, Microphone, Screen Recording, Accessibility, Automation (Mac).
         </Row>
         <Row ui={<ShieldCheck size={15} className="muted-icon" />} name="tmux permissions">
-          tmux runs your terminals and needs three of them too: drag it from Finder into the list.
-        </Row>
-        <Row ui={<Package size={15} className="muted-icon" />} name="Tools">
-          Homebrew, Node.js, tmux.
+          tmux runs your terminals and needs three of them too: drag it from Finder into the list. They wait until tmux is installed.
         </Row>
         <Row ui={<Laptop size={15} className="muted-icon" />} name="This device">
           Agent, storage and terminal backend.
@@ -1145,11 +1187,11 @@ export const HELP_PAGES: Record<HelpTopic, HelpPage> = {
     ],
   },
   topbar: {
-    label: "The top bar",
+    label: "The menu bar",
     blurb: "Every tool sits one click away above the grid, so you rarely need a menu.",
     icon: LayoutGrid,
     demo: (
-      <Hero caption="Top bar · tools (right side)">
+      <Hero caption="Menu bar · tools (right side)">
         <span className="doc-hero-cluster">
           <IB icon={LayoutGrid} />
           <IB icon={MessageSquare} />
@@ -1165,7 +1207,6 @@ export const HELP_PAGES: Record<HelpTopic, HelpPage> = {
     ),
     body: (
       <>
-        <Row ui={<IB icon={LayoutGrid} />} name="Grid layout">2, 3 or 4 columns, per workspace.</Row>
         <Row ui={<IB icon={MessageSquare} />} name="Quick Chat">A dropdown chat with your agent.</Row>
         <Row ui={<IB icon={FolderSync} />} name="Sync projects">With a remote device: align repositories.</Row>
         <Row ui={<IB icon={Monitor} />} name="Remote desktop">With a remote device: its Linux desktop.</Row>
@@ -1207,10 +1248,14 @@ export const HELP_PAGES: Record<HelpTopic, HelpPage> = {
     ),
     body: (
       <>
+        <P>Each agent starts in its bold mode unless you pick another. That mode asks before changes, or cannot make any for agents that never ask. The mode list is hidden for agents with only one mode, and the prompt box for agents that take no starting prompt.</P>
         <AgentModes />
       </>
     ),
-    tips: [<><b>Continue</b> resumes the last conversation here; red <b>Bypass</b> never asks.</>],
+    tips: [
+      <><b>Continue</b> resumes the last conversation; red modes never ask.</>,
+      <>Install agents yourself: <b>Settings → Setup</b> lists the install command for each one that is missing.</>,
+    ],
   },
   palette: {
     label: "Command palette",
@@ -1234,7 +1279,7 @@ export const HELP_PAGES: Record<HelpTopic, HelpPage> = {
     blurb: "Find any preference fast: Settings keeps everything in a handful of sections.",
     icon: SettingsIcon,
     demo: (
-      <Hero caption={`Top bar · Settings · ${CMD} ,`}>
+      <Hero caption={`Menu bar · Settings · ${CMD} ,`}>
         <IB icon={SettingsIcon} />
       </Hero>
     ),
@@ -1343,7 +1388,7 @@ export const HELP_PAGES: Record<HelpTopic, HelpPage> = {
     body: (
       <>
         <Steps>
-          <Step><IB icon={LayoutGrid} /> <b>Grid layout</b> on <b>Auto</b> fits columns to the window and shares rows evenly (5 tiles: 3 + 2); or pick <b>2</b>-<b>4</b> per workspace.</Step>
+          <Step>Click the active workspace tab and set <b>Layout</b>: <b>Auto</b> fits columns to the window and shares rows evenly (5 tiles: 3 + 2), or pick <b>2</b>-<b>4</b> for that workspace.</Step>
           <Step>Drag a tile's header to move it: the grid shows where it will land, the others make room, and <Kbd>Esc</Kbd> cancels.</Step>
           <Step>Drag a tile's right edge, bottom edge or corner to span more or less, in half steps; double-click any of them to return the tile to automatic size.</Step>
         </Steps>
@@ -1438,19 +1483,19 @@ export const HELP_PAGES: Record<HelpTopic, HelpPage> = {
   },
   broadcast: {
     label: "Broadcast",
-    blurb: "Type one line once and send it to several terminals at the same time.",
+    blurb: "Write one message once and send it to several sessions, or every agent, at the same time.",
     icon: Radio,
     demo: <BroadcastDemo />,
     body: (
       <Steps>
-        <Step><b>Shift+click</b> the headers of two or more tiles; they tint and a bar docks under the grid.</Step>
-        <Step>Type a line, or pick a saved prompt with <MessageSquareText size={12} className="doc-inline-icon" />.</Step>
-        <Step>Press <Kbd>Enter</Kbd> or <b>Send</b>: each terminal gets the line and Enter, and the bar reports any that failed.</Step>
+        <Step><b>Shift+click</b> the headers of two or more tiles; they tint and a composer rises under the grid with each one as a chip. <b>All agents</b> adds every tile running a coding agent.</Step>
+        <Step>Type a message, or pick a saved prompt with <MessageSquareText size={12} className="doc-inline-icon" />. <Kbd>Shift</Kbd>+<Kbd>Enter</Kbd> adds a line; agents take it as one prompt, while a plain shell refuses it instead of running each line.</Step>
+        <Step>Press <Kbd>Enter</Kbd> or <b>Send</b>: each session gets the message and Enter, and the composer reports any that failed.</Step>
       </Steps>
     ),
     tips: [
-      <><Kbd>Esc</Kbd> or a click on the empty canvas clears the selection.</>,
-      <><b>Broadcast to visible tiles</b> in the palette selects every visible tile at once.</>,
+      <>A session waiting on an approval prompt is skipped, so your message never answers it by accident.</>,
+      <><b>Broadcast to every agent</b> and <b>Broadcast to visible tiles</b> in the palette select them at once; <Kbd>Esc</Kbd> clears the selection.</>,
     ],
   },
   // --- Git & review -----------------------------------------------------------
@@ -1730,6 +1775,35 @@ export const HELP_PAGES: Record<HelpTopic, HelpPage> = {
     tips: [<><Kbd>{CMD} F</Kbd> finds and replaces; Markdown has a Preview, images and PDFs open as previews.</>],
   },
   // --- Agents & activity ------------------------------------------------------
+  tasks: {
+    label: "Tasks",
+    blurb: "Hand a prompt to an agent in its own worktree and follow it from start to merge, from one menu bar dropdown.",
+    icon: ListTodo,
+    demo: <TasksDemo />,
+    body: (
+      <>
+        <Steps>
+          <Step><IB icon={ListTodo} /> or <Kbd>{TASKS_SHORTCUT.label}</Kbd> opens Tasks, <IB icon={Plus} /> a new task. Write the prompt, press <Kbd>{CMD} ↩</Kbd>: it starts in a tile on a fresh <Code>{"pzza/"}</Code> worktree.</Step>
+          <Step>Tasks sort themselves into <b>Needs you</b>, <b>Working</b>, <b>Review</b> and <b>Done</b>; the count jumps to one waiting.</Step>
+          <Step>Click a task for where it stands and its next step (<b>Send prompt</b>, <b>Commit</b>, <b>Land</b>); <b>Open details</b> shows its attempts or steps, the diff and every action.</Step>
+        </Steps>
+      </>
+    ),
+    tips: [<>Land waits for an idle agent, committed work and any <Code>{'"check"'}</Code> in <Code>.pzzacode/worktree.json</Code>; <b>Discard</b> lists unmerged work.</>],
+  },
+  "best-of-n": {
+    label: "Task modes",
+    blurb: "Start one task, several at once, a chain of agents on one branch, or a race where you keep the best.",
+    icon: Trophy,
+    demo: <TaskModesDemo />,
+    body: (
+      <Steps>
+        <Step><b>One</b>: one agent. <b>Parallel</b>: one task per line, each with its own agent, worktree and branch, all started together.</Step>
+        <Step><b>Chain</b>: steps one after another in one worktree. Start from a preset, then add, remove or reorder steps, each with a role or your own instruction. A step starts when the one before goes quiet; one that needs approval pauses the chain until you <b>Resume</b>, <b>Skip</b> or <b>Stop</b>.</Step>
+        <Step><b>Race</b>: the same prompt to as many agents as you add. Compare them in the task window, <b>Land</b> your pick, and the rest go once you confirm.</Step>
+      </Steps>
+    ),
+  },
   "quick-chat": {
     label: "Quick Chat",
     blurb: "Ask your agent a quick question from a dropdown, without opening a session or losing your place.",
@@ -1737,9 +1811,9 @@ export const HELP_PAGES: Record<HelpTopic, HelpPage> = {
     demo: <QuickChatDemo />,
     body: (
       <Steps>
-        <Step>Press <IB icon={MessageSquare} /> <b>Quick Chat</b> in the top bar; your saved agent is ready.</Step>
+        <Step>Press <IB icon={MessageSquare} /> <b>Quick Chat</b> in the menu bar; your saved agent is ready.</Step>
         <Step>Click outside or <X size={11} className="doc-inline-icon" /> to hide it; the chat keeps running until the app closes.</Step>
-        <Step>Pick its agent (Claude, Codex or OpenCode) and device in <b>Settings → Quick Chat</b>.</Step>
+        <Step>Pick its agent (any of the {SESSION_AGENTS.length} the new-session form offers) and device in <b>Settings → Quick Chat</b>.</Step>
       </Steps>
     ),
   },
@@ -1785,7 +1859,7 @@ export const HELP_PAGES: Record<HelpTopic, HelpPage> = {
         <Row ui={<BellOff size={15} className="muted-icon" />} name="Preferences">System alerts while unfocused, pause for an hour, categories and single events.</Row>
       </>
     ),
-    tips: [<>Terminal alerts need a bell or a process exit; plain output never notifies.</>],
+    tips: [<>Terminal alerts need a bell or a process exit. A hidden tile also alerts once its agent stops working, or when a plain shell in it prints.</>],
   },
   usage: {
     label: "Usage limits",
@@ -1794,24 +1868,10 @@ export const HELP_PAGES: Record<HelpTopic, HelpPage> = {
     demo: <UsageDemo />,
     body: (
       <Steps>
-        <Step>Open <IB icon={Gauge} /> <b>Agent usage</b>: Claude and Codex show <b>5h</b> and <b>Weekly</b>, OpenCode adds <b>Monthly</b> and <b>Credits</b>.</Step>
-        <Step><b>Left / Used</b> flips the bars; <b>Show percentage</b> keeps one limit in the top bar: the tightest (<b>Auto</b>), or the one you pin.</Step>
+        <Step>Open <IB icon={Gauge} /> <b>Agent usage</b> (accounts are found automatically): Claude and Codex show <b>5h</b> and <b>Weekly</b>, OpenCode adds <b>Monthly</b> and <b>Credits</b>, and <b>Other agents</b> lists the rest from the last 30 days with their cost.</Step>
+        <Step><b>Left / Used</b> flips the bars; <b>Show percentage</b> keeps one limit in the menu bar: the tightest (<b>Auto</b>), or the one you pin.</Step>
       </Steps>
     ),
-    tips: [<>Accounts are found automatically; a provider missing here is filled in from your other devices.</>],
-  },
-  cost: {
-    label: "Session cost",
-    blurb: "Every Claude Code or Codex tile shows what its session has cost so far and how long it has run.",
-    icon: Coins,
-    demo: <CostDemo />,
-    body: (
-      <>
-        <P>The footer reads like <b>$1.24 · 38m</b>; hover it for the token breakdown, models and subagents. It is an estimate at standard API prices, not a bill.</P>
-        <P>In <b>Agent usage</b>, <b>More</b> under an account adds a token trend, a daily breakdown and <b>Today</b>, <b>Yesterday</b> and <b>Last 30 days</b>.</P>
-      </>
-    ),
-    tips: [<>Sessions are matched by folder and start time; narrow tiles leave the cost out first.</>],
   },
   multiaccount: {
     label: "Multi-account",
@@ -1893,7 +1953,7 @@ export const HELP_PAGES: Record<HelpTopic, HelpPage> = {
     body: (
       <>
         <Steps>
-          <Step>Press <IB icon={FolderSync} /> <b>Sync projects</b> in the top bar; PzzaCode scans each device.</Step>
+          <Step>Press <IB icon={FolderSync} /> <b>Sync projects</b> in the menu bar; PzzaCode scans each device.</Step>
           <Step>Review, then confirm <b>Sync projects</b>. <b>Cancel sync</b> stops what has not started.</Step>
         </Steps>
         <P>In <b>Settings → Sync</b>: devices in sync, cloning missing projects, aligning to the remote baseline, stashing uncommitted changes and syncing env files (with private backups).</P>
@@ -1923,7 +1983,7 @@ export const HELP_PAGES: Record<HelpTopic, HelpPage> = {
     body: (
       <Steps>
         <Step>Choose the <b>Remote server</b> in <b>Settings → Connections → Remote desktop</b>.</Step>
-        <Step>Press <IB icon={Monitor} /> <b>Remote desktop → Open</b> in the top bar.</Step>
+        <Step>Press <IB icon={Monitor} /> <b>Remote desktop → Open</b> in the menu bar.</Step>
       </Steps>
     ),
     tips: [<>The password comes from your keychain at launch and is never stored in the app.</>],
@@ -1962,6 +2022,7 @@ export const HELP_PAGES: Record<HelpTopic, HelpPage> = {
           <tr><td><Kbd>{altBadge(0)}</Kbd> – <Kbd>{altBadge(9)}</Kbd></td><td>All, then the Nth workspace</td></tr>
           <tr><td><Kbd>{ctrlBadge(1)}</Kbd> – <Kbd>{ctrlBadge(9)}</Kbd></td><td>Activate the Nth visible tile</td></tr>
           <tr><td><Kbd>{CMD} J</Kbd></td><td>Next tile waiting on you</td></tr>
+          <tr><td><Kbd>{TASKS_SHORTCUT.label}</Kbd></td><td>Show or hide Tasks</td></tr>
           <tr><td><Kbd>Shift Click</Kbd></td><td>Select tiles to broadcast</td></tr>
           <tr><td><Kbd>Esc</Kbd></td><td>Close, cancel, restore a maximized tile</td></tr>
         </tbody>

@@ -1,5 +1,5 @@
 import { AsyncButton } from "../ui/AsyncButton";
-import { Download, Loader2, RefreshCw, RotateCw } from "lucide-react";
+import { Bell, Clock, Command, Copy, Download, EthernetPort, EyeOff, FileCode, Folder, FolderInput, FolderSync, Gauge, GitBranch, GitFork, HardDrive, ListTodo, Loader2, Maximize2, MessageSquare, Mic, Monitor, RefreshCw, RotateCw, SquareTerminal, type LucideIcon } from "lucide-react";
 import { DEFAULT_TRANSPARENCY_OPTIONS, SPACING_RANGE, useStore } from "../state/store";
 import { useUpdates } from "../state/updates";
 import { HAS_TAURI } from "../tauriEnv";
@@ -12,21 +12,18 @@ import dictationLicenses from "../dictation-licenses.txt?raw";
 import { ThemeSettings } from "./ThemeSettings";
 import { PromptSettings } from "./PromptSettings";
 import { DictationLanguageSelect, SpeechLanguagesSelect } from "../ui/DictationLanguageSelect";
+import type { GeneralSection } from "./settingsSections";
 import { Select } from "../ui/Select";
 import { useEffect } from "react";
 import { confirmAction } from "../ui/ConfirmDialog";
+import { SESSION_HEADER_ITEMS, STATUS_BAR_ID, STATUS_BAR_ITEMS, TOP_BAR_ITEMS, type BarItemId } from "../barItems";
+import { hasRemoteDevice } from "../devices";
 
-export const generalSections = [
-  { id: "appearance", label: "Appearance" },
-  { id: "terminal", label: "Terminal" },
-  { id: "prompts", label: "Saved prompts" },
-  ...(DICTATION_SUPPORTED ? [{ id: "dictation" as const, label: "Dictation" }] : []),
-] as const;
-export type GeneralSection = "appearance" | "terminal" | "prompts" | "dictation";
 export function SettingsMenu({ section }: { section: GeneralSection }) {
   return (
     <div className="settings-page general-settings">
       {section === "appearance" && <AppearanceSection />}
+      {section === "bars" && <BarsSection />}
       {section === "terminal" && <TerminalSection />}
       {section === "prompts" && <PromptSettings />}
       {section === "dictation" && <DictationSection />}
@@ -203,13 +200,12 @@ function AppearanceSection() {
         <span className="switch-knob" />
       </button>
     </Row>
-    {enabled ? <Row label="Text visibility" hint="Raises text contrast over the background; 100% is maximum. Filled controls keep contrast-safe text.">
-      <Slider label="Text visibility" min={0} max={100} value={options.textVisibility} valueText={`${options.textVisibility}% visibility boost`}
-        onChange={(value) => setOptions({ textVisibility: value })} />
-    </Row> : null}
-    <details className="settings-disclosure transparency-details">
-      <summary>Transparency controls</summary>
-      <div className="settings-disclosure-body">
+    {/* The mode's main controls stay in view; the fine-tuning folds under More. */}
+    {enabled ? <>
+      <Row label="Text visibility" hint="Raises text contrast over the background; 100% is maximum. Filled controls keep contrast-safe text.">
+        <Slider label="Text visibility" min={0} max={100} value={options.textVisibility} valueText={`${options.textVisibility}% visibility boost`}
+          onChange={(value) => setOptions({ textVisibility: value })} />
+      </Row>
       <Row label="App background opacity" hint="How solid the window background is">
         <Slider label="App background opacity" min={5} max={95} value={options.opacity} onChange={(value) => setOptions({ opacity: value })} />
       </Row>
@@ -219,29 +215,34 @@ function AppearanceSection() {
           <span className="switch-knob" />
         </button>
       </Row>
-      <Row label="Panel background opacity" hint="Text stays opaque">
-        <Slider label="Panel background opacity" min={5} max={100} value={options.surfaceOpacity} onChange={(value) => setOptions({ surfaceOpacity: value })} />
-      </Row>
-      {/mac/i.test(navigator.platform || navigator.userAgent) ? <Row label="Desktop blur strength" hint="macOS window background">
-        <Slider label="Desktop blur strength" min={0} max={64} value={options.desktopBlurRadius} unit="px" disabled={!options.desktopBlur}
-          onChange={(value) => setOptions({ desktopBlurRadius: value })} />
-      </Row> : null}
-      <Row label="Panel backdrop blur" hint="Blur behind menus and panels">
-        <Slider label="Panel backdrop blur" min={0} max={40} value={options.blur} format={(value) => (value ? `${value}px` : "Off")} onChange={(value) => setOptions({ blur: value })} />
-      </Row>
-      <Row label="Saturation" hint="Color strength behind panels">
-        <Slider label="Saturation" min={50} max={180} value={options.saturation} onChange={(value) => setOptions({ saturation: value })} />
-      </Row>
-      <div className="settings-actions">
-        <button type="button" className="btn btn-sm" onClick={() => setOptions(DEFAULT_TRANSPARENCY_OPTIONS)}>
-          <RotateCw size={13} /> Reset to defaults
-        </button>
-      </div>
-      </div>
-    </details>
+      <details className="settings-disclosure transparency-details">
+        <summary>More transparency controls</summary>
+        <div className="settings-disclosure-body">
+        <Row label="Panel background opacity" hint="Text stays opaque">
+          <Slider label="Panel background opacity" min={5} max={100} value={options.surfaceOpacity} onChange={(value) => setOptions({ surfaceOpacity: value })} />
+        </Row>
+        {/mac/i.test(navigator.platform || navigator.userAgent) ? <Row label="Desktop blur strength" hint="macOS window background">
+          <Slider label="Desktop blur strength" min={0} max={64} value={options.desktopBlurRadius} unit="px" disabled={!options.desktopBlur}
+            onChange={(value) => setOptions({ desktopBlurRadius: value })} />
+        </Row> : null}
+        <Row label="Panel backdrop blur" hint="Blur behind menus and panels">
+          <Slider label="Panel backdrop blur" min={0} max={40} value={options.blur} format={(value) => (value ? `${value}px` : "Off")} onChange={(value) => setOptions({ blur: value })} />
+        </Row>
+        <Row label="Saturation" hint="Color strength behind panels">
+          <Slider label="Saturation" min={50} max={180} value={options.saturation} onChange={(value) => setOptions({ saturation: value })} />
+        </Row>
+        <div className="settings-actions">
+          <button type="button" className="btn btn-sm" onClick={() => setOptions(DEFAULT_TRANSPARENCY_OPTIONS)}>
+            <RotateCw size={13} /> Reset to defaults
+          </button>
+        </div>
+        </div>
+      </details>
+    </> : null}
     {enabled && notice ? <p className="set-note" role="status">{notice}</p> : null}
   </Section>;
 }
+
 
 function TerminalSection() {
   const fontSize = useStore((s) => s.fontSize);
@@ -289,4 +290,67 @@ function TerminalSection() {
       </Row>
     </Section>
   );
+}
+
+// The icon each menu bar tool or session bar item shows (see barItems).
+const BAR_ITEM_ICONS: Record<Exclude<BarItemId, typeof STATUS_BAR_ID>, LucideIcon> = {
+  "top:tasks": ListTodo, "top:quick-chat": MessageSquare, "top:sync": FolderSync, "top:remote": Monitor,
+  "top:ports": EthernetPort, "top:usage": Gauge, "top:notifications": Bell,
+  "header:device": HardDrive, "header:shortcut": Command, "header:mic": Mic, "header:code": FileCode,
+  "header:move": FolderInput, "header:duplicate": Copy, "header:fullscreen": Maximize2, "header:hide": EyeOff,
+  "status:session": SquareTerminal, "status:git": GitBranch, "status:worktree": GitFork,
+  "status:path": Folder, "status:started": Clock,
+};
+
+// Settings > General > Menu buttons: one card per bar with a switch for each
+// item. New session and Settings always stay in the menu bar, a session's
+// title and Close in its top bar. The status bar card's own switch turns the
+// whole bar off; its item switches rest disabled meanwhile.
+function BarsSection() {
+  const remote = useStore((state) => hasRemoteDevice(state.devices));
+  const statusBar = useStore((state) => !state.hiddenBarItems.includes(STATUS_BAR_ID));
+  const setShown = useStore((state) => state.setBarItemShown);
+  return <Section title="Menu buttons">
+    <BarItemList title="Menu bar" place="menu bar" hint="New session and Settings always stay." items={TOP_BAR_ITEMS} remote={remote} />
+    <BarItemList title="Session top bar" place="session top bar" hint="The title and Close always stay." items={SESSION_HEADER_ITEMS} remote={remote} />
+    <BarItemList title="Session status bar" place="status bar" hint="The line under each session." items={STATUS_BAR_ITEMS} remote={remote} disabled={!statusBar}
+      control={<button className={`switch ${statusBar ? "switch-on" : ""}`} type="button" role="switch" aria-label="Session status bar" aria-checked={statusBar}
+        onClick={() => setShown(STATUS_BAR_ID, !statusBar)}><span className="switch-knob" /></button>} />
+  </Section>;
+}
+
+function BarItemList({ title, place, hint, items, remote, disabled = false, control }: {
+  title: string;
+  place: string;
+  hint: string;
+  items: readonly { id: Exclude<BarItemId, typeof STATUS_BAR_ID>; label: string; needsRemote?: boolean }[];
+  remote: boolean;
+  disabled?: boolean;
+  control?: React.ReactNode;
+}) {
+  const hidden = useStore((state) => state.hiddenBarItems);
+  const setShown = useStore((state) => state.setBarItemShown);
+  const group = `${place[0].toUpperCase()}${place.slice(1)} items`;
+  return <div className="bar-item-settings">
+    <div className="bar-item-settings-head">
+      <div className="set-label"><span>{title}</span><span className="set-hint">{hint}</span></div>
+      {control}
+    </div>
+    <div className={`bar-item-list ${disabled ? "is-disabled" : ""}`} role="group" aria-label={group} aria-disabled={disabled || undefined}>
+      {items.map((item) => {
+        const Icon = BAR_ITEM_ICONS[item.id];
+        const shown = !hidden.includes(item.id);
+        // Shown or not, Sync and Remote desktop need a remote device to appear.
+        const waiting = item.needsRemote && !remote;
+        return <div key={item.id} className="bar-item-row">
+          <Icon size={15} className="bar-item-icon" aria-hidden="true" />
+          <span className="bar-item-label">{item.label}{waiting ? <span className="set-hint">Appears once you add a remote device</span> : null}</span>
+          <button className={`switch ${shown ? "switch-on" : ""}`} type="button" role="switch" disabled={disabled}
+            aria-label={`Show ${item.label} in the ${place}`} aria-checked={shown} onClick={() => setShown(item.id, !shown)}>
+            <span className="switch-knob" />
+          </button>
+        </div>;
+      })}
+    </div>
+  </div>;
 }

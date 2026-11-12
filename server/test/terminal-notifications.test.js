@@ -43,31 +43,8 @@ test("explicit terminal bells are rate limited and routed to their originating t
   assert.equal(f.events.length, 2);
 });
 
-test("completion requires an explicit command start and bounded numeric completion status", () => {
-  const f = fixture();
-  f.signals.osc133("D;0");
-  f.advance(60_000);
-  assert.equal(f.events.length, 0);
-  assert.equal(f.signals.osc133("C"), false);
-  assert.equal(f.signals.osc133("D;0"), false);
-  f.signals.osc133("D;0");
-  assert.equal(f.events.length, 1);
-  assert.equal(f.events[0].title, "Terminal reported completion");
-  f.signals.osc133("C");
-  f.signals.osc133("D;2");
-  assert.equal(f.events[1].title, "Terminal reported failure");
-  for (const status of ["D", "D;256", "D;0;private-output", "D;-1", "D;invalid", "D;" + "x".repeat(1000)]) {
-    f.signals.osc133("C");
-    f.signals.osc133(status);
-    assert.equal(f.events.length, 2);
-  }
-  f.signals.osc133("A");
-  f.signals.osc133("D;0");
-  assert.equal(f.events.length, 2);
-  assert.ok(!JSON.stringify(f.events).includes("private-output"));
-});
-
-test("real process exit is distinct from successful attachment detach and cleanup", () => {  const attached = fixture();
+test("real process exit is distinct from successful attachment detach and cleanup", () => {
+  const attached = fixture();
   attached.signals.processExit(0);
   assert.equal(attached.events.length, 0);
   attached.signals.bell();
@@ -81,35 +58,13 @@ test("real process exit is distinct from successful attachment detach and cleanu
   direct.signals.processExit(0);
   assert.equal(direct.events[0].title, "Terminal process finished");
   const detached = fixture();
-  detached.signals.osc133("C");
   detached.signals.dispose();
   detached.signals.processExit(1);
   detached.signals.bell();
-  detached.signals.osc133("D;0");
   assert.equal(detached.events.length, 0);
 });
 
-test("command and exit notifications quote real screen lines when a screen is attached", () => {
-  // At D time the shell has not drawn the next prompt yet, so the cursor sits
-  // on the last output line.
-  const lines = ["", "$ npm test", "", "PASS 3 tests"];
-  const f = screenFixture(lines, 1);
-  f.signals.osc133("C");
-  f.move(3);
-  f.signals.osc133("D;0");
-  assert.equal(f.events.length, 1);
-  assert.equal(f.events[0].title, "Terminal reported completion");
-  assert.ok(f.events[0].body.includes('"$ npm test"'), f.events[0].body);
-  assert.ok(f.events[0].body.includes('"PASS 3 tests"'), f.events[0].body);
-
-  const failed = screenFixture(["$ npm test", "FAIL boom"], 0);
-  failed.signals.osc133("C");
-  failed.move(1);
-  failed.signals.osc133("D;2");
-  assert.equal(failed.events[0].title, "Terminal reported failure");
-  assert.ok(failed.events[0].body.includes("exited with status 2"), failed.events[0].body);
-  assert.ok(failed.events[0].body.includes('"$ npm test"'), failed.events[0].body);
-
+test("exit notifications quote the real last screen line when a screen is attached", () => {
   const exited = screenFixture(["$ npm test", "FAIL boom"], 1);
   exited.signals.processExit(1);
   assert.ok(exited.events[0].body.includes("status 1"), exited.events[0].body);
@@ -148,11 +103,8 @@ test("focused terminal bells stay quiet without delaying later background alerts
   await Promise.resolve();
   assert.equal(events.length, 1);
   focused = true;
-  signals.osc133("C");
-  signals.osc133("D;2");
-  assert.equal(events[1].event, "terminal-command");
   signals.processExit(1);
-  assert.equal(events[2].event, "terminal-exit");
+  assert.equal(events[1].event, "terminal-exit");
 });
 
 test("missing screen rows explain why there is no message", async () => {
@@ -160,9 +112,6 @@ test("missing screen rows explain why there is no message", async () => {
   f.signals.bell();
   await Promise.resolve();
   assert.equal(f.events[0].body, "No message was provided. Open this terminal to check what needs attention.");
-  f.signals.osc133("C");
-  f.signals.osc133("D;0");
-  assert.equal(f.events[1].body, "Shell integration reported that a command finished successfully.");
   const exited = screenFixture([], 0);
   exited.signals.processExit(3);
   assert.equal(exited.events[0].body, "The terminal process exited with status 3.");
@@ -271,7 +220,7 @@ test("decorated completion footers do not replace a real answer", async () => {
   const f = screenFixture(lines, lines.length - 1);
   f.signals.bell();
   await Promise.resolve();
-  assert.equal(f.events[0].body, "⏺ The limit applies before trimming, because the check uses the raw input.");
+  assert.equal(f.events[0].body, "The limit applies before trimming, because the check uses the raw input.");
 });
 
 test("an indented answer survives its mode and timing footer", async () => {
@@ -373,7 +322,7 @@ test("all paragraphs of the latest marked response are preserved", async () => {
   const f = screenFixture(["Earlier tool output.", "", "⏺ Names containing only spaces are rejected.", "", "The limit is checked before trimming.", "─".repeat(40), "❯"], 6);
   f.signals.bell();
   await Promise.resolve();
-  assert.equal(f.events[0].body, "⏺ Names containing only spaces are rejected.\n\nThe limit is checked before trimming.");
+  assert.equal(f.events[0].body, "Names containing only spaces are rejected.\n\nThe limit is checked before trimming.");
 });
 
 
@@ -411,7 +360,7 @@ test("a response is captured before the next prompt is rendered", async () => {
   const f = screenFixture(["❯ Explain validation", "", "⏺ The complete answer is available before the prompt."], 2);
   f.signals.bell();
   await Promise.resolve();
-  assert.equal(f.events[0].body, "⏺ The complete answer is available before the prompt.");
+  assert.equal(f.events[0].body, "The complete answer is available before the prompt.");
 });
 
 
@@ -428,7 +377,7 @@ test("cursor-home before erasure preserves the response below the submitted ques
   lines.splice(0, lines.length, "❯");
   signals.bell();
   await Promise.resolve();
-  assert.equal(events[0].body, "⏺ The complete answer remains available after cursor-home.");
+  assert.equal(events[0].body, "The complete answer remains available after cursor-home.");
 });
 
 
@@ -445,4 +394,12 @@ test("redrawn file references keep their hyphen and slash boundaries", async () 
   f.signals.bell();
   await Promise.resolve();
   assert.equal(f.events[0].body, "See server/lib/session-name.js:9 and server/lib/session-name.js:11 for validation.");
+});
+
+test("the newer reply marker starts the latest answer and is left out of the body", async () => {
+  const lines = ["Earlier tool output.", "", "● I fixed the separator in the notice.", "", "● The build restarts the app.", "─".repeat(40), "❯"];
+  const f = screenFixture(lines, lines.length - 1);
+  f.signals.bell();
+  await Promise.resolve();
+  assert.equal(f.events[0].body, "The build restarts the app.");
 });

@@ -7,7 +7,7 @@ import { initEditorAppControlHandlers } from "./appControlEditor";
 import { initWorkflowAppControlHandlers } from "./appControlWorkflow";
 import { useStore } from "./state/store";
 import { executeAppControlRuntime, readAppControlRuntime, runAppControlExecution, finishAppControlReport, discardAppControlReport, runConfirmedAppCommand } from "./appControlRuntime";
-import { hasIcon } from "./workspaceIcons";
+import { ensureWorkspaceIcon, hasIcon } from "./workspaceIcons";
 import { HAS_TAURI } from "./tauriEnv";
 import { hasUnsavedEditors } from "./editorChanges";
 import { ALL_WORKSPACE_ID, DEFAULT_WORKSPACE_ID } from "./workspaces";
@@ -27,9 +27,15 @@ const context: AppControlContext = {
   readRuntime: readAppControlRuntime,
 };
 
+// Icons outside the bundled set are checked against the full set, loaded first.
+async function execute(action: string, args: Record<string, unknown>): Promise<unknown> {
+  if (typeof args.icon === "string") await ensureWorkspaceIcon(args.icon);
+  return executeAppControl(action, args, context);
+}
+
 /** Runs an app command for an in-app caller through the same confirmation and dispatcher as remote app control. */
 export function runLocalAppCommand(action: string, args: Record<string, unknown>): Promise<unknown> {
-  return runConfirmedAppCommand(action, args, { confirm: confirmAppControlAction, execute: (name, values) => executeAppControl(name, values, context) });
+  return runConfirmedAppCommand(action, args, { confirm: confirmAppControlAction, execute });
 }
 
 function pause(delay: number, signal: AbortSignal): Promise<void> {
@@ -102,7 +108,7 @@ export function useAppControl(): void {
                 if (!await confirmAppControlAction(command.action, command.args)) throw new Error("The action was cancelled in the app.");
                 if (signal.aborted || !enabledRef.current) throw new Error("App control was disabled before execution.");
                 if (Date.now() >= command.expiresAt) throw new Error("App control command expired while awaiting confirmation. Request it again.");
-                return executeAppControl(command.action, command.args, context);
+                return execute(command.action, command.args);
               }) };
             }
             catch (error) { outcome = { error: error instanceof Error ? error.message : "App control command failed." }; }

@@ -1,6 +1,6 @@
 import { AsyncButton } from "../ui/AsyncButton";
 import { useCallback, useEffect, useRef } from "react";
-import { MessageSquare, RotateCw, X } from "lucide-react";
+import { MessageSquare, RotateCw, TriangleAlert, X } from "lucide-react";
 import { create } from "zustand";
 import { deviceHost, THIS_MAC, type Device } from "../devices";
 import { attachCommand } from "../connection";
@@ -12,16 +12,22 @@ import { DeviceIcon } from "../ui/DeviceIcon";
 import { Dropdown } from "../ui/Dropdown";
 import { IconButton } from "../ui/IconButton";
 import { Select } from "../ui/Select";
+import { AgentIcon } from "../icons/AgentIcon";
+import { sessionAgent, type SessionAgentId } from "../../server/lib/session-agents.js";
+import { agentSelectOptions } from "../agentChoices";
 import "./QuickChat.css";
 
-interface Defaults { deviceId: string; agent: "claude" | "codex" | "opencode" }
+interface Defaults { deviceId: string; agent: SessionAgentId }
 const KEY = "pzza.quickChat.defaults";
+const QUICK_CHAT_AGENT_OPTIONS = agentSelectOptions().map(option => ({ ...option, icon: <AgentIcon id={option.value} size={13} /> }));
+
 function readDefaults(): Defaults {
   try {
     const value: unknown = JSON.parse(localStorage.getItem(KEY) ?? "null");
     if (value && typeof value === "object" && "deviceId" in value && typeof value.deviceId === "string" &&
-        "agent" in value && (value.agent === "claude" || value.agent === "codex" || value.agent === "opencode")) {
-      return { deviceId: value.deviceId, agent: value.agent };
+        "agent" in value) {
+      // An agent the catalog does not know falls back to Claude Code.
+      return { deviceId: value.deviceId, agent: sessionAgent(value.agent)?.id ?? "claude" };
     }
   } catch { /* Storage can be unavailable in private browsing. */ }
   return { deviceId: THIS_MAC.id, agent: "claude" };
@@ -75,6 +81,21 @@ export function releaseDisabledQuickChatDevice(devices: Device[]): void {
   if (devices.some(device => device.id === defaults.deviceId && device.disabled)) update({ deviceId: THIS_MAC.id });
 }
 
+// Quick Chat always opens the agent in its default mode. Most agents default to
+// one that asks first; an agent with no asking mode at all (Amp) is called out,
+// since its chat runs tools in your home folder without asking.
+function QuickChatModeNote({ agent }: { agent: SessionAgentId }) {
+  const definition = sessionAgent(agent);
+  const start = definition?.modes.find(mode => mode.id === definition.defaultMode);
+  if (definition && start?.approval === "bypass") {
+    return <p className="set-note quick-chat-mode-warning" role="note">
+      <TriangleAlert size={12} aria-hidden="true" />
+      <span>{definition.label} has no mode that asks first: it runs tools in your home folder without asking, unless its own settings turn permissions on.</span>
+    </p>;
+  }
+  return <p className="set-note">The agent opens directly in its default mode, the one that asks before changes.</p>;
+}
+
 export function QuickChatSettings() {
   const devices = useStore(state => state.activeDevices);
   const { defaults, notice, update } = useQuickChatPreferences();
@@ -82,13 +103,13 @@ export function QuickChatSettings() {
   return <div className="quick-chat-settings">
     <section className="settings-section">
       <div className="settings-form">
-        <label className="settings-field"><span>Profile</span><Select value={defaults.agent} options={[{ value: "claude", label: "Claude" }, { value: "codex", label: "Codex" }, { value: "opencode", label: "OpenCode" }]}
-          onChange={value => { if (value === "claude" || value === "codex" || value === "opencode") update({ agent: value }); }} /></label>
+        <label className="settings-field"><span>Profile</span><Select value={defaults.agent} options={QUICK_CHAT_AGENT_OPTIONS}
+          onChange={value => { const agent = sessionAgent(value); if (agent) update({ agent: agent.id }); }} /></label>
         <label className="settings-field"><span>Device</span><Select value={defaults.deviceId} placeholder="Choose a device"
           options={devices.map(device => ({ value: device.id, label: device.name, icon: <DeviceIcon device={device} /> }))}
           onChange={deviceId => update({ deviceId })} /></label>
       </div>
-      <p className="set-note">Claude opens Claude directly. Codex opens Codex directly. OpenCode opens OpenCode directly.</p>
+      <QuickChatModeNote agent={defaults.agent} />
       {!deviceAvailable && <p className="set-note" role="status">Your saved device is unavailable. Choose another device.</p>}
       {notice && <p className="set-note" role="status">{notice}</p>}
     </section>
@@ -101,7 +122,7 @@ export function QuickChatSettings() {
 type Chat = Awaited<ReturnType<typeof openQuickChat>> & { deviceName: string };
 
 function chatSummary(chat: Chat): string {
-  return `${chat.deviceName} · ${chat.agent === "claude" ? "Claude" : chat.agent === "codex" ? "Codex" : "OpenCode"}`;
+  return `${chat.deviceName} · ${sessionAgent(chat.agent)?.label ?? chat.agent}`;
 }
 
 const prepareChat = createQuickChatPreparation(openQuickChat);
@@ -148,7 +169,7 @@ export function QuickChat({ onOpenSettings }: { onOpenSettings?: () => void }) {
     }}>
     {(dismiss, open) => <>
       <div className="quick-chat-header">
-        <div><strong>Quick Chat</strong><span className="muted">{chat ? chatSummary(chat) : busy ? "Opening your chat…" : "Your conversation"}</span></div>
+        <div><span className="menu-head-title">Quick Chat</span><span className="muted">{chat ? chatSummary(chat) : busy ? "Opening your chat…" : "Your conversation"}</span></div>
         <div className="quick-chat-actions">
           <IconButton icon={X} title="Hide chat" onClick={dismiss} />
         </div>

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import {
-  Accessibility, Beer, Check, ChevronDown, ExternalLink, HardDrive, Hexagon, Laptop, Loader2, LockOpen,
+  Accessibility, Beer, Check, ChevronDown, Copy, ExternalLink, HardDrive, Hexagon, Laptop, Loader2, LockOpen,
   Mic, MonitorUp, RotateCcw, SquareTerminal, Workflow, X, type LucideIcon,
 } from "lucide-react";
 import { restartMessage, usePermissionControls, type PermissionControls } from "../panels/Permissions";
@@ -8,9 +8,15 @@ import { PERMISSIONS, PERMISSIONS_SUPPORTED, type PermissionId, type PermissionS
 import { installRequirement, refreshSetup, useSetup } from "../state/setup";
 import { fetchDoctor, SERVER_HTTP, type Doctor } from "../serverApi";
 import { IS_MAC, NEW_SESSION_SHORTCUT } from "../shortcuts";
+import { visibleInterval } from "../visibility";
+import { HAS_TAURI } from "../tauriEnv";
+import { openUrl } from "../forward";
+import { AgentIcon } from "../icons/AgentIcon";
+import type { SessionAgentDefinition } from "../../server/lib/session-agents.js";
+import { agentInstallState, type FoundAgent } from "../agentChoices";
 
-// The setup part of the onboarding tour: agent health, macOS permissions and
-// requirements for this machine, then a closing summary. Everything re-checks
+// The setup part of the onboarding tour: agent health, requirements and macOS
+// permissions for this machine, then a closing summary. Everything re-checks
 // when the window regains focus, which is how the user comes back from
 // Terminal or System Settings.
 
@@ -138,6 +144,18 @@ const PERMISSION_ICONS: Record<PermissionId, LucideIcon> = {
   fullDiskAccess: HardDrive, microphone: Mic, screenRecording: MonitorUp, accessibility: Accessibility, automation: Workflow,
   tmuxFullDiskAccess: HardDrive, tmuxAccessibility: Accessibility, tmuxScreenRecording: MonitorUp,
 };
+// One concrete step per permission for Allow all: what to do once the prompt
+// or System Settings is in front of the user.
+const GUIDE_STEPS: Record<PermissionId, string> = {
+  fullDiskAccess: "Turn on PzzaCode in the list. If it is missing, drag it in from Finder.",
+  microphone: "Click Allow in the macOS prompt.",
+  screenRecording: "Turn on PzzaCode in the list.",
+  accessibility: "Turn on PzzaCode in the list.",
+  automation: "Click OK in the macOS prompt.",
+  tmuxFullDiskAccess: "Drag tmux from Finder into the list and turn it on.",
+  tmuxAccessibility: "Drag tmux from Finder into the list and turn it on.",
+  tmuxScreenRecording: "Drag tmux from Finder into the list and turn it on.",
+};
 const PERMISSION_PILLS: Record<PermissionStatus, { tone: Tone; text: string }> = {
   granted: { tone: "ok", text: "Allowed" },
   notGranted: { tone: "action", text: "Not allowed" },
@@ -150,25 +168,54 @@ export function SetupPermissions({ only, controls }: { only?: "app" | "tmux"; co
   return controls ? <PermissionGroups only={only} controls={controls} /> : <OwnPermissionGroups only={only} />;
 }
 
+/** Starts Allow all for the permissions that still need action; hidden when none do. */
+export function AllowAllButton({ controls, subject }: { controls: PermissionControls; subject?: "app" | "tmux" }) {
+  const { actionable, guide, busy, startGuide } = controls;
+  const pending = PERMISSIONS.filter(item => (!subject || item.subject === subject) && actionable(item)).length;
+  if (guide || !pending) return null;
+  return <SmallButton primary icon={LockOpen} disabled={busy !== null} onClick={() => startGuide(subject)}>Allow all ({pending})</SmallButton>;
+}
+
+/** The permission Allow all is waiting for, with what to do; it moves on by itself once granted. */
+export function PermissionGuide({ controls }: { controls: PermissionControls }) {
+  const { guide, busy, repeatGuide, skipGuide, stopGuide } = controls;
+  const item = guide ? PERMISSIONS.find(entry => entry.id === guide.current) : undefined;
+  if (!guide || !item) return null;
+  return <div className="tour-callout tour-guide" role="status" aria-label="Allow all">
+    <span>
+      <strong>{guide.step} of {guide.total}: {item.label} for {item.subject === "tmux" ? "tmux" : "PzzaCode"}.</strong>{" "}
+      {GUIDE_STEPS[item.id]} This continues once it is allowed.
+    </span>
+    <div className="tour-guide-actions">
+      <SmallButton icon={ExternalLink} disabled={busy !== null} onClick={repeatGuide}>Open again</SmallButton>
+      <SmallButton onClick={skipGuide}>Skip</SmallButton>
+      <SmallButton onClick={stopGuide}>Stop</SmallButton>
+    </div>
+  </div>;
+}
+
 function OwnPermissionGroups({ only }: { only?: "app" | "tmux" }) {
   return <PermissionGroups only={only} controls={usePermissionControls()} />;
 }
 
 function PermissionGroups({ only, controls }: { only?: "app" | "tmux"; controls: PermissionControls }) {
-  const { statuses, busy, error, allow, openSettings, restartNeeded, restarting, restart } = controls;
+  const { statuses, tmuxMissing, busy, error, allow, openSettings, restartNeeded, restarting, restart } = controls;
   const group = (subject: "app" | "tmux", title: string, note: string) => {
     const items = PERMISSIONS.filter(item => item.subject === subject);
     const allowed = items.filter(item => statuses[item.id] === "granted").length;
+    // macOS grants tmux nothing until it is installed: its rows wait for it instead of failing.
+    const waiting = subject === "tmux" && tmuxMissing;
     return <section className="tour-group" aria-label={`${title} permissions`}>
       {only ? null : <div className="tour-group-head">
         <span className="tour-group-title">{title}</span>
-        <span className="tour-group-meta">{allowed} of {items.length} allowed</span>
+        <span className="tour-group-meta">{waiting ? "Waiting for tmux" : `${allowed} of ${items.length} allowed`}</span>
       </div>}
-      <p className="tour-group-note">{note}</p>
+      <p className="tour-group-note">{waiting ? "tmux is not installed yet. These open once it is." : note}</p>
       <ul className="tour-list">
         {items.map(({ id, label, short }) => {
           const status = statuses[id];
           const others = busy !== null && busy !== id;
+          if (waiting) return <SetupRow key={id} icon={PERMISSION_ICONS[id]} label={label} detail={short} pill={{ tone: "neutral", text: "Waiting" }} />;
           return <SetupRow key={id} icon={PERMISSION_ICONS[id]} label={label} detail={short}
             pill={status ? PERMISSION_PILLS[status] : { tone: "busy", text: "Checking" }}
             action={status === "granted" ? null : status === "denied"
@@ -179,6 +226,8 @@ function PermissionGroups({ only, controls }: { only?: "app" | "tmux"; controls:
     </section>;
   };
   return <div className="tour-stack">
+    {only === undefined ? <div className="tour-guide-start"><AllowAllButton controls={controls} /></div> : null}
+    {only === undefined ? <PermissionGuide controls={controls} /> : null}
     {only !== "tmux" ? group("app", "PzzaCode", "Every shell, agent and tool you start here runs as PzzaCode.") : null}
     {only !== "app" ? group("tmux", "tmux", "Only these lists accept command-line tools. Allow tmux again after a Homebrew upgrade.") : null}
     {error ? <p className="tour-callout tour-callout-fail" role="alert">{error}</p> : null}
@@ -189,7 +238,6 @@ function PermissionGroups({ only, controls }: { only?: "app" | "tmux"; controls:
   </div>;
 }
 
-const AGENT_NAMES: Record<string, string> = { claude: "Claude Code", codex: "Codex", opencode: "OpenCode" };
 
 function Checking({ label }: { label: string }) {
   return <ul className="tour-list"><SetupRow icon={Laptop} label={label} pill={{ tone: "busy", text: "Checking" }} /></ul>;
@@ -204,17 +252,19 @@ export function SetupRequirements() {
   const waitingForHomebrew = PERMISSIONS_SUPPORTED && checked && !status?.homebrew;
   useEffect(() => {
     if (!waitingForHomebrew) return;
-    const poll = window.setInterval(recheckAll, 4000);
-    return () => window.clearInterval(poll);
+    // Returning to the window rechecks already (useFocusRecheck).
+    return visibleInterval(recheckAll, 4000, { catchUp: false });
   }, [waitingForHomebrew]);
 
   if (!PERMISSIONS_SUPPORTED) {
     if (loading) return <Checking label="Looking for tmux" />;
-    return <ul className="tour-list">
+    const tmuxRow = <ul className="tour-list">
       <SetupRow icon={SquareTerminal} label="tmux" detail={doctor?.tmux ?? "Keeps terminals running when you close the app"}
         hint={doctor?.tmux ? undefined : "Install it with sudo apt install tmux or brew install tmux."}
         pill={doctor?.tmux ? { tone: "ok", text: "Ready" } : { tone: "action", text: "Needs action" }} />
     </ul>;
+    // Older device agents do not report coding agents.
+    return doctor?.agents ? <div className="tour-stack">{tmuxRow}<CodingAgents agents={doctor.agents} /></div> : tmuxRow;
   }
   if (!status) return checked
     ? <ul className="tour-list"><SetupRow icon={Laptop} label="Requirements" detail="This Mac's setup could not be read." pill={{ tone: "fail", text: "Failed" }}
@@ -249,20 +299,52 @@ export function SetupRequirements() {
       {brewRow("node", Hexagon, "Node.js", "Runs the PzzaCode agent")}
       {brewRow("tmux", SquareTerminal, "tmux", "Keeps terminals running after you quit")}
     </ul>
-    <section className="tour-group" aria-label="Coding agents">
-      <div className="tour-group-head">
-        <span className="tour-group-title">Coding agents</span>
-        <span className="tour-group-meta">optional</span>
-      </div>
-      <div className="tour-chips">
-        {status.agents.map(agent => <span key={agent.id} className={`tour-chip ${agent.path ? "is-found" : ""}`} title={agent.path ?? "Not installed"}>
-          {agent.path ? <Check size={11} aria-hidden="true" /> : null}{AGENT_NAMES[agent.id] ?? agent.id}
-          <span className="tour-chip-state">{agent.path ? "found" : "not found"}</span>
-        </span>)}
-      </div>
-      {status.agents.some(agent => agent.path) ? null : <p className="tour-group-note">Install the CLIs you use; new sessions can start them in a folder for you.</p>}
-    </section>
+    <CodingAgents agents={status.agents} />
   </div>;
+}
+
+function openHomepage(url: string) {
+  if (HAS_TAURI) void openUrl(url).catch(() => { /* An address the app may not open is simply ignored. */ });
+  else window.open(url, "_blank", "noopener,noreferrer");
+}
+
+// Install commands are shown to copy and run by hand; nothing here installs an agent.
+function MissingAgent({ agent }: { agent: SessionAgentDefinition }) {
+  const [copied, setCopied] = useState(false);
+  const install = agent.install[0];
+  const copy = () => {
+    if (!install) return;
+    void navigator.clipboard.writeText(install.command).then(() => setCopied(true), () => setCopied(false));
+  };
+  return <li className="tour-agent-row">
+    <span className="tour-agent-name"><AgentIcon id={agent.id} size={13} /> {agent.label}</span>
+    {install ? <code className="tour-agent-command" title={agent.install.map(item => item.command).join("\n")}>{install.command}</code> : <span className="tour-agent-command">No install command known</span>}
+    <span className="tour-agent-actions">
+      {install ? <SmallButton icon={copied ? Check : Copy} onClick={copy}>{copied ? "Copied" : "Copy"}</SmallButton> : null}
+      <SmallButton icon={ExternalLink} onClick={() => openHomepage(agent.homepage)}>Docs</SmallButton>
+    </span>
+  </li>;
+}
+
+function CodingAgents({ agents }: { agents: readonly FoundAgent[] }) {
+  const { installed, missing } = agentInstallState(agents);
+  return <section className="tour-group" aria-label="Coding agents">
+    <div className="tour-group-head">
+      <span className="tour-group-title">Coding agents</span>
+      <span className="tour-group-meta">optional · {installed.length} of {installed.length + missing.length} installed</span>
+    </div>
+    {installed.length ? <div className="tour-chips">
+      {installed.map(({ agent, path }) => <span key={agent.id} className="tour-chip is-found" title={path}>
+        <Check size={11} aria-hidden="true" /><AgentIcon id={agent.id} size={12} />{agent.label}
+        <span className="tour-chip-state">found</span>
+      </span>)}
+    </div> : <p className="tour-group-note">Install the CLIs you use; new sessions can start them in a folder for you.</p>}
+    {missing.length ? <details className="tour-agent-missing">
+      <summary>Not installed ({missing.length})</summary>
+      <p className="tour-group-note">PzzaCode never installs agents. Copy a command into a terminal to install one, then come back here.</p>
+      <ul className="tour-agent-list">{missing.map(agent => <MissingAgent key={agent.id} agent={agent} />)}</ul>
+    </details> : null}
+  </section>;
 }
 
 // Shortcuts worth knowing on day one. Push to talk needs voice input, which

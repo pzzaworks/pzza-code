@@ -25,14 +25,12 @@ import {
   type ProjectSync,
   type ProjectSyncResult,
 } from "../serverApi";
+import { visibleInterval } from "../visibility";
 
 function ScanProgress({ progress }: { progress: ProjectScanProgress | null }) {
   const [started] = useState(() => Date.now());
   const [elapsed, setElapsed] = useState(0);
-  useEffect(() => {
-    const timer = window.setInterval(() => setElapsed(Math.floor((Date.now() - started) / 1000)), 1000);
-    return () => window.clearInterval(timer);
-  }, [started]);
+  useEffect(() => visibleInterval(() => setElapsed(Math.floor((Date.now() - started) / 1000)), 1000), [started]);
   const failed = progress?.finished.filter((device) => device.error).length ?? 0;
   return (
     <div className="pj-scan-status" role="status">
@@ -670,7 +668,11 @@ export function ProjectsMenu({ active = true, page = "repositories", syncRequest
       const result = await syncProjects(root, syncRefs, migrated, operationId);
       setSync(result);
       const summary = summarizeProjectSync(result);
-      notify({ category: "sync", event: summary.needsAttention ? "sync-error" : "sync-completed", title: summary.title, body: summary.body, target: { section: "sync" } });
+      // The open Sync page shows a clean result inline; it is announced only
+      // when nobody is looking at it. Problems are always announced.
+      const view = viewRef.current;
+      const inView = view.active && view.page === "repositories" && document.hasFocus();
+      if (summary.needsAttention || !inView) notify({ category: "sync", event: summary.needsAttention ? "sync-error" : "sync-completed", title: summary.title, body: summary.body, target: { section: "sync" } });
       // Refresh so branches/behind counts reflect the new state.
       await runScan();
       return summary.complete;

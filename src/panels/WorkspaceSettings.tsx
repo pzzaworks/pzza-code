@@ -3,7 +3,8 @@ import { DeviceIcon } from "../ui/DeviceIcon";
 import { useEffect, useId, useRef, useState } from "react";
 import { Check, ChevronRight, ClipboardPaste, Copy, Eye, EyeOff, GitMerge, GitPullRequestCreateArrow, Loader2, RotateCcw, Save, ShieldCheck, Trash2 } from "lucide-react";
 import { approveWorktreeSetup, fetchGitWorktrees, fetchWorktreeSetup, removeGitWorktree, saveWorktreeSetup, type GitMergeKind, type GitWorktree, type WorktreeSetup } from "../serverApi";
-import { mergeWorktree, openWorktreePr, type LandResult } from "../worktreeLand";
+import { landWorktree, worktreeTask, type LandRequest, type LandResult } from "../worktreeLand";
+import { useTasks } from "../tasks/taskStore";
 import { openWebPage } from "../tileGit";
 import { confirmAction } from "../ui/ConfirmDialog";
 import { compactPath } from "../grid/compactPath";
@@ -17,6 +18,16 @@ import { DEFAULT_WORKSPACE_ID, WORKSPACE_COLORS, wsKeyOf } from "../workspaces";
 import { deviceNameFor } from "../devices";
 import { workspaceIcon } from "../workspaceIcons";
 import { IconPicker } from "../ui/IconPicker";
+import { AUTO_COLUMNS } from "../grid/autoLayout";
+import { useAutoGrow } from "../ui/useAutoGrow";
+
+// Grid columns for the workspace: Auto fits them to the window and tile count.
+const COLUMN_CHOICES = [
+  { value: AUTO_COLUMNS, label: "Auto" },
+  { value: 2, label: "2" },
+  { value: 3, label: "3" },
+  { value: 4, label: "4" },
+] as const;
 
 // Workspace settings: a compact chip (click the icon for icon & color, click the
 // name to rename), the workspace's sessions (visible + hidden) with a per-row
@@ -39,6 +50,8 @@ export function WorkspaceSettings({ id, close }: { id: string; close: () => void
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
+  const columns = useStore((s) => s.workspaceColumns[id] ?? s.defaultColumns);
+  const setColumns = useStore((s) => s.setColumns);
 
   const ws = workspaces.find((w) => w.id === id);
   if (!ws) return null;
@@ -108,6 +121,16 @@ export function WorkspaceSettings({ id, close }: { id: string; close: () => void
       ) : null}
 
       <div className="field">
+        <span className="field-label">Layout</span>
+        {/* The same segmented switch as the usage panel. */}
+        <div className="usage-seg ws-columns" role="group" aria-label="Grid columns">
+          {COLUMN_CHOICES.map(({ value, label }) => (
+            <button key={value} type="button" className={columns === value ? "on" : ""} aria-pressed={columns === value} onClick={() => setColumns(value, id)}>{label}</button>
+          ))}
+        </div>
+      </div>
+
+      <div className="field">
         <span className="field-label">
           Sessions
           {sessions.length ? <span className="field-hint">{sessions.length}</span> : null}
@@ -145,7 +168,7 @@ export function WorkspaceSettings({ id, close }: { id: string; close: () => void
       </div>
 
       <SnapshotSection workspaceId={id} workspaceName={ws.name} hasSessions={sessions.length > 0} />
-      <WorktreeSection workspaceId={id} />
+      <WorktreeSection workspaceId={id} onHandOff={close} />
 
       {workspaces.length > 1 && !ws.system ? (
         <button className="btn btn-danger ws-delete" onClick={() => setConfirmDelete(true)}>
@@ -366,11 +389,13 @@ interface WorktreeRepo { host: string; root: string; base: string | null; worktr
 // commands to run before the agent) is edited here.
 const MERGE_LABELS: Record<GitMergeKind, string> = { ancestor: "Merged", squash: "Squash-merged", patch: "Rebase-merged" };
 
-function WorktreeSection({ workspaceId }: { workspaceId: string }) {
+function WorktreeSection({ workspaceId, onHandOff }: { workspaceId: string; onHandOff: () => void }) {
   const tiles = useStore((s) => s.tiles);
   const sessionWs = useStore((s) => s.sessionWs);
   const allSessions = useStore((s) => s.allSessions);
   const connectionHost = useStore((s) => s.connection.host) ?? "";
+  // Read so a row's task, and so its landing path, follows Tasks.
+  useTasks((s) => s.tasks);
   const [expanded, setExpanded] = useState(false);
   const [repos, setRepos] = useState<WorktreeRepo[] | null>(null);
   const [loading, setLoading] = useState(false);
@@ -451,12 +476,15 @@ function WorktreeSection({ workspaceId }: { workspaceId: string }) {
       : { text: `Removed ${done} worktree${done === 1 ? "" : "s"}${deleted ? ` and ${deleted} merged branch${deleted === 1 ? "" : "es"}` : ""}.`, failed: false });
     setRevision((value) => value + 1);
   };
-  // Open PR and Merge: one at a time, then the list is read again.
-  const land = async (key: string, action: () => Promise<LandResult | null>) => {
+  // Open PR and Merge: one at a time through the shared landing path, then the
+  // list is read again. A task's worktree hands over to its task window.
+  const land = async (key: string, request: LandRequest) => {
     setNote(null);
     setBusy(key);
-    const result = await action();
+    const handOff = worktreeTask(request.host, request.path) !== null;
+    const result = await landWorktree(request, { interactive: true });
     setBusy(null);
+    if (handOff) { onHandOff(); return; }
     if (!result) return;
     setNote(result);
     if (!result.failed) setRevision((value) => value + 1);
@@ -497,8 +525,16 @@ function WorktreeSection({ workspaceId }: { workspaceId: string }) {
                   const why = blocker(repo, worktree);
                   const merge = worktree.merged ? `${MERGE_LABELS[worktree.mergedBy ?? "ancestor"]} into ${repo.base ?? "the main branch"}` : "Not merged";
                   const label = worktree.branch ?? worktree.path;
+                  // A task's worktree lands from its task window, which also offers to commit.
+                  const task = worktreeTask(repo.host, worktree.path)?.task.title;
+                  const viaTask = task ? `Part of the task "${task}": opens its land checks` : null;
                   const mergeWhy = !worktree.branch ? "it is on a detached HEAD" : !repo.base ? "the base branch is unknown"
-                    : worktree.merged ? `it is already in ${repo.base}` : worktree.dirty ? "it has uncommitted changes" : null;
+                    : worktree.merged ? `it is already in ${repo.base}` : worktree.dirty && !task ? "it has uncommitted changes" : null;
+                  const request = (kind: LandRequest["kind"]): LandRequest | null => (worktree.branch ? { kind, host: repo.host, path: worktree.path, branch: worktree.branch, base: repo.base } : null);
+                  const start = (kind: LandRequest["kind"]) => {
+                    const next = request(kind);
+                    if (next) void land(`${kind}:${worktree.path}`, next);
+                  };
                   return (
                     <div key={worktree.path} className="snap-row">
                       <div className="snap-row-copy">
@@ -508,15 +544,15 @@ function WorktreeSection({ workspaceId }: { workspaceId: string }) {
                         </span>
                       </div>
                       <button type="button" className="snap-icon" disabled={!worktree.branch || busy !== null}
-                        title={worktree.branch ? `Push ${worktree.branch} and open a pull request` : "Can't open a pull request: it is on a detached HEAD"}
+                        title={!worktree.branch ? "Can't open a pull request: it is on a detached HEAD" : viaTask ?? `Push ${worktree.branch} and open a pull request`}
                         aria-label={`Open pull request for ${label}`}
-                        onClick={() => void land(`pr:${worktree.path}`, () => openWorktreePr(repo.host, worktree.path))}>
+                        onClick={() => start("pr")}>
                         {busy === `pr:${worktree.path}` ? <Loader2 size={14} className="sw-spin" /> : <GitPullRequestCreateArrow size={14} />}
                       </button>
                       <button type="button" className="snap-icon" disabled={mergeWhy !== null || busy !== null}
-                        title={mergeWhy ? `Can't merge: ${mergeWhy}` : `Merge into ${repo.base} in the main checkout`}
+                        title={mergeWhy ? `Can't merge: ${mergeWhy}` : viaTask ?? `Merge into ${repo.base} in the main checkout`}
                         aria-label={`Merge ${label} into ${repo.base ?? "the base branch"}`}
-                        onClick={() => { if (worktree.branch && repo.base) { const { branch } = worktree, base = repo.base; void land(`merge:${worktree.path}`, () => mergeWorktree(repo.host, worktree.path, branch, base)); } }}>
+                        onClick={() => start("merge")}>
                         {busy === `merge:${worktree.path}` ? <Loader2 size={14} className="sw-spin" /> : <GitMerge size={14} />}
                       </button>
                       <button type="button" className="snap-icon" disabled={why !== null || busy !== null}
@@ -549,6 +585,10 @@ function WorktreeSetupEditor({ host, root }: { host: string; root: string }) {
   const [setup, setSetup] = useState<WorktreeSetup | null>(null);
   const [copyText, setCopyText] = useState("");
   const [runText, setRunText] = useState("");
+  const copyRef = useRef<HTMLTextAreaElement>(null);
+  const runRef = useRef<HTMLTextAreaElement>(null);
+  useAutoGrow(copyRef, copyText, { minLines: 3, maxLines: 8 });
+  useAutoGrow(runRef, runText, { minLines: 2, maxLines: 8 });
   const [status, setStatus] = useState<{ text: string; failed: boolean } | null>(null);
   const [saving, setSaving] = useState(false);
   const id = useId();
@@ -603,9 +643,9 @@ function WorktreeSetupEditor({ host, root }: { host: string; root: string }) {
       </p>
       {setup.error ? <p className="snap-note is-error">{setup.error}</p> : null}
       <label className="wt-setup-label" htmlFor={`${id}-copy`}>Copy from the main checkout <span className="field-hint">untracked files, one glob per line</span></label>
-      <textarea id={`${id}-copy`} className="field-input wt-setup-input" rows={3} spellCheck={false} value={copyText} onChange={(event) => setCopyText(event.target.value)} />
+      <textarea ref={copyRef} id={`${id}-copy`} className="field-input wt-setup-input" rows={3} spellCheck={false} value={copyText} onChange={(event) => setCopyText(event.target.value)} />
       <label className="wt-setup-label" htmlFor={`${id}-run`}>Run before the agent <span className="field-hint">one command per line, shown in the terminal</span></label>
-      <textarea id={`${id}-run`} className="field-input wt-setup-input" rows={2} spellCheck={false} placeholder="npm install" value={runText} onChange={(event) => setRunText(event.target.value)} />
+      <textarea ref={runRef} id={`${id}-run`} className="field-input wt-setup-input" rows={2} spellCheck={false} placeholder="npm install" value={runText} onChange={(event) => setRunText(event.target.value)} />
       {pending ? <p className="snap-note wt-setup-pending">These commands are not approved on this device yet, so new worktrees skip them.</p> : null}
       <div className="snap-actions">
         {pending ? (

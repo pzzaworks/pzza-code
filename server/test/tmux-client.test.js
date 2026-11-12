@@ -4,7 +4,7 @@ import { execFile, spawn } from "node:child_process";
 import { once } from "node:events";
 import { promisify } from "node:util";
 import { randomBytes } from "node:crypto";
-import { mkdtemp, mkdir, writeFile, readFile, rm, stat } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, readFile, readdir, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import net from "node:net";
 import { tmuxArgs, tmuxCommand } from "../lib/tmux-client.js";
@@ -25,7 +25,13 @@ function socketEnvironment(t, socket) {
 }
 async function directory(t) {
   const root = await mkdtemp("/tmp/pzza-client-");
-  t.after(() => rm(root, { recursive: true, force: true }));
+  // A tmux server outlives its deleted socket, so stop any started here first.
+  t.after(async () => {
+    const entries = await readdir(root, { withFileTypes: true }).catch(() => []);
+    await Promise.all(entries.filter(entry => entry.isSocket()).map(entry =>
+      promisify(execFile)("tmux", ["-S", path.join(root, entry.name), "kill-server"]).catch(() => {})));
+    await rm(root, { recursive: true, force: true });
+  });
   return root;
 }
 

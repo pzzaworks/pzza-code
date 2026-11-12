@@ -40,6 +40,10 @@ export interface ChromePalette {
   hover: string;
   selected: string;
   selectedText: string;
+  // The edge that marks a selected row or option against its surroundings.
+  selectedEdge: string;
+  // Unfilled part of meters, progress bars and slider rails.
+  track: string;
   focusRing: string;
   inactiveOverlay: string;
   focusOverlay: string;
@@ -129,23 +133,26 @@ export function contrastRatio(foreground: string, background: string): number {
 // Light surfaces, text and control boundaries have distinct semantic roles.
 export function deriveChrome(t: TerminalPalette, appearance: Theme["appearance"]): ChromePalette {
   if (appearance === "light") return {
-    bg: "#f6f8fa",
-    surface: "#ffffff",
-    surfaceAlt: "#f0f2f4",
+    // Panels sit a notch below white with a cool tint; only fields come close to it.
+    bg: "#f2f4f6",
+    surface: "#f9fafb",
+    surfaceAlt: "#eaedf0",
     border: "#d1d9e0",
-    controlBorder: "#818b98",
+    controlBorder: "#78828e",
     divider: translucent("#1f2328", 7),
     hairline: translucent("#1f2328", 10),
     hairlineStrong: translucent("#1f2328", 16),
-    input: "#ffffff",
-    hover: "#eaeef2",
-    selected: "#ddf4ff",
+    input: "#fbfcfd",
+    hover: "#e4e8ec",
+    selected: "#c4d9f5",
     selectedText: "#0550ae",
+    selectedEdge: "#3a87dd",
+    track: "#bfc8d2",
     focusRing: "#0969da",
     inactiveOverlay: "rgb(31 35 40 / 0%)",
     focusOverlay: "rgb(89 99 110 / 20%)",
     text: "#1f2328",
-    muted: "#59636e",
+    muted: "#545e69",
     accent: "#0969da",
     accentText: "#ffffff",
     success: "#1a6334",
@@ -167,6 +174,8 @@ export function deriveChrome(t: TerminalPalette, appearance: Theme["appearance"]
     hover: mix(bg, fg, 0.14),
     selected: mix(bg, fg, 0.17),
     selectedText: fg,
+    selectedEdge: mix(bg, fg, 0.32),
+    track: mix(bg, fg, 0.11),
     focusRing: "#8f9aab",
     inactiveOverlay: "rgb(0 0 0 / 26%)",
     focusOverlay: "rgb(27 36 52 / 30%)",
@@ -214,6 +223,8 @@ export function chromeToCssVars(c: ChromePalette): Record<string, string> {
     "--hover": c.hover,
     "--selected": c.selected,
     "--selected-text": c.selectedText,
+    "--selected-edge": c.selectedEdge,
+    "--track": c.track,
     "--focus-ring": c.focusRing,
     "--inactive-overlay": c.inactiveOverlay,
     "--focus-overlay": c.focusOverlay,

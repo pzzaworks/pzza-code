@@ -1,7 +1,7 @@
-import { useState, type FormEvent, type KeyboardEvent } from "react";
+import { useRef, useState, type FormEvent, type KeyboardEvent } from "react";
+import { useAutoGrow } from "../ui/useAutoGrow";
 import { ChevronDown, ChevronUp, Pencil, Trash2 } from "lucide-react";
 import { addPrompt, deletePrompt, movePrompt, PROMPT_NAME_MAX, PROMPT_TEXT_MAX, PROMPTS_MAX, updatePrompt, usePrompts, type SavedPrompt } from "../state/prompts";
-import { confirmAction } from "../ui/ConfirmDialog";
 import { COMMAND_PALETTE_SHORTCUT } from "../shortcuts";
 
 // Settings, General, Saved prompts: add, edit, reorder and delete the prompts
@@ -11,6 +11,8 @@ function PromptForm({ prompt, submitLabel, onDone, onCancel }: {
 }) {
   const [name, setName] = useState(prompt?.name ?? "");
   const [text, setText] = useState(prompt?.text ?? "");
+  const textRef = useRef<HTMLTextAreaElement>(null);
+  useAutoGrow(textRef, text, { minLines: 3, maxLines: 8 });
   const [error, setError] = useState<string | null>(null);
   const submit = (event?: FormEvent) => {
     event?.preventDefault();
@@ -36,7 +38,7 @@ function PromptForm({ prompt, submitLabel, onDone, onCancel }: {
     </label>
     <label className="settings-field">
       <span className="field-label">Prompt <span className="field-hint">One line, sent with Enter</span></span>
-      <textarea className="field-input prompt-text-input" aria-label={`${prefix} prompt text`} value={text} maxLength={PROMPT_TEXT_MAX} rows={3}
+      <textarea ref={textRef} className="field-input prompt-text-input" aria-label={`${prefix} prompt text`} value={text} maxLength={PROMPT_TEXT_MAX} rows={3}
         placeholder="Write tests for the current changes." onChange={(event) => { setText(event.target.value); setError(null); }} onKeyDown={onTextKey} />
     </label>
     {error ? <p className="prompt-error" role="alert">{error}</p> : null}
@@ -50,9 +52,6 @@ function PromptForm({ prompt, submitLabel, onDone, onCancel }: {
 export function PromptSettings() {
   const prompts = usePrompts((s) => s.prompts);
   const [editing, setEditing] = useState<string | null>(null);
-  const remove = async (prompt: SavedPrompt) => {
-    if (await confirmAction({ title: "Delete this prompt?", message: `“${prompt.name}” is removed from the command palette and the broadcast bar.`, confirmLabel: "Delete prompt", danger: true })) deletePrompt(prompt.id);
-  };
   return <section className="set-section settings-section" aria-label="Saved prompts">
     <h3 className="set-title">Saved prompts</h3>
     <p className="set-note prompt-intro">
@@ -72,7 +71,7 @@ export function PromptSettings() {
               <button type="button" className="tile-btn" aria-label={`Move ${prompt.name} up`} title="Move up" disabled={index === 0} onClick={() => movePrompt(prompt.id, -1)}><ChevronUp size={14} aria-hidden="true" /></button>
               <button type="button" className="tile-btn" aria-label={`Move ${prompt.name} down`} title="Move down" disabled={index === prompts.length - 1} onClick={() => movePrompt(prompt.id, 1)}><ChevronDown size={14} aria-hidden="true" /></button>
               <button type="button" className="tile-btn" aria-label={`Edit ${prompt.name}`} title="Edit" onClick={() => setEditing(prompt.id)}><Pencil size={13} aria-hidden="true" /></button>
-              <button type="button" className="tile-btn" aria-label={`Delete ${prompt.name}`} title="Delete" onClick={() => void remove(prompt)}><Trash2 size={13} aria-hidden="true" /></button>
+              <button type="button" className="tile-btn" aria-label={`Delete ${prompt.name}`} title="Delete" onClick={() => deletePrompt(prompt.id)}><Trash2 size={13} aria-hidden="true" /></button>
             </div>
           </>}
       </li>)}

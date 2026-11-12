@@ -37,8 +37,10 @@ import { createMcpRepair } from "./lib/mcp-repair.js";
 import { gitProtectorRouter } from "./lib/git-protector.js";
 import { gitStatusRouter } from "./lib/git-status.js";
 import { gitReviewRouter } from "./lib/git-review.js";
+import { checkpointsRouter } from "./lib/checkpoints.js";
 import { worktreeSetupRouter } from "./lib/worktree-setup.js";
 import { worktreeLandRouter } from "./lib/worktree-land.js";
+import { tasksRouter } from "./lib/tasks.js";
 import { SPEND_FRESH_MS, computeSpend } from "./lib/spend.js";
 import { sessionCostRouter } from "./lib/session-cost.js";
 import { deviceInfo } from "./lib/device-info.js";
@@ -48,6 +50,7 @@ import { createAppControl, createAppControlRouter } from "./lib/app-control.js";
 import { installAgent } from "./lib/install.js";
 import { filesRouter } from "./lib/files.js";
 import { startPtyBridge, sweepOrphanViews } from "./lib/pty.js";
+import { PaneModeRequestError, paneLines, paneLinesRequest, paneMode, paneModeRequest } from "./lib/pane-mode.js";
 import { scanProjects, syncProjects, cancelProjectSync } from "./lib/projects.js";
 
 // A query-param host, validated for safe ssh use ("" when absent/invalid).
@@ -85,8 +88,10 @@ const server = http.createServer(async (req, res) => {
   if (await gitProtectorRouter(req, res, url, json)) return;
   if (await gitStatusRouter(req, res, url, json)) return;
   if (await gitReviewRouter(req, res, url, json)) return;
+  if (await checkpointsRouter(req, res, url, json)) return;
   if (await worktreeSetupRouter(req, res, url, json)) return;
   if (await worktreeLandRouter(req, res, url, json)) return;
+  if (await tasksRouter(req, res, url, json)) return;
   if (await sessionCostRouter(req, res, url, json)) return;
   if (await quickChatRouter(req, res, url, json)) return;
 
@@ -135,6 +140,24 @@ const server = http.createServer(async (req, res) => {
       shOn(queryHost(url), cmd, (err, o) => resolve(err ? "" : String(o || "").trim())),
     );
     return json(res, 200, { path: out });
+  }
+  // Whether a tile's pane is in a tmux mode (copy-mode after a wheel-up), or
+  // leave that mode so the tile's typed input reaches the program again.
+  if (url.pathname === "/session/pane-mode" && req.method === "POST") {
+    let request;
+    try { request = paneModeRequest(await readBody(req)); }
+    catch (error) { return json(res, 400, { error: error instanceof PaneModeRequestError ? error.message : "Invalid request" }); }
+    try { return json(res, 200, await paneMode(request)); }
+    catch (error) { return json(res, 503, { error: error.message }); }
+  }
+  // A tile's pane history and visible rows in one capture: an approval prompt
+  // whose input starts above the screen is read in full from it.
+  if (url.pathname === "/session/pane-lines" && req.method === "POST") {
+    let request;
+    try { request = paneLinesRequest(await readBody(req)); }
+    catch (error) { return json(res, 400, { error: error instanceof PaneModeRequestError ? error.message : "Invalid request" }); }
+    try { return json(res, 200, await paneLines(request)); }
+    catch (error) { return json(res, 503, { error: error.message }); }
   }
   if (url.pathname === "/scan") {
     const host = url.searchParams.has("host") ? url.searchParams.get("host") : undefined;

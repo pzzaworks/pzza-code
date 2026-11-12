@@ -1,10 +1,12 @@
+import type { SessionAgentId } from "../../server/lib/session-agents.js";
+
 export interface ChatSession {
   session: string;
   host: string;
   // The saved profile owns a managed session, while launcher says what was
   // actually invoked to start it (always the matching CLI).
-  agent: "claude" | "codex" | "opencode";
-  launcher: "claude" | "codex" | "opencode";
+  agent: SessionAgentId;
+  launcher: SessionAgentId;
   identity: string;
 }
 

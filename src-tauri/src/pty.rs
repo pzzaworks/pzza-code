@@ -127,21 +127,62 @@ impl PtyState {
     }
 }
 
+impl Drop for PtyHandle {
+    // The exit watcher holds a stop sender too, so dropping the last handle
+    // signals the reaper explicitly instead of by closing the channel.
+    fn drop(&mut self) {
+        let _ = self.stop.send(());
+    }
+}
+
 // The owning child handle escalates from hangup to a forced kill. A cloned
 // signal handle only sends SIGHUP and can leave shutdown waiting forever.
 fn reap_child(mut child: Box<dyn portable_pty::Child + Send + Sync>, stop: mpsc::Receiver<()>) -> i32 {
+    let mut signalled = false;
     loop {
         match child.try_wait() {
             Ok(Some(status)) => return status.exit_code() as i32,
             Err(_) => return -1,
+            // Still running after a signal: it was a stop request.
+            Ok(None) if signalled => break,
             Ok(None) => {}
         }
-        match stop.recv_timeout(Duration::from_millis(20)) {
-            Err(RecvTimeoutError::Timeout) => continue,
-            Ok(()) | Err(RecvTimeoutError::Disconnected) => {
-                let _ = child.kill();
-                return child.wait().map(|status| status.exit_code() as i32).unwrap_or(-1);
-            }
+        signalled = next_signal(&stop);
+    }
+    let _ = child.kill();
+    child.wait().map(|status| status.exit_code() as i32).unwrap_or(-1)
+}
+
+// Blocks until a stop request, the exit watcher's report that the child is
+// waitable, or every sender is gone; a running terminal never wakes on a timer.
+#[cfg(unix)]
+fn next_signal(stop: &mpsc::Receiver<()>) -> bool {
+    let _ = stop.recv();
+    true
+}
+
+#[cfg(not(unix))]
+fn next_signal(stop: &mpsc::Receiver<()>) -> bool {
+    !matches!(stop.recv_timeout(Duration::from_millis(20)), Err(RecvTimeoutError::Timeout))
+}
+
+// Waits for the child to exit without reaping it (WNOWAIT), then wakes the
+// reaper, which collects the status. Only the reaper reaps, so the pid cannot
+// be reused while the reaper may still signal it.
+#[cfg(unix)]
+fn watch_exit(pid: u32, wake: mpsc::Sender<()>) {
+    loop {
+        // SAFETY: siginfo_t is plain data and waitid only writes into it.
+        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        if unsafe { libc::waitid(libc::P_PID, pid as libc::id_t, &mut info, libc::WEXITED | libc::WNOWAIT) } == 0 {
+            let _ = wake.send(());
+            return;
+        }
+        match std::io::Error::last_os_error().raw_os_error() {
+            Some(libc::EINTR) => {}
+            // Already reaped after a stop request: nothing is left to report.
+            Some(libc::ECHILD) => return,
+            _ => std::thread::sleep(Duration::from_millis(20)),
         }
     }
 }
@@ -254,6 +295,11 @@ pub fn pty_spawn(
         .map_err(|e| e.to_string())?;
     drop(pair.slave);
     let (stop, stop_rx) = mpsc::channel();
+    #[cfg(unix)]
+    if let Some(pid) = child.process_id() {
+        let wake = stop.clone();
+        std::thread::spawn(move || watch_exit(pid, wake));
+    }
     let handle = Arc::new(PtyHandle {
         master: Mutex::new(pair.master),
         writer: Mutex::new(writer),
@@ -512,6 +558,54 @@ mod tests {
         assert!(writer_finished);
         worker.join().unwrap();
     }
+    #[cfg(unix)]
+    fn spawn_watched(script: &str) -> (Box<dyn portable_pty::Child + Send + Sync>, std::thread::JoinHandle<()>, std::thread::JoinHandle<()>, mpsc::Sender<()>, mpsc::Receiver<()>) {
+        let pair = native_pty_system().openpty(size(80, 24)).unwrap();
+        let mut reader = pair.master.try_clone_reader().unwrap();
+        let mut command = CommandBuilder::new("/bin/sh");
+        command.args(["-c", script]);
+        let child = pair.slave.spawn_command(command).unwrap();
+        drop(pair.slave);
+        let output = std::thread::spawn(move || {
+            let _ = std::io::copy(&mut reader, &mut std::io::sink());
+            drop(pair.master);
+        });
+        let (stop, stop_rx) = mpsc::channel();
+        let pid = child.process_id().unwrap();
+        let wake = stop.clone();
+        let watcher = std::thread::spawn(move || watch_exit(pid, wake));
+        (child, watcher, output, stop, stop_rx)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn exit_watcher_wakes_the_reaper_with_the_exit_code() {
+        let (child, watcher, output, stop, stop_rx) = spawn_watched("sleep 0.2; exit 7");
+        let (done_tx, done_rx) = mpsc::channel();
+        let reaper = std::thread::spawn(move || done_tx.send(reap_child(child, stop_rx)).unwrap());
+        // `stop` stays open, so only the watcher can have woken the reaper.
+        assert_eq!(done_rx.recv_timeout(Duration::from_secs(5)).unwrap(), 7);
+        reaper.join().unwrap();
+        watcher.join().unwrap();
+        drop(stop);
+        output.join().unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stop_still_kills_a_watched_child() {
+        let (child, watcher, output, stop, stop_rx) = spawn_watched("exec sleep 30");
+        let reaper = std::thread::spawn(move || reap_child(child, stop_rx));
+        std::thread::sleep(Duration::from_millis(50));
+        assert!(!reaper.is_finished());
+        let start = Instant::now();
+        stop.send(()).unwrap();
+        assert_ne!(reaper.join().unwrap(), 0);
+        assert!(start.elapsed() < Duration::from_secs(2));
+        watcher.join().unwrap();
+        output.join().unwrap();
+    }
+
     #[cfg(unix)]
     #[test]
     fn shutdown_reaps_a_child_that_ignores_hangup() {

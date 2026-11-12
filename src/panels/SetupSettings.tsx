@@ -1,9 +1,10 @@
 import { useState, type ReactNode } from "react";
-import { ChevronRight, Laptop, Package, RotateCcw, ShieldCheck, type LucideIcon } from "lucide-react";
+import { ChevronRight, Laptop, Loader2, Package, RefreshCw, RotateCcw, ShieldCheck, type LucideIcon } from "lucide-react";
 import { PERMISSIONS, PERMISSIONS_SUPPORTED } from "../state/permissions";
 import { useSetup } from "../state/setup";
 import { usePermissionControls } from "./Permissions";
-import { SetupHealth, SetupPermissions, SetupRequirements, useRequirementsReady } from "../tour/SetupSteps";
+import { refreshLocalSessions, useSessionRefresh } from "../state/sessionRefresh";
+import { AllowAllButton, PermissionGuide, SetupHealth, SetupPermissions, SetupRequirements, useRequirementsReady } from "../tour/SetupSteps";
 import "../tour/OnboardingTour.css";
 
 type Tone = "ok" | "busy" | "action";
@@ -24,26 +25,30 @@ interface Group {
 export function SetupSettings() {
   // One status source for the summaries and the rows inside the groups.
   const controls = usePermissionControls();
-  const { statuses } = controls;
+  const { statuses, tmuxMissing } = controls;
   const ready = useRequirementsReady();
   const installing = useSetup((state) => state.busy !== null);
+  const refreshing = useSessionRefresh((state) => state.running);
   const [toggled, setToggled] = useState<Record<string, boolean>>({});
 
   const permissionGroup = (subject: "app" | "tmux", title: string): Group => {
     const items = PERMISSIONS.filter((item) => item.subject === subject);
     const known = items.every((item) => statuses[item.id] !== undefined);
     const allowed = items.filter((item) => statuses[item.id] === "granted").length;
+    // tmux's permissions open once the tools group has installed it.
+    const waiting = subject === "tmux" && tmuxMissing;
     return {
       id: subject,
       icon: ShieldCheck,
       title,
-      summary: known ? `${allowed} of ${items.length} allowed` : "Checking…",
-      tone: !known ? "busy" : allowed === items.length ? "ok" : "action",
+      summary: waiting ? "Waiting for tmux" : known ? `${allowed} of ${items.length} allowed` : "Checking…",
+      tone: waiting || !known ? "busy" : allowed === items.length ? "ok" : "action",
       body: <SetupPermissions only={subject} controls={controls} />,
     };
   };
+  // Same order as first-launch setup: the tools first, since tmux must be
+  // installed before macOS can grant it permissions.
   const groups: Group[] = [
-    ...(PERMISSIONS_SUPPORTED ? [permissionGroup("app", "PzzaCode permissions"), permissionGroup("tmux", "tmux permissions")] : []),
     {
       id: "requirements",
       icon: Package,
@@ -52,6 +57,7 @@ export function SetupSettings() {
       tone: ready ? "ok" : installing ? "busy" : "action",
       body: <SetupRequirements />,
     },
+    ...(PERMISSIONS_SUPPORTED ? [permissionGroup("app", "PzzaCode permissions"), permissionGroup("tmux", "tmux permissions")] : []),
     { id: "health", icon: Laptop, title: "This device", summary: "Agent, storage and terminals", tone: "ok", body: <SetupHealth /> },
   ];
   // Until toggled, a group is open exactly when it needs action.
@@ -59,11 +65,21 @@ export function SetupSettings() {
 
   return <div className="settings-page setup-settings">
     <div className="setup-settings-intro">
-      <p>Permissions and the tools PzzaCode needs on this machine. Anything that needs you opens here.</p>
-      <button type="button" className="btn btn-sm" onClick={() => window.dispatchEvent(new Event("pzza:start-setup"))}>
-        <RotateCcw size={13} aria-hidden="true" /> Run setup
-      </button>
+      <p>The tools and permissions PzzaCode needs on this machine. Anything that needs you opens here.</p>
+      <div className="setup-settings-actions">
+        {PERMISSIONS_SUPPORTED ? <AllowAllButton controls={controls} /> : null}
+        {PERMISSIONS_SUPPORTED ? <button type="button" className="btn btn-sm" disabled={refreshing} aria-busy={refreshing || undefined}
+          title="Restart this Mac's terminals so they get new permissions. Sessions, folders and recent output come back."
+          onClick={() => { void refreshLocalSessions("manual").catch(() => undefined); }}>
+          {refreshing ? <Loader2 size={13} className="sw-spin" aria-hidden="true" /> : <RefreshCw size={13} aria-hidden="true" />}
+          {refreshing ? "Refreshing sessions…" : "Refresh sessions"}
+        </button> : null}
+        <button type="button" className="btn btn-sm" onClick={() => window.dispatchEvent(new Event("pzza:start-setup"))}>
+          <RotateCcw size={13} aria-hidden="true" /> Run setup
+        </button>
+      </div>
     </div>
+    {PERMISSIONS_SUPPORTED ? <PermissionGuide controls={controls} /> : null}
     <div className="setup-settings-groups">
       {groups.map((group) => {
         const open = isOpen(group);

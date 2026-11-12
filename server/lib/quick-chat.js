@@ -1,36 +1,63 @@
 import { execFile } from "node:child_process";
 import { SSH_TOKEN, shQuote, deviceEnv } from "./shell.js";
 import { tmuxCommand } from "./tmux-client.js";
+import { SESSION_AGENT_IDS, agentBinaryPathRules, sessionAgent, sessionAgentLaunch } from "./session-agents.js";
 
 export const QUICK_CHAT_SESSION = "pzza-quick-chat";
 
-const QUICK_CHAT_AGENTS = ["claude", "codex", "opencode"];
-const isQuickChatAgent = (agent) => QUICK_CHAT_AGENTS.includes(agent);
+const isQuickChatAgent = (agent) => SESSION_AGENT_IDS.includes(agent);
+// Owner records the managed session may carry: an agent with its own launcher,
+// or with none (sessions started before the launcher was recorded).
+const OWNER_CASES = SESSION_AGENT_IDS.map(id => `PZZA_QUICK_CHAT_AGENT=${id}:PZZA_QUICK_CHAT_LAUNCHER=${id}`).join("|");
+const LEGACY_OWNER_CASES = SESSION_AGENT_IDS.map(id => `PZZA_QUICK_CHAT_AGENT=${id}:`).join("|");
 
 export function quickChatCommand(agent, host = "") {
   if (!isQuickChatAgent(agent)) throw new Error("Choose a supported agent.");
   // A fixed name and atomic tmux creation prevent duplicate sessions, even
   // across concurrent clients. The session environment identifies our session.
-  // Every profile launches its CLI directly (claude / codex / opencode).
+  // Every profile launches its CLI directly, in the agent's safe default mode.
   const tmux = tmuxCommand(host);
-  const launcher = agent;
+  const definition = sessionAgent(agent);
+  const { env, argv } = sessionAgentLaunch({ id: agent, mode: definition.defaultMode });
+  const [binary, ...args] = argv;
+  const folders = [...new Set([...definition.installDirs, ".local/bin"])];
+  const candidates = folders.map(folder => `"$HOME"/${shQuote(`${folder}/${binary}`)}`).join(" ");
+  const environment = env.map(([key, value]) => ` -e ${shQuote(`${key}=${value}`)}`).join("");
+  // A binary on PATH can be another tool with the same name (Foundry's forge,
+  // Homebrew's goose), so every PATH entry is tried, then the install folders,
+  // and a candidate counts only when neither its path nor the path it resolves
+  // to is excluded, and one of them matches a required fragment, if any. The
+  // PATH walk splits with tr instead of IFS so a zsh login shell runs it too.
+  const { exclude, require } = agentBinaryPathRules(definition);
+  const fragments = rules => rules.map(rule => `*${shQuote(rule.text)}${rule.end ? "" : "*"}`).join("|");
+  const checks = [
+    ...(exclude.length ? [`for found in "$1" "$real"; do case "$found" in ${fragments(exclude)}) return 1 ;; esac; done`] : []),
+    require.length ? `for found in "$1" "$real"; do case "$found" in ${fragments(require)}) return 0 ;; esac; done; return 1` : "return 0",
+  ];
   const create = `
-  executable=$(command -v ${agent} 2>/dev/null)
+  agent_binary() {
+    [ -f "$1" ] && [ -x "$1" ] || return 1
+    real=$(realpath "$1" 2>/dev/null || readlink -f "$1" 2>/dev/null) || real=$1${checks.map(check => `
+    ${check}`).join("")}
+  }
+  executable=$(printf '%s\\n' "$PATH" | tr ':' '\\n' | while IFS= read -r folder; do
+    if [ "\${folder#/}" != "$folder" ] && agent_binary "$folder"/${shQuote(binary)}; then printf '%s' "$folder"/${shQuote(binary)}; break; fi
+  done)
   if [ -z "$executable" ]; then
-    for candidate in "$HOME/.opencode/bin/${agent}" "$HOME/.local/bin/${agent}"; do
-      if [ -x "$candidate" ]; then executable="$candidate"; break; fi
+    for candidate in ${candidates}; do
+      if agent_binary "$candidate"; then executable="$candidate"; break; fi
     done
   fi
   [ -n "$executable" ] || exit 42
-  ${tmux} new-session -d -s pzza-quick-chat -x 160 -y 45 -c "$HOME" -e PZZA_QUICK_CHAT_AGENT=${agent} -e PZZA_QUICK_CHAT_LAUNCHER=${launcher} -e "PATH=$PATH" sh -c ${shQuote('exec "$1"')} quick-chat "$executable" 2>/dev/null || ${tmux} has-session -t '=pzza-quick-chat' 2>/dev/null || exit 43`;
+  ${tmux} new-session -d -s pzza-quick-chat -x 160 -y 45 -c "$HOME" -e PZZA_QUICK_CHAT_AGENT=${agent} -e PZZA_QUICK_CHAT_LAUNCHER=${agent}${environment} -e "PATH=$PATH" sh -c ${shQuote('exec "$@"')} quick-chat "$executable"${args.map(argument => ` ${shQuote(argument)}`).join("")} 2>/dev/null || ${tmux} has-session -t '=pzza-quick-chat' 2>/dev/null || exit 43`;
   return `command -v tmux >/dev/null 2>&1 || exit 41
 if ! ${tmux} has-session -t '=pzza-quick-chat' 2>/dev/null; then${create}
 fi
 owner=$(${tmux} show-environment -t '=pzza-quick-chat' PZZA_QUICK_CHAT_AGENT 2>/dev/null) || exit 44
 launcher=$(${tmux} show-environment -t '=pzza-quick-chat' PZZA_QUICK_CHAT_LAUNCHER 2>/dev/null || true)
 case "$owner:$launcher" in
-  PZZA_QUICK_CHAT_AGENT=claude:PZZA_QUICK_CHAT_LAUNCHER=claude|PZZA_QUICK_CHAT_AGENT=codex:PZZA_QUICK_CHAT_LAUNCHER=codex|PZZA_QUICK_CHAT_AGENT=opencode:PZZA_QUICK_CHAT_LAUNCHER=opencode) ;;
-  PZZA_QUICK_CHAT_AGENT=claude:|PZZA_QUICK_CHAT_AGENT=codex:|PZZA_QUICK_CHAT_AGENT=opencode:) launcher="PZZA_QUICK_CHAT_LAUNCHER=\${owner#*=}" ;;
+  ${OWNER_CASES}) ;;
+  ${LEGACY_OWNER_CASES}) launcher="PZZA_QUICK_CHAT_LAUNCHER=\${owner#*=}" ;;
   *) exit 44 ;;
 esac
 identity=$(${tmux} display-message -p -t '=pzza-quick-chat:' '#{session_id}:#{session_created}:#{pid}') || exit 45
@@ -74,7 +101,7 @@ if ! ${tmux} has-session -t '=pzza-quick-chat' 2>/dev/null; then exit 0; fi
 owner=$(${tmux} show-environment -t '=pzza-quick-chat' PZZA_QUICK_CHAT_AGENT 2>/dev/null) || exit 44
 launcher=$(${tmux} show-environment -t '=pzza-quick-chat' PZZA_QUICK_CHAT_LAUNCHER 2>/dev/null || true)
 case "$owner:$launcher" in
-  PZZA_QUICK_CHAT_AGENT=claude:PZZA_QUICK_CHAT_LAUNCHER=claude|PZZA_QUICK_CHAT_AGENT=codex:PZZA_QUICK_CHAT_LAUNCHER=codex|PZZA_QUICK_CHAT_AGENT=opencode:PZZA_QUICK_CHAT_LAUNCHER=opencode|PZZA_QUICK_CHAT_AGENT=claude:|PZZA_QUICK_CHAT_AGENT=codex:|PZZA_QUICK_CHAT_AGENT=opencode:) ${tmux} kill-session -t '=pzza-quick-chat' ;;
+  ${OWNER_CASES}|${LEGACY_OWNER_CASES}) ${tmux} kill-session -t '=pzza-quick-chat' ;;
   *) exit 44 ;;
 esac` : verifying ? quickChatAttachmentGuard(body.agent, body.identity, tmux) : quickChatCommand(body.agent, body.host);
   // Explicit empty host always means this device, including receiver mode.
@@ -86,11 +113,7 @@ esac` : verifying ? quickChatAttachmentGuard(body.agent, body.identity, tmux) : 
       if (error) {
         const message = {
           41: "tmux is not installed or is not on this device's PATH.",
-          42: body.agent === "codex"
-            ? "Codex is not installed or is not on this device's PATH."
-            : body.agent === "opencode"
-              ? "OpenCode is not installed or is not on this device's PATH."
-              : "Claude is not installed or is not on this device's PATH.",
+          42: `${sessionAgent(body.agent)?.label ?? "This agent"} is not installed or is not on this device's PATH.`,
           43: "Quick Chat could not start. Check the launcher installation and login on this device.",
           44: "A session named pzza-quick-chat already exists but is not the expected managed Quick Chat session.",
           45: "This Quick Chat conversation ended or was replaced. It cannot be reattached.",

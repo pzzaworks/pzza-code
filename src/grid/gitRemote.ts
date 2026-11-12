@@ -12,6 +12,8 @@ interface RemoteEntry {
   listeners: Set<() => void>;
   timer?: ReturnType<typeof setTimeout>;
   controller?: AbortController;
+  // Set when a poll came due while the window was hidden.
+  paused?: { host: string; path: string };
 }
 const remotes = new Map<string, RemoteEntry>();
 
@@ -21,20 +23,34 @@ async function pollRemote(key: string, host: string, path: string) {
   entry.controller?.abort();
   const controller = new AbortController();
   entry.controller = controller;
-  if (document.visibilityState !== "hidden") {
-    try {
-      const value = await fetchGitRemote(host, path, controller.signal);
-      if (controller.signal.aborted) return;
-      entry.value = value;
-    } catch {
-      if (controller.signal.aborted) return;
-      // Not a repository, or the device is unreachable: show nothing.
-      entry.value = entry.value ?? null;
-    }
-    for (const notify of entry.listeners) notify();
+  // Hidden: no polling until the window shows again (see below).
+  if (document.visibilityState === "hidden") {
+    entry.paused = { host, path };
+    return;
   }
+  try {
+    const value = await fetchGitRemote(host, path, controller.signal);
+    if (controller.signal.aborted) return;
+    entry.value = value;
+  } catch {
+    if (controller.signal.aborted) return;
+    // Not a repository, or the device is unreachable: show nothing.
+    entry.value = entry.value ?? null;
+  }
+  for (const notify of entry.listeners) notify();
   if (remotes.get(key) === entry) entry.timer = setTimeout(() => void pollRemote(key, host, path), REMOTE_POLL_MS);
 }
+
+// Back from hidden: refresh what was paused at once.
+if (typeof document !== "undefined") document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden") return;
+  for (const [key, entry] of remotes) {
+    if (!entry.paused) continue;
+    const { host, path } = entry.paused;
+    entry.paused = undefined;
+    void pollRemote(key, host, path);
+  }
+});
 
 function subscribeRemote(key: string, host: string, path: string, listener: () => void): () => void {
   let entry = remotes.get(key);

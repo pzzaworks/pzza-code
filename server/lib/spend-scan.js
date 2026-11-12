@@ -1,137 +1,18 @@
-// Estimated spend from local Claude/Codex transcripts (ccusage-style) plus
-// billed OpenCode session costs from its local database. Scans JSONL
-// transcripts, prices token buckets per model, and caches the result;
-// warmed in the background so the usage panel never waits on the scan.
+// Spend per agent from this device's local agent data (ccusage-style): every
+// usage adapter (agent-usage/) contributes its tokens per day and model, priced
+// from the local rate table or taken as the cost the agent recorded itself.
+// Transcript files are parsed incrementally and cached on disk; databases are
+// queried directly. Runs in the scan worker, warmed in the background so the
+// usage panel never waits on it.
+import crypto from "node:crypto";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { STATE_DIR } from "./config.js";
-import { discoverAccounts } from "./accounts.js";
+import { usageAdapter, usageRoots } from "./agent-usage/index.js";
+import { bucketCost } from "./agent-usage/pricing.js";
+import { COST_SLOT, UNRECORDED_SLOT, hasRecordedCost, localDay, mergeDays, tokenSum } from "./agent-usage/records.js";
 
-// USD per million (input, output[, cache read]) tokens. The optional third
-// rate overrides the default 10%-of-input cache-read price for models that
-// publish their own cache-read rate.
-const PRICING = {
-  "claude-fable-5-1": [10.0, 50.0, 0.25],
-  "claude-mythos-5-1": [10.0, 50.0, 0.25],
-  "claude-fable-5": [10.0, 50.0],
-  "claude-mythos-5": [10.0, 50.0],
-  "claude-opus-5-5": [4.0, 20.0, 0.2],
-  "claude-opus-5": [5.0, 25.0],
-  "claude-opus-4-8": [5.0, 25.0],
-  "claude-opus-4-7": [5.0, 25.0],
-  "claude-opus-4-6": [5.0, 25.0],
-  "claude-opus-4-5": [5.0, 25.0],
-  "claude-sonnet-5-5": [2.0, 10.0, 0.2],
-  "claude-sonnet-5": [3.0, 15.0],
-  "claude-sonnet-4-6": [3.0, 15.0],
-  "claude-sonnet-4-5": [3.0, 15.0],
-  "claude-haiku-5-5": [0.1, 0.5],
-  "claude-haiku-4-5": [1.0, 5.0],
-  // Standard short-context API rates, verified 2026-09-10:
-  // https://developers.openai.com/api/docs/pricing
-  "gpt-6-astra": [10.0, 50.0],
-  "gpt-5.6-sol": [4.0, 20.0],
-  "gpt-5.6-terra": [2.0, 12.0],
-  "gpt-5.6-luna": [0.2, 1.2],
-  "gpt-5.5": [5.0, 30.0],
-  "gpt-5.4": [2.5, 15.0],
-  "gpt-5.4-mini": [0.75, 4.5],
-  "gpt-5.4-nano": [0.2, 1.25],
-  "gpt-5.3-codex": [1.75, 14.0],
-  "gpt-5.2-codex": [1.75, 14.0],
-  "gpt-5.2": [1.75, 14.0],
-  "gpt-5.1-codex": [1.25, 10.0],
-  "gpt-5.1-codex-mini": [0.25, 2.0],
-  "gpt-5.1": [1.25, 10.0],
-  "gpt-5-codex": [1.25, 10.0],
-  "gpt-5": [1.25, 10.0],
-  "gpt-5-mini": [0.25, 2.0],
-  "gpt-5-nano": [0.05, 0.4],
-};
-const PROMO_PRICING = { "claude-sonnet-5": [[2.0, 10.0], "2026-08-31"] };
-const CACHE_READ_RATE = 0.1;
-const CACHE_WRITE_5M_RATE = 1.25;
-const CACHE_WRITE_1H_RATE = 2.0;
-const CODEX_COUNTERS = ["input_tokens", "cached_input_tokens", "output_tokens"];
 const SPEND_WINDOW_DAYS = 30;
-
-
-function modelRates(model, day) {
-  const name = String(model || "").split("[")[0];
-  const candidates = [name];
-  const parts = name.split("-");
-  if (parts.length >= 2 && /^\d{8}$/.test(parts[parts.length - 1])) {
-    candidates.push(parts.slice(0, -1).join("-"));
-  }
-  for (const c of candidates) {
-    const promo = PROMO_PRICING[c];
-    if (promo && day <= promo[1]) return promo[0];
-    if (PRICING[c]) return PRICING[c];
-  }
-  return null;
-}
-
-export function bucketCost(b, model, day) {
-  const rates = modelRates(model, day);
-  if (!rates) return null;
-  const [ri, wo, cacheRead = ri * CACHE_READ_RATE] = rates;
-  return (
-    (b[0] * ri +
-      b[1] * wo +
-      b[2] * cacheRead +
-      b[3] * ri * CACHE_WRITE_5M_RATE +
-      b[4] * ri * CACHE_WRITE_1H_RATE) /
-    1_000_000
-  );
-}
-
-function walkJsonl(dir) {
-  const out = [];
-  const stack = [dir];
-  while (stack.length) {
-    let entries;
-    try {
-      entries = fs.readdirSync(stack.pop(), { withFileTypes: true });
-    } catch {
-      continue;
-    }
-    for (const e of entries) {
-      const p = path.join(e.parentPath || e.path || dir, e.name);
-      if (e.isDirectory()) stack.push(p);
-      else if (e.name.endsWith(".jsonl")) out.push(p);
-    }
-  }
-  return out;
-}
-
-function transcriptFiles(provider, dir) {
-  const roots = provider === "claude" ? ["projects"] : ["sessions", "archived_sessions"];
-  const files = [];
-  for (const r of roots) files.push(...walkJsonl(path.join(dir, r)));
-  return files;
-}
-
-function recordDay(rec) {
-  const d = new Date(rec.timestamp);
-  if (Number.isNaN(d.getTime())) return null;
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-}
-
-function addBuckets(days, day, model, values) {
-  const d = (days[day] = days[day] || {});
-  const b = (d[model] = d[model] || [0, 0, 0, 0, 0]);
-  for (let i = 0; i < values.length; i++) b[i] += values[i];
-}
-
-// Sum one file's day -> model -> buckets into the account-wide accumulator.
-function mergeDays(into, from) {
-  for (const [day, models] of Object.entries(from)) {
-    for (const [model, buckets] of Object.entries(models)) {
-      addBuckets(into, day, model, buckets);
-    }
-  }
-}
 
 // Per-file parse cache persisted to disk, keyed by absolute path, each entry
 // tagged with the file's mtime + size. It survives restarts, so after the first
@@ -141,12 +22,6 @@ function mergeDays(into, from) {
 // or older-format cache just means a cold scan.
 const CACHE_FILE = path.join(STATE_DIR, "spend-cache.json");
 const CACHE_VERSION = 2;
-// Cap on the dedup keys persisted per Claude file for incremental resumes. A
-// retry is logged right next to its original, so the last few hundred keys
-// are all a resume ever needs; a cold parse still dedups the whole file.
-const SEEN_KEEP = 200;
-// Bytes per read: bounds peak memory per file and the sync work per tick.
-const READ_CHUNK = 1024 * 1024;
 let memCache = null;
 
 function loadFileCache() {
@@ -172,184 +47,58 @@ function saveFileCache(files) {
   }
 }
 
-// Stream `file` from byte `start`, calling onLine(line) for every complete
-// (newline-terminated) line. Chunks are split on the raw bytes, so a multi-byte
-// character straddling two reads is decoded intact and only the unfinished tail
-// is carried between reads. Resolves with the byte offset just past the last
-// line consumed; a trailing line without a newline is consumed only if it is
-// already valid JSON (a fully written record awaiting its "\n"), otherwise it
-// is left for the next scan, which resumes from the returned offset.
-async function readLines(file, start, onLine) {
-  let consumed = start;
-  let parts = [];
-  let bytes = 0;
-  const stream = fs.createReadStream(file, { start, highWaterMark: READ_CHUNK });
-  for await (const chunk of stream) {
-    let from = 0;
-    for (let nl = chunk.indexOf(10); nl !== -1; nl = chunk.indexOf(10, from)) {
-      const part = chunk.subarray(from, nl);
-      if (parts.length) {
-        parts.push(part);
-        onLine(Buffer.concat(parts, bytes + part.length).toString("utf8"));
-      } else onLine(part.toString("utf8"));
-      consumed += bytes + part.length + 1;
-      parts = [];
-      bytes = 0;
-      from = nl + 1;
-    }
-    if (from < chunk.length) {
-      const part = chunk.subarray(from);
-      parts.push(part);
-      bytes += part.length;
-    }
-  }
-  if (bytes) {
-    const tail = Buffer.concat(parts, bytes).toString("utf8");
-    let complete = false;
-    try {
-      JSON.parse(tail);
-      complete = true;
-    } catch {
-      /* partial write - re-read from `consumed` next time */
-    }
-    if (complete) {
-      onLine(tail);
-      consumed += bytes;
-    }
-  }
-  return consumed;
-}
+// Bytes of the parsed region fingerprinted at each end (see parsedMark).
+const MARK_BYTES = 256;
 
-// The transcript's working folder and its first and last priced record, kept
-// in the resume state so the per-session view (session-cost.js) can still read
-// them after an incremental resume.
-function sessionState(state) {
-  const session = state && state.session && typeof state.session === "object" ? state.session : {};
-  return {
-    cwd: typeof session.cwd === "string" ? session.cwd : null,
-    firstAt: Number.isFinite(session.firstAt) ? session.firstAt : null,
-    lastAt: Number.isFinite(session.lastAt) ? session.lastAt : null,
-    // The model of the most recent reply: what the session is running now.
-    lastModel: typeof session.lastModel === "string" ? session.lastModel : null,
-  };
-}
-
-function noteSession(session, rec, cwd, model) {
-  if (typeof cwd === "string" && cwd && !session.cwd) session.cwd = cwd;
-  const at = Date.parse(rec.timestamp);
-  if (!Number.isFinite(at)) return;
-  if (session.firstAt === null || at < session.firstAt) session.firstAt = at;
-  if (session.lastAt === null || at >= session.lastAt) {
-    session.lastAt = at;
-    if (typeof model === "string" && model) session.lastModel = model;
+// A fingerprint of the bytes already parsed: the first and the last
+// MARK_BYTES before `parsedBytes`. A file that was replaced or rewritten and
+// has since grown past the old offset (log rotation, a session file written
+// anew) no longer matches, so it is parsed from scratch instead of resumed
+// from an offset inside unrelated content.
+async function parsedMark(file, parsedBytes) {
+  const handle = await fs.promises.open(file, "r");
+  try {
+    const head = Math.min(MARK_BYTES, parsedBytes);
+    const tailStart = Math.max(head, parsedBytes - MARK_BYTES);
+    const buffer = Buffer.alloc(head + (parsedBytes - tailStart));
+    const { bytesRead: headRead } = await handle.read(buffer, 0, head, 0);
+    const { bytesRead: tailRead } = await handle.read(buffer, head, parsedBytes - tailStart, tailStart);
+    if (headRead + tailRead !== buffer.length) return null;
+    return crypto.createHash("sha256").update(buffer).digest("hex");
+  } finally {
+    await handle.close();
   }
 }
 
-// Parse a Claude transcript (from byte `start`, continuing `state`) into
-// day -> model -> buckets. Deduplicates by (message id, requestId) within the
-// file (retries logged twice); each file is parsed at most once and the result
-// is cached, so cross-file dupes - which Claude Code does not actually produce
-// (a session appends to its own file) - are not worth a global pass.
-async function parseClaudeFile(file, start, days, state) {
-  const seen = new Set(state && Array.isArray(state.seen) ? state.seen : []);
-  const session = sessionState(state);
-  const parsedBytes = await readLines(file, start, (line) => {
-    if (!line.includes('"usage"')) return;
-    let rec;
-    try {
-      rec = JSON.parse(line);
-    } catch {
-      return;
-    }
-    const msg = rec.message;
-    if (!msg || typeof msg !== "object") return;
-    const usage = msg.usage;
-    const model = msg.model;
-    if (!usage || typeof usage !== "object" || !model || String(model).startsWith("<")) return;
-    const key = `${msg.id} ${rec.requestId}`;
-    if (seen.has(key)) return;
-    seen.add(key);
-    const day = recordDay(rec);
-    if (!day) return;
-    noteSession(session, rec, rec.cwd, model);
-    const created = usage.cache_creation || {};
-    let five = created.ephemeral_5m_input_tokens;
-    const hour = created.ephemeral_1h_input_tokens;
-    if (five == null && hour == null) five = usage.cache_creation_input_tokens;
-    addBuckets(days, day, model, [
-      usage.input_tokens || 0,
-      usage.output_tokens || 0,
-      usage.cache_read_input_tokens || 0,
-      five || 0,
-      hour || 0,
-    ]);
-  });
-  // Sets iterate in insertion order, so the slice keeps the most recent keys.
-  const keys = [...seen];
-  return { parsedBytes, state: { seen: keys.slice(Math.max(0, keys.length - SEEN_KEEP)), session } };
-}
-
-// Parse a Codex transcript. token_count events carry running totals, so the
-// last totals (`previous`) and the current `model` are the resume state.
-async function parseCodexFile(file, start, days, state) {
-  let model = state && typeof state.model === "string" ? state.model : null;
-  let previous =
-    state && Array.isArray(state.previous) && state.previous.length === CODEX_COUNTERS.length
-      ? state.previous.map(Number)
-      : null;
-  const session = sessionState(state);
-  const parsedBytes = await readLines(file, start, (line) => {
-    if (!line.includes('"turn_context"') && !line.includes('"token_count"')) return;
-    let rec;
-    try {
-      rec = JSON.parse(line);
-    } catch {
-      return;
-    }
-    const payload = rec.payload;
-    if (!payload || typeof payload !== "object") return;
-    if (rec.type === "turn_context") {
-      if (typeof payload.model === "string") model = payload.model;
-      if (typeof payload.cwd === "string" && payload.cwd && !session.cwd) session.cwd = payload.cwd;
-      return;
-    }
-    if (rec.type !== "event_msg" || payload.type !== "token_count") return;
-    const total = (payload.info || {}).total_token_usage;
-    if (!total || typeof total !== "object") return;
-    const current = CODEX_COUNTERS.map((n) => Number(total[n] || 0));
-    const delta =
-      previous === null || current.some((now, i) => now < previous[i])
-        ? current
-        : current.map((now, i) => now - previous[i]);
-    previous = current;
-    const day = recordDay(rec);
-    if (!model || !day || !delta.some((x) => x)) return;
-    noteSession(session, rec, undefined, model);
-    const cached = Math.min(delta[1], delta[0]);
-    addBuckets(days, day, model, [delta[0] - cached, delta[2], cached, 0, 0]);
-  });
-  return { parsedBytes, state: { model, previous, session } };
-}
-
-// Produce the cache entry for `file`: untouched files are reused as-is, files
-// that only grew are resumed from the last complete line, anything else (shrunk,
-// rewritten, mtime moved backwards, unusable state) is parsed from scratch.
-// Returns null when the file cannot be read, so it is retried next scan.
+// Produce the cache entry for `file` with the agent's transcript parser:
+// untouched files are reused as-is, files that only grew are resumed from the
+// last complete line, anything else (shrunk, replaced, rewritten, mtime moved
+// backwards, unusable state) is parsed from scratch. Returns null when the file
+// cannot be read or the agent has no transcript parser, so it is retried next scan.
 export async function parseTranscript(provider, file, st, prev) {
-  const parse = provider === "claude" ? parseClaudeFile : parseCodexFile;
+  const adapter = usageAdapter(provider);
+  const parse = adapter?.parse;
+  if (!parse) return null;
+  if (prev && prev.parsedBytes === st.size && prev.mtimeMs === st.mtimeMs && prev.days && typeof prev.days === "object") return prev;
+  // A file the agent rewrites whole (rather than appends to) is never resumed.
   const canResume =
+    !adapter.wholeFile &&
     prev &&
     typeof prev.parsedBytes === "number" &&
     prev.parsedBytes <= st.size &&
     prev.mtimeMs <= st.mtimeMs &&
     prev.days &&
     typeof prev.days === "object";
-  if (canResume && prev.parsedBytes === st.size && prev.mtimeMs === st.mtimeMs) return prev;
-  if (canResume) {
+  // Resuming needs proof the parsed bytes are still the same file's: its
+  // inode and the fingerprint of what was parsed.
+  const sameFile = canResume && prev.ino === st.ino && typeof prev.mark === "string" &&
+    await parsedMark(file, prev.parsedBytes).then((mark) => mark === prev.mark, () => false);
+  if (sameFile) {
     try {
       const days = structuredClone(prev.days);
       const { parsedBytes, state } = await parse(file, prev.parsedBytes, days, prev.state);
-      return { mtimeMs: st.mtimeMs, size: st.size, parsedBytes, days, state };
+      const mark = await parsedMark(file, parsedBytes);
+      return { mtimeMs: st.mtimeMs, size: st.size, ino: st.ino, parsedBytes, mark, days, state };
     } catch {
       /* fall through to a full parse */
     }
@@ -357,7 +106,8 @@ export async function parseTranscript(provider, file, st, prev) {
   try {
     const days = {};
     const { parsedBytes, state } = await parse(file, 0, days, null);
-    return { mtimeMs: st.mtimeMs, size: st.size, parsedBytes, days, state };
+    const mark = await parsedMark(file, parsedBytes);
+    return { mtimeMs: st.mtimeMs, size: st.size, ino: st.ino, parsedBytes, mark, days, state };
   } catch {
     return null;
   }
@@ -367,137 +117,81 @@ function emptySpendWindow() {
   return { cost: 0, pricedCost: 0, tokens: 0, unpricedTokens: 0, unpricedModels: [] };
 }
 
-// Billed OpenCode spend from its local session database (per-session cost and
-// token totals with creation timestamps). Read-only and best-effort: a
-// missing, locked, or unreadable database simply yields no entry instead of
-// a misleading zero row.
-function opencodeDbPath() {
-  const home = os.homedir();
-  const candidates = [
-    path.join(process.env.XDG_DATA_HOME || path.join(home, ".local", "share"), "opencode", "opencode.db"),
-    path.join(home, ".opencode", "opencode.db"),
-  ];
-  for (const file of candidates) {
-    try {
-      if (fs.statSync(file).isFile()) return file;
-    } catch {
-      /* try the next location */
-    }
-  }
-  return null;
+function markUnpriced(total, tokens, model) {
+  total.unpricedTokens += tokens;
+  if (!total.unpricedModels.includes(model)) total.unpricedModels.push(model);
+  total.unpricedModels.sort();
 }
 
-async function opencodeSpendEntry(acc, now, dayStr, dayToday, dayYesterday, horizon) {
-  const dbPath = opencodeDbPath();
-  if (!dbPath) return null;
-  let rows;
-  try {
-    const { DatabaseSync } = await import("node:sqlite");
-    const db = new DatabaseSync(dbPath, { readonly: true });
-    try {
-      rows = db
-        .prepare("SELECT time_created AS t, cost AS c, tokens_input AS i, tokens_output AS o, tokens_reasoning AS r FROM session WHERE time_created >= ?")
-        .all(horizon);
-    } finally {
-      db.close();
-    }
-  } catch {
-    return null;
-  }
-  const byDay = new Map();
-  for (const row of rows || []) {
-    const t = Number(row?.t);
-    if (!Number.isFinite(t)) continue;
-    const day = dayStr(t);
-    const cost = Number(row?.c) || 0;
-    const tokens = (Number(row?.i) || 0) + (Number(row?.o) || 0) + (Number(row?.r) || 0);
-    if (!(cost > 0 || tokens > 0)) continue;
-    const entry = byDay.get(day) ?? { cost: 0, tokens: 0 };
-    entry.cost += cost;
-    entry.tokens += tokens;
-    byDay.set(day, entry);
-  }
-  const winOf = (days) => {
-    const win = emptySpendWindow();
-    for (const day of days) {
-      const entry = byDay.get(day);
-      if (!entry) continue;
-      win.cost += entry.cost;
-      win.pricedCost += entry.cost;
-      win.tokens += entry.tokens;
-    }
-    return win;
-  };
-  const inWindow = [...byDay.keys()].filter((day) => new Date(`${day}T00:00:00`).getTime() >= horizon);
-  const series = [];
-  for (let i = SPEND_WINDOW_DAYS - 1; i >= 0; i--) {
-    const day = dayStr(now - i * 86400000);
-    const entry = byDay.get(day);
-    series.push({ day, ...emptySpendWindow(), ...(entry ? { cost: entry.cost, pricedCost: entry.cost, tokens: entry.tokens } : null) });
-  }
-  return {
-    provider: acc.provider,
-    label: acc.label,
-    pricingBasis: "opencode-billed",
-    today: winOf([dayToday]),
-    yesterday: winOf([dayYesterday]),
-    window: winOf(inWindow),
-    days: series,
-  };
-}
-
-function addSpend(total, buckets, model, day) {
-  const tokens = buckets.reduce((a, b) => a + b, 0);
-  if (!tokens) return;
-  const cost = bucketCost(buckets, model, day);
+// Adds one day's buckets for one model: the cost the agent recorded, or the
+// tokens priced at the model's rates. Tokens without either stay unpriced.
+export function addSpend(total, buckets, model, day) {
+  const tokens = tokenSum(buckets);
+  const recorded = hasRecordedCost(buckets);
+  // An agent that records cost but not tokens (Crush) still has spend.
+  if (!tokens && !(recorded && buckets[COST_SLOT] > 0)) return;
   total.tokens += tokens;
-  if (cost === null) {
-    total.unpricedTokens += tokens;
-    if (!total.unpricedModels.includes(model)) total.unpricedModels.push(model);
-    total.unpricedModels.sort();
+  if (recorded) {
+    total.pricedCost += buckets[COST_SLOT];
+    if (buckets[UNRECORDED_SLOT] > 0) markUnpriced(total, buckets[UNRECORDED_SLOT], model);
   } else {
-    total.pricedCost += cost;
+    const cost = bucketCost(buckets, model, day);
+    if (cost === null) markUnpriced(total, tokens, model);
+    else total.pricedCost += cost;
   }
   // A known subtotal is useful, but must never masquerade as a complete total.
   total.cost = total.unpricedTokens ? null : total.pricedCost;
 }
 
+// One adapter root's day -> model -> buckets for the window, or null when its
+// data could not be read. Transcript files go through the parse cache.
+async function rootDays(adapter, root, horizon, cache, nextCache, changes) {
+  if (adapter.records) return adapter.records(root, horizon);
+  const days = {};
+  // A session can exist as several files (Gemini CLI copies its old project
+  // folders when it renames them); such copies share a sessionKey and only the
+  // most complete one counts.
+  const sessions = new Map();
+  for (const file of adapter.transcripts(root)) {
+    let st;
+    try {
+      st = fs.statSync(file);
+    } catch {
+      continue;
+    }
+    if (st.mtimeMs < horizon) continue; // too old to touch the 30-day window
+    // Reuse the parsed result unless the file changed. Only the bytes an
+    // actually-changed file (essentially just the active transcript) gained
+    // are read, so a huge history is streamed in full only once.
+    const entry = await parseTranscript(adapter.id, file, st, cache[file]);
+    if (!entry) continue;
+    if (entry !== cache[file]) changes.count++;
+    nextCache[file] = entry;
+    const key = entry.state?.sessionKey;
+    if (typeof key !== "string" || !key) mergeDays(days, entry.days);
+    else if (!sessions.has(key) || sessions.get(key).parsedBytes < entry.parsedBytes) sessions.set(key, entry);
+  }
+  for (const entry of sessions.values()) mergeDays(days, entry.days);
+  return days;
+}
+
 // All discovery, parsing, and disk cache work runs in the scan worker.
 export async function scanSpend(now) {
-  const dayStr = (ms) => {
-    const d = new Date(ms);
-    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-  };
-  const dayToday = dayStr(now);
-  const dayYesterday = dayStr(now - 86400000);
+  const dayToday = localDay(now);
+  const dayYesterday = localDay(now - 86400000);
   const horizon = now - SPEND_WINDOW_DAYS * 86400000;
 
   const cache = loadFileCache();
   const nextCache = {};
+  // Whether any file's entry changed, so an idle rescan skips rewriting the
+  // (whole-history) cache file.
+  const changes = { count: 0 };
   const data = [];
-  for (const acc of discoverAccounts()) {
-    if (acc.provider === "opencode") {
-      const entry = await opencodeSpendEntry(acc, now, dayStr, dayToday, dayYesterday, horizon);
-      if (entry) data.push(entry);
-      continue;
-    }
-    const days = {};
-    for (const file of transcriptFiles(acc.provider, acc.dir)) {
-      let st;
-      try {
-        st = fs.statSync(file);
-      } catch {
-        continue;
-      }
-      if (st.mtimeMs < horizon) continue; // too old to touch the 30-day window
-      // Reuse the parsed result unless the file changed. Only the bytes an
-      // actually-changed file (essentially just the active transcript) gained
-      // are read, so a huge history is streamed in full only once.
-      const entry = await parseTranscript(acc.provider, file, st, cache[file]);
-      if (!entry) continue;
-      nextCache[file] = entry;
-      mergeDays(days, entry.days);
-    }
+  for (const root of usageRoots()) {
+    const adapter = usageAdapter(root.provider);
+    if (!adapter) continue;
+    const days = await rootDays(adapter, root, horizon, cache, nextCache, changes);
+    if (!days) continue;
     const win = { today: emptySpendWindow(), yesterday: emptySpendWindow(), window: emptySpendWindow() };
     for (const [day, models] of Object.entries(days)) {
       const inWindow = new Date(`${day}T00:00:00`).getTime() >= horizon;
@@ -507,28 +201,32 @@ export async function scanSpend(now) {
         if (inWindow) addSpend(win.window, buckets, model, day);
       }
     }
+    // Agents without a signed-in account card are listed only when they did
+    // something in the window, so an installed but idle agent adds no row.
+    if (!adapter.listWhenIdle && !win.window.tokens && !win.window.pricedCost) continue;
     // Per-day totals across models for the trailing window (oldest first), for
     // the usage trend sparkline. Days with no activity are filled in as zero so
     // the bars line up on a calendar.
     const series = [];
     for (let i = SPEND_WINDOW_DAYS - 1; i >= 0; i--) {
-      const day = dayStr(now - i * 86400000);
+      const day = localDay(now - i * 86400000);
       const total = emptySpendWindow();
-      for (const [model, buckets] of Object.entries(days[day] || {})) {
-        addSpend(total, buckets, model, day);
-      }
+      for (const [model, buckets] of Object.entries(days[day] || {})) addSpend(total, buckets, model, day);
       series.push({ day, ...total });
     }
     data.push({
-      provider: acc.provider,
-      label: acc.label,
-      pricingBasis: "standard-api-short-context",
+      provider: adapter.id,
+      label: root.label,
+      pricingBasis: adapter.pricingBasis,
+      ...(adapter.tracksTokens === false ? { tokensTracked: false } : {}),
       ...win,
       days: series,
     });
   }
   // nextCache holds only the files seen this pass, so deleted / aged-out files
-  // drop out and the cache never grows without bound.
-  saveFileCache(nextCache);
+  // drop out and the cache never grows without bound. Every kept entry is the
+  // cached one when nothing changed, so equal counts mean no file dropped out.
+  if (changes.count || Object.keys(nextCache).length !== Object.keys(cache).length) saveFileCache(nextCache);
+  else memCache = nextCache;
   return data;
 }

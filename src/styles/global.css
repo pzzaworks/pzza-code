@@ -139,6 +139,14 @@ button {
   align-items: center;
   gap: 3px;
 }
+/* Tool groups (work tools | status | settings) split by the same short
+   divider as a tile header's button groups. */
+.topbar-tools-sep { flex: 0 0 auto; width: 1px; height: 14px; margin: 0 5px; background: var(--border); }
+/* New session keeps the bordered look of a .btn, as an icon-only square. */
+.topbar [data-tour="new-session"] > .icon-btn { width: 30px; height: 30px; margin-left: 4px; border: 1px solid var(--hairline-strong); border-radius: var(--r-md); background: transparent; }
+.topbar [data-tour="new-session"] > .icon-btn:hover:not(:disabled) { border-color: var(--muted); background: var(--surface-alt); }
+:root[data-appearance="light"] .topbar [data-tour="new-session"] > .icon-btn { background: var(--bg); border-radius: var(--r-sm); }
+:root[data-appearance="light"] .topbar [data-tour="new-session"] > .icon-btn:hover:not(:disabled) { background: var(--hover); }
 /* The tool cluster: inline on wide windows, collapsed behind a menu button and
    opened as a full-width bar under the top bar on narrow ones. It is rendered
    once and only repositioned, so each tool keeps its own dropdown and state. */
@@ -196,14 +204,22 @@ button {
   :root[data-transparency="on"] .topbar-tools::before {
     content: "";
     position: absolute;
-    inset: -1px;
+    /* Inside the border: the card is a stacking context, so a layer reaching
+       over the edge would paint on top of its border and hide it. */
+    inset: 0;
     z-index: -1;
-    border-radius: inherit;
+    border-radius: calc(var(--r-lg) - 1px);
     background: var(--glass-bg);
     -webkit-backdrop-filter: var(--glass-filter);
     backdrop-filter: var(--glass-filter);
     pointer-events: none;
   }
+  /* The card's fade-in would make the card the backdrop root of its own glass
+     layer while it runs, so WebKit would open it unblurred. The glass layer
+     and the tools fade in on their own instead; the card never animates. */
+  :root[data-transparency="on"] .topbar-tools { animation: none; }
+  :root[data-transparency="on"] .topbar-tools::before,
+  :root[data-transparency="on"] .topbar-tools > * { animation: menu-in 0.14s ease-out; }
 }
 .icon-btn-accent {
   color: var(--accent-foreground, var(--accent));
@@ -318,7 +334,7 @@ button {
 }
 .ws-tab-active {
   background: var(--bg);
-  border-color: var(--divider);
+  border-color: var(--hairline-strong);
   color: var(--text);
   margin-bottom: -1px;
 }
@@ -513,6 +529,87 @@ button {
   color: var(--muted);
   font-family: ui-monospace, Menlo, monospace;
 }
+/* Select lists: the menu frames a scrolling listbox (and a search field). */
+.cselect-menu.cselect-menu-list {
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+  overflow: hidden;
+}
+.cselect-menu.cselect-menu-search { max-height: 300px; }
+.cselect-list {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  /* No top padding: a sticky group header then sits flush with the top edge. */
+  padding: 0 5px 5px;
+  outline: none;
+}
+.cselect-list > .cselect-item:first-child { margin-top: 5px; }
+.cselect-list.cselect-list-empty { flex: 0 0 auto; padding: 0; }
+.cselect-list .cselect-item { user-select: none; -webkit-user-select: none; }
+.cselect-item-active { background: var(--surface-alt); }
+/* While the keyboard moves the highlight, a resting pointer adds no second one. */
+.cselect-list.cselect-keys .cselect-item:not(.cselect-item-active):not(.cselect-item-on):hover { background: transparent; }
+.cselect-search {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  height: 30px;
+  margin: 5px 5px 0;
+  padding: 0 9px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-sm);
+  background: var(--bg);
+  color: var(--muted);
+  cursor: text;
+}
+.cselect-search:focus-within { border-color: var(--hairline-strong); }
+.cselect-search input {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  padding: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: var(--fs-md);
+}
+.cselect-search input::placeholder { color: var(--muted); }
+.cselect-group + .cselect-group, .cselect-item + .cselect-group, .cselect-group + .cselect-item { margin-top: 4px; }
+.cselect-group-label {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  margin: 0 -5px;
+  padding: 8px 15px 4px;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+:root[data-transparency="on"] .cselect-group-label {
+  background: var(--glass-bg);
+  -webkit-backdrop-filter: var(--glass-filter);
+  backdrop-filter: var(--glass-filter);
+}
+.cselect-empty {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 14px 10px;
+  color: var(--muted);
+  font-size: var(--fs-md);
+}
+:root[data-appearance="light"] .cselect-search { background: var(--input); border-color: var(--hairline-strong); }
+:root[data-appearance="light"] .cselect-item-active:not(.cselect-item-on) { background: var(--hover); }
 .icon-choice {
   height: 34px;
   display: inline-flex;
@@ -632,6 +729,11 @@ button {
   color: var(--muted);
   padding: 5px 10px 7px;
 }
+/* A dropdown's header row: Port manager's title on the left, the panel's own
+   actions on the right. Inside a padded panel the title drops its own inset so
+   it lines up with the content, as Port manager's does in its compact panel. */
+.menu-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; min-height: 24px; }
+.menu-head > .menu-head-title { flex: 1 1 auto; min-width: 0; max-width: none; padding: 0; overflow: hidden; text-overflow: ellipsis; }
 .menu-head-ws {
   min-width: 0;
   overflow: hidden;
@@ -1628,6 +1730,17 @@ html.is-resizing-y, html.is-resizing-y * { cursor: row-resize !important; user-s
 .empty-session-create:hover { transform: translateY(-1px); }
 .empty-session-create:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
 @keyframes empty-session-enter { from { opacity: 0; transform: translateY(8px) scale(.98); } to { opacity: 1; transform: none; } }
+/* In semi-transparent mode the window's glass is its ::before layer, and an
+   opacity animation on the window (kept in effect by its fill) would make the
+   window that layer's backdrop root: WebKit would paint the glass unblurred.
+   The window only rises; its glass and its content fade in on their own. */
+@keyframes empty-session-rise { from { transform: translateY(8px) scale(.98); } to { transform: none; } }
+@keyframes empty-session-fade { from { opacity: 0; } }
+@media (prefers-reduced-motion: no-preference) {
+  html[data-transparency="on"] .tile.empty-session-window { animation-name: empty-session-rise; }
+  html[data-transparency="on"] .tile.empty-session-window::before,
+  html[data-transparency="on"] .tile.empty-session-window > * { animation: empty-session-fade 220ms ease-out backwards; }
+}
 @media (prefers-reduced-motion: reduce) {
   .tile.empty-session-window { animation: none; }
   .grid-empty .empty-session-create { transition: none; }
@@ -1676,8 +1789,7 @@ html.is-resizing-y, html.is-resizing-y * { cursor: row-resize !important; user-s
   white-space: nowrap;
   overflow: hidden;
 }
-.tile-strip-path,
-.tile-strip-command {
+.tile-strip-path {
   font-family: ui-monospace, "SF Mono", Menlo, monospace;
   font-size: var(--fs-sm);
 }
@@ -1709,49 +1821,19 @@ html.is-resizing-y, html.is-resizing-y * { cursor: row-resize !important; user-s
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.tile-strip-running {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  /* The logo and command never shrink; the folder and session name give way. */
-  flex: 0 0 auto;
-}
-.tile-strip-logo { flex: 0 0 auto; margin-right: -2px; }
-/* Plain muted text, no pill. */
-.tile-strip-command {
-  flex: 0 0 auto;
-  color: var(--muted);
-  max-width: 16ch;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.tile-strip-agent {
-  min-width: 0;
-  max-width: 20ch;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
 .tile-strip-path ~ .tile-strip-time { margin-left: 0; }
 .tile-strip-time {
   flex: 0 0 auto;
   margin-left: auto;
   font-variant-numeric: tabular-nums;
 }
-/* A narrowing tile keeps the branch and the folder readable. The agent label
-   goes first (its logo stays), then the start time and the tmux session, then
-   the command text, and in the tightest tiles the running logo; the push and
+/* A narrowing tile keeps the branch and the folder readable. The start time
+   and the tmux session go first; the push and
    pull counts and the pull request number leave the screen but stay in the
    branch button's name and tooltip. */
-@container tile (max-width: 640px) {
-  .tile-strip-agent { display: none; }
-}
 @container tile (max-width: 560px) {
   .tile-strip-time,
   .tile-strip-target { display: none; }
-}
-@container tile (max-width: 340px) {
-  .tile-strip-command { display: none; }
-  .tile-strip-logo { margin-right: 0; }
 }
 @container tile (max-width: 280px) {
   .tile-strip { gap: 6px; padding-left: 8px; }
@@ -1766,21 +1848,9 @@ html.is-resizing-y, html.is-resizing-y * { cursor: row-resize !important; user-s
   }
 }
 @container tile (max-width: 200px) {
-  .tile-strip-running { display: none; }
   /* The small icon buttons around the branch tighten so its name stays readable. */
   .tile-strip .tile-strip-git { gap: 2px; }
   .tile-strip :is(.tile-strip-review, .tile-strip-branch-btn, .tile-strip-ci-send, button.tile-strip-shared, .tile-strip-wt-action) { padding-left: 1px; padding-right: 1px; margin-left: 0; margin-right: 0; }
-}
-/* Agent session cost and run time in the footer: muted, and the first item
-   a narrowing tile drops, before the agent label. */
-.tile-strip-cost {
-  flex: 0 0 auto;
-  color: var(--muted);
-  font-variant-numeric: tabular-nums;
-  cursor: default;
-}
-@container tile (max-width: 700px) {
-  .tile-strip-cost { display: none; }
 }
 /* Resize grips: right edge (columns), bottom edge (rows), corner (both). */
 .tile-resize {
@@ -2003,22 +2073,89 @@ button.tile-strip-shared:disabled { cursor: default; opacity: 0.7; }
 }
 .tile-selected > .tile-head { background: color-mix(in srgb, var(--accent) 14%, var(--surface)); }
 .tile-selected.tile-inactive::after { background: transparent; }
-/* The bar takes its own row under the grid, so the grid leaves room for it. */
-.grid.grid-with-broadcast { min-height: calc(100% - 44px - var(--space)); }
-.broadcast-bar {
-  position: sticky;
-  bottom: 0;
+/* The composer takes its own row under the grid (its measured height, set
+   on the canvas as --broadcast-h), so it never covers a terminal's input. */
+/* How far the composer floats above the bottom of the canvas. */
+.canvas { --broadcast-lift: 24px; }
+.grid.grid-with-broadcast { min-height: calc(100% - var(--broadcast-h, 108px) - var(--broadcast-lift)); }
+/* Room for the composer at the end of the canvas flow: the bar plus its lift,
+   so at rest it never covers a tile. */
+.broadcast-spacer { height: calc(var(--broadcast-h, 108px) + var(--broadcast-lift)); }
+/* The dock is fixed over the bottom of the canvas's visible box (left, width
+   and bottom come from the canvas), so its fade meets the canvas edges and
+   sliding it in or out never changes what scrolls. */
+.broadcast-dock {
+  position: fixed;
   z-index: 8;
+  padding: var(--space) var(--space) var(--broadcast-lift);
+  pointer-events: none;
+  animation: broadcast-dock-in 0.34s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.broadcast-dock-measuring { visibility: hidden; }
+.broadcast-dock-leaving { animation: broadcast-dock-out 0.2s cubic-bezier(0.4, 0, 1, 1) forwards; }
+.broadcast-dock-leaving .broadcast-bar { pointer-events: none; }
+@keyframes broadcast-dock-in { from { transform: translateY(calc(100% + 8px)); } }
+@keyframes broadcast-dock-out { to { transform: translateY(calc(100% + 8px)); } }
+@media (prefers-reduced-motion: reduce) {
+  .broadcast-dock { animation: none; }
+  .broadcast-dock-leaving { animation: none; visibility: hidden; }
+}
+/* Progressive blur: stacked layers, each stronger and masked lower, so the
+   blur steps up from nothing at the top to its full strength at the edge. */
+.broadcast-fade {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(to top, color-mix(in srgb, var(--bg) 55%, transparent), transparent);
+}
+.broadcast-fade > span {
+  position: absolute;
+  inset: 0;
+}
+/* Tiles run under the dock: the fade starts higher, over the content. */
+.broadcast-dock-covering > .broadcast-fade { top: -48px; }
+.broadcast-fade > span:nth-child(1) {
+  -webkit-backdrop-filter: blur(1px);
+  backdrop-filter: blur(1px);
+  -webkit-mask-image: linear-gradient(to top, #000 55%, transparent);
+  mask-image: linear-gradient(to top, #000 55%, transparent);
+}
+.broadcast-fade > span:nth-child(2) {
+  -webkit-backdrop-filter: blur(3px);
+  backdrop-filter: blur(3px);
+  -webkit-mask-image: linear-gradient(to top, #000 40%, transparent 80%);
+  mask-image: linear-gradient(to top, #000 40%, transparent 80%);
+}
+.broadcast-fade > span:nth-child(3) {
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+  -webkit-mask-image: linear-gradient(to top, #000 25%, transparent 60%);
+  mask-image: linear-gradient(to top, #000 25%, transparent 60%);
+}
+.broadcast-fade > span:nth-child(4) {
+  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
+  -webkit-mask-image: linear-gradient(to top, #000 10%, transparent 40%);
+  mask-image: linear-gradient(to top, #000 10%, transparent 40%);
+}
+/* A floating card like a modal, centered at the bottom of the canvas. */
+.broadcast-bar {
+  position: relative;
+  z-index: 1;
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-  margin-top: var(--space);
-  padding: 7px 8px 7px 12px;
+  flex-direction: column;
+  gap: 0;
+  width: min(760px, 100%);
+  margin: 0 auto;
+  pointer-events: auto;
+  padding: 0;
   background: var(--surface);
-  border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border));
-  border-radius: var(--r-lg);
-  box-shadow: var(--surface-shadow);
+  border: 1px solid var(--surface-edge);
+  border-radius: var(--r-xl);
+  box-shadow: var(--surface-shadow-lg);
+}
+@media (prefers-reduced-transparency: reduce) {
+  .broadcast-fade > span { display: none; }
+  .broadcast-fade { background: linear-gradient(to top, var(--bg) 40%, transparent); }
 }
 /* Glass on a layer behind the bar, not on the bar: the saved-prompts menu
    opens from inside it and must blur the page, which a backdrop-filter on
@@ -2026,39 +2163,119 @@ button.tile-strip-shared:disabled { cursor: default; opacity: 0.7; }
 :root[data-transparency="on"] .broadcast-bar::before {
   content: "";
   position: absolute;
-  inset: -1px;
+  /* Inside the border: the sticky bar is a stacking context, so a layer
+     reaching over the edge would paint on top of its border and hide it. */
+  inset: 0;
   z-index: -1;
-  border-radius: inherit;
+  border-radius: calc(var(--r-xl) - 1px);
   background: var(--glass-bg);
   -webkit-backdrop-filter: var(--glass-filter);
   backdrop-filter: var(--glass-filter);
   pointer-events: none;
 }
-.broadcast-icon { flex: 0 0 auto; color: var(--accent); }
+/* Inside the card: a light header row (title, chips, actions) over the
+   composer, split by a divider like the command palette's search row. The
+   composer is the field itself: a transparent input between its buttons. */
+.broadcast-head { display: flex; align-items: center; gap: 8px; min-width: 0; height: 38px; padding: 0 6px 0 12px; border-bottom: 1px solid var(--divider); }
+.broadcast-title { display: inline-flex; align-items: center; gap: 7px; flex: 0 0 auto; font-size: var(--fs-sm); font-weight: 600; color: var(--text); }
+.broadcast-icon { flex: 0 0 auto; color: var(--muted); }
+/* One scrolling row of chips; the edges fade instead of clipping a name. */
 .broadcast-targets {
-  flex: 0 1 auto;
-  max-width: 28%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: var(--fs-sm);
-  color: var(--muted);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  padding: 0 2px;
+  list-style: none;
+  overflow-x: auto;
+  scrollbar-width: none;
+  mask-image: linear-gradient(to right, transparent, #000 4px, #000 calc(100% - 14px), transparent);
 }
+.broadcast-targets::-webkit-scrollbar { display: none; }
+/* Chips read like the device pill in a session header. */
+.broadcast-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: 0 0 auto;
+  box-sizing: border-box;
+  max-width: 170px;
+  height: 20px;
+  padding: 0 2px 0 6px;
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  letter-spacing: 0.2px;
+  color: var(--muted);
+  background: var(--surface-alt);
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-sm);
+}
+.broadcast-chip > svg { flex: 0 0 auto; }
+.broadcast-chip-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+.broadcast-chip-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-sm);
+  color: var(--muted);
+  background: transparent;
+  cursor: pointer;
+}
+.broadcast-chip-remove:hover { color: var(--text); background: var(--hover); }
+.broadcast-chip-remove:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 0; }
+/* Header actions are toolbar buttons, like a tile header's. */
+.broadcast-head .tile-btn { flex: 0 0 auto; width: 26px; height: 26px; }
+.broadcast-head .tile-btn.broadcast-agents { width: auto; gap: 5px; padding: 0 8px; font-size: var(--fs-sm); font-weight: 500; white-space: nowrap; }
+.broadcast-agents-count { color: var(--muted); font-variant-numeric: tabular-nums; }
+.broadcast-compose { display: flex; align-items: flex-end; gap: 2px; padding: 6px 6px 6px 8px; }
+.broadcast-compose .tile-btn { flex: 0 0 auto; width: 30px; height: 30px; }
+.broadcast-compose .tile-btn svg { width: 15px; height: 15px; }
+/* A live mic shows its level bars beside the stop square, as in a tile header. */
+.broadcast-compose .tile-btn.dictation-mic-on { width: 54px; justify-content: center; }
 .broadcast-input {
-  flex: 1 1 200px;
+  display: block;
+  flex: 1 1 auto;
   min-width: 0;
   height: 30px;
-  padding: 0 10px;
-  font: var(--fs-md) ui-monospace, "SF Mono", Menlo, monospace;
+  min-height: 30px;
+  padding: 6px 6px;
+  font: inherit;
+  font-size: var(--fs-md);
+  line-height: 18px;
   color: var(--text);
-  background: var(--bg);
-  border: 1px solid var(--hairline-strong);
-  border-radius: var(--r-sm);
+  background: transparent;
+  border: 0;
   outline: none;
+  resize: none;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
-.broadcast-input:focus { border-color: var(--accent); }
-.broadcast-send { display: inline-flex; align-items: center; gap: 6px; }
-.broadcast-status { flex: 1 0 100%; font-size: var(--fs-sm); color: var(--muted); }
+.broadcast-input::placeholder { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* Send is the field's accent action; it stays quiet until there is text. */
+.tile-btn.broadcast-send { color: var(--accent-foreground, var(--accent)); }
+.tile-btn.broadcast-send:disabled { color: var(--muted); opacity: 0.5; }
+.tile-btn.broadcast-send:not(:disabled):hover { background: color-mix(in srgb, var(--accent) 16%, transparent); }
+/* Status and dictation share one quiet line, shown only when there is one. */
+.broadcast-foot { display: flex; align-items: center; gap: 6px; min-width: 0; margin-top: -2px; padding: 0 12px 8px 46px; font-size: var(--fs-xs); color: var(--muted); }
+/* Live dictation shows in the field, at the caret, as a session shows it at its
+   cursor: an invisible copy of the text under the transparent field carries the
+   underlined words still being recognized and the activity dots. */
+.broadcast-field { position: relative; flex: 1 1 auto; min-width: 0; display: flex; }
+.broadcast-field > .broadcast-input { position: relative; z-index: 1; }
+.broadcast-ghost { position: absolute; inset: 0; z-index: 0; overflow: hidden; padding: 6px; font: inherit; font-size: var(--fs-md); line-height: 18px; white-space: pre-wrap; overflow-wrap: anywhere; pointer-events: none; }
+.broadcast-ghost-text { color: transparent; }
+.broadcast-ghost-words { color: var(--text); opacity: 0.75; text-decoration: underline dotted; text-underline-offset: 2px; }
+.broadcast-ghost-dots { color: var(--text); }
+.broadcast-status { font-size: var(--fs-xs); }
+.broadcast-foot:empty { display: none; }
 .broadcast-status-error { color: var(--danger-foreground, var(--danger)); }
 /* Folder dragged from Finder over the canvas. */
 .canvas-drop-overlay {
@@ -2181,6 +2398,8 @@ button.tile-strip-shared:disabled { cursor: default; opacity: 0.7; }
   background: var(--surface-alt);
   color: var(--text);
 }
+/* The workspace menu's Layout switch spans the menu, one equal segment each. */
+.usage-seg.ws-columns button { flex: 1 1 0; }
 .usage-refresh {
   width: 24px;
   height: 24px;
@@ -2717,12 +2936,6 @@ button.tile-strip-shared:disabled { cursor: default; opacity: 0.7; }
 .doc-tile-strip .tile-strip-path {
   flex-shrink: 0;
 }
-/* The demo keeps every footer item; its agent label is the one that gives way. */
-.doc-tile-strip .tile-strip-running {
-  flex: 0 1 auto;
-  min-width: 0;
-  overflow: hidden;
-}
 .doc-term-line {
   white-space: pre;
   overflow: hidden;
@@ -2785,7 +2998,6 @@ button.tile-strip-shared:disabled { cursor: default; opacity: 0.7; }
 .doc-broadcast-input {
   display: inline-flex;
   align-items: center;
-  font-family: ui-monospace, "SF Mono", Menlo, monospace;
   font-size: var(--fs-md);
   color: var(--text);
 }
@@ -2821,6 +3033,21 @@ button.tile-strip-shared:disabled { cursor: default; opacity: 0.7; }
 }
 .doc-keys.doc-modes td:first-child {
   width: 110px;
+}
+.doc-more {
+  margin-top: 8px;
+}
+.doc-more > summary {
+  cursor: pointer;
+  width: fit-content;
+  color: var(--muted);
+  font-weight: 550;
+}
+.doc-more > summary:hover {
+  color: var(--text);
+}
+.doc-more[open] > summary {
+  margin-bottom: 4px;
 }
 .doc-dots {
   display: inline-flex;
@@ -3248,6 +3475,7 @@ button.tile-strip-shared:disabled { cursor: default; opacity: 0.7; }
 @container tile (max-width: 480px) {
   /* The device pill keeps its frame and shows just its icon, centered. */
   .tile-device { width: 22px; padding: 0; }
+  .tile-head .tile-device .device-os-icon { margin: 0; }
   .tile-device-name {
     position: absolute;
     width: 1px;
@@ -3267,7 +3495,11 @@ button.tile-strip-shared:disabled { cursor: default; opacity: 0.7; }
   .tile-action-fullscreen::before,
   .tile-action-close::before { left: -4px; }
 }
-@container tile (max-width: 280px) {
+/* One step tighter before the buttons move under the title, so the title keeps room. */
+@container tile (max-width: 360px) {
+  .tile-actions .tile-btn { width: 20px; }
+}
+@container tile (max-width: 310px) {
   .tile > .tile-head {
     flex-wrap: wrap;
     height: auto;
@@ -3289,6 +3521,8 @@ button.tile-strip-shared:disabled { cursor: default; opacity: 0.7; }
   }
   .tile-head .tile-action { flex: 0 1 auto; min-width: 0; }
   .tile-head .tile-actions .tile-btn { width: auto; flex: 0 1 22px; min-width: 18px; }
+  /* A live mic is wider; the other buttons give up a little more room. */
+  .tile-head .tile-actions:has(.dictation-mic-on) .tile-btn:not(.dictation-mic-on) { min-width: 14px; }
   .tile-head .tile-actions .tile-btn.dictation-mic-on { flex: 0 1 auto; }
   /* Close keeps the far right of the button row. */
   .tile-head .tile-action-close { margin-left: auto; }
@@ -3454,6 +3688,15 @@ button.tile-strip-shared:disabled { cursor: default; opacity: 0.7; }
 .term-surface .xterm-viewport::-webkit-scrollbar {
   width: 10px;
 }
+/* A local terminal while its session is being refreshed (sessionRefresh.ts). */
+.term-refreshing {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: var(--fs-sm);
+}
 
 /* Resize veil: blurs the live content instead of hiding it, so a transition
  * reads as a soft blur-up rather than a grey flash. Theme-aware tint via the
@@ -3505,7 +3748,7 @@ button.tile-strip-shared:disabled { cursor: default; opacity: 0.7; }
   border-radius: var(--r-md);
   box-shadow: var(--surface-shadow);
 }
-::root[data-appearance="light"] .term-find-bar {
+:root[data-appearance="light"] .term-find-bar {
   background: #f6f8fa;
 }
 .term-find-input {
@@ -3817,10 +4060,14 @@ button.tile-strip-shared:disabled { cursor: default; opacity: 0.7; }
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
-.usage-more-details[open] {
+/* Spacing by margins: a <details> lays its non-summary children out in one
+   anonymous content box, so flex gap on the details never reaches them. */
+.usage-more-details[open] > summary + * { margin-top: 6px; }
+.usage-more-details[open] > :not(summary) + * { margin-top: 10px; }
+.usage-detail-rows {
   display: flex;
   flex-direction: column;
-  gap: 5px;
+  gap: 6px;
 }
 .usage-daily-details {
   color: var(--muted);
@@ -3856,6 +4103,100 @@ button.tile-strip-shared:disabled { cursor: default; opacity: 0.7; }
 }
 .usage-daily-details th:first-child { text-align: left; }
 .usage-daily-details thead th { color: var(--muted); }
+/* Prepaid balance (credits or dollars left): label left, amount right, no bar. */
+.usage-balance {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+.usage-balance-val {
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+/* Other agents: local usage of agents without a limits card, one compact row
+   each (no borders) that opens into the same spend details a card shows. */
+.usage-others {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.usage-card + .usage-others {
+  margin-top: 12px;
+}
+.usage-section-title {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 2px 2px;
+  font-size: var(--fs-xs);
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.usage-section-note {
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
+}
+.usage-agent {
+  padding: 0 8px;
+  border-radius: var(--r-md);
+  background: var(--bg);
+}
+.usage-detail.usage-detail-row-only {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: 0;
+}
+.usage-agent .usage-more-details > summary {
+  list-style: none;
+  padding: 6px 0;
+}
+.usage-agent .usage-more-details > summary::-webkit-details-marker {
+  display: none;
+}
+.usage-agent .usage-more-details[open] {
+  padding-bottom: 8px;
+}
+.usage-agent-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  white-space: nowrap;
+}
+.usage-agent-chevron {
+  flex: 0 0 auto;
+  color: var(--muted);
+  transition: transform 0.12s;
+}
+.usage-agent .usage-more-details[open] .usage-agent-chevron {
+  transform: rotate(90deg);
+}
+.usage-agent-name {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: var(--fs-md);
+  font-weight: 600;
+  color: var(--text);
+}
+.usage-agent-total {
+  flex: 0 0 auto;
+  margin-left: auto;
+  font-size: var(--fs-md);
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+@media (prefers-reduced-motion: reduce) {
+  .usage-agent-chevron { transition: none; }
+}
 /* Update control beside the version (UpdateButton): a small pill, accented
    once a restart is all that is left. */
 .update-button {
@@ -4315,7 +4656,7 @@ button.update-button-ready:hover { background: color-mix(in srgb, var(--accent) 
 .new-session-form .ns-input { flex: 1; min-width: 0; border: none; background: transparent; color: var(--text); font-size: var(--fs-md); }
 .new-session-form .ns-input:focus, .new-session-form .ns-input:focus-visible { outline: none; }
 .ns-name-limit { flex: 0 0 auto; color: var(--muted); font-size: var(--fs-sm); font-variant-numeric: tabular-nums; }
-.ns-prompt { display: block; width: 100%; min-height: 30px; padding: 6px 10px 8px 34px; border: none; border-top: 1px solid var(--divider); border-radius: 0 0 var(--r-md) var(--r-md); background: transparent; color: var(--text); font: inherit; font-size: var(--fs-md); line-height: 1.45; resize: none; field-sizing: content; max-height: 96px; }
+.ns-prompt { display: block; width: 100%; min-height: 30px; padding: 6px 10px 8px 34px; border: none; border-top: 1px solid var(--divider); border-radius: 0 0 var(--r-md) var(--r-md); background: transparent; color: var(--text); font: inherit; font-size: var(--fs-md); line-height: 1.45; resize: none; }
 .ns-prompt:focus { outline: none; }
 .ns-prompt::placeholder, .new-session-form .ns-input::placeholder { color: var(--muted); }
 /* Pills: compact select triggers, folder picker and toggles share one shape. */
@@ -4324,6 +4665,17 @@ button.update-button-ready:hover { background: color-mix(in srgb, var(--accent) 
    width and truncates. The second, only when needed, holds the options. */
 .ns-seg { display: flex; align-items: stretch; width: 100%; height: 30px; border: 1px solid var(--hairline-strong); border-radius: var(--r-md); overflow: hidden; }
 .ns-seg.ns-seg-extra { width: fit-content; max-width: 100%; height: 28px; }
+/* With a workspace to pick the four choices form one 2x2 block: device and
+   folder, then agent and workspace, so the folder keeps a readable width. */
+.ns-seg.ns-seg-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); height: auto; }
+.ns-seg.ns-seg-grid > * { min-width: 0; height: 30px; box-shadow: none; }
+.ns-seg.ns-seg-grid > :nth-child(2) { box-shadow: inset 1px 0 0 var(--hairline-strong); }
+.ns-seg.ns-seg-grid > :nth-child(3) { box-shadow: inset 0 1px 0 var(--hairline-strong); }
+.ns-seg.ns-seg-grid > :nth-child(4) { box-shadow: inset 1px 0 0 var(--hairline-strong), inset 0 1px 0 var(--hairline-strong); }
+.ns-seg.ns-seg-grid .cselect.ns-pill, .ns-seg.ns-seg-grid .ns-pill-path { height: 30px; }
+.ns-seg.ns-seg-grid .cselect.ns-pill { width: 100%; min-width: 0; justify-content: flex-start; }
+.ns-seg.ns-seg-grid .cselect.ns-pill .cselect-value { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ns-seg.ns-seg-grid .cselect.ns-pill > svg:last-child { margin-left: auto; flex: 0 0 auto; }
 .ns-seg > * + * { box-shadow: inset 1px 0 0 var(--hairline-strong); }
 .ns-seg .cselect.ns-pill, .ns-seg .path-field.ns-pill, .ns-seg .ns-toggle { flex: 0 0 auto; height: 100%; border: none; border-radius: 0; background: transparent; }
 .ns-seg .cselect.ns-pill:hover:not(:disabled), .ns-seg .path-field.ns-pill:hover:not(:disabled), .ns-seg .ns-toggle:hover:not(:disabled) { background: var(--surface-alt); }
@@ -4331,7 +4683,8 @@ button.update-button-ready:hover { background: color-mix(in srgb, var(--accent) 
 .ns-seg .ns-pill-path .path-field.ns-pill { flex: 1 1 auto; min-width: 0; }
 .ns-seg .ns-pill-path .path-field-value { max-width: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: inherit; font-size: var(--fs-md); color: var(--text); }
 .ns-seg .ns-pill-path .ns-clear { margin-right: 4px; align-self: center; }
-.ns-seg .ns-toggle.on { background: color-mix(in srgb, var(--accent) 20%, transparent); }
+/* Pressed inside a segment: a filled cell like the other segmented switches, never a ring. */
+.ns-seg .ns-toggle.on { border: none; background: var(--surface-alt); color: var(--text); }
 .cselect.ns-pill, .path-field.ns-pill { width: auto; max-width: 100%; height: 28px; padding: 0 10px; gap: 6px; border-radius: var(--r-pill); background: transparent; font-size: var(--fs-md); }
 .cselect.ns-pill .cselect-value { flex: 0 1 auto; }
 .cselect.ns-pill > svg:last-child { width: 12px; height: 12px; }
@@ -5211,12 +5564,24 @@ html[data-transparency="on"][data-native="false"] body {
     radial-gradient(ellipse at 88% 85%, #454a5466, transparent 60%),
     var(--opaque-bg);
 }
+/* A tile's glass is a layer behind its content, not the tile itself: a
+   backdrop-filter on the tile would make it the backdrop root of everything in
+   it, and WebKit then paints no blur at all for glass inside a tile. The
+   tile is a stacking context (its
+   container query contains layout), so the layer stays under its content. */
 html[data-transparency="on"] .tile {
+  background: transparent;
+}
+html[data-transparency="on"] .tile::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  background: var(--surface);
   -webkit-backdrop-filter: blur(var(--surface-blur)) saturate(var(--surface-saturation));
   backdrop-filter: blur(var(--surface-blur)) saturate(var(--surface-saturation));
-}
-html[data-transparency="on"] .tile {
-  background: var(--surface);
+  pointer-events: none;
 }
 html[data-transparency="on"] .modal-backdrop {
   background: rgb(0 0 0 / 28%);
@@ -5354,13 +5719,28 @@ html[data-transparency="on"] .tile-code { background: transparent; }
   -webkit-backdrop-filter: var(--glass-filter);
   backdrop-filter: var(--glass-filter);
 }
+/* Small floating cards over other content: the label shown while a folder is
+   dragged over the canvas, and the file tree's "Change…" hint, which covers
+   the end of the folder path under it. */
+:root[data-transparency="on"] .canvas-drop-label {
+  background: var(--glass-bg);
+  border-color: var(--glass-border);
+  -webkit-backdrop-filter: var(--glass-filter);
+  backdrop-filter: var(--glass-filter);
+}
+:root[data-transparency="on"] .ft-root-hint {
+  background: var(--glass-bg-strong);
+  -webkit-backdrop-filter: var(--glass-filter);
+  backdrop-filter: var(--glass-filter);
+}
 :root[data-transparency="on"] :is(.topbar-tools.open, .broadcast-bar) { background: transparent; }
+:root[data-transparency="on"] .broadcast-bar { border-color: var(--glass-border); }
 /* Wells and cards inside glass stay a layer, not a solid block. The panel's
    contents get translucent versions of the surface colors (set on its
    children so the panel keeps its own glass), so every card, row, field and
    hover state inside follows without listing them one by one. */
 :root[data-transparency="on"] :is(.fp-list, .notification-row) { background: var(--glass-well); }
-:root[data-transparency="on"] :is(.menu, .cselect-menu, .modal, .cmdk, .pzza-tooltip) > * {
+:root[data-transparency="on"] :is(.menu, .cselect-menu, .modal, .cmdk, .pzza-tooltip, .broadcast-bar) > * {
   --bg: var(--glass-well);
   --surface: color-mix(in srgb, var(--opaque-surface) 42%, transparent);
   --surface-alt: color-mix(in srgb, var(--opaque-surface-alt) 58%, transparent);
@@ -5369,7 +5749,7 @@ html[data-transparency="on"] .tile-code { background: transparent; }
 :root[data-grayscale="on"] { --glass-saturate: 100%; }
 @media (prefers-reduced-transparency: reduce) {
   :root[data-transparency="on"] { --glass-tint: 100%; --glass-filter: none; }
-  :root[data-transparency="on"] :is(.menu, .cselect-menu, .modal, .cmdk, .pzza-tooltip) > * {
+  :root[data-transparency="on"] :is(.menu, .cselect-menu, .modal, .cmdk, .pzza-tooltip, .broadcast-bar) > * {
     --bg: var(--opaque-bg);
     --surface: var(--opaque-surface);
     --surface-alt: var(--opaque-surface-alt);
@@ -5395,7 +5775,7 @@ html[data-transparency="on"] .tile-code { background: transparent; }
    ports, workspace tabs). The accent pair is the theme's contrast-checked
    fill/text combination; the ring separates it from the icon under it. */
 .toolbar-icon-anchor { position: relative; display: inline-flex; }
-.corner-badge { position: absolute; top: -6px; left: calc(100% - 7px); display: inline-flex; align-items: center; justify-content: center; min-width: 14px; height: 14px; padding: 0 3px; box-sizing: border-box; border-radius: var(--r-sm); background: var(--accent); color: var(--accent-text); box-shadow: 0 0 0 1.5px var(--bg); font-size: var(--fs-xs); font-weight: 700; line-height: 1; font-variant-numeric: tabular-nums; pointer-events: none; white-space: nowrap; }
+.corner-badge { position: absolute; top: -6px; left: calc(100% - 7px); display: inline-flex; align-items: center; justify-content: center; min-width: 14px; height: 14px; padding: 0 3px; box-sizing: border-box; border-radius: var(--r-sm); background: var(--accent); color: var(--accent-text); font-size: var(--fs-xs); font-weight: 700; line-height: 1; font-variant-numeric: tabular-nums; pointer-events: none; white-space: nowrap; }
 .usage-chip { display: inline-flex; align-items: center; gap: 5px; }
 .usage-chip-meter { position: relative; width: 22px; height: 4px; border-radius: 2px; overflow: hidden; background: var(--border); }
 .usage-chip-fill { position: absolute; inset: 0 auto 0 0; border-radius: 2px; }
@@ -5448,7 +5828,7 @@ input[type="checkbox"]:disabled { opacity: .45; cursor: not-allowed; }
 .dismiss-btn svg { flex-shrink: 0; pointer-events: none; }
 .notification-row-actions { display: flex; align-items: center; gap: 4px; flex: 0 0 auto; padding: 8px 8px 8px 0; }
 .notification-row-actions > button { width: 28px; height: 28px; margin: 0; flex-shrink: 0; }
-.notification-row-actions > .notification-action { width: auto; padding: 0 10px; white-space: nowrap; }
+
 .modal-head > .icon-btn { width: 30px; height: 30px; flex-shrink: 0; }
 .modal-head > .icon-btn svg { width: 16px; height: 16px; }
 
@@ -5456,7 +5836,7 @@ input[type="checkbox"]:disabled { opacity: .45; cursor: not-allowed; }
 .toolbar-sync-indicator { position: absolute; width: 7px; height: 7px; top: 2px; right: 2px; border-radius: 50%; background: var(--success); pointer-events: none; animation: sync-indicator-pulse 1.2s ease-in-out infinite; }
 @keyframes sync-indicator-pulse { 50% { opacity: .4; } }
 .menu-panel.notifications-panel { padding: 0; }
-.notifications-panel .latest-notifications { padding: 12px; }
+.notifications-panel .latest-notifications { padding: 14px; }
 .latest-notifications > .notification-actions { margin: 0; padding: 0 0 10px; justify-content: space-between; }
 .latest-notifications > .notification-list { padding-top: 0; }
 .notification-content .notification-title { display: flex; align-items: center; gap: 8px; color: var(--text); font-size: var(--fs-md); }
@@ -5472,12 +5852,16 @@ input[type="checkbox"]:disabled { opacity: .45; cursor: not-allowed; }
 :root[data-appearance="light"] :is(.field-input, input.input, textarea.input, .cselect, .fp-search) { color: var(--text); background: var(--input); border-color: var(--hairline-strong); }
 :root[data-appearance="light"] :is(input, textarea)::placeholder { color: var(--muted); opacity: 1; }
 :root[data-appearance="light"] :is(.menu-item-on, .cselect-item-on, .btn-on, .settings-hub-sublink.active, .settings-hub-link.active:not([aria-expanded])) { color: var(--selected-text); background: var(--selected); }
-:root[data-appearance="light"] :is(.menu-item-on, .cselect-item-on, .btn-on):hover { background: var(--selected); }
+/* Selected rows: tinted fill, a firm edge and the selected text color, so
+   they never read as the neutral, edgeless hover. */
+:root[data-appearance="light"] :is(.menu-item-on:not(.btn-accent), .cselect-item-on, .settings-hub-sublink.active, .settings-hub-link.active:not([aria-expanded]), .cmdk-row-active, .ft-row.on) { color: var(--selected-text); background: var(--selected); }
+:root[data-appearance="light"] :is(.menu-item-on:not(.btn-accent), .cselect-item-on, .settings-hub-sublink.active) { font-weight: 600; }
+:root[data-appearance="light"] :is(.menu-item-on, .cselect-item-on, .btn-on, .settings-hub-sublink.active, .settings-hub-link.active, .ft-row.on):hover { background: var(--selected); }
 :root[data-appearance="light"] :is(.menu-item, .cselect-item, .icon-btn, .dismiss-btn, .port-row):hover { background: var(--hover); }
 :root[data-appearance="light"] :is(.btn-accent, .menu-item-on.btn-accent) { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
 :root[data-appearance="light"] .btn-danger { color: var(--danger-foreground, var(--danger)); background: color-mix(in srgb, var(--danger) 6%, var(--surface)); border-color: color-mix(in srgb, var(--danger) 65%, var(--surface)); }
 :root[data-appearance="light"] :is(button, input, textarea, summary, a):focus-visible { outline-color: var(--focus-ring); }
-:root[data-appearance="light"] .switch { background: #e3e7ed; border-color: var(--control-border); box-shadow: inset 0 0 0 1px var(--control-border); }
+:root[data-appearance="light"] .switch { background: var(--hover); border-color: var(--control-border); box-shadow: inset 0 0 0 1px var(--control-border); }
 :root[data-appearance="light"] .switch-on { background: var(--accent); box-shadow: none; }
 :root[data-appearance="light"] .switch-knob { background: #ffffff; box-shadow: 0 1px 3px rgb(30 40 55 / 25%); }
 :root[data-appearance="light"] .modal-backdrop { background: rgb(35 46 63 / 28%); }
@@ -5489,7 +5873,7 @@ input[type="checkbox"]:disabled { opacity: .45; cursor: not-allowed; }
 :root[data-appearance="light"] .tile-head { background: var(--bg); }
 :root[data-appearance="light"] .kbd { background: transparent; border-color: var(--hairline); box-shadow: none; font-weight: 500; }
 :root[data-appearance="light"] .btn { background: var(--bg); border-color: var(--hairline-strong); border-radius: var(--r-sm); }
-:root[data-appearance="light"] .btn:hover:not(:disabled) { background: var(--hover); border-color: #b6bec8; }
+:root[data-appearance="light"] .btn:hover:not(:disabled) { background: var(--hover); border-color: color-mix(in srgb, var(--control-border) 45%, var(--border)); }
 :root[data-appearance="light"] .btn-accent { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
 :root[data-appearance="light"] .btn-accent:hover:not(:disabled) { background: #0550ae; border-color: #0550ae; }
 :root[data-grayscale="on"][data-appearance="light"] .btn-accent:hover:not(:disabled) { background: #545454; border-color: #545454; }
@@ -5501,8 +5885,23 @@ input[type="checkbox"]:disabled { opacity: .45; cursor: not-allowed; }
 :root[data-appearance="light"] .dropdown-label-btn { background: var(--surface); border-radius: var(--r-sm); }
 :root[data-appearance="light"] .appearance-modes .btn:not(.btn-on) { border-color: transparent; background: transparent; }
 
-:root[data-appearance="light"] :is(.field-input, input.input, textarea.input, .cselect, .fp-search):hover { border-color: #b6bec8; }
+:root[data-appearance="light"] :is(.field-input, input.input, textarea.input, .cselect, .fp-search):hover { border-color: color-mix(in srgb, var(--control-border) 45%, var(--border)); }
 :root[data-appearance="light"] :is(.field-input, input.input, textarea.input, .cselect, .fp-search):focus-visible { border-color: var(--focus-ring); outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+
+/* Segmented controls: an opaque recessed track (it stays solid on glass) and
+   a raised thumb with a firm edge, full-strength text and a soft shadow. */
+:root[data-appearance="light"] :is(.segmented, .usage-seg, .settings-segment, .code-diff-mode) { background: var(--opaque-surface-alt, var(--surface-alt)); border-color: var(--hairline-strong); }
+:root[data-appearance="light"] :is(.segmented-on, .usage-seg > .on, .settings-segment > button[aria-pressed="true"], .code-diff-mode > button.on) { background: var(--input); color: var(--text); font-weight: 600; box-shadow: 0 1px 3px rgb(31 35 40 / 16%), 0 1px 1px rgb(31 35 40 / 8%); }
+/* Meters and progress bars: the unfilled part keeps a quiet, visible tone. */
+:root[data-appearance="light"] :is(.usage-bar, .usage-chip-meter) { background: var(--track); }
+:root[data-appearance="light"] .dictation-download progress { -webkit-appearance: none; appearance: none; border: 0; border-radius: var(--r-xs); overflow: hidden; background: var(--track); }
+:root[data-appearance="light"] .dictation-download progress::-webkit-progress-bar { background: var(--track); }
+:root[data-appearance="light"] .dictation-download progress::-webkit-progress-value { background: var(--accent); }
+/* The active workspace tab and tile are marked by a line, not only a shade. */
+:root[data-appearance="light"] .ws-tab-active { color: var(--text); font-weight: 600; }
+:root[data-appearance="light"] :where(.tile.tile-active:not(.tile-selected)) { border-color: var(--control-border); }
+:root[data-appearance="light"] .ns-seg .ns-toggle.on { color: var(--selected-text); background: var(--selected); }
+:root[data-appearance="light"] .notification-title > .notification-new { color: var(--selected-text); background: var(--selected); border-color: transparent; }
 
 /* A white glass backing keeps light surfaces from taking on a muddy desktop tint. */
 html[data-transparency="on"][data-appearance="light"] .app {
@@ -5620,6 +6019,7 @@ input[type="range"]:disabled { cursor: not-allowed; }
 /* Dark themes keep a neutral accent, so matches read as bold underlined text there. */
 .cmdk-row-label mark { background: transparent; color: var(--text); font-weight: 700; text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 3px; }
 :root[data-appearance="light"] :is(.cmdk-row-label mark, .cmdk-row-active .cmdk-row-icon) { color: var(--accent-foreground, var(--accent)); text-decoration: none; }
+:root[data-appearance="light"] .cmdk-row-active :is(.cmdk-row-icon, .cmdk-row-label mark) { color: var(--selected-text); }
 .cmdk-row-detail { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: var(--fs-sm); }
 .cmdk-row .kbd { flex: 0 0 auto; }
 .cmdk-empty { display: flex; align-items: center; justify-content: center; gap: 8px; min-height: 96px; color: var(--muted); font-size: var(--fs-md); overflow-wrap: anywhere; text-align: center; }
@@ -5675,3 +6075,105 @@ input[type="range"]:disabled { cursor: not-allowed; }
 /* While setup is open the app stays mounted (terminals keep running) but is
    not drawn, so a transparent window shows only the desktop behind setup. */
 .app.app-behind-setup { visibility: hidden; }
+
+
+/* Glass is re-blurred every frame while it is open. WebKit skipped refreshing
+   the blur in parts of a panel, which then flashed the sharp content behind
+   it; an imperceptible animation of the blur radius makes it recompute the
+   whole backdrop each frame. The opening animations run alongside it. */
+@keyframes glass-refresh {
+  from, to { -webkit-backdrop-filter: var(--glass-filter); backdrop-filter: var(--glass-filter); }
+  50% {
+    -webkit-backdrop-filter: blur(calc(var(--glass-blur) + 0.01px)) saturate(var(--glass-saturate));
+    backdrop-filter: blur(calc(var(--glass-blur) + 0.01px)) saturate(var(--glass-saturate));
+  }
+}
+:root[data-transparency="on"] :is(.menu, .cselect-menu) { animation: menu-in 0.14s ease-out, glass-refresh 1s linear infinite; }
+:root[data-transparency="on"] :is(.modal, .cmdk) { animation: modal-pop 0.16s cubic-bezier(0.2, 0.8, 0.2, 1), glass-refresh 1s linear infinite; }
+@media (prefers-reduced-transparency: reduce) {
+  :root[data-transparency="on"] :is(.menu, .cselect-menu) { animation: menu-in 0.14s ease-out; }
+  :root[data-transparency="on"] :is(.modal, .cmdk) { animation: modal-pop 0.16s cubic-bezier(0.2, 0.8, 0.2, 1); }
+}
+/* Glass panels that host glass of their own: a select list's sticky group
+   headers and the new-workspace menu's sticky Add button stay over the rows
+   that scroll under them, so they blur those rows. A backdrop-filter (or the
+   opening fade) on the panel would make it their backdrop root, and WebKit
+   would paint none of their blur. So the panel's glass and its refresh sit on
+   a layer behind its content, the panel itself never animates, and an inner
+   element does the scrolling (the select list's .cselect-list already does). */
+:root[data-transparency="on"] :is(.cselect-menu.cselect-menu-list, .menu.new-workspace-panel) {
+  background: transparent;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  animation: none;
+}
+:root[data-transparency="on"] .cselect-menu.cselect-menu-list::before,
+:root[data-transparency="on"] .menu.new-workspace-panel::before {
+  content: "";
+  position: absolute;
+  /* Inside the border: the panel is a stacking context (fixed or z-indexed),
+     so the layer stays under its content without covering the border. */
+  inset: 0;
+  z-index: -1;
+  border-radius: calc(var(--r-lg) - 1px);
+  background: var(--glass-bg);
+  -webkit-backdrop-filter: var(--glass-filter);
+  backdrop-filter: var(--glass-filter);
+  pointer-events: none;
+  animation: menu-in 0.14s ease-out, glass-refresh 1s linear infinite;
+}
+:root[data-transparency="on"] :is(.cselect-menu.cselect-menu-list, .menu.new-workspace-panel) > * { animation: menu-in 0.14s ease-out; }
+:root[data-transparency="on"] .menu.new-workspace-panel {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+/* The body scrolls in the panel's place, over the same box (the panel's
+   padding moves onto it), so nothing moves. */
+:root[data-transparency="on"] .new-workspace-panel > .menu-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  margin: -14px;
+  padding: 14px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+:root[data-transparency="on"] .new-workspace-panel .ws-add-btn {
+  -webkit-backdrop-filter: var(--glass-filter);
+  backdrop-filter: var(--glass-filter);
+}
+@media (prefers-reduced-transparency: reduce) {
+  :root[data-transparency="on"] .cselect-menu.cselect-menu-list::before,
+  :root[data-transparency="on"] .menu.new-workspace-panel::before { animation: menu-in 0.14s ease-out; }
+}
+
+/* A semi-transparent tile re-blurs what is behind it every frame while its
+   terminal draws (Terminal sets data-drawing), the same refresh the glass
+   panels use: WebKit skipped it where the WebGL canvas redrew. */
+@keyframes tile-glass-refresh {
+  from, to {
+    -webkit-backdrop-filter: blur(var(--surface-blur)) saturate(var(--surface-saturation));
+    backdrop-filter: blur(var(--surface-blur)) saturate(var(--surface-saturation));
+  }
+  50% {
+    -webkit-backdrop-filter: blur(calc(var(--surface-blur) + 0.01px)) saturate(var(--surface-saturation));
+    backdrop-filter: blur(calc(var(--surface-blur) + 0.01px)) saturate(var(--surface-saturation));
+  }
+}
+html[data-transparency="on"] .tile:has(.term-surface[data-drawing])::before { animation: tile-glass-refresh 1s linear infinite; }
+@media (prefers-reduced-transparency: reduce) {
+  html[data-transparency="on"] .tile:has(.term-surface[data-drawing])::before { animation: none; }
+}
+
+/* Notification rows: the buttons sit in the top-right corner beside the title
+   (which keeps room for them), so the text below uses the full width. The
+   text is three lines in the panel and six in Settings, with Show more. */
+.notification-row { position: relative; display: block; }
+.notification-content { width: 100%; }
+.notification-content .notification-title { padding-right: calc(var(--notification-actions, 1) * 32px); }
+.notification-row-actions { position: absolute; top: 8px; right: 8px; padding: 0; }
+.notification-content .notification-body.is-clamped,
+.notification-content .notification-body.is-clamped-long { display: -webkit-box; -webkit-box-orient: vertical; overflow: hidden; }
+.notification-content .notification-body.is-clamped { -webkit-line-clamp: 3; }
+.notification-content .notification-body.is-clamped-long { -webkit-line-clamp: 6; }
+.notification-row > .notification-more { display: block; margin: -4px 12px 10px; padding: 0; border: 0; background: none; color: var(--text); font: inherit; font-size: var(--fs-sm); font-weight: 500; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }

@@ -1,5 +1,5 @@
 import { Mic, Square } from "lucide-react";
-import { DICTATION_SUPPORTED, useDictation } from "../state/dictation";
+import { DICTATION_SUPPORTED, prewarmDictation, useDictation } from "../state/dictation";
 import "./Dictation.css";
 
 const WAVE_HEIGHTS = [0.4, 0.75, 1, 0.75, 0.4];
@@ -21,6 +21,7 @@ export function DictationButton({ tileId, activate }: { tileId: string; activate
   const level = recording?.phase === "listening" ? recording.level : 0;
   return <button type="button" className={`tile-btn ${active ? "dictation-mic-on" : failed ? "dictation-mic-error" : ""}`} title={title} aria-label={title}
     disabled={busy && !recording} aria-busy={pending} aria-description={active ? status : undefined}
+    onPointerEnter={prewarmDictation} onFocus={prewarmDictation}
     onMouseDown={(event) => { event.preventDefault(); event.stopPropagation(); }}
     onClick={(event) => {
       event.stopPropagation();

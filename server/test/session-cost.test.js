@@ -3,7 +3,9 @@ import { mkdtemp, mkdir, writeFile, appendFile, utimes, rm } from "node:fs/promi
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { claudeProjectSlug, findSessionCost, findSessionModel, sessionCostQuery, sessionCostRouter } from "../lib/session-cost.js";
+import { Readable } from "node:stream";
+import { claudeProjectSlug } from "../lib/agent-usage/claude.js";
+import { SESSION_COST_BATCH_LIMITS, findSessionCost, findSessionCosts, findSessionModel, sessionCostBatchQueries, sessionCostQuery, sessionCostRouter } from "../lib/session-cost.js";
 
 const at = (iso) => new Date(iso).getTime();
 const claudeLine = (id, iso, cwd, usage, model = "claude-opus-4-7") => JSON.stringify({
@@ -34,7 +36,7 @@ test("validates provider, folder and start time before reading anything", () => 
   const now = at("2026-09-10T12:00:00Z");
   const query = (values) => sessionCostQuery(new URLSearchParams(values), now);
   assert.deepEqual(query({ provider: "claude", cwd: "/Users/dev/app/", since: String(now - 1000) }), { provider: "claude", cwd: "/Users/dev/app", since: now - 1000 });
-  assert.throws(() => query({ provider: "opencode", cwd: "/a", since: "1" }), /claude or codex/);
+  assert.throws(() => query({ provider: "cursor", cwd: "/a", since: "1" }), /sessions can be priced/);
   assert.throws(() => query({ provider: "claude", cwd: "relative/app", since: "1" }), /absolute/);
   assert.throws(() => query({ provider: "claude", cwd: "/Users/dev/../root", since: "1" }), /normalized/);
   assert.throws(() => query({ provider: "claude", cwd: "/Users/dev/a\u0000b", since: "1" }), /absolute/);
@@ -165,4 +167,66 @@ test("the session model is the one its newest reply used", async (t) => {
   // Nothing for a folder without a transcript, or a bad folder.
   assert.equal(await findSessionModel({ provider: "claude", cwd: "/Users/dev/other", since: 0, accounts }), null);
   assert.equal(await findSessionModel({ provider: "claude", cwd: "relative", since: 0, accounts }), null);
+});
+
+test("batch queries are validated one by one and malformed batches are refused whole", () => {
+  const now = at("2026-09-10T12:00:00Z");
+  const good = { provider: "claude", cwd: "/Users/dev/app/", since: String(now - 1000) };
+  const [first, bad, number, notObject] = sessionCostBatchQueries({ queries: [good, { ...good, cwd: "/Users/dev/../root" }, { ...good, since: now - 1000 }, "x"] }, now);
+  assert.deepEqual(first, { provider: "claude", cwd: "/Users/dev/app", since: now - 1000 });
+  assert.match(bad.error, /normalized/);
+  // Fields are strings exactly as in the GET query; anything else is rejected.
+  assert.match(number.error, /milliseconds/);
+  assert.match(notObject.error, /object/);
+  assert.throws(() => sessionCostBatchQueries([good], now), /JSON object/);
+  assert.throws(() => sessionCostBatchQueries({ queries: [] }, now), /between 1 and 64/);
+  assert.throws(() => sessionCostBatchQueries({ queries: Array(SESSION_COST_BATCH_LIMITS.queries + 1).fill(good) }, now), /between 1 and 64/);
+  assert.throws(() => sessionCostBatchQueries({ host: "devbox", queries: [good] }, now), /this device/);
+});
+
+test("a batch answers in order, looks identical sessions up once and isolates failures", async () => {
+  const calls = [];
+  const find = async (query) => {
+    calls.push(query);
+    if (query.cwd === "/broken") throw new Error("disk error with /private/path");
+    return { found: true, provider: query.provider, cost: query.since };
+  };
+  const query = (cwd, since = 5) => ({ provider: "claude", cwd, since });
+  const results = await findSessionCosts([query("/a"), query("/a"), { error: "bad" }, query("/broken"), query("/a", 6)], { accounts: [], find });
+  assert.deepEqual(results.map((result) => result.cost ?? result.error), [5, 5, "bad", "Session cost is unavailable on this device", 6]);
+  assert.deepEqual(calls.map((call) => `${call.cwd}@${call.since}`), ["/a@5", "/broken@5", "/a@6"]);
+  assert.equal(JSON.stringify(results).includes("/private/path"), false, "lookup errors never leak details");
+});
+
+test("the batch route matches single lookups and refuses wrong methods and oversized bodies", async (t) => {
+  const root = await fixture(t);
+  const cwd = "/Users/dev/app";
+  const project = path.join(root, ".claude", "projects", claudeProjectSlug(cwd));
+  await mkdir(project, { recursive: true });
+  await writeFile(path.join(project, "s.jsonl"), claudeLine(1, new Date().toISOString(), cwd, { input_tokens: 1000, output_tokens: 10 }) + "\n");
+  const home = process.env.HOME;
+  process.env.HOME = root;
+  t.after(() => { process.env.HOME = home; });
+  const since = Date.now() - 60000;
+  const calls = [];
+  const json = (res, status, body) => calls.push([status, body]);
+  const route = (method, body, headers = {}) => {
+    const req = Readable.from(body === undefined ? [] : [Buffer.from(typeof body === "string" ? body : JSON.stringify(body))]);
+    Object.assign(req, { method, headers });
+    return sessionCostRouter(req, {}, new URL("/session/cost/batch", "http://127.0.0.1"), json);
+  };
+  const query = { provider: "claude", cwd, since: String(since) };
+  assert.equal(await route("POST", { queries: [query, query, { ...query, cwd: "relative" }] }), true);
+  const [status, body] = calls.at(-1);
+  assert.equal(status, 200);
+  const single = await findSessionCost({ provider: "claude", cwd, since });
+  assert.equal(single.found, true);
+  assert.deepEqual(body.results[0], single);
+  assert.deepEqual(body.results[1], single);
+  assert.match(body.results[2].error, /absolute/);
+  await route("GET");
+  await route("POST", "x".repeat(SESSION_COST_BATCH_LIMITS.bodyBytes + 1));
+  await route("POST", "{}", { "content-length": String(SESSION_COST_BATCH_LIMITS.bodyBytes + 1) });
+  await route("POST", "not json");
+  assert.deepEqual(calls.slice(1).map(([code]) => code), [405, 413, 413, 400]);
 });

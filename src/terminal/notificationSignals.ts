@@ -2,7 +2,7 @@ import { redactTerminalOutput } from "../../server/lib/terminal-redaction.js";
 
 export interface TerminalSignalNotification {
   category: "terminal";
-  event: "terminal-bell" | "terminal-command" | "terminal-exit";
+  event: "terminal-bell" | "terminal-exit";
   title: string;
   body: string;
   target: { tileId: string };
@@ -74,8 +74,6 @@ export function createTerminalSignals(
 ) {
   let disposed = false;
   let exited = false;
-  let commandStarted = false;
-  let commandStartRow: number | null = null;
   let lastBell = -Infinity;
   let pendingBell = false;
   let capturedOutput = "";
@@ -142,10 +140,11 @@ export function createTerminalSignals(
     const paragraphs = output.join("\n").trim().split(/\n\s*\n/);
     let responseStart = -1;
     for (let index = output.length - 1; index >= 0; index--) {
-      if (/^\s*⏺\s/u.test(output[index])) { responseStart = index; break; }
+      if (/^\s*[⏺●]\s/u.test(output[index])) { responseStart = index; break; }
     }
     const response = responseStart < 0 ? paragraphs[paragraphs.length - 1] : output.slice(responseStart).join("\n");
-    return response.replace(/[ \t]+/g, " ").trim();
+    // Reply markers at line starts are drawing, not part of the message.
+    return response.replace(/^[ \t]*[⏺●][ \t]+/gmu, "").replace(/[ \t]+/g, " ").trim();
   };
   const captureOutput = (beforeErase = false) => {
     let current = recentOutput(beforeErase);
@@ -210,35 +209,6 @@ export function createTerminalSignals(
       message(separator < 0 ? data.slice(7) : data.slice(7, separator), separator < 0 ? "" : data.slice(separator + 1));
       return true;
     },
-    osc133(data: string) {
-      if (disposed || exited || data.length > 32) return false;
-      // Shell integration brackets a running command with C and D;status.
-      // Requiring C avoids notifying for the initial prompt's previous status.
-      if (data === "A") { commandStarted = false; commandStartRow = null; }
-      else if (data === "C") { commandStarted = true; commandStartRow = cursorRow?.() ?? null; }
-      else if (data === "D" || data.startsWith("D;")) {
-        const started = commandStarted;
-        const startRow = commandStartRow;
-        commandStarted = false;
-        commandStartRow = null;
-        const status = /^D;(0|[1-9][0-9]{0,2})$/.exec(data);
-        if (started && status && Number(status[1]) <= 255) {
-          const code = Number(status[1]);
-          const cursor = cursorRow?.() ?? null;
-          const lines = screenLines(readRow, startRow ?? (cursor === null ? null : cursor - 30), cursor);
-          const command = lines.length ? lines[0] : null;
-          const output = lines.length > 1 && lines[lines.length - 1] !== command ? lines[lines.length - 1] : null;
-          const context = command ? ` ${quote(command)}${output ? ` - last line ${quote(output)}` : ""}` : "";
-          emit(code === 0 ? "Terminal reported completion" : "Terminal reported failure",
-            code === 0
-              ? (command ? `Finished${context}.` : "Shell integration reported that a command finished successfully.")
-              : `Command exited with status ${code}${command ? ` after${context}` : "."}`,
-            "terminal-command");
-        }
-      }
-      // Other shell-integration handlers may observe the same sequence.
-      return false;
-    },
     processExit(code: number) {
       if (disposed || exited) return;
       // A successful tmux/SSH client exit can be an intentional detach. Its
@@ -252,9 +222,7 @@ export function createTerminalSignals(
           "terminal-exit");
       }
       exited = true;
-      commandStarted = false;
-      commandStartRow = null;
     },
-    dispose() { disposed = true; pendingBell = false; commandStarted = false; commandStartRow = null; },
+    dispose() { disposed = true; pendingBell = false; },
   };
 }

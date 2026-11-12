@@ -45,3 +45,13 @@ export function searchTerminalsShortcut(event: KeyboardEvent): boolean {
   const modifier = IS_MAC ? event.metaKey && !event.ctrlKey : event.ctrlKey && !event.metaKey;
   return modifier && event.shiftKey && !event.altKey && event.code === "KeyF" && !event.isComposing;
 }
+
+export const TASKS_SHORTCUT = { label: IS_MAC ? "⇧⌘T" : "Ctrl Shift T", keys: IS_MAC ? "Meta+Shift+T" : "Control+Shift+T" };
+
+// Cmd+Shift+T shows or hides Tasks from anywhere on macOS. Off macOS
+// Ctrl+Shift+T reaches terminal programs, so a focused terminal keeps it.
+export function tasksShortcut(event: KeyboardEvent): boolean {
+  const modifier = IS_MAC ? event.metaKey && !event.ctrlKey : event.ctrlKey && !event.metaKey;
+  if (!modifier || !event.shiftKey || event.altKey || event.code !== "KeyT" || event.isComposing) return false;
+  return IS_MAC || !(event.target instanceof Element && event.target.closest(".xterm"));
+}

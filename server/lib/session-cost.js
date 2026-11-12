@@ -1,38 +1,34 @@
 // Token cost and run time of the agent session behind one tile, read from the
-// agent's own local transcripts with the same parser and prices as the spend
-// estimate (spend-scan.js). A tile is matched to a transcript by its working
-// folder and start time, best effort: the newest transcript for that folder
-// written since the tile's session started. Two agents in one folder at the
+// agent's own local data with the same usage adapters and prices as the spend
+// estimate (spend-scan.js). A tile is matched to a session by its working
+// folder and start time, best effort: the newest session for that folder
+// active since the tile's session started. Two agents in one folder at the
 // same time therefore both resolve to whichever wrote last.
 import fs from "node:fs";
 import path from "node:path";
-import { discoverAccounts } from "./accounts.js";
-import { bucketCost, parseTranscript } from "./spend-scan.js";
+import { SESSION_USAGE_AGENTS, usageAdapter, usageRoots } from "./agent-usage/index.js";
+import { bucketCost } from "./agent-usage/pricing.js";
+import { COST_SLOT, UNRECORDED_SLOT, hasRecordedCost, tokenSum } from "./agent-usage/records.js";
+import { parseTranscript } from "./spend-scan.js";
 
-const PROVIDERS = new Set(["claude", "codex"]);
+const PROVIDERS = new Set(SESSION_USAGE_AGENTS);
 const MAX_CWD_LENGTH = 4096;
 // A transcript that was not written to for a while after the tile started can
 // still be the one that started it; allow for clock skew only, not hours.
 const FUTURE_SLACK_MS = 5 * 60 * 1000;
-// Bounds per lookup: transcripts parsed while looking for the folder, subagent
-// files under one Claude session, and Codex day folders walked back in time.
+// Transcripts parsed per lookup while looking for the folder.
 const MAX_CANDIDATES = 24;
-const MAX_SIDECHAINS = 200;
-const MAX_CODEX_DAYS = 31;
+// Bounds of one POST /session/cost/batch: the tiles of a whole grid in one
+// request, each query as large as a single GET may be.
+export const SESSION_COST_BATCH_LIMITS = { queries: 64, bodyBytes: 512 * 1024 };
 // Parsed transcripts kept in memory between polls, resumed as they grow.
 const CACHE_LIMIT = 256;
 const cache = new Map();
 
-// Claude Code stores a folder's sessions under projects/<folder with every
-// character other than a letter or digit replaced by "-">.
-export function claudeProjectSlug(cwd) {
-  return cwd.replace(/[^a-zA-Z0-9]/g, "-");
-}
-
 // Validates the query of GET /session/cost; throws with a message fit for a 400.
 export function sessionCostQuery(params, now = Date.now()) {
   const provider = params.get("provider");
-  if (!PROVIDERS.has(provider)) throw new Error("Choose claude or codex.");
+  if (!PROVIDERS.has(provider)) throw new Error(`Choose an agent whose sessions can be priced: ${SESSION_USAGE_AGENTS.join(", ")}.`);
   const raw = params.get("cwd");
   if (typeof raw !== "string" || !raw.startsWith("/") || raw.length > MAX_CWD_LENGTH || /[\u0000-\u001f\u007f]/.test(raw)) {
     throw new Error("cwd must be an absolute folder path.");
@@ -63,71 +59,34 @@ async function parsed(provider, file) {
   return entry;
 }
 
-// .jsonl files directly in `dir` written at or after `since`, newest first.
-async function recentTranscripts(dir, since) {
-  let entries;
-  try {
-    entries = await fs.promises.readdir(dir, { withFileTypes: true });
-  } catch {
-    return [];
-  }
-  const files = [];
-  for (const entry of entries) {
-    if (!entry.isFile() || !entry.name.endsWith(".jsonl")) continue;
-    const file = path.join(dir, entry.name);
-    try {
-      const { mtimeMs } = await fs.promises.stat(file);
-      if (mtimeMs >= since) files.push({ file, mtimeMs });
-    } catch {
-      /* removed meanwhile */
-    }
-  }
-  return files.sort((a, b) => b.mtimeMs - a.mtimeMs);
-}
-
-// Every .jsonl below `dir` (a Claude session's subagent transcripts), bounded.
-async function nestedTranscripts(dir) {
-  const files = [];
-  const stack = [dir];
-  while (stack.length && files.length < MAX_SIDECHAINS) {
-    let entries;
-    try {
-      entries = await fs.promises.readdir(stack.pop(), { withFileTypes: true });
-    } catch {
-      continue;
-    }
-    for (const entry of entries) {
-      const file = path.join(entry.parentPath || entry.path || dir, entry.name);
-      if (entry.isDirectory()) stack.push(file);
-      else if (entry.isFile() && entry.name.endsWith(".jsonl") && files.length < MAX_SIDECHAINS) files.push(file);
-    }
-  }
-  return files;
-}
-
-function localDay(ms) {
-  const d = new Date(ms);
-  return [String(d.getFullYear()), String(d.getMonth() + 1).padStart(2, "0"), String(d.getDate()).padStart(2, "0")];
-}
-
-// Codex keeps sessions/<yyyy>/<mm>/<dd>/rollout-*.jsonl by start date: the
-// days from the tile's start (one day earlier for time zones) to tomorrow.
-function codexDayFolders(dir, since, now) {
-  const folders = [];
-  const first = Math.max(since - 86400000, now - MAX_CODEX_DAYS * 86400000);
-  for (let at = now + 86400000; at >= first; at -= 86400000) folders.push(path.join(dir, "sessions", ...localDay(at)));
-  return folders;
-}
-
 function sameFolder(session, cwd) {
-  // Older cached entries carry no folder; the slug match already narrowed them.
+  // Older cached entries carry no folder; the folder lookup already narrowed them.
   return !session?.cwd || session.cwd.replace(/\/+$/, "") === cwd;
 }
 
-async function newestMatch(provider, candidates, cwd) {
+// The session entry for `cwd` since `since` across the agent's data roots:
+// the newest matching transcript (with its subagent files) or the database's
+// newest matching session.
+async function sessionMatch(adapter, roots, cwd, since, now) {
+  if (adapter.sessionEntry) {
+    let best = null;
+    for (const root of roots) {
+      const entry = await adapter.sessionEntry(root, cwd, since, now);
+      if (entry?.state?.session?.firstAt != null && (!best || entry.state.session.lastAt > best.state.session.lastAt)) best = entry;
+    }
+    return best ? { entries: [best], subagents: best.subagents ?? 0 } : null;
+  }
+  const candidates = [];
+  for (const root of roots) candidates.push(...await adapter.sessionFiles(root, cwd, since, now));
   for (const { file } of candidates.sort((a, b) => b.mtimeMs - a.mtimeMs).slice(0, MAX_CANDIDATES)) {
-    const entry = await parsed(provider, file);
-    if (entry && sameFolder(entry.state?.session, cwd) && entry.state?.session?.firstAt != null) return { file, entry };
+    const entry = await parsed(adapter.id, file);
+    if (!entry || !sameFolder(entry.state?.session, cwd) || entry.state?.session?.firstAt == null) continue;
+    const entries = [entry];
+    for (const extra of adapter.subagentFiles ? await adapter.subagentFiles(file, entry) : []) {
+      const sub = await parsed(adapter.id, extra);
+      if (sub) entries.push(sub);
+    }
+    return { entries, subagents: entries.length - 1 };
   }
   return null;
 }
@@ -139,51 +98,47 @@ function emptyTotals() {
 function addEntry(totals, entry) {
   for (const [day, models] of Object.entries(entry.days || {})) {
     for (const [model, buckets] of Object.entries(models)) {
-      const sum = buckets.reduce((a, b) => a + b, 0);
-      if (!sum) continue;
+      const sum = tokenSum(buckets);
+      if (!sum && !(hasRecordedCost(buckets) && buckets[COST_SLOT] > 0)) continue;
       totals.tokens.input += buckets[0];
       totals.tokens.output += buckets[1];
       totals.tokens.cacheRead += buckets[2];
       totals.tokens.cacheWrite += buckets[3] + buckets[4];
       if (!totals.models.includes(model)) totals.models.push(model);
-      const cost = bucketCost(buckets, model, day);
-      if (cost === null) {
-        totals.unpricedTokens += sum;
+      const unpriced = (tokens) => {
+        totals.unpricedTokens += tokens;
         if (!totals.unpricedModels.includes(model)) totals.unpricedModels.push(model);
-      } else totals.pricedCost += cost;
+      };
+      if (hasRecordedCost(buckets)) {
+        totals.pricedCost += buckets[COST_SLOT];
+        if (buckets[UNRECORDED_SLOT] > 0) unpriced(buckets[UNRECORDED_SLOT]);
+        continue;
+      }
+      const cost = bucketCost(buckets, model, day);
+      if (cost === null) unpriced(sum);
+      else totals.pricedCost += cost;
     }
   }
 }
 
+function rootsFor(provider, accounts) {
+  return accounts.filter((account) => account.provider === provider);
+}
+
 // Finds the session for `cwd` that ran since `since` and returns its cost and
 // time span, or { found: false }. `accounts` defaults to this device's agent
-// config folders. File paths and transcript text are never returned.
-export async function findSessionCost({ provider, cwd, since, now = Date.now(), accounts = discoverAccounts() }) {
-  const dirs = accounts.filter((account) => account.provider === provider).map((account) => account.dir);
-  const candidates = [];
-  if (provider === "claude") {
-    const slug = claudeProjectSlug(cwd);
-    for (const dir of dirs) candidates.push(...await recentTranscripts(path.join(dir, "projects", slug), since));
-  } else {
-    for (const dir of dirs) for (const folder of codexDayFolders(dir, since, now)) candidates.push(...await recentTranscripts(folder, since));
-  }
-  const match = await newestMatch(provider, candidates, cwd);
+// data roots. File paths and transcript text are never returned.
+export async function findSessionCost({ provider, cwd, since, now = Date.now(), accounts = usageRoots() }) {
+  const adapter = usageAdapter(provider);
+  const match = adapter ? await sessionMatch(adapter, rootsFor(provider, accounts), cwd, since, now) : null;
   if (!match) return { found: false, provider };
   const totals = emptyTotals();
-  addEntry(totals, match.entry);
-  const session = match.entry.state.session;
+  const session = match.entries[0].state.session;
   let lastAt = session.lastAt;
-  let subagents = 0;
-  if (provider === "claude") {
-    // Subagents of a Claude session log to <session id>/subagents/*.jsonl.
-    for (const file of await nestedTranscripts(match.file.replace(/\.jsonl$/, ""))) {
-      const entry = await parsed(provider, file);
-      if (!entry) continue;
-      subagents++;
-      addEntry(totals, entry);
-      const at = entry.state?.session?.lastAt;
-      if (Number.isFinite(at) && at > lastAt) lastAt = at;
-    }
+  for (const entry of match.entries) {
+    addEntry(totals, entry);
+    const at = entry.state?.session?.lastAt;
+    if (Number.isFinite(at) && at > lastAt) lastAt = at;
   }
   totals.models.sort();
   totals.unpricedModels.sort();
@@ -192,18 +147,101 @@ export async function findSessionCost({ provider, cwd, since, now = Date.now(), 
     provider,
     startedAt: session.firstAt,
     lastAt,
-    subagents,
+    subagents: match.subagents,
     models: totals.models,
-    tokens: totals.tokens,
+    // An agent that records cost but not tokens (Crush) has no token counts.
+    tokens: adapter.tracksTokens === false ? null : totals.tokens,
     // A known subtotal must never pass for a complete cost.
     cost: totals.unpricedTokens ? null : totals.pricedCost,
     pricedCost: totals.pricedCost,
     unpricedModels: totals.unpricedModels,
-    pricingBasis: "standard-api-short-context",
+    pricingBasis: adapter.pricingBasis,
   };
 }
 
+// Validates the body of POST /session/cost/batch. A malformed request throws
+// (400); one bad query only fails its own slot, as its own GET would have.
+export function sessionCostBatchQueries(body, now = Date.now()) {
+  if (!body || typeof body !== "object" || Array.isArray(body)) throw new Error("Send a JSON object with queries.");
+  if (body.host !== undefined && body.host !== "") throw new Error("Session cost is only read on this device.");
+  const { queries } = body;
+  if (!Array.isArray(queries) || !queries.length || queries.length > SESSION_COST_BATCH_LIMITS.queries) {
+    throw new Error(`Send between 1 and ${SESSION_COST_BATCH_LIMITS.queries} queries.`);
+  }
+  return queries.map((item) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return { error: "Each query must be an object." };
+    // Only string fields, exactly as a GET query string would carry them.
+    const params = { get: (name) => (typeof item[name] === "string" ? item[name] : null) };
+    try {
+      return sessionCostQuery(params, now);
+    } catch (error) {
+      return { error: error.message };
+    }
+  });
+}
+
+// Answers validated batch queries in order. Identical queries are looked up
+// once, and lookups run one after another so a full grid never fans out into
+// parallel transcript reads. A failed lookup only fails its own slot.
+export async function findSessionCosts(queries, { now = Date.now(), accounts = usageRoots(), find = findSessionCost } = {}) {
+  const answers = new Map();
+  const results = [];
+  for (const query of queries) {
+    if (query.error) {
+      results.push({ error: query.error });
+      continue;
+    }
+    const key = `${query.provider}\n${query.cwd}\n${query.since}`;
+    if (!answers.has(key)) {
+      answers.set(key, await find({ ...query, now, accounts }).catch(() => ({ error: "Session cost is unavailable on this device" })));
+    }
+    results.push(answers.get(key));
+  }
+  return results;
+}
+
+async function boundedJson(req, limit) {
+  const declared = Number(req.headers?.["content-length"]);
+  if (Number.isFinite(declared) && declared > limit) return { tooLarge: true };
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of req) {
+    size += chunk.length;
+    if (size > limit) return { tooLarge: true };
+    chunks.push(chunk);
+  }
+  try {
+    return { value: JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}") };
+  } catch {
+    return { value: null };
+  }
+}
+
 export async function sessionCostRouter(req, res, url, json) {
+  if (url.pathname === "/session/cost/batch") {
+    if (req.method !== "POST") {
+      json(res, 405, { error: "Use POST for batched session cost" });
+      return true;
+    }
+    const body = await boundedJson(req, SESSION_COST_BATCH_LIMITS.bodyBytes);
+    if (body.tooLarge) {
+      json(res, 413, { error: "Session cost request too large." });
+      return true;
+    }
+    let queries;
+    try {
+      queries = sessionCostBatchQueries(body.value);
+    } catch (error) {
+      json(res, 400, { error: error.message });
+      return true;
+    }
+    try {
+      json(res, 200, { results: await findSessionCosts(queries) });
+    } catch {
+      json(res, 503, { error: "Session cost is unavailable on this device" });
+    }
+    return true;
+  }
   if (url.pathname !== "/session/cost") return false;
   if (req.method !== "GET") {
     json(res, 405, { error: "Use GET for session cost" });
@@ -231,19 +269,11 @@ export async function sessionCostRouter(req, res, url, json) {
 }
 
 // The model an agent session in `cwd` is actually running: the model of the
-// newest reply in that folder's newest transcript written since `since`.
-// Null when no transcript matches (a session that has not replied yet).
-export async function findSessionModel({ provider, cwd, since, now = Date.now(), accounts = discoverAccounts() }) {
+// newest reply in that folder's newest session active since `since`. Null when
+// no session matches (a session that has not replied yet).
+export async function findSessionModel({ provider, cwd, since, now = Date.now(), accounts = usageRoots() }) {
   if (!PROVIDERS.has(provider) || typeof cwd !== "string" || !cwd.startsWith("/") || cwd.length > MAX_CWD_LENGTH) return null;
-  const dirs = accounts.filter((account) => account.provider === provider).map((account) => account.dir);
-  const candidates = [];
-  if (provider === "claude") {
-    const slug = claudeProjectSlug(cwd);
-    for (const dir of dirs) candidates.push(...await recentTranscripts(path.join(dir, "projects", slug), since));
-  } else {
-    for (const dir of dirs) for (const folder of codexDayFolders(dir, since, now)) candidates.push(...await recentTranscripts(folder, since));
-  }
-  const match = await newestMatch(provider, candidates, cwd);
-  const model = match?.entry.state?.session?.lastModel;
+  const match = await sessionMatch(usageAdapter(provider), rootsFor(provider, accounts), cwd, since, now);
+  const model = match?.entries[0].state?.session?.lastModel;
   return typeof model === "string" && model ? model : null;
 }

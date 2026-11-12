@@ -1,0 +1,46 @@
+/* Floats above dialogs (Settings included) without blocking them. */
+.session-refresh-notice {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 1100;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: min(420px, calc(100vw - 32px));
+  padding: 9px 10px 9px 12px;
+  border: 1px solid var(--surface-edge);
+  border-radius: var(--r-md);
+  background: var(--opaque-surface, var(--surface));
+  box-shadow: var(--surface-shadow);
+  color: var(--text);
+  font-size: var(--fs-sm);
+  line-height: 1.45;
+}
+
+.session-refresh-notice > span {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.session-refresh-notice.is-fail {
+  border-color: color-mix(in srgb, var(--danger) 45%, var(--surface-edge));
+  color: var(--danger-foreground, var(--danger));
+}
+
+.session-refresh-dismiss {
+  display: inline-flex;
+  flex: 0 0 auto;
+  padding: 3px;
+  border: 0;
+  border-radius: var(--r-xs);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.session-refresh-dismiss:hover {
+  background: var(--surface-alt);
+  color: var(--text);
+}

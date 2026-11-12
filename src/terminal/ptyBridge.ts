@@ -21,9 +21,19 @@ export async function spawnPty(
   const channel = new Channel<ArrayBuffer>();
   let ptyId: number | undefined;
   let earlyCredit = 0;
-  const acknowledge = (bytes: number) => {
+  // A parsed write releases all of its chunks in one synchronous loop; their
+  // credit is summed and returned in one IPC call after that loop.
+  let pendingCredit = 0;
+  const returnCredit = () => {
+    const bytes = pendingCredit;
+    pendingCredit = 0;
+    if (!bytes) return;
     if (ptyId === undefined) earlyCredit += bytes;
     else void invoke("pty_ack", { id: ptyId, bytes }).catch(() => {});
+  };
+  const acknowledge = (bytes: number) => {
+    if (pendingCredit === 0) queueMicrotask(returnCredit);
+    pendingCredit += bytes;
   };
   channel.onmessage = (chunk) => {
     let consumed = false;
@@ -45,7 +55,11 @@ export async function spawnPty(
     onExit: exitChannel,
   });
   ptyId = id;
-  if (earlyCredit) acknowledge(earlyCredit);
+  if (earlyCredit) {
+    const bytes = earlyCredit;
+    earlyCredit = 0;
+    acknowledge(bytes);
+  }
   return id;
 }
 

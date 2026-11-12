@@ -6,7 +6,8 @@ import { Monitor } from "lucide-react";
 import { useStore } from "../state/store";
 import { notify } from "../state/notifications";
 import { THIS_MAC, deviceHost, type Device } from "../devices";
-import { rdpErrorMessage, rdpIsOpen, rdpLaunch } from "../rdp";
+import { rdpErrorMessage, rdpFocus, rdpIsOpen, rdpLaunch } from "../rdp";
+import { executeAppControlRuntime } from "../appControlRuntime";
 import { HAS_TAURI } from "../tauriEnv";
 import { Select } from "../ui/Select";
 
@@ -24,12 +25,21 @@ export function releaseDisabledRdpServer(devices: Device[]): void {
   useRdpConnection.setState({ serverId: "" });
 }
 
+/**
+ * Opens the saved server's desktop, or brings its window to the front when it
+ * is already open. Without a saved remote server, Settings opens on the
+ * Remote desktop page to choose one.
+ */
 export async function openSaved(): Promise<boolean> {
   if (useRdpConnection.getState().busy) return false;
   const { activeDevices: devices, deviceRdp, setDeviceRdp } = useStore.getState();
   const server = devices.find(device => device.id === useRdpConnection.getState().serverId);
-  if (!HAS_TAURI || !server || server.id === THIS_MAC.id || !server.host.trim()) {
-    notify({ category: "app", title: "Remote desktop unavailable", body: !HAS_TAURI ? "Open the desktop app to launch remote desktop." : "Choose a remote server in Settings → Connections → Remote desktop, then click Remote desktop again." });
+  if (!HAS_TAURI) {
+    notify({ category: "app", title: "Remote desktop unavailable", body: "Open the desktop app to launch remote desktop." });
+    return false;
+  }
+  if (!server || server.id === THIS_MAC.id || !server.host.trim()) {
+    executeAppControlRuntime("open_settings", { section: "remote" });
     return false;
   }
   useRdpConnection.setState({ busy: true });
@@ -37,10 +47,7 @@ export async function openSaved(): Promise<boolean> {
     const config = deviceRdp[server.id];
     const user = config?.user ?? RDP_USER;
     const keychainService = config?.keychainService ?? `pzzacode-rdp-${server.id}`;
-    if (await rdpIsOpen(keychainService)) {
-      notify({ category: "app", title: "Remote desktop is already open", body: `Switch to the existing desktop window for ${server.name}.` });
-      return true;
-    }
+    if (await rdpFocus(keychainService)) return true;
     const result = await rdpLaunch({ host: deviceHost(server), user, keychainService });
     setDeviceRdp(server.id, { user, keychainService, port: result.port, mode: result.mode });
     return true;

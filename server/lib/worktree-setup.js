@@ -10,6 +10,8 @@
 // terminal before its agent starts. A repository file must never execute on
 // its own, so commands only run once they are approved on this device for
 // that exact list (saving them here approves them; a changed list asks again).
+// An optional "check" list ("check": ["npm test"]) holds the commands a task
+// runs in its worktree before landing it, approved separately the same way.
 //
 // Everything runs as fixed POSIX scripts whose inputs are positional
 // arguments: locally through /bin/sh, on another device over one ssh call.
@@ -75,16 +77,18 @@ function listOf(value, field, max, valid, normalize) {
   return items;
 }
 
-// { copy: string[] | null (null = the default patterns), run: string[] }.
+// { copy: string[] | null (null = the default patterns), run: string[],
+// check?: string[] }. "check" is only present when the input has it.
 export function normalizeWorktreeConfig(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("The setup must be a JSON object.");
-  const unknown = Object.keys(value).find((key) => !["copy", "run"].includes(key));
+  const unknown = Object.keys(value).find((key) => !["copy", "run", "check"].includes(key));
   if (unknown !== undefined) throw new Error(`Unknown setup field "${unknown.slice(0, 40)}".`);
   const copy = value.copy === undefined ? null
     : listOf(value.copy, "copy", WORKTREE_SETUP_LIMITS.patterns, validCopyPattern, (item) => item.trim().replace(/^\.\/+/, ""));
   const run = value.run === undefined ? []
     : listOf(value.run, "run", WORKTREE_SETUP_LIMITS.commands, validSetupCommand, (item) => item.trim());
-  return { copy, run };
+  if (value.check === undefined) return { copy, run };
+  return { copy, run, check: listOf(value.check, "check", WORKTREE_SETUP_LIMITS.commands, validSetupCommand, (item) => item.trim()) };
 }
 
 export function parseWorktreeConfig(text) {
@@ -94,8 +98,10 @@ export function parseWorktreeConfig(text) {
   return normalizeWorktreeConfig(value);
 }
 
-export function serializeWorktreeConfig({ copy, run }) {
-  return `${JSON.stringify(copy === null ? { run } : { copy, run }, null, 2)}\n`;
+export function serializeWorktreeConfig({ copy, run, check }) {
+  const value = copy === null ? { run } : { copy, run };
+  if (check?.length) value.check = check;
+  return `${JSON.stringify(value, null, 2)}\n`;
 }
 
 // The commands typed into a new session: each one through eval of a single
@@ -109,7 +115,11 @@ export function setupCommandLine(run, agentCommand) {
 
 // ---------------------------------------------------------------- approvals
 
-const approvalKey = (host, main, run) => crypto.createHash("sha256").update(JSON.stringify([host, main, run])).digest("hex");
+// Each kind of list ("run" setup commands, "check" commands) is approved on
+// its own. "run" keeps the key it had before kinds existed, so approvals
+// already on disk stay valid.
+const approvalKey = (host, main, list, kind = "run") => crypto.createHash("sha256")
+  .update(JSON.stringify(kind === "run" ? [host, main, list] : [host, main, list, kind])).digest("hex");
 
 async function readApprovals(file) {
   try {
@@ -122,17 +132,17 @@ async function readApprovals(file) {
 
 let approvalWrites = Promise.resolve();
 
-export async function setupApproved(host, main, run, { approvalsFile = DEFAULT_APPROVALS_FILE } = {}) {
+export async function setupApproved(host, main, run, { approvalsFile = DEFAULT_APPROVALS_FILE, kind = "run" } = {}) {
   if (!run.length) return true;
-  return (await readApprovals(approvalsFile)).includes(approvalKey(host, main, run));
+  return (await readApprovals(approvalsFile)).includes(approvalKey(host, main, run, kind));
 }
 
 // Writes are serialized and atomic (temporary file, then rename); the newest
 // approvals are kept when the list is full.
-export function approveSetup(host, main, run, { approvalsFile = DEFAULT_APPROVALS_FILE } = {}) {
+export function approveSetup(host, main, run, { approvalsFile = DEFAULT_APPROVALS_FILE, kind = "run" } = {}) {
   const write = approvalWrites.then(async () => {
     if (!run.length) return;
-    const key = approvalKey(host, main, run);
+    const key = approvalKey(host, main, run, kind);
     const approved = (await readApprovals(approvalsFile)).filter((item) => item !== key);
     approved.push(key);
     const kept = approved.slice(-WORKTREE_SETUP_LIMITS.approvals);
@@ -332,7 +342,7 @@ export function validateSetupApproveRequest(body) {
   return { ...request, run };
 }
 
-async function readSetup({ host, path }, options) {
+export async function readSetup({ host, path }, options) {
   const { code, text } = await runDeviceScript(host, READ_SETUP_SCRIPT, [path], options);
   if (code === 3) throw notRepo();
   const setup = code === 0 ? readSetupSections(scriptSections(text)) : null;
@@ -351,6 +361,8 @@ async function describeSetup(host, setup, options) {
     defaultCopy: config.copy === null,
     run: config.run,
     approved: setup.config !== null && await setupApproved(setupHost(host), setup.main, config.run, options),
+    check: config.check ?? [],
+    checkApproved: setup.config !== null && await setupApproved(setupHost(host), setup.main, config.check ?? [], { ...options, kind: "check" }),
   };
 }
 
@@ -359,7 +371,10 @@ export async function worktreeSetup(request, options = {}) {
 }
 
 export async function saveWorktreeSetup({ host, path, copy, run }, options = {}) {
-  const { code, text } = await runDeviceScript(host, WRITE_SETUP_SCRIPT, [path, serializeWorktreeConfig({ copy, run })], options);
+  // The settings edit "copy" and "run" only; a "check" list already in the
+  // file is written back unchanged (an unreadable file has none to keep).
+  const check = (await readSetup({ host, path }, options)).config?.check;
+  const { code, text } = await runDeviceScript(host, WRITE_SETUP_SCRIPT, [path, serializeWorktreeConfig({ copy, run, check })], options);
   if (code === 3) throw notRepo();
   if (code === 9) throw new GitReviewError(`${WORKTREE_CONFIG_FILE} or its folder is a symbolic link; replace it with a regular file first.`, 409);
   if (code !== 0) throw new GitReviewError(`Could not write ${WORKTREE_CONFIG_FILE} in the main checkout.`, 500);

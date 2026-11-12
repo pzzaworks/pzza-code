@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { deviceHost } from "./devices";
 import { useStore } from "./state/store";
 import { useIntegrationHealth } from "./state/integrationHealth";
+import { visibleInterval } from "./visibility";
 
 export function IntegrationMaintenance() {
   const devices = useStore(state => state.activeDevices);
@@ -17,8 +18,8 @@ export function IntegrationMaintenance() {
       }));
     };
     void check();
-    const timer = window.setInterval(() => { if (document.visibilityState !== "hidden") void check(); }, 60000);
-    return () => { cancelled = true; clearInterval(timer); };
+    const stop = visibleInterval(() => void check(), 60000);
+    return () => { cancelled = true; stop(); };
   }, [devices]);
   return null;
 }

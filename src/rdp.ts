@@ -38,3 +38,9 @@ export function rdpLaunch(opts: RdpOptions): Promise<Launched> {
 export function rdpIsOpen(keychainService: string): Promise<boolean> {
   return invoke<boolean>("rdp_is_open", { keychainService });
 }
+
+// Brings the desktop window already open for this device to the front; false
+// when none is open.
+export function rdpFocus(keychainService: string): Promise<boolean> {
+  return invoke<boolean>("rdp_focus", { keychainService });
+}
