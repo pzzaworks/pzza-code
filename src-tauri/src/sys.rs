@@ -160,3 +160,91 @@ pub fn system_languages() -> Vec<String> {
         Vec::new()
     }
 }
+
+/// The app bundle an executable runs from: the `.app` folder holding
+/// `Contents/MacOS/<executable>`. None when it does not run from a bundle
+/// (a development build).
+fn app_bundle(executable: &std::path::Path) -> Option<&std::path::Path> {
+    let macos = executable.parent()?;
+    let contents = macos.parent()?;
+    let bundle = contents.parent()?;
+    let bundled = macos.file_name()? == "MacOS"
+        && contents.file_name()? == "Contents"
+        && bundle.extension()? == "app";
+    bundled.then_some(bundle)
+}
+
+/// Whether this user may write `path`, as access(2) answers it.
+fn writable(path: &std::path::Path) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+    let Ok(path) = std::ffi::CString::new(path.as_os_str().as_bytes()) else {
+        return false;
+    };
+    unsafe { libc::access(path.as_ptr(), libc::W_OK) == 0 }
+}
+
+/// Whether an update can replace the bundle at `executable` without asking
+/// for an administrator password: the bundle and the folder holding it are
+/// both writable by this user.
+fn bundle_writable(executable: &std::path::Path) -> bool {
+    let executable = std::fs::canonicalize(executable).unwrap_or_else(|_| executable.to_path_buf());
+    let Some(bundle) = app_bundle(&executable) else {
+        return false;
+    };
+    let Some(folder) = bundle.parent() else {
+        return false;
+    };
+    writable(bundle) && writable(folder)
+}
+
+/// Whether the running app can install an update on its own. Background
+/// installs are skipped when it cannot, so no password prompt appears unasked.
+#[tauri::command]
+pub async fn app_bundle_writable() -> Result<bool, String> {
+    Ok(std::env::current_exe().is_ok_and(|executable| bundle_writable(&executable)))
+}
+
+#[cfg(test)]
+mod bundle_tests {
+    use super::{app_bundle, bundle_writable};
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::Path;
+
+    #[test]
+    fn the_bundle_is_the_app_folder_around_the_executable() {
+        assert_eq!(
+            app_bundle(Path::new("/Applications/PzzaCode.app/Contents/MacOS/PzzaCode")),
+            Some(Path::new("/Applications/PzzaCode.app"))
+        );
+        assert_eq!(
+            app_bundle(Path::new("/Users/me/Downloads/Pzza Code 2.app/Contents/MacOS/pzza-code")),
+            Some(Path::new("/Users/me/Downloads/Pzza Code 2.app"))
+        );
+        assert_eq!(app_bundle(Path::new("/repo/src-tauri/target/release/pzza-code")), None);
+        assert_eq!(app_bundle(Path::new("/Applications/PzzaCode/Contents/MacOS/PzzaCode")), None);
+        assert_eq!(app_bundle(Path::new("/Applications/PzzaCode.app/Contents/Resources/PzzaCode")), None);
+        assert_eq!(app_bundle(Path::new("/Applications/PzzaCode.app/MacOS/PzzaCode")), None);
+        assert_eq!(app_bundle(Path::new("PzzaCode")), None);
+    }
+
+    #[test]
+    fn both_the_bundle_and_its_folder_must_be_writable() {
+        let root = std::env::temp_dir().join(format!("pzza-bundle-test-{}", std::process::id()));
+        let bundle = root.join("PzzaCode.app");
+        let macos = bundle.join("Contents/MacOS");
+        std::fs::create_dir_all(&macos).unwrap();
+        let executable = macos.join("PzzaCode");
+        std::fs::write(&executable, b"").unwrap();
+        let mode = |path: &Path, mode: u32| std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+        assert!(bundle_writable(&executable));
+        mode(&root, 0o500);
+        assert!(!bundle_writable(&executable), "a read-only folder cannot take the new bundle");
+        mode(&root, 0o700);
+        mode(&bundle, 0o500);
+        assert!(!bundle_writable(&executable), "a read-only bundle cannot be replaced");
+        mode(&bundle, 0o700);
+        assert!(!bundle_writable(&root.join("missing.app/Contents/MacOS/PzzaCode")));
+        assert!(!bundle_writable(&root.join("release/pzza-code")));
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+}

@@ -3,12 +3,13 @@ import childProcess from "node:child_process";
 import { execFile } from "node:child_process";
 import { syncBuiltinESMExports } from "node:module";
 import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
+import os, { homedir } from "node:os";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
-import { reconcileGithubOrigins, groupProjects, migrateProjectOptions, normalizeOptions, originKey, planEnvSync, planSync, projectIdFor, rootExpr, scanProjects, syncScript, syncProjects, cancelProjectSync, envWriteScript } from "../lib/projects.js";
+import { reconcileGithubOrigins, groupProjects, migrateProjectOptions, normalizeOptions, originKey, paneProbe, planEnvSync, planSync, projectIdFor, rootExpr, scanProjects, syncScript, syncProjects, cancelProjectSync, envWriteScript } from "../lib/projects.js";
+import { shQuote } from "../lib/shell.js";
 
 const exec = promisify(execFile);
 const run = (command, args, options = {}) => exec(command, args, { timeout: 20_000, ...options });
@@ -695,7 +696,39 @@ test("scan progress counts failed devices and does not fabricate repositories", 
 });
 
 
-test("sync parks divergent source and baseline tips before aligning the selected baseline", async (t) => {
+test("sync leaves a local baseline with unpushed commits alone, before stashing anything", async (t) => {
+  const { projects, origin, plan } = await fixture(t, 1);
+  const repo = path.join(projects, plan[0].rel);
+  await git(repo, "config", "user.name", "Sync Test");
+  await git(repo, "config", "user.email", "sync-test@example.invalid");
+  await git(origin, "checkout", "-b", "development");
+  await writeFile(path.join(origin, "remote-development.txt"), "remote development\n");
+  await git(origin, "add", ".");
+  await git(origin, "commit", "-m", "Remote development");
+
+  // A local "Merge into base" on development that was never pushed.
+  await git(repo, "checkout", "-b", "development");
+  await writeFile(path.join(repo, "merged-task.txt"), "merged task work\n");
+  await git(repo, "add", ".");
+  await git(repo, "commit", "-m", "Merge task into development");
+  const merged = (await git(repo, "rev-parse", "HEAD")).stdout.trim();
+  await writeFile(path.join(repo, "tracked.txt"), "unfinished tracked edit\n");
+
+  for (const current of ["development", "feature"]) {
+    if (current === "feature") await git(repo, "checkout", "-q", "-b", "feature");
+    const { stdout } = await run("sh", ["-c", syncScript(rootExpr(projects), plan, normalizeOptions())]);
+    const [row] = results(stdout);
+    assert.equal(row[2], "skipped", current);
+    assert.match(row[3], /local development has 1 commit\(s\) not on origin; left alone/);
+    assert.equal((await git(repo, "branch", "--show-current")).stdout.trim(), current);
+    assert.equal((await git(repo, "rev-parse", "refs/heads/development")).stdout.trim(), merged);
+    assert.equal(await readFile(path.join(repo, "tracked.txt"), "utf8"), "unfinished tracked edit\n", "nothing was stashed");
+    assert.equal((await git(repo, "stash", "list")).stdout, "");
+    assert.equal((await git(repo, "for-each-ref", "refs/pzza-sync")).stdout, "");
+  }
+});
+
+test("sync parks the checked-out tip before aligning the selected baseline", async (t) => {
   const { projects, origin, plan } = await fixture(t, 1);
   const repo = path.join(projects, plan[0].rel);
   await git(repo, "config", "user.name", "Sync Test");
@@ -706,12 +739,6 @@ test("sync parks divergent source and baseline tips before aligning the selected
   await git(origin, "add", ".");
   await git(origin, "commit", "-m", "Remote development");
   const remoteTip = (await git(origin, "rev-parse", "HEAD")).stdout.trim();
-
-  await git(repo, "checkout", "-b", "development");
-  await writeFile(path.join(repo, "local-development.txt"), "local target\n");
-  await git(repo, "add", ".");
-  await git(repo, "commit", "-m", "Local development");
-  const targetTip = (await git(repo, "rev-parse", "HEAD")).stdout.trim();
 
   await git(repo, "checkout", "-b", "feature", "main");
   await writeFile(path.join(repo, "feature.txt"), "local source\n");
@@ -724,16 +751,14 @@ test("sync parks divergent source and baseline tips before aligning the selected
   const first = await run("sh", ["-c", syncScript(rootExpr(projects), plan, normalizeOptions())]);
   const row = results(first.stdout)[0];
   assert.equal(row[2], "stashed");
-  assert.match(row[3], /recovery refs: source .*target /);
+  assert.match(row[3], /recovery refs: source /);
   assert.match(row[3], new RegExp(`git branch recover-source-${sourceTip} refs/pzza-sync/backups/${sourceTip}`));
-  assert.match(row[3], new RegExp(`git branch recover-target-${targetTip} refs/pzza-sync/backups/${targetTip}`));
   assert.match(row[3], /git stash apply [a-f0-9]+ to restore/);
   assert.equal((await git(repo, "branch", "--show-current")).stdout.trim(), "development");
   assert.equal((await git(repo, "rev-parse", "HEAD")).stdout.trim(), remoteTip);
   assert.equal((await git(repo, "rev-parse", `refs/pzza-sync/backups/${sourceTip}`)).stdout.trim(), sourceTip);
-  assert.equal((await git(repo, "rev-parse", `refs/pzza-sync/backups/${targetTip}`)).stdout.trim(), targetTip);
+  assert.equal((await git(repo, "rev-parse", "refs/heads/feature")).stdout.trim(), sourceTip, "the feature branch itself stays");
   await assert.rejects(git(repo, "merge-base", "--is-ancestor", sourceTip, "HEAD"));
-  await assert.rejects(git(repo, "merge-base", "--is-ancestor", targetTip, "HEAD"));
   assert.match((await git(repo, "stash", "show", "-p")).stdout, /unfinished tracked edit/);
   assert.equal((await git(repo, "show", "stash@{0}^3:untracked.txt")).stdout, "unfinished untracked edit\n");
 
@@ -1067,4 +1092,66 @@ test("env transfer refuses a source edited after its content was scanned", async
   assert.equal(transfer.status, "failed");
   assert.match(transfer.detail, /source changed since scan/);
   assert.equal(await readFile(path.join(projects, plan[1].rel, ".env"), "utf8"), destination);
+});
+
+test("sync leaves checkouts a terminal session is working in alone and reports why", async (t) => {
+  const { projects, origin, plan } = await fixture(t, 3);
+  const [agentRepo, dirtyRepo, idleRepo] = plan.map(step => path.join(projects, step.rel));
+  await mkdir(path.join(agentRepo, "src"));
+  await writeFile(path.join(agentRepo, "tracked.txt"), "agent edit in progress\n");
+  await writeFile(path.join(dirtyRepo, "tracked.txt"), "edit next to an idle shell\n");
+  await writeFile(path.join(origin, "remote.txt"), "advanced\n");
+  await git(origin, "add", ".");
+  await git(origin, "commit", "-m", "Advance origin");
+  const remote = (await git(origin, "rev-parse", "HEAD")).stdout.trim();
+  // An agent in a subfolder of one checkout, idle shells in the other two.
+  const probe = `printf '%s\\t%s\\n' claude ${shQuote(path.join(agentRepo, "src"))} -zsh ${shQuote(dirtyRepo)} zsh ${shQuote(idleRepo)} bash ${shQuote(`${idleRepo}-other`)}`;
+  const { stdout } = await run("sh", ["-c", syncScript(rootExpr(projects), plan, normalizeOptions(), { paneProbe: probe })]);
+  const rows = new Map(results(stdout).map(([, rel, status, detail]) => [rel, { status, detail }]));
+  assert.deepEqual(rows.get(plan[0].rel), { status: "skipped", detail: "a terminal session is running claude in this folder; left alone" });
+  assert.deepEqual(rows.get(plan[1].rel), { status: "skipped", detail: "uncommitted changes with a terminal session open in this folder; left alone" });
+  assert.equal(rows.get(plan[2].rel).status, "updated");
+  assert.equal(await readFile(path.join(agentRepo, "tracked.txt"), "utf8"), "agent edit in progress\n");
+  assert.equal(await readFile(path.join(dirtyRepo, "tracked.txt"), "utf8"), "edit next to an idle shell\n");
+  for (const repo of [agentRepo, dirtyRepo]) assert.equal((await git(repo, "stash", "list")).stdout, "");
+  assert.equal((await git(idleRepo, "rev-parse", "HEAD")).stdout.trim(), remote);
+});
+
+test("sync reads live panes from an isolated tmux server to find a working session", { timeout: 20_000 }, async (t) => {
+  const { projects, plan } = await fixture(t, 2);
+  const [busy, free] = plan.map(step => path.join(projects, step.rel));
+  const socketRoot = await mkdtemp(path.join(os.tmpdir(), "pzza-sync-tmux-"));
+  const socket = path.join(socketRoot, "s");
+  t.after(async () => {
+    await run("tmux", ["-S", socket, "kill-server"]).catch(() => {});
+    await rm(socketRoot, { recursive: true, force: true });
+  });
+  await run("tmux", ["-f", "/dev/null", "-S", socket, "new-session", "-d", "-s", "work", "-c", busy, "sleep 60"], { env: { ...process.env, TMUX: "" } });
+  const probe = `tmux -S ${shQuote(socket)} -u list-panes -a -F ${shQuote("#{pane_current_command}\t#{pane_current_path}")}`;
+  const { stdout } = await run("sh", ["-c", syncScript(rootExpr(projects), plan, normalizeOptions(), { paneProbe: probe })]);
+  const rows = new Map(results(stdout).map(([, rel, status, detail]) => [rel, { status, detail }]));
+  assert.deepEqual(rows.get(plan[0].rel), { status: "skipped", detail: "a terminal session is running sleep in this folder; left alone" });
+  assert.equal(rows.get(plan[1].rel).status, "current");
+  assert.ok(free);
+});
+
+test("the pane probe reads the app's own server and the default one, and only the device's own server remotely", (t) => {
+  const previous = process.env.PZZA_TMUX_SOCKET;
+  t.after(() => {
+    if (previous === undefined) delete process.env.PZZA_TMUX_SOCKET;
+    else process.env.PZZA_TMUX_SOCKET = previous;
+  });
+  process.env.PZZA_TMUX_SOCKET = "/tmp/pzza-managed/socket";
+  const local = paneProbe("");
+  assert.match(local, /^tmux -N -S '\/tmp\/pzza-managed\/socket' -u list-panes -a -F /);
+  assert.match(local, /; tmux -u list-panes -a -F /);
+  assert.ok(!/new-session|start-server|kill/.test(local));
+  assert.equal(paneProbe("devbox"), `tmux -u list-panes -a -F ${shQuote("#{pane_current_command}\t#{pane_current_path}")} 2>/dev/null`);
+});
+
+test("null and non-object sync requests are refused without running anything", async () => {
+  for (const body of [null, [], "x", 1]) {
+    assert.deepEqual(await syncProjects(body, { scan: async () => { throw new Error("must not scan"); } }), { error: "invalid request" });
+    assert.deepEqual(await scanProjects(body), { error: "invalid request" });
+  }
 });

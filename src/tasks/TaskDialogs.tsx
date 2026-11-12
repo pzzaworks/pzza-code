@@ -144,6 +144,9 @@ export function DiscardDialog({ request, onClose }: { request: DiscardRequest; o
   const states = candidates.map((candidate) => previews[candidate.id]);
   const loading = states.some((state) => !state || state.status === "loading");
   const unmerged = states.some((state) => state?.status === "ready" && !state.preview.locked && (state.preview.commits.length > 0 || state.preview.uncommitted.length > 0));
+  // git worktree remove deletes ignored files too (dependencies, build
+  // output, local settings): they are listed, never called safe.
+  const ignoredDeleted = states.some((state) => state?.status === "ready" && !state.preview.locked && state.preview.ignored.length > 0);
   const discard = async () => {
     setBusy(true);
     setError(null);
@@ -180,7 +183,7 @@ export function DiscardDialog({ request, onClose }: { request: DiscardRequest; o
   return (
     <Modal open onClose={onClose} title={title} icon={TriangleAlert} role="alertdialog" size="md" className="cp-confirm" pending={busy} initialFocusRef={cancel} describedBy={description}>
       <p id={description} className="cp-confirm-lead">
-        {request.afterLanding ? "The pick has landed. " : ""}Each session closes and its worktree folder and pzza/ branch are deleted. {unmerged ? `What is listed below is not in ${task.base} and is deleted for good.` : `Nothing below is lost: every branch is already in ${task.base}.`}
+        {request.afterLanding ? "The pick has landed. " : ""}Each session closes and its worktree folder and pzza/ branch are deleted. {unmerged ? `The commits and changes listed below are not in ${task.base} and are deleted for good.` : `Every branch is already in ${task.base}, so no commits or changes are lost.`}{ignoredDeleted ? " The ignored files listed below (dependencies, build output, local settings) are deleted with their worktree." : ""}
       </p>
       {candidates.map((candidate) => {
         const state = previews[candidate.id];
@@ -193,19 +196,25 @@ export function DiscardDialog({ request, onClose }: { request: DiscardRequest; o
             {!state || state.status === "loading" ? <p className="cp-note"><LoaderCircle size={14} className="sw-spin" aria-hidden="true" /> Checking for unmerged work…</p>
               : state.status === "error" ? <p className="cp-detail-warn"><TriangleAlert size={12} aria-hidden="true" />{state.error} Its folder is kept; only the session closes.</p>
                 : state.preview.locked ? <p className="cp-detail-warn"><TriangleAlert size={12} aria-hidden="true" />This worktree is locked (git worktree lock), so it is kept; only the session closes.</p>
-                  : !state.preview.commits.length && !state.preview.uncommitted.length ? <p className="cp-confirm-safe"><CircleCheck size={13} aria-hidden="true" />No unmerged commits or uncommitted changes.</p>
-                    : (
-                      <ul className="cp-confirm-files task-loss" aria-label={`What ${agentName(candidate)} would lose`}>
-                        {state.preview.commits.length ? <li className="cp-confirm-more">{state.preview.commits.length} {state.preview.commits.length === 1 ? "commit" : "commits"} not in {state.preview.base ?? task.base}</li> : null}
-                        {state.preview.commits.slice(0, MAX_LISTED).map((commit) => <li key={commit.sha}><code className="cp-confirm-action">{commit.sha.slice(0, 7)}</code><span className="cp-confirm-path" title={commit.subject}>{commit.subject}</span></li>)}
-                        {state.preview.uncommitted.length ? <li className="cp-confirm-more">{state.preview.uncommitted.length}{state.preview.truncated ? "+" : ""} uncommitted {state.preview.uncommitted.length === 1 ? "change" : "changes"}</li> : null}
-                        {state.preview.uncommitted.slice(0, MAX_LISTED).map((file) => <li key={file.path}><span className={`code-changes-status code-changes-status-${file.status}`} aria-hidden="true">{STATUS_MARK(file.status)}</span><span className="cp-confirm-path" title={file.path}>{file.path}</span></li>)}
-                      </ul>
-                    )}
+                  : (
+                    <>
+                      {!state.preview.commits.length && !state.preview.uncommitted.length ? <p className="cp-confirm-safe"><CircleCheck size={13} aria-hidden="true" />No unmerged commits or uncommitted changes.</p> : null}
+                      {state.preview.commits.length || state.preview.uncommitted.length || state.preview.ignored.length ? (
+                        <ul className="cp-confirm-files task-loss" aria-label={`What ${agentName(candidate)} would lose`}>
+                          {state.preview.commits.length ? <li className="cp-confirm-more">{state.preview.commits.length} {state.preview.commits.length === 1 ? "commit" : "commits"} not in {state.preview.base ?? task.base}</li> : null}
+                          {state.preview.commits.slice(0, MAX_LISTED).map((commit) => <li key={commit.sha}><code className="cp-confirm-action">{commit.sha.slice(0, 7)}</code><span className="cp-confirm-path" title={commit.subject}>{commit.subject}</span></li>)}
+                          {state.preview.uncommitted.length ? <li className="cp-confirm-more">{state.preview.uncommitted.length}{state.preview.truncated ? "+" : ""} uncommitted {state.preview.uncommitted.length === 1 ? "change" : "changes"}</li> : null}
+                          {state.preview.uncommitted.slice(0, MAX_LISTED).map((file) => <li key={file.path}><span className={`code-changes-status code-changes-status-${file.status}`} aria-hidden="true">{STATUS_MARK(file.status)}</span><span className="cp-confirm-path" title={file.path}>{file.path}</span></li>)}
+                          {state.preview.ignored.length ? <li className="cp-confirm-more">{state.preview.ignored.length}{state.preview.truncated ? "+" : ""} ignored {state.preview.ignored.length === 1 ? "file or folder" : "files and folders"}, deleted with the worktree</li> : null}
+                          {state.preview.ignored.slice(0, MAX_LISTED).map((entry) => <li key={`ignored:${entry}`}><span className="cp-confirm-path" title={entry}>{entry}</span></li>)}
+                        </ul>
+                      ) : null}
+                    </>
+                  )}
           </section>
         );
       })}
-      {unmerged ? null : <p className="cp-confirm-safe"><ShieldCheck size={13} aria-hidden="true" />Discarding removes only what is listed here; your main checkout is not touched.</p>}
+      {unmerged ? null : <p className="cp-confirm-safe"><ShieldCheck size={13} aria-hidden="true" />Only these worktree folders and their pzza/ branches are removed; your main checkout is not touched.</p>}
       {error ? <div className="cp-confirm-alert" role="alert"><TriangleAlert size={14} aria-hidden="true" /><span>{error}</span></div> : null}
       <div className="modal-actions">
         <button type="button" className="btn" ref={cancel} onClick={onClose} disabled={busy}>{request.afterLanding ? "Keep them" : "Cancel"}</button>

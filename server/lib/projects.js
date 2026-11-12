@@ -4,7 +4,9 @@
 // a device is cloned there from the origin URL seen elsewhere; a repo that is
 // present aligns to remote development when available, otherwise remote main. Modified
 // tracked and untracked files are stashed first and retained for recovery, while
-// unmerged local commits are retained in durable backup refs. Afterwards every .env / .env.* file is copied from
+// the checked-out tip is kept in a durable backup ref. A local development or
+// main holding commits origin lacks, and a checkout a terminal session is
+// working in, are left alone and reported. Afterwards every .env / .env.* file is copied from
 // the device holding the newest copy to every device where it is missing or
 // differs, so secrets follow the project without ever passing through git.
 //
@@ -14,6 +16,7 @@ import { execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { DEVBOX, IS_CLIENT } from "./config.js";
 import { SSH_TOKEN, shQuote } from "./shell.js";
+import { tmuxCommand } from "./tmux-client.js";
 
 // How deep below the root we look for repos (root/Org/Group/repo is depth 3).
 const SCAN_DEPTH = 4;
@@ -359,10 +362,18 @@ const SYNC_FUNCS =
   // pz_update REL STASH ALIGN EXPECTED. ALIGN=1 makes the checkout exactly
   // match remote development when present, otherwise remote main. ALIGN=0 is an
   // explicit opt-out that leaves the checkout and its working files untouched.
+  // pz_busy DIR: whether a terminal pane ($pz_panes, "command<TAB>cwd" lines
+  // read once per run) sits in DIR or below it. Sets pz_busy_what to the
+  // program running there, or "-" when only idle shells are.
+  `pz_busy() { [ -n "$pz_panes" ] || return 1; pz_busy_dir=$(cd "$1" 2>/dev/null && pwd -P) || return 1; pz_busy_what=$(printf '%s\n' "$pz_panes" | PZ_DIR="$pz_busy_dir" awk -F '\t' 'index($2 "/", ENVIRON["PZ_DIR"] "/") == 1 { c = $1; sub(/^-/, "", c); if (c ~ /^(bash|zsh|fish|sh|dash|ksh|mksh|tcsh|csh|nu|xonsh|elvish|login)$/) { shell = 1; next } gsub(/[^A-Za-z0-9._+-]/, "", c); print (c == "" ? "a program" : c); found = 1; exit } END { if (!found && shell) print "-" }'); [ -n "$pz_busy_what" ]; }; ` +
   `pz_update_inner() { d=$1; do_stash=$2; do_align=$3; expected=$4; pz_recoveries=; stash_id=; stash_ref=; stash_note=; pz_attempt=0; ` +
   `if pz_linked_worktree "$d"; then pz_r "$d" skipped "linked worktree; left alone"; return; fi; ` +
   `actual=$(git -C "$d" remote get-url origin 2>/dev/null); [ "$actual" = "$expected" ] || { pz_r "$d" skipped "origin changed since scan; left alone"; return; }; ` +
   `gitdir=$(git -C "$d" rev-parse --absolute-git-dir) || { pz_r "$d" failed "repository no longer exists"; return; }; ` +
+  // An agent, dev server or editor working in the checkout must never have its
+  // files stashed or its branch switched under it; an idle shell only blocks
+  // a checkout whose uncommitted changes it may be in the middle of.
+  `if pz_busy "$d"; then if [ "$pz_busy_what" != - ]; then pz_r "$d" skipped "a terminal session is running $pz_busy_what in this folder; left alone"; return; fi; if [ -n "$(git -C "$d" status --porcelain --untracked-files=all 2>/dev/null)" ]; then pz_r "$d" skipped "uncommitted changes with a terminal session open in this folder; left alone"; return; fi; fi; ` +
   `if [ -n "$(git -C "$d" ls-files --unmerged)" ] || [ -f "$gitdir/MERGE_HEAD" ] || [ -f "$gitdir/CHERRY_PICK_HEAD" ] || [ -f "$gitdir/REVERT_HEAD" ] || [ -d "$gitdir/rebase-merge" ] || [ -d "$gitdir/rebase-apply" ]; then pz_r "$d" skipped "unfinished merge or rebase; left alone"; return; fi; ` +
   `was=$(git -C "$d" rev-parse --abbrev-ref HEAD 2>/dev/null); before=$(git -C "$d" rev-parse HEAD 2>/dev/null); [ -n "$was" ] && [ -n "$before" ] || { pz_r "$d" skipped "could not read current checkout; left alone"; return; }; ` +
   `if [ "$do_align" != 1 ]; then pz_r "$d" skipped "baseline alignment is off; $was left alone"; return; fi; ` +
@@ -379,6 +390,11 @@ const SYNC_FUNCS =
   // The origin is verified before anything is preserved or moved: a deleted,
   // renamed or unreachable remote skips the repo without touching it.
   `pz_pick_remote "$d"; picked=$?; if [ "$picked" != 0 ]; then if [ "$picked" = 1 ]; then pz_r "$d" skipped "origin has neither development nor main branch; left alone$stash_note"; else pz_r "$d" skipped "check origin: $(pz_tail "$pz_remote_error"); left alone$stash_note"; fi; return; fi; ` +
+  // Aligning resets the local baseline branch to origin, so a local
+  // development or main with commits origin does not have (unpushed work, a
+  // local "Merge into base") is left alone before anything is stashed. The
+  // advertised remote tip is fetched first when it is not known locally.
+  `pz_target_tip=$(git -C "$d" rev-parse --verify --quiet "refs/heads/$pz_baseline" 2>/dev/null); if [ -n "$pz_target_tip" ]; then git -C "$d" cat-file -e "$pz_remote_head^{commit}" 2>/dev/null || git -C "$d" fetch --quiet origin 2>/dev/null || true; if ! git -C "$d" merge-base --is-ancestor "$pz_target_tip" "$pz_remote_head" 2>/dev/null; then pz_ahead=$(git -C "$d" rev-list --count "$pz_remote_head..$pz_target_tip" 2>/dev/null) || pz_ahead=; pz_r "$d" skipped "local $pz_baseline has \${pz_ahead:-some} commit(s) not on origin; left alone (push or merge them first)$stash_note"; return; fi; fi; ` +
   `if [ -n "$tracked" ]; then prev_stash=$(git -C "$d" rev-parse --verify --quiet refs/stash 2>/dev/null || true); git -C "$d" update-index --refresh >/dev/null 2>&1; if ! out=$(git -C "$d" stash push --include-untracked --quiet -m "pzza-sync $was $(date +%Y-%m-%d_%H:%M)" 2>&1); then git -C "$d" update-index --refresh >/dev/null 2>&1; out=$(git -C "$d" stash push --include-untracked --quiet -m "pzza-sync $was $(date +%Y-%m-%d_%H:%M)" 2>&1) || { pz_r "$d" skipped "could not preserve local changes safely ($(pz_tail "$out")); left alone$stash_note"; return; }; fi; new_id=$(git -C "$d" rev-parse --verify --quiet refs/stash 2>/dev/null || true); if [ -n "$new_id" ] && [ "$new_id" != "$prev_stash" ]; then new_ref="refs/pzza-sync/stashes/$new_id"; if ! git -C "$d" update-ref "$new_ref" "$new_id" || [ "$(git -C "$d" rev-parse --verify --quiet "$new_ref" 2>/dev/null)" != "$new_id" ]; then pz_r "$d" failed "could not retain durable stash reference; git stash apply $new_id to restore$stash_note"; return; fi; stash_id=$new_id; stash_ref=$new_ref; if [ -n "$stash_note" ]; then stash_note="$stash_note; stashed $n more change(s) in $new_ref (git stash apply $new_id to restore)"; else stash_note="; stashed $n change(s) in $new_ref (git stash apply $new_id to restore)"; fi; elif [ -n "$(git -C "$d" status --porcelain --untracked-files=all)" ]; then pz_r "$d" skipped "could not preserve local changes safely; left alone$stash_note"; return; fi; fi; ` +
   `if [ -n "$(git -C "$d" status --porcelain --untracked-files=all)" ]; then if [ "$pz_attempt" -lt 3 ]; then sleep 2; continue; fi; pz_r "$d" skipped "working files keep changing (another program may be writing them); left alone$stash_note"; return; fi; ` +
   // A clean checkout known to equal the advertised selected branch is a real
@@ -390,11 +406,12 @@ const SYNC_FUNCS =
   `pz_pick_tracking "$d" || { pz_r "$d" skipped "origin has neither development nor main branch after fetch; left alone$stash_note"; return; }; ` +
   `now_branch=$(git -C "$d" rev-parse --abbrev-ref HEAD 2>/dev/null); now_head=$(git -C "$d" rev-parse HEAD 2>/dev/null); if [ "$now_branch" != "$was" ] || [ "$now_head" != "$before" ]; then if [ "$pz_attempt" -lt 3 ]; then sleep 2; continue; fi; pz_r "$d" skipped "checkout changed during sync; left alone$stash_note"; return; fi; ` +
   `if [ -n "$(git -C "$d" status --porcelain --untracked-files=all)" ]; then if [ "$pz_attempt" -lt 3 ]; then sleep 2; continue; fi; pz_r "$d" skipped "working files changed during sync; left alone$stash_note"; return; fi; ` +
-  // A checkout may be ahead or diverged both on the currently checked-out
-  // source branch and on the selected target branch. Keep both tips reachable
-  // before moving the clean baseline, without manufacturing a merge commit.
+  // The local baseline branch is reset by the checkout below, so it must hold
+  // nothing origin lacks (checked again now that origin is fetched: a commit
+  // may have landed since the first check). Other branches stay where they
+  // are; the checked-out tip is still kept reachable before moving away.
+  `target_tip=$(git -C "$d" rev-parse --verify --quiet "refs/heads/$pz_baseline" 2>/dev/null); if [ -n "$target_tip" ] && ! git -C "$d" merge-base --is-ancestor "$target_tip" "refs/remotes/origin/$pz_baseline" 2>/dev/null; then pz_ahead=$(git -C "$d" rev-list --count "refs/remotes/origin/$pz_baseline..$target_tip" 2>/dev/null) || pz_ahead=; pz_r "$d" skipped "local $pz_baseline has \${pz_ahead:-some} commit(s) not on origin; left alone (push or merge them first)$stash_note"; return; fi; ` +
   `if ! git -C "$d" merge-base --is-ancestor "$before" "refs/remotes/origin/$pz_baseline" 2>/dev/null; then pz_keep_ref "$d" "$before" source || { pz_r "$d" failed "could not verify recovery ref for current $was tip$stash_note"; return; }; fi; ` +
-  `target_tip=$(git -C "$d" rev-parse --verify --quiet "refs/heads/$pz_baseline" 2>/dev/null); if [ -n "$target_tip" ] && ! git -C "$d" merge-base --is-ancestor "$target_tip" "refs/remotes/origin/$pz_baseline" 2>/dev/null; then pz_keep_ref "$d" "$target_tip" target || { pz_r "$d" failed "could not verify recovery ref for selected $pz_baseline tip$stash_note"; return; }; fi; ` +
   `if [ -n "$(git -C "$d" status --porcelain --untracked-files=all)" ]; then if [ "$pz_attempt" -lt 3 ]; then sleep 2; continue; fi; pz_r "$d" skipped "working files changed before baseline alignment; left alone$stash_note"; return; fi; ` +
   // A merge, cherry-pick, revert or rebase started after the first check must
   // stop the alignment, never the working tree.
@@ -434,14 +451,32 @@ function syncBatches(plan) {
   return batches;
 }
 
-export function syncScript(rootE, plan, opts) {
+// Shell command listing "command<TAB>cwd" for every terminal pane on the
+// device a sync runs on: the app's own tmux server plus the default one
+// locally, the default server on another device. Read-only: list-panes never
+// starts a server.
+export function paneProbe(host) {
+  const format = shQuote("#{pane_current_command}\t#{pane_current_path}");
+  const target = host || (IS_CLIENT ? DEVBOX : "");
+  if (target) return `tmux -u list-panes -a -F ${format} 2>/dev/null`;
+  const managed = tmuxCommand("");
+  const probes = [`${managed} -u list-panes -a -F ${format} 2>/dev/null`];
+  if (managed !== "tmux") probes.push(`tmux -u list-panes -a -F ${format} 2>/dev/null`);
+  return probes.join("; ");
+}
+
+// `paneProbe` is the shell command whose output tells which checkouts have a
+// terminal session working in them (see pz_busy); without one, none is skipped
+// for that reason.
+export function syncScript(rootE, plan, opts, { paneProbe: probe = "" } = {}) {
   const flags = `${opts.stashDirty ? 1 : 0} ${opts.switchToDefault ? 1 : 0}`;
   const batches = syncBatches(plan);
   const steps = batches.map((items) => items.map(({ rel, action, origin }) => {
     const call = action === "clone" ? `pz_clone ${shQuote(origin)} ${shQuote(rel)}` : `pz_start_update ${shQuote(rel)} ${flags} ${shQuote(origin)}`;
     return `(${call}) &`;
   }).join(" ") + " wait");
-  return prelude(rootE) + `cd "$root"; ` + SYNC_FUNCS + steps.join("; ");
+  const panes = probe ? `pz_panes=$( { ${probe}; } 2>/dev/null ); ` : "pz_panes=; ";
+  return prelude(rootE) + `cd "$root"; ` + panes + SYNC_FUNCS + steps.join("; ");
 }
 
 async function mapConcurrent(items, limit, work) {
@@ -643,6 +678,7 @@ function normalizeDevices(list) {
 // The HTTP route passes `redact` so credentials in origin URLs never reach the
 // app; the sync keeps the raw URL because the clone needs it.
 export async function scanProjects(body, { redact: strip = false, onProgress, freshOrigins = false } = {}) {
+  if (!body || typeof body !== "object" || Array.isArray(body)) return { error: "invalid request" };
   const rootE = rootExpr(body.root);
   if (!rootE) return { error: "invalid projects root" };
   const devices = normalizeDevices(body.devices);
@@ -726,7 +762,8 @@ export function planSync(scan, opts = normalizeOptions()) {
 // Scan, plan and run the sync on every device in parallel: git first (clone /
 // stash / checkout / merge), then the env files. Returns
 // { root, devices: [{ id, name, host, error, results: [...], envs: [...] }] }.
-export async function syncProjects(body, { scan = scanProjects, run = runOn, copy = copyEnv } = {}) {
+export async function syncProjects(body, { scan = scanProjects, run = runOn, copy = copyEnv, probe = paneProbe } = {}) {
+  if (!body || typeof body !== "object" || Array.isArray(body)) return { error: "invalid request" };
   const operationId = body.operationId;
   if (operationId !== undefined && !validOperationId(operationId)) return { error: "invalid sync operation" };
   if (syncOperations.size) return { error: "a sync operation is already running" };
@@ -734,11 +771,11 @@ export async function syncProjects(body, { scan = scanProjects, run = runOn, cop
   cancelledRequests.delete(operationId);
   syncOperations.set(operationId, operation);
   try {
-    return await performSync(body, operation, { scan, run, copy });
+    return await performSync(body, operation, { scan, run, copy, probe });
   } finally { syncOperations.delete(operationId); }
 }
 
-async function performSync(body, operation, { scan: scanDevices, run, copy }) {
+async function performSync(body, operation, { scan: scanDevices, run, copy, probe }) {
   const rootE = rootExpr(body.root);
   if (!rootE) return { error: "invalid projects root" };
   // Cached aliases speed up browsing, but a sync must revalidate redirects
@@ -758,7 +795,7 @@ async function performSync(body, operation, { scan: scanDevices, run, copy }) {
       for (const batch of syncBatches(d.plan)) {
         if (operation.cancelled) break;
         for (const step of batch) started.add(step.rel);
-        const chunk = await run(d.host, syncScript(rootE, batch, opts), SYNC_TIMEOUT_MS);
+        const chunk = await run(d.host, syncScript(rootE, batch, opts, { paneProbe: probe(d.host) }), SYNC_TIMEOUT_MS);
         chunks.push(chunk);
         // A disconnected device cannot run later batches. Keep reports from
         // completed repositories and stop paying the connection timeout again.

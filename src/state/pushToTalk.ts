@@ -59,8 +59,11 @@ export function initializePushToTalk(supported = DICTATION_SUPPORTED): () => voi
     const tileId = owned;
     owned = null;
     silence = null;
-    // Only end the recording this trigger started; a click-started one is left alone.
-    if (tileId && useDictation.getState().recording?.tileId === tileId) void (cancel ? useDictation.getState().cancel() : useDictation.getState().stop());
+    // Only end the recording this trigger started; a click-started one is left
+    // alone. One that failed (the tile waits on an approval prompt, say) stays
+    // as it is, so its microphone button keeps showing why.
+    const recording = useDictation.getState().recording;
+    if (tileId && recording?.tileId === tileId && recording.phase !== "error") void (cancel ? useDictation.getState().cancel() : useDictation.getState().stop());
   };
   const stopTrigger = initializeKeyTrigger({
     codes: ["AltLeft", "AltRight"],
@@ -70,7 +73,9 @@ export function initializePushToTalk(supported = DICTATION_SUPPORTED): () => voi
     active: mine,
     begin: () => {
       const dictation = useDictation.getState();
-      if (!dictation.enabled || dictation.model !== "ready" || dictation.recording) return;
+      // A failed recording only shows its error: a new hold retries, as a click on its button does.
+      const failed = dictation.recording?.phase === "error";
+      if (!dictation.enabled || dictation.model !== "ready" || (dictation.recording && !failed)) return;
       // A focused field that takes dictation (the broadcast composer) is the
       // target; otherwise the active tile is.
       const focused = document.activeElement instanceof HTMLElement ? document.activeElement.closest<HTMLElement>("[data-dictation-target]")?.dataset.dictationTarget : undefined;
@@ -79,7 +84,10 @@ export function initializePushToTalk(supported = DICTATION_SUPPORTED): () => voi
       owned = tileId;
       silence = usePushToTalk.getState().mode === "tap" ? new SilenceStop({ maxMs: TAP_MAX_MS }) : null;
       // Push to talk keeps its own ending: the key release, or tap mode's pause.
-      void dictation.start(tileId, { silenceStop: false });
+      void (async () => {
+        if (failed) await dictation.cancel();
+        await useDictation.getState().start(tileId, { silenceStop: false });
+      })();
     },
     release: () => finish(false),
     cancel: () => finish(true),

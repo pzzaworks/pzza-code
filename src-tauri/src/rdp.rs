@@ -110,6 +110,12 @@ impl DesktopManager {
         }
         Ok(())
     }
+
+    // Calls off a shutdown that did not finish, so desktops can open again.
+    // Connections the shutdown ended stay ended.
+    fn resume(&self) {
+        self.state.lock().unwrap().closing = false;
+    }
 }
 
 impl DesktopSession {
@@ -195,6 +201,11 @@ fn activate_viewer(_pid: u32) {}
 
 pub fn shutdown() -> Result<(), String> {
     desktops().shutdown(Duration::from_secs(5))
+}
+
+/// Undoes `shutdown` when the app keeps running after a failed cleanup.
+pub fn resume() {
+    desktops().resume();
 }
 
 // The selected SSH device and its saved desktop-sharing account.
@@ -809,6 +820,15 @@ fn launch_blocking(opts: RdpOptions) -> Result<Launched, RdpFailure> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_called_off_shutdown_lets_desktops_open_again() {
+        let manager = Arc::new(DesktopManager::default());
+        manager.shutdown(Duration::ZERO).unwrap();
+        assert!(manager.reserve("after-shutdown").is_err());
+        manager.resume();
+        assert!(matches!(manager.reserve("after-shutdown"), Ok(DesktopStart::Launch(_))));
+    }
 
     #[test]
     fn dropping_a_desktop_process_reaps_it_and_removes_its_private_log() {

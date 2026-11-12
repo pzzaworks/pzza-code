@@ -7,6 +7,13 @@
 // delivers that input and everything after it in order.
 
 export type InputKind = "typing" | "mode-entry" | "passthrough";
+/**
+ * Who sent the input: the user's own keyboard, mouse or paste in the tile
+ * ("keyboard"), or the app on the user's behalf ("app": an approval answer,
+ * an app-control key, the Enter that submits a broadcast). Only a keystroke
+ * can be the habit of leaving the scrollback, so only it is ever held back.
+ */
+export type InputOrigin = "keyboard" | "app";
 
 const SGR_MOUSE = /\x1b\[<(\d+);\d+;\d+([Mm])/g;
 const SGR_MOUSE_ONLY = /^(?:\x1b\[<\d+;\d+;\d+[Mm])+$/;
@@ -35,7 +42,7 @@ export function classifyInput(data: string): InputKind {
 
 export interface PaneModeGate {
   /** Delivers input in order, leaving a pane mode first when typed input needs it. */
-  send(data: string): Promise<void>;
+  send(data: string, origin: InputOrigin): Promise<void>;
   /** The pane may be in a mode (a new attachment): the next typed input leaves it first. */
   mark(): void;
   /** Marks so far; pass to settle() with a probe started now. */
@@ -51,6 +58,7 @@ export interface PaneModeGate {
 interface Pending {
   data: string;
   kind: InputKind;
+  origin: InputOrigin;
   resolve: (written: Promise<void>) => void;
   reject: (error: Error) => void;
 }
@@ -63,6 +71,10 @@ export function createPaneModeGate({ write, leave }: {
   leave: () => Promise<void>;
 }): PaneModeGate {
   let inMode = false;
+  // The user is known to be in a scrollback: their own wheel-up or drag
+  // entered the mode, or a probe found the pane in one. A fresh attachment
+  // alone only may have left one behind.
+  let scrolled = false;
   let marks = 0;
   let attachment = 0;
   let pumping = false;
@@ -79,7 +91,7 @@ export function createPaneModeGate({ write, leave }: {
     let done: Promise<void>;
     try { done = write(data); } catch (error) { done = Promise.reject(error instanceof Error ? error : new Error(String(error))); }
     written = done.then(() => undefined, () => undefined);
-    if (kind === "mode-entry") mark();
+    if (kind === "mode-entry") { mark(); scrolled = true; }
     return done;
   };
   const pump = async () => {
@@ -95,11 +107,14 @@ export function createPaneModeGate({ write, leave }: {
         // and later keys do not each wait on a device that is not answering.
         await leave().catch(() => undefined);
         if (current !== attachment) return;
-        if (marks === before) inMode = false;
-        // Esc or Ctrl+C right after a scroll is the habit for leaving the
-        // scrollback, not a key for the agent: both would interrupt it, so the
-        // key that left the mode stops there.
-        if (LEAVE_KEYS.has(next.data)) {
+        const leftScroll = scrolled;
+        if (marks === before) { inMode = false; scrolled = false; }
+        // Esc or Ctrl+C typed right after the user's own scroll is the habit
+        // for leaving the scrollback, not a key for the agent: both would
+        // interrupt it, so the key that left the mode stops there. A key the
+        // app sends (an approval's Reject, an interrupt) is always delivered,
+        // and so is one after a reattach that may not have left a mode at all.
+        if (leftScroll && next.origin === "keyboard" && LEAVE_KEYS.has(next.data)) {
           queue.shift();
           next.resolve(Promise.resolve());
           continue;
@@ -112,23 +127,28 @@ export function createPaneModeGate({ write, leave }: {
   };
 
   return {
-    send(data) {
+    send(data, origin) {
       const kind = classifyInput(data);
       if (!pumping && !(kind === "typing" && inMode)) return deliver(data, kind);
       return new Promise<void>((resolve, reject) => {
-        queue.push({ data, kind, resolve, reject });
+        queue.push({ data, kind, origin, resolve, reject });
         if (!pumping) void pump();
       });
     },
-    mark,
+    // A new attachment may find the pane in a mode, but not one the user
+    // scrolled into from this tile.
+    mark() { mark(); scrolled = false; },
     generation: () => marks,
     settle(generation, found) {
-      if (!found && generation === marks) inMode = false;
+      if (generation !== marks) return;
+      if (found) scrolled = true;
+      else { inMode = false; scrolled = false; }
     },
     mayBeInMode: () => inMode,
     reset(reason) {
       attachment++;
       pumping = false;
+      scrolled = false;
       written = Promise.resolve();
       for (const pending of queue.splice(0)) pending.reject(reason);
     },

@@ -1,8 +1,10 @@
 // Path guards for file access. The code view can only ever reach the user's
 // home tree, and never key material or credential stores, on both the local and
 // the ssh-proxied branches.
+import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { STATE_DIR } from "./config.js";
 import { shQuote } from "./shell.js";
 
 // Private key material and credential stores are never something the code
@@ -37,6 +39,49 @@ export function safePath(p, { listOnly = false } = {}) {
   if (!home || (resolved !== home && !resolved.startsWith(home + path.sep))) return null;
   if (!listOnly && sensitivePath(path.relative(home, resolved))) return null;
   return resolved;
+}
+
+const within = (root, candidate) => candidate === root || candidate.startsWith(root + path.sep);
+
+// The agent's own token file, wherever XDG_CONFIG_HOME puts it.
+function isAgentToken(real) {
+  try { return real === fs.realpathSync.native(path.join(STATE_DIR, "agent-token")); } catch { return false; }
+}
+
+// safePath for anything that opens a file. The path as given must be inside
+// home (safePath); every symlink along it is then resolved and the credential
+// denylist is applied to the real target as well, so a link inside home cannot
+// reach a key store. The real target itself may sit outside home: a project
+// folder linked to another volume (~/Projects -> /Volumes/SSD/Projects) opens
+// and saves like any other, as the lexical bound already requires the user to
+// have placed that link in their own home. A file that does not exist yet
+// resolves through its folder; a dangling link in its place is refused
+// (writing through it would create a file wherever it points). Returns the
+// real path, or null when refused. A missing folder throws ENOENT for the
+// caller to report.
+export function realSafePath(p) {
+  const lexical = safePath(p);
+  if (!lexical) return null;
+  const home = os.homedir();
+  let realHome;
+  try { realHome = fs.realpathSync.native(home); } catch { return null; }
+  let real;
+  try {
+    real = fs.realpathSync.native(lexical);
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+    real = path.join(fs.realpathSync.native(path.dirname(lexical)), path.basename(lexical));
+    try {
+      fs.lstatSync(real);
+      return null;
+    } catch (missing) {
+      if (missing.code !== "ENOENT") throw missing;
+    }
+  }
+  const root = within(realHome, real) ? realHome : within(home, real) ? home : null;
+  if (root && sensitivePath(path.relative(root, real))) return null;
+  if (isAgentToken(real)) return null;
+  return real;
 }
 
 // "~" or "~/x" -> the given home; anything else is returned as is.

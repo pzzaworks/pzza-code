@@ -17,12 +17,22 @@ export function registerBroadcastTarget(tileId: string, writer: Writer): () => v
 export interface BroadcastResult { tileId: string; error: string | null; skipped?: boolean }
 
 export const BROADCAST_PENDING_APPROVAL = "Waiting on an approval prompt, so nothing was sent. Answer it first.";
+export const BROADCAST_APPROVAL_APPEARED = "An approval prompt appeared while sending, so Enter was not pressed. Answer it first, then submit the text in the terminal.";
+
+/**
+ * Thrown by a writer that found an approval prompt on its terminal's screen
+ * right before it would type or press Enter: the tile is skipped, as one
+ * already known to wait on an approval is.
+ */
+export class PendingApprovalError extends Error {}
 
 // Sends `text` followed by Enter to every tile. The text is validated once
 // before anything is sent, so a bad message reaches no terminal; `multiline`
 // allows line breaks, which each terminal still accepts only in bracketed
 // paste mode. A tile waiting on an approval prompt is skipped: the text and
-// its Enter would answer the prompt instead of reaching the agent.
+// its Enter would answer the prompt instead of reaching the agent. Each
+// writer checks its screen again right before typing and before Enter, since
+// a prompt drawn a moment ago is not flagged yet.
 export async function broadcastLine(tileIds: readonly string[], text: string, { multiline = false } = {}): Promise<BroadcastResult[]> {
   if (!text.trim()) throw new Error("Type something to send.");
   validateTerminalPaste(text, multiline, !multiline);
@@ -34,6 +44,7 @@ export async function broadcastLine(tileIds: readonly string[], text: string, { 
       await writer(text);
       return { tileId, error: null };
     } catch (error) {
+      if (error instanceof PendingApprovalError) return { tileId, error: error.message, skipped: true };
       return { tileId, error: error instanceof Error ? error.message : "Sending failed." };
     }
   }));

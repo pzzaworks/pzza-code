@@ -350,11 +350,50 @@ export async function gitProtectionWorker(input) {
       const hookNames = new Set([...protectedHooks, "applypatch-msg", "pre-applypatch", "post-applypatch", "prepare-commit-msg", "post-commit", "pre-rebase", "post-checkout", "post-merge", "pre-receive", "update", "proc-receive", "post-receive", "post-update", "reference-transaction", "push-to-checkout", "pre-auto-gc", "post-rewrite", "sendemail-validate", "fsmonitor-watchman", "p4-changelist", "p4-prepare-changelist", "p4-post-changelist", "p4-pre-submit", "post-index-change"]);
       try { for (const name of await fs.readdir(path.resolve(root, settings.previous))) if (!name.endsWith(".sample")) hookNames.add(name); }
       catch (error) { if (error.code !== "ENOENT") fail("Cannot preserve the existing Git hook directory"); }
+      // Hooks are POSIX sh wrappers. A Node.js path written into a shebang dies
+      // with that Node version (an nvm or Homebrew upgrade), and a missing
+      // interpreter on reference-transaction aborts every ref update in the
+      // repository. Pass-through hooks never need Node; protected hooks find
+      // it when they run and otherwise stop with instructions to repair.
+      const scripts = path.join(privateDirectory, "hook-scripts");
+      await fs.mkdir(scripts, { recursive: true, mode: 0o700 });
+      const scriptsStat = await fs.lstat(scripts);
+      if (!scriptsStat.isDirectory() || scriptsStat.isSymbolicLink() || scriptsStat.uid !== process.getuid()) fail("Git hook storage must be owned by this account");
+      const shellText = (value) => `'${String(value).replace(/'/g, `'\\''`)}'`;
+      const configScope = worktreeConfig ? "--worktree" : "--local";
       for (const hook of hookNames) {
         const oldHook = path.join(settings.previous, hook);
         const protectedHook = protectedHooks.includes(hook);
-        const script = `#!${process.execPath}
-const fs = require('node:fs');
+        if (!protectedHook) {
+          // A relative previous hook path resolves against the hook's working
+          // directory, exactly as Git runs it; stdin and arguments pass through.
+          await privateWrite(path.join(hooks, hook), `#!/bin/sh
+previous=${shellText(oldHook)}
+if [ -f "$previous" ] && [ -x "$previous" ]; then exec "$previous" "$@"; fi
+exit 0
+`, 0o700);
+          continue;
+        }
+        const hookScript = path.join(scripts, `${hook}.cjs`);
+        const failure = [
+          `Git protection could not run the ${hook} hook: no Node.js runtime was found.`,
+          `It was installed with ${process.execPath}, which is no longer available.`,
+          "The operation was stopped so nothing is committed or pushed unchecked.",
+          "To repair it, install Node.js or put it on PATH, then run Git protection",
+          "(git_protect) in PzzaCode for this repository again; it rewrites these hooks.",
+          `To turn protection off for this repository instead: git config --unset ${configScope} core.hooksPath`,
+        ].join("\n");
+        await privateWrite(path.join(hooks, hook), `#!/bin/sh
+script=${shellText(hookScript)}
+for runtime in ${shellText(process.execPath)} "$(command -v node 2>/dev/null)" "$HOME/.local/bin/node" /opt/homebrew/bin/node /usr/local/bin/node /usr/bin/node "$HOME"/.volta/bin/node "$HOME"/.nvm/versions/node/*/bin/node "$HOME"/.local/share/mise/installs/node/*/bin/node; do
+  if [ -n "$runtime" ] && [ -f "$runtime" ] && [ -x "$runtime" ]; then exec "$runtime" "$script" "$@"; fi
+done
+cat >&2 <<'PZZA_PROTECTION_UNAVAILABLE'
+${failure}
+PZZA_PROTECTION_UNAVAILABLE
+exit 1
+`, 0o700);
+        const script = `const fs = require('node:fs');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const previous = path.resolve(process.cwd(), ${JSON.stringify(oldHook)});
@@ -365,7 +404,7 @@ function prior() {
   const result = spawnSync(previous, process.argv.slice(2), ${hook === "pre-push" ? "{ stdio: ['pipe', 'inherit', 'inherit'], input: updates }" : "{ stdio: 'inherit' }"});
   if (result.error || result.status !== 0) process.exit(result.status || 1);
 }
-${protectedHook ? `const worker = require(${JSON.stringify(workerPath)});
+const worker = require(${JSON.stringify(workerPath)});
 async function protect() {
   const result = await worker({ path: process.cwd(), operation: ${JSON.stringify(hook === "pre-push" ? "hook_push" : hook === "commit-msg" ? "hook_message" : "hook_commit")}, updates, remote: process.argv[2] || '', remoteUrl: process.argv[3] || ''${hook === "commit-msg" ? ', message: fs.readFileSync(process.argv[2], "utf8")' : ""} });
   if (!result.approved) {
@@ -373,9 +412,9 @@ async function protect() {
     process.exit(1);
   }
 }
-(async () => { ${hook === "pre-push" ? "await protect(); prior();" : "prior(); await protect();"} })().catch(() => { process.stderr.write('Git protection could not verify this operation. Run git_protect to diagnose it.\\n'); process.exitCode = 1; });` : "try { prior(); } catch { process.stderr.write('Cannot run the existing Git hook\\n'); process.exitCode = 1; }"}
+(async () => { ${hook === "pre-push" ? "await protect(); prior();" : "prior(); await protect();"} })().catch(() => { process.stderr.write('Git protection could not verify this operation. Run git_protect to diagnose it.\\n'); process.exitCode = 1; });
 `;
-        await privateWrite(path.join(hooks, hook), script, 0o700);
+        await privateWrite(hookScript, script, 0o600);
       }
       await git("config", worktreeConfig ? "--worktree" : "--local", "core.hooksPath", hooks);
       if (await git("config", "--path", "--get", "core.hooksPath") !== hooks) fail("The effective Git hook configuration did not enable protection");

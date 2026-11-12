@@ -5,6 +5,7 @@ import { notify } from "../state/notifications";
 import { Modal } from "../ui/Modal";
 import { DEFAULT_PROJECT_ROOT, bindProjectOperations, hasUnresolvedProjectSync, summarizeProjectSync, updateProjectSyncPreferences, useProjectSyncPreferences } from "../state/projectSync";
 import { hasUnsavedEditors } from "../editorChanges";
+import { syncEffects } from "../appControlConfirmations";
 import { DeviceIcon } from "../ui/DeviceIcon";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ChevronRight, Folder, FolderSync, Loader2, RefreshCw } from "lucide-react";
@@ -947,12 +948,7 @@ export function ProjectsMenu({ active = true, page = "repositories", syncRequest
         {scanning ? <ScanProgress progress={scanProgress} /> : null}
         {!scanning && scan ? <p className="set-note">{rows.filter(row => opts.repos[row.projectId]?.enabled !== false).length} enabled projects · {syncRefs.length} devices</p> : null}
         {error ? <p className="set-note" role="alert">{error}</p> : null}
-        <p className="set-note">
-          This updates Git working files{opts.cloneMissing ? ", clones missing projects" : ""}
-          {opts.switchToDefault ? ", and aligns clean checkouts to remote development or main" : ", but leaves existing checkouts untouched"}
-          {opts.stashDirty ? ". Tracked and untracked local changes are preserved before alignment." : ". Dirty projects are left alone."}
-          {opts.syncEnvs ? " Replaced environment files are backed up privately in the destination repository’s Git directory." : " Environment file copying is disabled."}
-        </p>
+        <p className="set-note">{syncEffects(opts)}</p>
         <div className="modal-actions">
           <button className="btn" disabled={cancelling} onClick={() => syncing ? void cancelSync() : setConfirmSync(false)}>{syncing ? cancelling ? "Stopping…" : "Cancel sync" : "Cancel"}</button>
           {!scan && !scanning ? <AsyncButton className="btn" loading={scanning} icon={RefreshCw} onClick={() => void runScan()}>Retry scan</AsyncButton> : null}

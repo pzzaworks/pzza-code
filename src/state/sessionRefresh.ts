@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { create } from "zustand";
 import { useStore } from "./store";
+import { notify } from "./notifications";
 import { noteDetectedAgents, useSessionAgents } from "./sessionAgents";
 import { PERMISSIONS, PERMISSIONS_SUPPORTED, permissionStatuses, type PermissionId, type PermissionStatus } from "./permissions";
 import { autoSavedLocalAgents } from "./workspaceSnapshots";
@@ -46,8 +47,6 @@ const RECORD_MS = 10_000;
 
 export const useSessionRefresh = create<SessionRefreshState>(() => ({ running: false, restoring: false, pending: false, generation: 0, notice: null }));
 
-export const PERMISSION_REFRESH_MESSAGE = "Sessions refreshed so they can use the new permission.";
-
 export interface AgentResume {
   session: string;
   /** Omitted: the session's active window. */
@@ -61,6 +60,8 @@ interface RefreshReport {
   restored: string[];
   resumed: string[];
   failed: { session: string; error: string }[];
+  /** Restored sessions whose agent stayed at its shell: another pane in the same folder continues that agent's last conversation. */
+  skipped: { session: string; error: string }[];
 }
 
 export interface LocalTile {
@@ -128,28 +129,38 @@ function localTiles(): LocalTile[] {
     .map(tile => ({ session: tile.session ?? tile.name, window: tile.window, choice: choices[tile.id] }));
 }
 
+// The new terminal server hands out window ids afresh, so local window tiles
+// tie their ids to the restored sessions again.
+function retieLocalWindowIds(): void {
+  void useStore.getState().recordWindowIds("").catch(() => {});
+}
+
 const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? "" : "s"}`;
 
 /**
  * The notice for a refresh or restore: `ok` when everything came back,
  * otherwise each session that was not restored, and each restored one whose
- * agent was not resumed, by name.
+ * agent was not resumed, by name. Sessions whose agent was left at its shell
+ * on purpose (another pane in the same folder continues that conversation)
+ * are named too, without making it a failure.
  */
 export function reportNotice(report: RefreshReport, ok: string, lead = ""): SessionRefreshNotice {
   const restored = new Set(report.restored);
   const sessions = [...new Set(report.failed.filter(item => !restored.has(item.session)).map(item => item.session))];
   const agents = [...new Set(report.failed.filter(item => restored.has(item.session)).map(item => item.session))];
-  if (!sessions.length && !agents.length) return { tone: "ok", message: ok, failed: [] };
+  const atShell = [...new Set(report.skipped.map(item => item.session))].filter(session => !sessions.includes(session) && !agents.includes(session));
+  const skipped = atShell.length ? `Agents left at the shell in ${atShell.join(", ")}: another session in the same folder continues that conversation.` : "";
+  if (!sessions.length && !agents.length) return { tone: "ok", message: [ok, skipped].filter(Boolean).join(" "), failed: [] };
   const parts = [
     lead,
     sessions.length ? `Some sessions could not be restored: ${sessions.join(", ")}.` : "",
     agents.length ? `Agents could not be resumed in: ${agents.join(", ")}.` : "",
+    skipped,
   ];
   return { tone: "fail", message: parts.filter(Boolean).join(" "), failed: [...sessions, ...agents] };
 }
 
-function refreshOk(report: RefreshReport, trigger: "permission" | "manual"): string {
-  if (trigger === "permission") return PERMISSION_REFRESH_MESSAGE;
+function refreshOk(report: RefreshReport): string {
   return report.restored.length ? "Sessions refreshed." : "Terminal server restarted. There were no sessions to restore.";
 }
 
@@ -166,7 +177,7 @@ function failureReason(error: unknown): string {
  * Saves, restarts and restores the local sessions. Throws only when a
  * refresh is already running; any other outcome is reported in the notice.
  */
-export async function refreshLocalSessions(trigger: "permission" | "manual"): Promise<void> {
+export async function refreshLocalSessions(): Promise<void> {
   if (useSessionRefresh.getState().running) throw new Error("Sessions are already refreshing.");
   useSessionRefresh.setState({ running: true, restoring: false, notice: null });
   try {
@@ -175,11 +186,12 @@ export async function refreshLocalSessions(trigger: "permission" | "manual"): Pr
     const detected = agentsToResume(rows, tiles);
     const agents = [...detected, ...snapshotAgents(detected, autoSavedLocalAgents())];
     const report = await invoke<RefreshReport>("local_tmux_refresh_sessions", { agents });
-    useSessionRefresh.setState({ notice: reportNotice(report, refreshOk(report, trigger)) });
+    useSessionRefresh.setState({ notice: reportNotice(report, refreshOk(report)) });
   } catch (error) {
     useSessionRefresh.setState({ notice: { tone: "fail", message: `Sessions could not be refreshed. ${failureReason(error)}`.trim(), failed: [] } });
   } finally {
     useSessionRefresh.setState(state => ({ running: false, generation: state.generation + 1 }));
+    retieLocalWindowIds();
   }
 }
 
@@ -209,6 +221,7 @@ export async function restoreLostSessions(options: { quiet?: boolean } = {}): Pr
   } finally {
     // Tiles attach again only when sessions changed under them.
     useSessionRefresh.setState(state => ({ running: false, restoring: false, generation: state.generation + (changed ? 1 : 0) }));
+    if (changed) retieLocalWindowIds();
   }
 }
 
@@ -292,8 +305,11 @@ async function localSessionsExist(): Promise<boolean> {
 
 /**
  * Feeds every permission status read. When a permission terminals need goes
- * from not allowed to allowed while local sessions exist, the sessions are
- * refreshed so they get it.
+ * from not allowed to allowed while local sessions exist, a notification says
+ * that running sessions get it after Refresh sessions. The sessions are never
+ * restarted on their own: a restart stops every program running in them, and
+ * a status read can change for reasons that are not a new grant (an update,
+ * another copy of the app, a reinstalled tmux).
  */
 export function observePermissionStatuses(next: Statuses): void {
   const previous = lastKnown ?? loadLastKnown();
@@ -303,29 +319,21 @@ export function observePermissionStatuses(next: Statuses): void {
   } catch {
     /* Without storage, changes are still seen while the app stays open. */
   }
-  const granted = PERMISSIONS.some(item => item.refreshSessions && next[item.id] === "granted" &&
+  const granted = PERMISSIONS.filter(item => item.refreshSessions && next[item.id] === "granted" &&
     (previous[item.id] === "notGranted" || previous[item.id] === "denied"));
-  if (!granted || permissionRefreshQueued) return;
-  // A restore or refresh in progress finishes first; the grant still applies after it.
-  permissionRefreshQueued = true;
-  void whenIdle()
-    .then(localSessionsExist)
-    .then(exist => (exist ? refreshLocalSessions("permission") : undefined))
-    .catch(() => { /* No local terminal server: nothing to refresh. */ })
-    .finally(() => { permissionRefreshQueued = false; });
-}
-
-let permissionRefreshQueued = false;
-
-function whenIdle(): Promise<void> {
-  if (!useSessionRefresh.getState().running) return Promise.resolve();
-  return new Promise(resolve => {
-    const unsubscribe = useSessionRefresh.subscribe(state => {
-      if (state.running) return;
-      unsubscribe();
-      resolve();
-    });
-  });
+  if (!granted.length) return;
+  void localSessionsExist()
+    .then(exist => {
+      if (!exist) return;
+      const names = [...new Set(granted.map(item => item.subject === "tmux" ? `${item.label} for tmux` : item.label))].join(", ");
+      notify({
+        category: "app",
+        title: "New permission ready for new sessions",
+        body: `${names} ${granted.length > 1 ? "are" : "is"} allowed. New terminals have it now. Running sessions get it after Refresh sessions in Settings > Setup, which restarts the programs running in them.`,
+        dedupeKey: `permission-granted:${granted.map(item => item.id).join(",")}`,
+      });
+    })
+    .catch(() => { /* No local terminal server: nothing is running without it. */ });
 }
 
 /** One status read shortly after launch, for grants made while the app was closed or that needed a relaunch. */

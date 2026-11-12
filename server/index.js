@@ -20,6 +20,7 @@ import {
   AGENT_ID,
   cors,
   hostOk,
+  isJsonObject,
   json,
   ndjson,
   readBody,
@@ -28,7 +29,7 @@ import {
   tokenOk,
 } from "./lib/http.js";
 import { listPorts, listPortDetails, terminateListener, stopPortContainer } from "./lib/ports.js";
-import { listSessions, listWindows, scanSessions, sessionActivity, paneOutputActivity, terminateSession, duplicateSession } from "./lib/tmux.js";
+import { listSessions, listWindows, scanSessions, sessionActivity, paneOutputActivity, terminateSession, duplicateSession, WINDOW_ID } from "./lib/tmux.js";
 import { forwardStatus, setForwardEnabled, startForwardLoop } from "./lib/forward.js";
 import { listAccounts } from "./lib/accounts.js";
 import { USAGE_FRESH_MS, collectUsage, fixClaudeToken } from "./lib/usage.js";
@@ -64,7 +65,20 @@ const remoteSpend = createRemoteSpend();
 const repairMcp = createMcpRepair();
 const appControl = createAppControl();
 const appControlRouter = createAppControlRouter(appControl, json);
-const server = http.createServer(async (req, res) => {
+// A rejected request handler must answer that request, never escape as an
+// unhandled rejection that would end the agent and every attached terminal.
+const server = http.createServer((req, res) => {
+  handleRequest(req, res).catch(() => {
+    if (res.headersSent) res.destroy();
+    else json(res, 500, { error: "The device agent could not complete this request" });
+  });
+});
+
+// Every route that reads a JSON body requires an object: `null`, arrays and
+// primitives are valid JSON but never a valid request.
+const invalidBody = (res) => json(res, 400, { error: "invalid request" });
+
+async function handleRequest(req, res) {
   if (shutdown.stopping) {
     res.setHeader("Connection", "close");
     return json(res, 503, { error: "Device agent is shutting down" });
@@ -124,7 +138,9 @@ const server = http.createServer(async (req, res) => {
   if (await filesRouter(req, res, url)) return;
 
   if (url.pathname === "/agent/install" && req.method === "POST") {
-    return installAgent(await readBody(req), res);
+    const body = await readBody(req);
+    if (!isJsonObject(body)) return invalidBody(res);
+    return installAgent(body, res);
   }
   if (url.pathname === "/sessions") return json(res, 200, await listSessions());
   // Live current directory of a session's active pane, so the code editor can
@@ -189,7 +205,12 @@ const server = http.createServer(async (req, res) => {
     return json(res, 200, await deviceOs(host));
   }
   if (url.pathname === "/ssh/hosts") return json(res, 200, sshHosts());
-  if (url.pathname === "/windows") return json(res, 200, await listWindows());
+  if (url.pathname === "/windows") {
+    const host = url.searchParams.has("host") ? url.searchParams.get("host") : undefined;
+    if (host && !SSH_TOKEN.test(host)) return json(res, 400, { error: "invalid host" });
+    try { return json(res, 200, await listWindows(host)); }
+    catch (error) { return json(res, 503, { error: error.message }); }
+  }
   if (url.pathname === "/ports/details") {
     const host = url.searchParams.has("host") ? url.searchParams.get("host") : undefined;
     if (host && !SSH_TOKEN.test(host)) return json(res, 400, { error: "invalid host" });
@@ -232,11 +253,16 @@ const server = http.createServer(async (req, res) => {
     }
     const hasWin = body.window !== undefined && body.window !== null;
     if (hasWin && (!Number.isInteger(body.window) || body.window < 0)) return json(res, 400, { error: "invalid window" });
+    // A window tile sends the stable window id it showed; the index alone can
+    // point at a different window after renumbering or index reuse.
+    const hasWindowId = body.windowId !== undefined && body.windowId !== null;
+    if (hasWindowId && (typeof body.windowId !== "string" || !WINDOW_ID.test(body.windowId))) return json(res, 400, { error: "invalid window" });
     try {
-      await terminateSession(name, hasWin ? body.window : undefined, body.host);
+      await terminateSession(name, hasWin ? body.window : undefined, body.host, hasWindowId ? body.windowId : undefined);
       json(res, 200, { ok: true });
-    } catch {
-      json(res, 500, { error: "Could not close the session on this device" });
+    } catch (error) {
+      if (error.status === 409) json(res, 409, { error: error.message });
+      else json(res, 500, { error: "Could not close the session on this device" });
     }
     return;
   }
@@ -253,6 +279,7 @@ const server = http.createServer(async (req, res) => {
   }
   if (url.pathname === "/forward/toggle" && req.method === "POST") {
     const body = await readBody(req);
+    if (!isJsonObject(body)) return invalidBody(res);
     return json(res, 200, { enabled: setForwardEnabled(body.enabled) });
   }
   if (url.pathname === "/create" && req.method === "POST") {
@@ -264,6 +291,7 @@ const server = http.createServer(async (req, res) => {
   // Project sync: git repos under the projects root, across every device.
   if (url.pathname === "/projects/scan" && req.method === "POST") {
     const body = await readBody(req);
+    if (!isJsonObject(body)) return invalidBody(res);
     if (req.headers.accept === "application/x-ndjson") {
       const send = ndjson(res);
       try {
@@ -282,16 +310,19 @@ const server = http.createServer(async (req, res) => {
   }
   if (url.pathname === "/projects/sync/cancel" && req.method === "POST") {
     const body = await readBody(req);
+    if (!isJsonObject(body)) return invalidBody(res);
     const result = cancelProjectSync(body.operationId);
     return json(res, result.error ? 400 : 200, result);
   }
   if (url.pathname === "/projects/sync" && req.method === "POST") {
-    const out = await syncProjects(await readBody(req));
+    const body = await readBody(req);
+    if (!isJsonObject(body)) return invalidBody(res);
+    const out = await syncProjects(body);
     return json(res, out.error ? 400 : 200, out);
   }
   if (url.pathname === "/mcp/repair" && req.method === "POST") {
     const body = await readBody(req);
-    if (!body || typeof body !== "object" || (body.host !== undefined && (typeof body.host !== "string" || (body.host && !SSH_TOKEN.test(body.host))))) return json(res, 400, { error: "Invalid device host" });
+    if (!isJsonObject(body) || (body.host !== undefined && (typeof body.host !== "string" || (body.host && !SSH_TOKEN.test(body.host))))) return json(res, 400, { error: "Invalid device host" });
     try { return json(res, 200, await repairMcp(body.host || "", body.fresh === true)); }
     catch (error) { return json(res, 503, { error: error.message }); }
   }
@@ -304,11 +335,12 @@ const server = http.createServer(async (req, res) => {
   }
   if (url.pathname === "/mcp/install" && req.method === "POST") {
     const body = await readBody(req);
+    if (!isJsonObject(body)) return invalidBody(res);
     return json(res, 200, await mcpInstall(String(body.framework || ""), MCP_PATH));
   }
 
   json(res, 404, { error: "not found" });
-});
+}
 
 const shutdown = createServerShutdown(server, () => process.exit(0));
 

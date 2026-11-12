@@ -19,7 +19,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { discardTerminalDrop, uploadPasteImage, uploadTerminalDrop, verifyQuickChat } from "../serverApi";
 import { createAttachmentRecovery, type AttachmentStatus } from "../state/quickChatSession";
 import { readNativeDrop, registerTerminalDropTarget, releaseNativeDrop, shellQuotePaths, validateDroppedFiles, type TerminalDrop } from "./fileDrop";
-import { registerBroadcastTarget } from "./broadcast";
+import { BROADCAST_APPROVAL_APPEARED, BROADCAST_PENDING_APPROVAL, PendingApprovalError, registerBroadcastTarget } from "./broadcast";
 import { registerSearchTarget } from "./terminalSearch";
 import { sessionDisplayName, type TileStatus } from "../sessionMeta";
 import { registerContextMenu, clipboardPaste, readClipboardData } from "../ui/ContextMenu";
@@ -29,7 +29,7 @@ import { notify } from "../state/notifications";
 import { createTerminalSignals } from "./notificationSignals";
 import { agentSignalled } from "./agentFinished";
 import { createPermissionWatcher, hasPendingPermission } from "../state/permissionPrompts";
-import type { Screen } from "./permissionPrompts";
+import { detectPermissionPrompt, type Screen } from "./permissionPrompts";
 import { paneForeground } from "./permissionForeground";
 import { createPaneModeGate } from "./paneModeGate";
 import { leavePaneMode, paneInMode, paneLines, type PaneTarget } from "./paneMode";
@@ -890,6 +890,8 @@ function TerminalView({ tileId, name, host, cmd, args, cwd, window: win, active,
             focus: () => { if (current() && tauriId !== null) term.focus(); },
             preview: text => { composition.suspend(!activeRef.current || !document.hasFocus()); composition.preview(text); },
             clearPreview: composition.clear,
+            // A prompt the watcher flagged, or one on screen it has not confirmed yet.
+            awaitingApproval: () => hasPendingPermission(tileId) || detectPermissionPrompt(visibleScreen()) !== null,
             insert: async text => {
               if (!current() || tauriId === null || !attachmentReady) return false;
               const previousWrite = lastWrite;
@@ -913,7 +915,7 @@ function TerminalView({ tileId, name, host, cmd, args, cwd, window: win, active,
         if (disposed || exited || !attachmentReady || (HAS_TAURI && tauriId === null)) return;
         notificationSignals.input(text);
         const epoch = connectionEpoch;
-        lastWrite = modeGate.send(text);
+        lastWrite = modeGate.send(text, "keyboard");
         void lastWrite.catch((error: unknown) => {
           if (!disposed && epoch === connectionEpoch) transportFailed(error instanceof Error ? error.message : "Terminal input failed.");
         });
@@ -1027,18 +1029,8 @@ function TerminalView({ tileId, name, host, cmd, args, cwd, window: win, active,
         if (!connected()) throw new Error("The terminal is disconnected.");
         notificationSignals.input(value);
         cancelDictationInput();
-        await modeGate.send(value);
+        await modeGate.send(value, "app");
       };
-      // Broadcast: the text goes through the guarded paste path (no control
-      // characters; line breaks only in bracketed paste mode, where an agent's
-      // input box takes them as one message), then Enter is sent separately so
-      // it submits. Queued with other pastes, in order.
-      const unregisterBroadcast = registerBroadcastTarget(tileId, text => enqueuePaste(async () => {
-        if (/[\n\t]/.test(text) && !term.modes.bracketedPasteMode) throw new Error("This terminal takes one line at a time; a shell would run each line on its own.");
-        validateTerminalPaste(text, term.modes.bracketedPasteMode);
-        await insert(text, false);
-        await sendRaw("\r");
-      }));
 
       // Coding-agent approval prompts on the visible screen (the bottom
       // `rows` lines of the active buffer, which is what tmux last drew).
@@ -1076,13 +1068,37 @@ function TerminalView({ tileId, name, host, cmd, args, cwd, window: win, active,
         };
         return { rows, background, style, cols: term.cols };
       };
+      // The visible screen after all output received so far has been parsed.
+      const freshScreen = async (): Promise<Screen> => {
+        output.flush();
+        await new Promise<void>(resolve => term.write("", resolve));
+        return visibleScreen();
+      };
+      // Whether an approval prompt shows right now: one the watcher flagged,
+      // or one on a fresh read of the screen that it has not confirmed yet
+      // (it waits to see a prompt twice before flagging it).
+      const approvalShowing = async () => {
+        if (hasPendingPermission(tileId)) return true;
+        return detectPermissionPrompt(await freshScreen()) !== null;
+      };
+      // Broadcast: the text goes through the guarded paste path (no control
+      // characters; line breaks only in bracketed paste mode, where an agent's
+      // input box takes them as one message), then Enter is sent separately so
+      // it submits. Queued with other pastes, in order. Both the paste and the
+      // Enter wait on a fresh look at the screen: on an approval prompt, the
+      // text would land in the prompt and Enter would take its highlighted
+      // choice, usually Yes.
+      const unregisterBroadcast = registerBroadcastTarget(tileId, text => enqueuePaste(async () => {
+        if (/[\n\t]/.test(text) && !term.modes.bracketedPasteMode) throw new Error("This terminal takes one line at a time; a shell would run each line on its own.");
+        validateTerminalPaste(text, term.modes.bracketedPasteMode);
+        if (await approvalShowing()) throw new PendingApprovalError(BROADCAST_PENDING_APPROVAL);
+        await insert(text, false);
+        if (await approvalShowing()) throw new PendingApprovalError(BROADCAST_APPROVAL_APPEARED);
+        await sendRaw("\r");
+      }));
       const permissionWatcher = managedChat ? null : createPermissionWatcher(tileId, {
         screen: visibleScreen,
-        freshScreen: async () => {
-          output.flush();
-          await new Promise<void>(resolve => term.write("", resolve));
-          return visibleScreen();
-        },
+        freshScreen,
         // Queued behind pastes, so an answer never interleaves with one.
         send: value => enqueuePaste(() => sendRaw(value)),
         focused: () => document.hasFocus() && container.contains(document.activeElement),

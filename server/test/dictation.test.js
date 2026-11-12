@@ -80,6 +80,7 @@ test("dictation opt-in, native events, pinned insertion and cancellation", async
     focus: () => focused.push(tileId),
     preview: (text) => previews.set(tileId, text),
     clearPreview: () => previews.delete(tileId),
+    awaitingApproval: () => false,
   });
   const unregister = register("first", (text) => { inserted.push(text); return true; });
   register("second", () => { assert.fail("Transcript reached wrong terminal"); });

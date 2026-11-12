@@ -35,9 +35,10 @@ fn tmux_capture(host: &Option<String>, remote: &str) -> std::io::Result<std::pro
         None => {
             #[cfg(target_os = "macos")]
             {
-                crate::local_tmux::client_command()
-                    .args(["list-sessions", "-F", SESSION_FORMAT])
-                    .output()
+                // A local server that failed to start, or ended while the app
+                // runs, is started again here (at most once per retry delay).
+                crate::local_tmux::ensure_running();
+                local_list_command().output()
             }
             #[cfg(not(target_os = "macos"))]
             {
@@ -45,6 +46,15 @@ fn tmux_capture(host: &Option<String>, remote: &str) -> std::io::Result<std::pro
             }
         }
     }
+}
+
+// UTF-8 output whatever the app's locale (a Finder launch has none): without
+// -u tmux prints every tab of the listing as "_", and no field could be read.
+#[cfg(target_os = "macos")]
+fn local_list_command() -> Command {
+    let mut command = crate::local_tmux::client_command();
+    command.args(["-u", "list-sessions", "-F", SESSION_FORMAT]);
+    command
 }
 
 // List the tmux sessions currently on the devbox. Returns an empty list (not an
@@ -113,6 +123,17 @@ fn parse_path(value: String) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::parse_path;
+
+    // Only inspects the command; it never runs against the app's server.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_local_session_list_is_read_as_utf8() {
+        let command = super::local_list_command();
+        let args: Vec<_> = command.get_args().map(|arg| arg.to_string_lossy().into_owned()).collect();
+        let list = args.iter().position(|arg| arg == "list-sessions").unwrap();
+        assert!(args[..list].iter().any(|arg| arg == "-u"), "{args:?}");
+        assert_eq!(args[list + 1..], ["-F".to_string(), super::SESSION_FORMAT.to_string()]);
+    }
 
     #[test]
     fn session_paths_are_absolute_and_free_of_control_characters() {

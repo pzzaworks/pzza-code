@@ -43,7 +43,7 @@ export function McpMenu() {
     setConsentPending(true);
     setConsentError("");
     try {
-      if (!await confirmAction({ title: next ? "Allow app window control?" : "Disable app window control?", message: next ? "Connected tools can read and control terminals, edit files, change settings and manage sessions in this app window. Only enable this for integrations you trust. Consequential actions still require local confirmation." : "Stop accepting app window commands? Existing terminal sessions and separate file/device tools keep running.", confirmLabel: next ? "Allow window control" : "Disable window control", danger: !next })) return;
+      if (!await confirmAction({ title: next ? "Allow app window control?" : "Disable app window control?", message: next ? "Connected tools can read and control terminals, edit files, change settings and manage sessions in this app window. Only enable this for integrations you trust. Consequential actions still require local confirmation." : "Stop accepting app window commands? Existing terminal sessions and separate file and device tools keep running, but tools can no longer end a session, since that is confirmed in an app window.", confirmLabel: next ? "Allow window control" : "Disable window control", danger: !next })) return;
       localStorage.setItem(ENABLED_KEY, next ? "1" : "0");
       setEnabled(next);
       window.dispatchEvent(new CustomEvent("pzza:mcp-enabled-changed", { detail: { enabled: next } }));
@@ -74,7 +74,7 @@ export function McpMenu() {
       </div>
 
       {consentError ? <p className="set-note" role="alert">{consentError}</p> : null}
-      <p className="set-note">Session, file and device tools remain available when window control is off.</p>
+      <p className="set-note">File, device and session tools remain available when window control is off, except ending a session: the user confirms that in an app window with window control on.</p>
       <section className="settings-section" aria-label="Connection">
       <div className="settings-form">
       <label className="settings-field"><span>App SSH host</span>

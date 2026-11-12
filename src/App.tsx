@@ -42,6 +42,8 @@ import { Modal } from "./ui/Modal";
 import { ConfirmationHost } from "./ui/ConfirmDialog";
 import { SessionRefreshHost } from "./ui/SessionRefreshHost";
 import { confirmUnsavedWork, hasUnsavedWork, protectUnsavedUnload } from "./state/unsavedWork";
+import { localSessionWorkRunning, whenLocalSessionWorkSettled } from "./state/localSessionWork";
+import { ErrorBoundary } from "./ui/ErrorBoundary";
 import { installTerminalDrops } from "./terminal/fileDrop";
 import { startBackgroundActivityPoll } from "./terminal/backgroundActivity";
 import { registerAppControlHandler, registerAppControlState } from "./appControlRuntime";
@@ -299,6 +301,9 @@ export default function App() {
     return () => { window.removeEventListener("pzza-notification-section", section); window.removeEventListener("pzza-notification-terminal", terminal); };
   }, []);
   const [nativeCloseError, setNativeCloseError] = useState<string | null>(null);
+  // Set while a close (window close, Quit, app control) waits for a local
+  // session refresh or restore to finish; calling it keeps the window open.
+  const [closeWaiting, setCloseWaiting] = useState<(() => void) | null>(null);
   useEffect(() => {
     if (!HAS_TAURI) return;
     let disposed = false;
@@ -309,20 +314,56 @@ export default function App() {
       if (!disposed) setNativeCloseError(message);
       else console.error("Could not finish removing the window close listener.", message);
     };
+    // Closing mid-refresh would end the app after the terminal server
+    // restarted but before every session and agent is back: wait for it,
+    // unless the user decides to keep the window open.
+    const waitForSessions = () => new Promise<boolean>((resolve) => {
+      setCloseWaiting(() => () => resolve(false));
+      void whenLocalSessionWorkSettled().then(() => resolve(true));
+    }).finally(() => { if (!disposed) setCloseWaiting(null); });
+    // The user kept PzzaCode open: a macOS logout, restart or shut down
+    // waiting on this quit is called off at once instead of timing out.
+    const quitCancelled = () => {
+      void import("@tauri-apps/api/core").then(({ invoke }) => invoke("app_quit_cancelled"))
+        .catch((error: unknown) => console.error("Could not call off the system quit.", error instanceof Error ? error.message : String(error)));
+    };
+    // Answers the close being confirmed with "keep open", once. Set while a
+    // confirmation runs so tearing this listener down answers it at once,
+    // even when its dialog went away with the page and never settles.
+    let keepOpen: (() => void) | null = null;
     void import("@tauri-apps/api/window").then(async ({ getCurrentWindow }) => {
       if (disposed) return;
       const appWindow = getCurrentWindow();
       const stop = await appWindow.onCloseRequested(async (event) => {
-        if (!hasUnsavedWork() && !confirming) { window.dispatchEvent(new Event("pzza:quick-chat-cancel")); return; }
+        if (!hasUnsavedWork() && !localSessionWorkRunning() && !confirming) { window.dispatchEvent(new Event("pzza:quick-chat-cancel")); return; }
         event.preventDefault();
-        if (confirming || disposed) return;
+        // A second request while confirming is answered with the first one.
+        if (confirming) return;
+        if (disposed) { quitCancelled(); return; }
         confirming = true;
+        let answered = false;
+        const answerKeepOpen = () => {
+          if (answered) return;
+          answered = true;
+          quitCancelled();
+        };
+        keepOpen = answerKeepOpen;
+        let closed = false;
         try {
-          if (await confirmUnsavedWork() && !disposed) { window.dispatchEvent(new Event("pzza:quick-chat-cancel")); await appWindow.destroy(); }
+          if (localSessionWorkRunning() && !await waitForSessions()) return;
+          if (disposed || !await confirmUnsavedWork() || disposed) return;
+          window.dispatchEvent(new Event("pzza:quick-chat-cancel"));
+          await appWindow.destroy();
+          closed = true;
         } catch (error) {
           reportError(error);
         } finally {
           confirming = false;
+          if (keepOpen === answerKeepOpen) keepOpen = null;
+          // Every way out that leaves the window open answers a waiting
+          // logout, restart or shut down right away instead of letting it
+          // time out.
+          if (!closed) answerKeepOpen();
         }
       });
       if (disposed) stop();
@@ -330,6 +371,8 @@ export default function App() {
     }).catch(reportError);
     return () => {
       disposed = true;
+      keepOpen?.();
+      keepOpen = null;
       try { unlisten?.(); } catch (error) { reportError(error); }
     };
   }, []);
@@ -425,10 +468,10 @@ export default function App() {
         <p role="alert">{menuError}</p>
       </Modal>
       <Modal open={sessionDialogOpen} onClose={() => setSessionDialogOpen(false)} title="New session" size="md" className="creation-dialog">
-        <SessionMenu close={() => setSessionDialogOpen(false)} />
+        <ErrorBoundary label="New session"><SessionMenu close={() => setSessionDialogOpen(false)} /></ErrorBoundary>
       </Modal>
       <Tooltip />
-      <TaskTracker />
+      <ErrorBoundary label="Task tracking" variant="quiet"><TaskTracker /></ErrorBoundary>
       {taskWindowOpen ? <TaskWindow /> : null}
       {paletteMounted ? <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} onError={setPaletteError} /> : null}
       {terminalSearchMounted ? <TerminalSearch open={terminalSearchOpen} onClose={() => setTerminalSearchOpen(false)} onError={setTerminalSearchError} /> : null}
@@ -444,6 +487,11 @@ export default function App() {
         <p className="move-q" role="alert">{nativeCloseError}</p>
         <p className="set-note">Save your editor changes before closing the window again.</p>
         <div className="modal-actions"><button className="btn" onClick={() => setNativeCloseError(null)}>Dismiss</button></div>
+      </Modal>
+      <Modal open={closeWaiting !== null} onClose={() => closeWaiting?.()} title="Closing PzzaCode" size="sm">
+        <p className="move-q" role="status">PzzaCode closes as soon as your sessions are back.</p>
+        <p className="set-note">Your local sessions are being refreshed or restored. Closing now could leave some of them half restored, with their agents not started again.</p>
+        <div className="modal-actions"><button className="btn" onClick={() => closeWaiting?.()}>Keep PzzaCode open</button></div>
       </Modal>
       {/* Hidden, not unmounted, behind setup: terminals keep running, and a
           transparent window shows the desktop through setup rather than tiles. */}
@@ -475,8 +523,8 @@ export default function App() {
                 onClick={() => setToolsOpen((v) => !v)}
               />
               <div className={`topbar-tools ${toolsOpen ? "open" : ""}`}>
-                {barShown("top:tasks") ? <TasksButton /> : null}
-                {barShown("top:quick-chat") ? <QuickChat onOpenSettings={() => openSettings("quick-chat")} /> : null}
+                {barShown("top:tasks") ? <ErrorBoundary label="Tasks"><TasksButton /></ErrorBoundary> : null}
+                {barShown("top:quick-chat") ? <ErrorBoundary label="Quick Chat"><QuickChat onOpenSettings={() => openSettings("quick-chat")} /></ErrorBoundary> : null}
                 {(hasRemote || syncing) && barShown("top:sync") ? <div className="toolbar-action-status">
                   <IconButton icon={FolderSync} title={syncing ? "Sync in progress" : "Sync projects"} onClick={() => {
                     setToolsOpen(false);
@@ -499,15 +547,15 @@ export default function App() {
                 {barShown("top:ports") ? <Dropdown icon={EthernetPort} title="Port manager" controlId="port_forwarding" width={320} loading={portsLoading} align="end" compact tourId="ports"
                   badgeLabel={forwardedPorts ? `Port manager: ${forwardedPorts} forwarded port${forwardedPorts === 1 ? "" : "s"}` : undefined}
                   cornerBadge={forwardedPorts ? countLabel(forwardedPorts) : null}>
-                  {(close, open) => <PortsMenu active={open && !settingsOpen} onLoadingChange={setPortsLoading} onOpenSettings={() => { close(); openSettings("ports"); }} />}
+                  {(close, open) => <ErrorBoundary label="Port manager"><PortsMenu active={open && !settingsOpen} onLoadingChange={setPortsLoading} onOpenSettings={() => { close(); openSettings("ports"); }} /></ErrorBoundary>}
                 </Dropdown> : null}
                 {barShown("top:usage") || barShown("top:notifications") ? <span className="topbar-tools-sep" aria-hidden="true" /> : null}
-                {barShown("top:usage") ? <UsageTool /> : null}
-                {barShown("top:notifications") ? <NotificationsTool viewAll={() => openSettings("notifications")} /> : null}
+                {barShown("top:usage") ? <ErrorBoundary label="Agent usage"><UsageTool /></ErrorBoundary> : null}
+                {barShown("top:notifications") ? <ErrorBoundary label="Notifications"><NotificationsTool viewAll={() => openSettings("notifications")} /></ErrorBoundary> : null}
                 <span className="topbar-tools-sep" aria-hidden="true" />
                 <IconButton icon={SettingsIcon} title="Settings" tourId="settings" onClick={() => openSettings("general")} />
                 <Dropdown icon={Plus} title="New session" controlId="new_session" width={380} panelClassName="creation-panel" shortcut={NEW_SESSION_SHORTCUT} tourId="new-session">
-                  {(close) => <SessionMenu close={close} />}
+                  {(close) => <ErrorBoundary label="New session"><SessionMenu close={close} /></ErrorBoundary>}
                 </Dropdown>
               </div>
             </div>
@@ -518,18 +566,18 @@ export default function App() {
 
         <div className="body">
           <main className="canvas" ref={canvasRef}>
-            <Canvas onNewSession={openNewSession} />
+            <ErrorBoundary label="The session grid"><Canvas onNewSession={openNewSession} /></ErrorBoundary>
           </main>
         </div>
       </div>
-      <SetupWizard open={wizardOpen} onClose={() => setWizardOpen(false)} />
+      <ErrorBoundary label="Setup" variant="dialog" resetKey={wizardOpen} onDismiss={() => setWizardOpen(false)}><SetupWizard open={wizardOpen} onClose={() => setWizardOpen(false)} /></ErrorBoundary>
       {/* The tour follows setup only while it is still to come: running setup again from Settings never replays a finished tour. */}
       {setupMounted ? <SetupScreen open={setupOpen} onDone={() => {
         if (onboardingPending()) whenLoaded(ONBOARDING, () => { setSetupOpen(false); setTourOpen(true); });
         else setSetupOpen(false);
       }} /> : null}
       {tourMounted ? <OnboardingTour open={tourOpen} onClose={() => setTourOpen(false)} /> : null}
-      <SettingsHub onOpen={openSettings} helpRequest={helpRequest} open={settingsOpen} section={settingsSection} onSectionChange={setSettingsSection} onClose={() => setSettingsOpen(false)} syncRequest={syncRequest} onSyncingChange={setSyncing} />
+      <ErrorBoundary label="Settings" variant="dialog" resetKey={settingsOpen} onDismiss={() => setSettingsOpen(false)}><SettingsHub onOpen={openSettings} helpRequest={helpRequest} open={settingsOpen} section={settingsSection} onSectionChange={setSettingsSection} onClose={() => setSettingsOpen(false)} syncRequest={syncRequest} onSyncingChange={setSyncing} /></ErrorBoundary>
     </ThemeProvider>
   );
 }

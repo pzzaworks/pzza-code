@@ -81,6 +81,8 @@ export interface DiscardPreview {
   base: string | null;
   commits: TaskCommit[];
   uncommitted: { path: string; status: GitChangeStatus }[];
+  /** Ignored files and folders ("dir/" for a whole folder) the removal deletes too. */
+  ignored: string[];
   truncated: boolean;
   /** A locked worktree is never removed. */
   locked: boolean;
@@ -91,8 +93,9 @@ export async function previewTaskDiscard(host: string, path: string, base: strin
   const value = await postGitReview("task/discard/preview", { host, path, base }, "Could not read the worktree", signal ?? AbortSignal.timeout(30000));
   const commits = isRecord(value) ? list(value.commits, readCommit) : null;
   const uncommitted = isRecord(value) ? list(value.uncommitted, (item) => (isRecord(item) && isString(item.path) && isStatus(item.status) ? { path: item.path, status: item.status } : null)) : null;
-  if (!isRecord(value) || !commits || !uncommitted || !isString(value.main) || !isString(value.branch) || !isStringOrNull(value.base) || typeof value.truncated !== "boolean" || !isString(value.fingerprint)) invalid("Worktree");
-  return { main: value.main, branch: value.branch, base: value.base, commits, uncommitted, truncated: value.truncated, locked: value.locked === true, fingerprint: value.fingerprint };
+  const ignored = isRecord(value) ? list(value.ignored, (item) => (isString(item) && item ? item : null)) : null;
+  if (!isRecord(value) || !commits || !uncommitted || !ignored || !isString(value.main) || !isString(value.branch) || !isStringOrNull(value.base) || typeof value.truncated !== "boolean" || !isString(value.fingerprint)) invalid("Worktree");
+  return { main: value.main, branch: value.branch, base: value.base, commits, uncommitted, ignored, truncated: value.truncated, locked: value.locked === true, fingerprint: value.fingerprint };
 }
 
 export async function discardTaskWorktree(host: string, path: string, fingerprint: string): Promise<{ branchDeleted: boolean }> {

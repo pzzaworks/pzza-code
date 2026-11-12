@@ -146,5 +146,5 @@ export function usePermissionControls(): PermissionControls {
 }
 
 export function restartMessage(ids: readonly PermissionId[]): string {
-  return `Restart PzzaCode so ${ids.map(id => PERMISSIONS.find(item => item.id === id)?.label).join(" and ")} also applies to the app itself. Terminals get it when their sessions refresh.`;
+  return `Restart PzzaCode so ${ids.map(id => PERMISSIONS.find(item => item.id === id)?.label).join(" and ")} also applies to the app itself. New terminals get it right away; running ones after Refresh sessions.`;
 }

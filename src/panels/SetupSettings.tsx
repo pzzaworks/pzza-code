@@ -5,9 +5,22 @@ import { useSetup } from "../state/setup";
 import { usePermissionControls } from "./Permissions";
 import { refreshLocalSessions, useSessionRefresh } from "../state/sessionRefresh";
 import { AllowAllButton, PermissionGuide, SetupHealth, SetupPermissions, SetupRequirements, useRequirementsReady } from "../tour/SetupSteps";
+import { confirmAction } from "../ui/ConfirmDialog";
 import "../tour/OnboardingTour.css";
 
 type Tone = "ok" | "busy" | "action";
+
+// Restarting the terminal server stops every program in this Mac's sessions,
+// so it only runs when asked for and confirmed.
+async function confirmRefresh(): Promise<void> {
+  const accepted = await confirmAction({
+    title: "Refresh this Mac's sessions?",
+    message: "The terminal server restarts so running sessions get new permissions. Sessions, folders, recent output and agent chats come back, but programs running in them stop: dev servers, watchers, and an agent in the middle of a turn.",
+    confirmLabel: "Refresh sessions",
+    danger: true,
+  });
+  if (accepted) await refreshLocalSessions().catch(() => undefined);
+}
 
 interface Group {
   id: string;
@@ -69,8 +82,8 @@ export function SetupSettings() {
       <div className="setup-settings-actions">
         {PERMISSIONS_SUPPORTED ? <AllowAllButton controls={controls} /> : null}
         {PERMISSIONS_SUPPORTED ? <button type="button" className="btn btn-sm" disabled={refreshing} aria-busy={refreshing || undefined}
-          title="Restart this Mac's terminals so they get new permissions. Sessions, folders and recent output come back."
-          onClick={() => { void refreshLocalSessions("manual").catch(() => undefined); }}>
+          title="Restart this Mac's terminals so they get new permissions. Sessions, folders, recent output and agent chats come back; programs running in them stop."
+          onClick={() => { void confirmRefresh(); }}>
           {refreshing ? <Loader2 size={13} className="sw-spin" aria-hidden="true" /> : <RefreshCw size={13} aria-hidden="true" />}
           {refreshing ? "Refreshing sessions…" : "Refresh sessions"}
         </button> : null}

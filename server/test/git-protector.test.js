@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdtemp, writeFile, readFile, mkdir, rm, symlink } from "node:fs/promises";
+import { access, copyFile, link, mkdtemp, writeFile, readFile, mkdir, rm, symlink } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
@@ -331,7 +331,8 @@ printf '%s\\n%s\\n' "$1" "$2" > ${JSON.stringify(invocation)}
 `, { mode: 0o700 });
   assert.equal((await runGitProtection({ path: root, operation: "commit" })).approved, true);
   const hooks = await git(root, "config", "--path", "--get", "core.hooksPath");
-  assert.match(await readFile(path.join(hooks, "pre-push"), "utf8"), /remoteUrl: process\.argv\[3\] \|\| ''/);
+  assert.match(await readFile(path.join(hooks, "pre-push"), "utf8"), /^#!\/bin\/sh\n/);
+  assert.match(await readFile(path.join(path.dirname(hooks), "hook-scripts", "pre-push.cjs"), "utf8"), /remoteUrl: process\.argv\[3\] \|\| ''/);
 
   await stage(root, "release.txt", "Safe release contents.\n");
   await git(root, "commit", "-qm", "Prepare safe release");
@@ -689,4 +690,54 @@ test("protected PR creation checks the published head, scans its body, and reche
   assert.equal(result.approved, true);
   assert.equal(result.url, "https://github.com/example/project/pull/123");
   assert.equal((await boundary.state()).draft, true);
+});
+
+test("hooks survive removal of the Node.js that installed them and fail closed with repair steps when no Node.js is left", { timeout: 120000 }, async t => {
+  const root = await repository(t);
+  // A private hard link stands in for a version-managed Node.js (nvm, Homebrew)
+  // that a later upgrade removes; the real runtime is never touched.
+  const runtimeDirectory = await mkdtemp(path.join(os.tmpdir(), "pzza-node-runtime-"));
+  t.after(() => rm(runtimeDirectory, { recursive: true, force: true }));
+  const installer = path.join(runtimeDirectory, "node");
+  try { await link(process.execPath, installer); } catch { await copyFile(process.execPath, installer); }
+  const module = new URL("../lib/git-protector.js", import.meta.url).href;
+  const installed = await execute(installer, ["--input-type=module", "-e",
+    `import { runGitProtection } from ${JSON.stringify(module)}; process.stdout.write(JSON.stringify(await runGitProtection({ path: ${JSON.stringify(root)}, operation: "commit" })));`],
+  { timeout: 90000 });
+  assert.equal(JSON.parse(installed.stdout).approved, true);
+  const hooks = await git(root, "config", "--path", "--get", "core.hooksPath");
+  assert.ok((await readFile(path.join(hooks, "pre-commit"), "utf8")).includes(installer));
+  for (const hook of ["reference-transaction", "post-index-change", "post-checkout"]) {
+    const script = await readFile(path.join(hooks, hook), "utf8");
+    assert.match(script, /^#!\/bin\/sh\n/);
+    assert.ok(!script.includes("node"), `${hook} never needs Node.js`);
+  }
+  await rm(installer);
+
+  // A newer Node.js on PATH runs the protection; ref updates never depend on it.
+  await git(root, "branch", "after-upgrade");
+  await stage(root, "safe.txt", "Safe after the upgrade.\n");
+  await git(root, "commit", "-qm", "Commit after the Node.js upgrade");
+  await stage(root, ".env.local");
+  const blocked = await rejectedGit(root, ["commit", "-qm", "Blocked after the upgrade"]);
+  assert.match(gitErrorOutput(blocked), /Git protection blocked sensitive content/);
+  await git(root, "rm", "-q", "--cached", ".env.local");
+  await rm(path.join(root, ".env.local"));
+
+  // No Node.js anywhere: branches and checkouts still work, commits stop with the way out.
+  const bare = await mkdtemp(path.join(os.tmpdir(), "pzza-no-node-home-"));
+  t.after(() => rm(bare, { recursive: true, force: true }));
+  const noNode = { ...process.env, PATH: "/usr/bin:/bin", HOME: bare };
+  await execute("git", ["branch", "without-node"], { cwd: root, env: noNode, timeout: 15000 });
+  await execute("git", ["checkout", "-q", "without-node"], { cwd: root, env: noNode, timeout: 15000 });
+  const systemNode = ["/opt/homebrew/bin/node", "/usr/local/bin/node", "/usr/bin/node"];
+  const available = await Promise.all(systemNode.map(file => access(file).then(() => true, () => false)));
+  if (!available.includes(true)) {
+    await stage(root, "later.txt", "A later safe change.\n");
+    const stopped = await rejectedGit(root, ["commit", "-qm", "Commit without Node.js"], noNode);
+    const output = gitErrorOutput(stopped);
+    assert.match(output, /no Node\.js runtime was found/);
+    assert.match(output, /git_protect/);
+    assert.match(output, /git config --unset --local core\.hooksPath/);
+  }
 });

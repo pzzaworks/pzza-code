@@ -7,6 +7,26 @@ import { GIT_TOOLS } from "./git-tools.js";
 import { APP_TOOLS } from "./app-tools.js";
 import { SESSION_NAME_SCHEMA } from "../../server/lib/session-name.js";
 
+// Ending a session kills everything running in it, so, like terminating a
+// tile, it is asked in the app first: the request goes to an app window as
+// terminate_session and fails when the user declines. Without an app window to
+// ask, nothing is killed.
+export async function killSessionInApp({ name, window, host, clientId }) {
+  let target = clientId;
+  if (!target) {
+    const clients = await get("/app/control/clients");
+    const list = Array.isArray(clients) ? clients : [];
+    if (list.length === 0) throw new Error("Ending a session needs the user's confirmation in the PzzaCode app, and no app window has app control on. Ask the user to turn it on in the app, or to end the session there.");
+    if (list.length > 1) throw new Error("Several app windows are open. Pass clientId from app_list_clients to choose where the user confirms.");
+    target = list[0].clientId;
+  }
+  return post("/app/control/command", {
+    clientId: target,
+    action: "terminate_session",
+    args: { session: typeof name === "string" ? name.trim() : name, ...(window !== undefined ? { window } : {}), ...(host ? { host } : {}) },
+  });
+}
+
 const TOOLS = [
   ...GIT_TOOLS,
   ...APP_TOOLS,
@@ -83,17 +103,19 @@ const TOOLS = [
   },
   {
     name: "kill_session",
-    description: "Terminate a tmux session (or a single window with `window`) on a device.",
+    description: "Terminate a tmux session (or a single window with `window`) on a device, killing everything running in it. The user must confirm it in the PzzaCode app, so app control has to be on in an open app window; a declined request fails.",
+    annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
     inputSchema: {
       type: "object",
       properties: {
-        name: { type: "string", description: "Session name" },
-        window: { type: "number", description: "Window index (optional)" },
-        host: { type: "string", description: "ssh host (optional; blank = local)" },
+        name: { type: "string", minLength: 1, maxLength: 256, description: "Session name" },
+        window: { type: "integer", minimum: 0, description: "Window index (optional)" },
+        host: { type: "string", maxLength: 128, description: "ssh host (optional; blank = local)" },
+        clientId: { type: "string", minLength: 1, maxLength: 128, description: "App client ID from app_list_clients; needed only when several app windows are open" },
       },
       required: ["name"],
     },
-    run: (a) => post("/kill", { name: a.name, window: a.window, host: a.host }),
+    run: killSessionInApp,
   },
   {
     name: "list_ports",

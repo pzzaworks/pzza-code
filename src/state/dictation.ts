@@ -135,8 +135,16 @@ interface TranscriptTarget {
   // `activity` animates dots after the words: speech is heard, or the final pass runs.
   preview: (text: string, activity?: PreviewActivity | null) => void;
   clearPreview: () => void;
+  /**
+   * Whether the target waits on an approval prompt. Words typed there would
+   * reach the prompt, where a digit, "y" or "a" can answer it, so dictation
+   * neither starts nor types while it does.
+   */
+  awaitingApproval: () => boolean;
 }
 const targets = new Map<string, TranscriptTarget>();
+export const DICTATION_AWAITING_APPROVAL = "This terminal is waiting on an approval prompt. Answer it first, then dictate.";
+export const DICTATION_APPROVAL_APPEARED = "An approval prompt appeared in this terminal, so these words were not typed. Answer it first, then dictate again.";
 let finalizingId: string | undefined;
 // How long the final pass may take before the recording is closed with the
 // words already typed: a pass that never answers must not leave the control
@@ -211,6 +219,8 @@ function deliverTranscript(id: string, text: string, final: boolean) {
     }
     const target = targets.get(current.tileId);
     if (suffix) {
+      // Checked before every insert: the prompt can appear mid-recording.
+      if (target?.awaitingApproval()) throw new Error(DICTATION_APPROVAL_APPEARED);
       pipeline.writing = text;
       try {
         const inserted = target?.insert(suffix);
@@ -390,6 +400,7 @@ export const useDictation = create<DictationState>((set, get) => ({
       if (get().recording?.id !== id) return;
       const target = targets.get(tileId);
       if (!target) throw new Error("Wait for this terminal to connect before recording.");
+      if (target.awaitingApproval()) throw new Error(DICTATION_AWAITING_APPROVAL);
       target.clearPreview();
       target.focus();
       const silenceStop = options?.silenceStop === false ? 0 : get().silenceStop;

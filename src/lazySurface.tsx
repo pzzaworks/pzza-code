@@ -1,4 +1,5 @@
 import { createElement, Suspense, useEffect, useState, type ComponentType, type ReactNode } from "react";
+import { ErrorBoundary, SurfaceLoadError, type ErrorBoundaryVariant } from "./ui/ErrorBoundary";
 
 // A component whose code loads on first use, from its own chunk. preload()
 // starts that load early (on intent, at startup when the first window needs it,
@@ -13,23 +14,43 @@ export interface LazySurface<P extends object> {
   isLoaded(): boolean;
 }
 
-export function lazySurface<P extends object>(load: () => Promise<ComponentType<P>>, fallback: ReactNode = null): LazySurface<P> {
+// Each surface renders inside its own error boundary, so one that fails to
+// render shows a short note with Try again in its place (Reload when its code
+// could not be loaded), or a dialog for window-level surfaces that shows again
+// when they reopen, instead of taking the whole window down.
+export interface SurfaceBoundary<P extends object = object> {
+  /** What the surface is, as the subject of a sentence (see ErrorBoundary). */
+  label?: string;
+  variant?: ErrorBoundaryVariant;
+  /** Where its note sits, so it takes the surface's own place. */
+  className?: string;
+  /** dialog: closes the surface when its error dialog is closed, so it can be opened again. */
+  dismiss?: (props: P) => void;
+}
+
+export function lazySurface<P extends object>(load: () => Promise<ComponentType<P>>, fallback: ReactNode = null, { label = "This panel", variant = "panel", className, dismiss }: SurfaceBoundary<P> = {}): LazySurface<P> {
   let loaded: ComponentType<P> | null = null;
   let loading: Promise<ComponentType<P>> | null = null;
   let failure: { error: unknown } | null = null;
-  const fetch = () => (loading ??= load().then(
+  // A new attempt (a preload, or a retry) starts over after a failed load.
+  const fetch = () => (loading ??= (failure = null, load()).then(
     (component) => (loaded = component),
-    (error: unknown) => { loading = null; failure = { error }; throw error; },
+    (error: unknown) => { loading = null; failure = { error: new SurfaceLoadError(error) }; throw error; },
   ));
   // Suspends (throws the pending load to the Suspense boundary) until loaded;
-  // a failed load throws its error, as React.lazy does.
+  // a failed load throws its error, as React.lazy does. The failure stays
+  // until a retry asks for another load: React renders a failed part more
+  // than once before showing its boundary, and must see the same error.
   function Deferred(props: P) {
     if (loaded) return createElement(loaded, props);
-    if (failure) { const { error } = failure; failure = null; throw error; }
+    if (failure) throw failure.error;
     throw fetch();
   }
+  const retry = () => { failure = null; };
   function Surface(props: P) {
-    return createElement(Suspense, { fallback }, createElement(Deferred, props));
+    const resetKey = "open" in props ? props.open : undefined;
+    const onDismiss = dismiss ? () => dismiss(props) : undefined;
+    return createElement(ErrorBoundary, { label, variant, className, resetKey, onRetry: retry, onDismiss }, createElement(Suspense, { fallback }, createElement(Deferred, props)));
   }
   return Object.assign(Surface, {
     preload: () => fetch().then(() => undefined, () => undefined),

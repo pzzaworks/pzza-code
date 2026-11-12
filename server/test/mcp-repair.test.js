@@ -159,13 +159,91 @@ test("unknown commands, disabled servers, parser failures and symlinked files ar
 });
 
 test("concurrent health checks coalesce and invalid hosts never execute", async () => {
-  let calls = 0;
-  const repair = createMcpRepair({ run: async () => { calls++; return { results: [] }; } });
-  await Promise.all([repair("host"), repair("host", true), repair("host")]);
-  assert.equal(calls, 1);
+  const calls = [];
+  const repair = createMcpRepair({ run: async (_host, apply) => { calls.push(apply); return { results: [] }; } });
+  await Promise.all([repair("host"), repair("host"), repair("host")]);
+  assert.deepEqual(calls, [false], "background checks share one read-only run");
   await repair("host");
-  assert.equal(calls, 1);
+  assert.deepEqual(calls, [false], "a recent result is reused");
+  // An explicit check during a background read still applies, once.
+  await Promise.all([repair("host", true), repair("host"), repair("host", true)]);
+  assert.deepEqual(calls, [false, true]);
   await assert.rejects(runMcpRepair("--proxy-command"), /Invalid device/);
+});
+
+test("background maintenance reads only, applies a needed repair once and never re-applies one a client reverted", async () => {
+  let now = 0;
+  const calls = [];
+  let reports = [];
+  const repair = createMcpRepair({ now: () => now, run: async (_host, apply) => { calls.push(apply); return reports.shift(); } });
+  const repairable = { framework: "claude", server: "railway", file: ".claude.json", status: "repairable", message: "Use the installed executable" };
+  const healthy = { ...repairable, status: "healthy" };
+
+  // Healthy configuration: one read-only run, nothing written.
+  reports = [{ results: [healthy] }];
+  assert.deepEqual((await repair("")).results, [healthy]);
+  assert.deepEqual(calls, [false]);
+
+  // Something to repair: the read finds it, then one applied run repairs it.
+  now += 61_000;
+  reports = [{ results: [repairable] }, { results: [{ ...repairable, status: "repaired" }] }];
+  assert.equal((await repair("")).results[0].status, "repaired");
+  assert.deepEqual(calls, [false, false, true]);
+
+  // A running client wrote the old command back: reported, never rewritten again on the timer.
+  for (let round = 0; round < 3; round++) {
+    now += 61_000;
+    reports = [{ results: [repairable] }];
+    const result = await repair("");
+    assert.equal(result.results[0].status, "repairable");
+    assert.match(result.results[0].message, /running client wrote its previous command back/);
+  }
+  assert.deepEqual(calls, [false, false, true, false, false, false]);
+
+  // The user's explicit check applies it again.
+  reports = [{ results: [{ ...repairable, status: "repaired" }] }];
+  assert.equal((await repair("", true)).results[0].status, "repaired");
+  assert.deepEqual(calls.at(-1), true);
+
+  // A writable client file is restricted by an applied run, read first like any repair.
+  now += 61_000;
+  const writable = { framework: "integration", server: "", file: ".claude.json", status: "unresolved", message: "Configuration must be a user-owned file that others cannot modify." };
+  reports = [{ results: [writable] }, { results: [{ ...writable, status: "repaired" }] }];
+  assert.equal((await repair("")).results[0].status, "repaired");
+  assert.deepEqual(calls.slice(-2), [false, true]);
+});
+
+test("real background checks repair once, then only read, and leave a client-reverted file alone", async t => {
+  const f = await fixture(t);
+  const file = path.join(f.home, ".claude.json");
+  const original = JSON.stringify({ mcpServers: { service: { command: "pzza-test-launcher" } } });
+  await fs.writeFile(file, original, { mode: 0o600 });
+  let now = 0;
+  const runs = [];
+  const repair = createMcpRepair({ now: () => now, run: async (_host, apply) => { runs.push(apply); return f.run(apply); } });
+  const first = await repair("");
+  assert.equal(first.results[0].status, "repaired", "a needed repair is applied once");
+  assert.deepEqual(runs, [false, true]);
+  const repaired = await fs.readFile(file, "utf8");
+  assert.notEqual(repaired, original);
+  // Healthy now: the next timed check only reads.
+  now += 61_000;
+  const steady = await fs.stat(file);
+  assert.equal((await repair("")).results[0].status, "healthy");
+  assert.deepEqual(runs, [false, true, false]);
+  assert.equal((await fs.stat(file)).mtimeMs, steady.mtimeMs);
+  // The client writes its in-memory copy back; the next timed checks leave it alone.
+  await fs.writeFile(file, original, { mode: 0o600 });
+  const reverted = await fs.stat(file);
+  for (let round = 0; round < 2; round++) {
+    now += 61_000;
+    assert.equal((await repair("")).results[0].status, "repairable");
+  }
+  assert.deepEqual(runs, [false, true, false, false, false]);
+  assert.equal(await fs.readFile(file, "utf8"), original);
+  assert.equal((await fs.stat(file)).mtimeMs, reverted.mtimeMs);
+  const backups = (await fs.readdir(f.home)).filter(name => name.startsWith(".claude.json.pzza-backup-"));
+  assert.equal(backups.length, 1, "only the first repair made a backup");
 });
 
 test("apply restricts writable private configurations without touching shared files or hard links", async t => {

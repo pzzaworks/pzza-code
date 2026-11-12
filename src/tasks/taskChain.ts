@@ -2,6 +2,7 @@ import { useStore } from "../state/store";
 import { createSessionInApp } from "../sessionActions";
 import { sendPromptToTile } from "../terminal/broadcast";
 import { hasPendingPermission } from "../state/permissionPrompts";
+import { paneForeground } from "../terminal/permissionForeground";
 import { useNotifications } from "../state/notifications";
 import { fetchSessions, scanDevice } from "../serverApi";
 import { DEFAULT_WORKSPACE_ID } from "../workspaces";
@@ -173,6 +174,25 @@ async function stepContext(item: Task, steps: readonly ChainStep[], index: numbe
 }
 
 /**
+ * Why `agent` cannot take typed input in the tile, read afresh from the
+ * device: the program in the foreground of the pane the tile's keys reach is
+ * another one (the agent exited to its shell) or cannot be read. Undefined
+ * when that agent runs there.
+ */
+export async function agentAbsence(tileId: string, agent: string): Promise<string | undefined> {
+  const state = useStore.getState();
+  const tile = state.tiles.find((item) => item.id === tileId);
+  if (!tile) return "Session closed";
+  const host = tile.host ?? state.connection.host ?? "";
+  try {
+    const pane = await paneForeground(host || undefined, tile.session ?? tile.name, tile.window, true);
+    return pane?.agent === agent ? undefined : "Agent exited";
+  } catch {
+    return "Could not check that the agent still runs";
+  }
+}
+
+/**
  * Starts step `index`: in an earlier step's session of the same agent and
  * mode when its tile is open (the instruction is typed there), else in a new
  * session in the chain's worktree. The handoff is saved first, so a restart
@@ -191,6 +211,13 @@ async function startStep(taskId: string, steps: ChainStep[], index: number): Pro
   if (earlier?.session && earlier.tileId) {
     if (hasPendingPermission(earlier.tileId)) {
       setChain(taskId, { steps: withStep(steps, index, { status: "paused", instruction, note: "Approval needed" }), state: "paused", handoff: undefined });
+      return;
+    }
+    // The tile stays open on the login shell after its agent exits: typed
+    // there, the instruction would run as a shell command.
+    const absent = await agentAbsence(earlier.tileId, step.agent.id);
+    if (absent) {
+      setChain(taskId, { steps: withStep(steps, index, { status: "paused", instruction, note: absent }), state: "paused", handoff: undefined });
       return;
     }
     setChain(taskId, { steps: withStep(steps, index, { instruction }), state: "running", handoff: { step: index, kind: "send", session: earlier.session, at: now } });
