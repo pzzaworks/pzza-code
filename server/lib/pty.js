@@ -226,15 +226,42 @@ export async function startPtyBridge(server) {
   });
 }
 
+// A window view is created detached and attached a moment later (the desktop
+// app's tiles and this bridge both do it), so only views that have stayed
+// unattached well past that window are orphans.
+export const ORPHAN_VIEW_GRACE_SECONDS = 60;
+
+// Names of internal window views that are unattached and older than the grace
+// period, from `name\tattached\tcreated` lines.
+export function staleOrphanViews(out, nowSeconds, graceSeconds = ORPHAN_VIEW_GRACE_SECONDS) {
+  const stale = [];
+  for (const line of String(out || "").split("\n")) {
+    const [name, attached, created] = line.split("\t");
+    const createdAt = Number(created);
+    if (!name || !name.startsWith("pzza-v-") || /[\x00-\x1f\x7f]/.test(name) || attached !== "0") continue;
+    if (!Number.isInteger(createdAt) || createdAt <= 0 || nowSeconds - createdAt < graceSeconds) continue;
+    stale.push(name);
+  }
+  return stale;
+}
+
 // Clean up leftover internal window-view sessions that are no longer attached.
-export function sweepOrphanViews() {
-  sh(`${tmuxCommand()} list-sessions -F '#{session_name} #{session_attached}' 2>/dev/null`, (err, out) => {
-    if (err) return;
-    for (const line of String(out || "").split("\n")) {
-      const [name, attached] = line.split(" ");
-      if (name && name.startsWith("pzza-v-") && attached === "0") {
-        sh(`${tmuxCommand()} kill-session -t ${shQuote(name)} 2>/dev/null`, () => {});
-      }
-    }
+// Each kill re-checks that the view is still unattached right before it, so a
+// view attached since the listing is never taken away from its tile.
+export function sweepOrphanViews({ graceSeconds = ORPHAN_VIEW_GRACE_SECONDS } = {}) {
+  const tmux = tmuxCommand();
+  return new Promise((resolve) => {
+    sh(`${tmux} list-sessions -F '#{session_name}\t#{session_attached}\t#{session_created}' 2>/dev/null`, (err, out) => {
+      if (err) return resolve([]);
+      const views = staleOrphanViews(out, Math.floor(Date.now() / 1000), graceSeconds);
+      if (!views.length) return resolve([]);
+      const commands = views.map((name) => {
+        // "=name:" (exact session, its current window) is what display-message
+        // resolves; a bare "=name" prints nothing.
+        const status = `${tmux} display-message -p -t ${shQuote(`=${name}:`)} '#{session_attached}' 2>/dev/null`;
+        return `[ "$(${status})" = 0 ] && ${tmux} kill-session -t ${shQuote(`=${name}`)} 2>/dev/null`;
+      });
+      sh(commands.join("; ") + "; exit 0", () => resolve(views));
+    });
   });
 }

@@ -6,6 +6,7 @@ import type { RemoteSession } from "./connection";
 import type { DeviceOs } from "./devices";
 import { HAS_TAURI } from "./tauriEnv";
 import { createAgentConnection } from "./agentConnection";
+import { validSessionCreatedAt, validWindowId, type LocatedWindow } from "./windowIdentity";
 import { sessionAgent, type SessionAgentChoice, type SessionAgentId } from "../server/lib/session-agents.js";
 
 function serverPort(): number {
@@ -277,11 +278,37 @@ export interface RemoteWindow {
   active: boolean;
   command: string;
   path: string;
+  /** tmux's stable window id ("@7"), when the device reports one. */
+  windowId?: string;
 }
-export async function fetchWindows(): Promise<RemoteWindow[]> {
-  const res = await agentFetch(`${SERVER_HTTP}/windows`);
-  if (!res.ok) throw new Error(`windows ${res.status}`);
-  return res.json();
+
+// Every tmux window on a device. Without `host` the device the agent serves
+// by default; "" is the agent's own device.
+export async function fetchWindows(host?: string): Promise<RemoteWindow[]> {
+  const res = await agentFetch(`${SERVER_HTTP}/windows${host === undefined ? "" : `?host=${encodeURIComponent(host)}`}`);
+  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `windows ${res.status}`);
+  const value: unknown = await res.json();
+  if (!Array.isArray(value)) throw new Error("The device returned an invalid window list.");
+  return value;
+}
+
+/**
+ * Every tmux window on a device right now with the creation time of its
+ * session, which ties each window id to the terminal server that issued it.
+ * `host` as for fetchWindows ("" is the agent's own device).
+ */
+export async function locateWindows(host: string): Promise<LocatedWindow[]> {
+  const [windows, sessions] = await Promise.all([fetchWindows(host), scanDevice(host)]);
+  const created = new Map(sessions.map((session) => [session.name, session.createdAt]));
+  return windows.map((window) => {
+    const createdAt = created.get(window.session);
+    return {
+      session: window.session,
+      window: window.window,
+      ...(validWindowId(window.windowId) ? { windowId: window.windowId } : {}),
+      sessionCreatedAt: validSessionCreatedAt(createdAt) ? createdAt : null,
+    };
+  });
 }
 
 export interface McpFramework {
@@ -377,16 +404,41 @@ export async function discardTerminalDrop(id: string): Promise<void> {
   if (!response.ok) throw new Error("Could not clean up the uploaded files.");
 }
 
-// Kill a tmux session (or a single window). Pass host to kill on another device.
-export async function killSession(name: string, window?: number, host?: string): Promise<void> {
+/** "already-closed": the window a window id named had closed already, and nothing was terminated. */
+export type KillOutcome = "terminated" | "already-closed";
+
+// Kill a tmux session (or a single window). Pass host to kill on another
+// device. A window tile passes the stable id of the window it shows
+// (`windowId`): the device then ends exactly that window, never whatever holds
+// its index now, and answers 409 when that window is gone.
+export async function killSession(name: string, window?: number, host?: string, windowId?: string): Promise<KillOutcome> {
+  if (windowId !== undefined && !validWindowId(windowId)) throw new Error("Invalid window.");
   const targetHost = HAS_TAURI ? host ?? "" : host;
   const res = await agentFetch(`${SERVER_HTTP}/kill`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name, window, host: targetHost }),
+    body: JSON.stringify({ name, window, host: targetHost, ...(windowId ? { windowId } : {}) }),
   });
-  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `kill ${res.status}`);
+  const outcome: KillOutcome = res.status === 409 && windowId ? "already-closed" : "terminated";
+  if (!res.ok && outcome !== "already-closed") throw new Error((await res.json().catch(() => ({}))).error || `kill ${res.status}`);
+  if (HAS_TAURI && !targetHost) await recordLocalSessions();
   globalThis.window.dispatchEvent(new CustomEvent("pzza:sessions-changed", { detail: { name, host: targetHost ?? "", window } }));
+  return outcome;
+}
+
+// The native side keeps a record of the local sessions to bring back after
+// the terminal server is replaced (see sessionRefresh). A terminated session
+// is taken out of it right away: otherwise a quit, logout or reboot within the
+// next periodic record would bring it back with its agent started again.
+// Agents stay as recorded (null). Best effort: the next periodic record
+// catches up when this one cannot run.
+async function recordLocalSessions(): Promise<void> {
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("local_tmux_record_sessions", { agents: null });
+  } catch {
+    /* No local terminal server or a refresh is running: the periodic record follows. */
+  }
 }
 
 export interface Account {
@@ -613,14 +665,31 @@ export interface DirEntry {
 // device's ssh target) to read/write that device's files over ssh instead.
 const hostQ = (host?: string) => (host ? `&host=${encodeURIComponent(host)}` : "");
 
+// The version of a file's bytes on disk (hex SHA-256), when the device's agent
+// reports one. Agents that do not report it leave it out.
+const FILE_VERSION = /^[0-9a-f]{64}$/;
+const fileVersion = (value: unknown): string | undefined => (typeof value === "string" && FILE_VERSION.test(value) ? value : undefined);
+
 // Read a text file (restricted to the home tree).
 export async function readFile(
   path: string,
   host?: string,
-): Promise<{ content: string; tooLarge?: boolean }> {
+): Promise<{ content: string; tooLarge?: boolean; binary?: boolean; sha256?: string }> {
   const res = await agentFetch(`${SERVER_HTTP}/file/read?path=${encodeURIComponent(path)}${hostQ(host)}`);
   if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `read ${res.status}`);
-  return res.json();
+  const value: unknown = await res.json();
+  const body = value && typeof value === "object" ? value as Record<string, unknown> : {};
+  if (typeof body.content !== "string") throw new Error("The file could not be read.");
+  const sha256 = fileVersion(body.sha256);
+  return { content: body.content, ...(body.tooLarge === true ? { tooLarge: true } : {}), ...(body.binary === true ? { binary: true } : {}), ...(sha256 ? { sha256 } : {}) };
+}
+
+/** The file on disk is not the version the save was based on (it changed since it was read). */
+export class FileChangedOnDiskError extends Error {
+  constructor() {
+    super("The file changed on disk after it was opened.");
+    this.name = "FileChangedOnDiskError";
+  }
 }
 // Direct URL to a file's raw bytes (served with its media type) - use it as the
 // src of an <img> or PDF viewer to preview binary files in the code view.
@@ -628,13 +697,24 @@ export function fileRawUrl(path: string, host?: string): string {
   const q = tokenQ();
   return `${SERVER_HTTP}/file/raw?path=${encodeURIComponent(path)}${hostQ(host)}${q ? `&${q}` : ""}`;
 }
-export async function writeFile(path: string, content: string, host?: string): Promise<void> {
+// Writes a text file. With `expectedSha256` (the version read), an agent that
+// supports it refuses with 409 and code "changed" when the file on disk is
+// another version, and returns the new version; older agents ignore it and
+// write unconditionally. Other refusals carry the agent's own message.
+export async function writeFile(path: string, content: string, host?: string, expectedSha256?: string): Promise<{ sha256?: string }> {
   const res = await agentFetch(`${SERVER_HTTP}/file/write`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ path, content, host }),
+    body: JSON.stringify({ path, content, host, ...(expectedSha256 ? { expectedSha256 } : {}) }),
   });
-  if (!res.ok) throw new Error(`write ${res.status}`);
+  const value: unknown = await res.json().catch(() => null);
+  const body = value && typeof value === "object" ? value as Record<string, unknown> : {};
+  if (!res.ok) {
+    if (res.status === 409 && expectedSha256 && body.code === "changed") throw new FileChangedOnDiskError();
+    throw new Error(typeof body.error === "string" && body.error ? body.error : `write ${res.status}`);
+  }
+  const sha256 = fileVersion(body.sha256);
+  return sha256 ? { sha256 } : {};
 }
 export async function moveFile(root: string, path: string, destination: string, host?: string): Promise<{ path: string }> {
   const res = await agentFetch(`${SERVER_HTTP}/fs/move`, {

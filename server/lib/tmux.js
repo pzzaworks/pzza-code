@@ -13,13 +13,32 @@ import { tmuxArgs } from "./tmux-client.js";
 const sessionsCommand = (host) =>
   `${tmuxCommand(host)} list-sessions -F '#{session_name}\t#{session_windows}\t#{session_attached}\t#{pane_current_command}\t#{pane_current_path}\t#{session_created}'`;
 
+// tmux's stable window id ("@7"). Unlike an index it never moves to another
+// window after renumbering or after the original window exits.
+export const WINDOW_ID = /^@\d{1,9}$/;
+
+// Exit status of a window termination whose window id is no longer in the
+// session: the window already closed, and nothing else is touched.
+export const WINDOW_GONE_EXIT = 4;
+
 // Resolve an exact session before modifying it. Internal grouped views retain
 // the parent's windows and processes unless they are closed with the parent.
-export function terminationCommand(name, window, host) {
+// With a window id, only that exact window is killed, and only while it still
+// belongs to the session; a bare index is the legacy form (it targets whatever
+// window holds that index now).
+export function terminationCommand(name, window, host, windowId) {
   if (typeof name !== "string" || !name.trim() || /[\x00-\x1f\x7f]/.test(name)) throw new Error("invalid session");
   if (window !== undefined && (!Number.isInteger(window) || window < 0)) throw new Error("invalid window");
+  if (windowId !== undefined && (typeof windowId !== "string" || !WINDOW_ID.test(windowId))) throw new Error("invalid window");
   const target = shQuote("=" + name + ":");
   const tmux = tmuxCommand(host);
+  if (windowId !== undefined) {
+    // A session:@id target falls back to the session's current window when
+    // the id is not one of its windows, so membership is checked explicitly.
+    return `ids=$(${tmux} list-windows -t ${shQuote("=" + name)} -F '#{window_id}') || exit 1
+printf '%s\\n' "$ids" | grep -Fqx ${shQuote(windowId)} || exit ${WINDOW_GONE_EXIT}
+${tmux} kill-window -t ${shQuote(windowId)}`;
+  }
   if (window !== undefined) return `${tmux} kill-window -t ${shQuote("=" + name + ":" + window)}`;
   return `session_id=$(${tmux} display-message -p -t ${target} '#{session_id}') || exit 1
 [ -n "$session_id" ] || exit 1
@@ -35,18 +54,21 @@ fi
 ${tmux} kill-session -t "$session_id"`;
 }
 
-export function terminateSession(name, window, host) {
+export function terminateSession(name, window, host, windowId) {
   if (host !== undefined && (typeof host !== "string" || (host && !SSH_TOKEN.test(host)))) return Promise.reject(new Error("invalid host"));
   const targetHost = host === undefined ? (IS_CLIENT ? DEVBOX : "") : host;
-  const command = terminationCommand(name, window, targetHost);
+  const command = terminationCommand(name, window, targetHost, windowId);
   const executable = targetHost ? "ssh" : "sh";
   const args = targetHost
     ? ["-o", "BatchMode=yes", "-o", "ConnectTimeout=8", "-o", "StrictHostKeyChecking=accept-new", targetHost, command]
     : ["-c", command];
   return new Promise((resolve, reject) => {
     execFile(executable, args, { timeout: 15_000, env: deviceEnv(targetHost) }, (error) => {
-      if (error) reject(new Error("Could not close the session on this device"));
-      else resolve();
+      if (!error) return resolve();
+      if (windowId !== undefined && error.code === WINDOW_GONE_EXIT) {
+        return reject(Object.assign(new Error("That window has already closed; nothing was terminated."), { status: 409 }));
+      }
+      reject(new Error("Could not close the session on this device"));
     });
   });
 }
@@ -135,30 +157,42 @@ export function scanSessions(host) {
   });
 }
 
-export function listWindows() {
-  return new Promise((resolve) => {
-    sh(
-      `${tmuxCommand()} list-windows -a -F '#{session_name}\t#{window_index}\t#{window_name}\t#{window_active}\t#{pane_current_command}\t#{pane_current_path}'`,
-      (err, out) => {
-        if (err) return resolve([]);
-        const wins = [];
-        for (const line of out.split("\n")) {
-          if (!line) continue;
-          const [session, index, wname, active, command, path] = line.split("\t");
-          if (session) {
-            wins.push({
-              session,
-              window: Number(index) || 0,
-              windowName: wname || "",
-              active: active === "1",
-              command: command || "",
-              path: path || "",
-            });
-          }
+// Every window on the connected device, or on `host` over ssh ("" is this
+// device). A device without a tmux server has none; with `host`, one that
+// cannot be reached is an error, so a window tile never takes it for a
+// closed window.
+export function listWindows(host) {
+  if (host !== undefined && (typeof host !== "string" || (host && !SSH_TOKEN.test(host)))) return Promise.reject(new Error("invalid host"));
+  const command = (target) => `${tmuxCommand(target)} list-windows -a -F '#{session_name}\t#{window_index}\t#{window_name}\t#{window_active}\t#{pane_current_command}\t#{pane_current_path}\t#{window_id}'`;
+  return new Promise((resolve, reject) => {
+    const done = (err, out, stderr) => {
+      if (err && host !== undefined && !/no server running|no sessions|error connecting.*No such file/.test(String(stderr || ""))) {
+        return reject(new Error("Could not list the windows on this device"));
+      }
+      if (err) return resolve([]);
+      const wins = [];
+      for (const line of String(out || "").split("\n")) {
+        if (!line) continue;
+        const [session, index, wname, active, command, path, windowId] = line.split("\t");
+        if (session) {
+          wins.push({
+            session,
+            window: Number(index) || 0,
+            windowName: wname || "",
+            active: active === "1",
+            command: command || "",
+            path: path || "",
+            // Stable id a window tile keeps so Terminate targets this exact window.
+            ...(WINDOW_ID.test(windowId || "") ? { windowId } : {}),
+          });
         }
-        resolve(wins);
-      },
-    );
+      }
+      resolve(wins);
+    };
+    if (host === undefined) return sh(command(), done);
+    execFile(host ? "ssh" : "sh", host
+      ? ["-o", "BatchMode=yes", "-o", "ConnectTimeout=8", "-o", "StrictHostKeyChecking=accept-new", host, command(host)]
+      : ["-c", command("")], { timeout: 15_000, env: deviceEnv(host) }, done);
   });
 }
 

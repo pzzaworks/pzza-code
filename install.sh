@@ -123,6 +123,11 @@ ENTRY="$SCRIPT_DIR/server/index.js"
 register_systemd() {
   local unit_dir="$HOME/.config/systemd/user"
   mkdir -p "$unit_dir"
+  # KillMode=process: a tmux server the agent starts lives in this unit's
+  # cgroup, and the default (control-group) would kill it, and every session
+  # on the device, whenever the agent stops, restarts or crashes. Only the
+  # agent process itself is stopped. Re-running this installer rewrites the
+  # unit and daemon-reload applies it to an already running agent.
   cat > "$unit_dir/pzzacode-agent.service" <<UNIT
 [Unit]
 Description=PzzaCode device agent
@@ -134,6 +139,7 @@ Environment=PORT=${PORT}
 Environment=PZZA_SERVER_HOST=${SERVER_HOST}
 WorkingDirectory=${SCRIPT_DIR}
 ExecStart=${NODE_BIN} ${ENTRY}
+KillMode=process
 Restart=on-failure
 RestartSec=3
 
@@ -149,6 +155,8 @@ UNIT
 register_launchd() {
   local plist="$HOME/Library/LaunchAgents/com.pzzacode.app.agent.plist"
   mkdir -p "$HOME/Library/LaunchAgents"
+  # AbandonProcessGroup: launchd must not take a tmux server the agent started
+  # down with the agent when it exits or restarts.
   cat > "$plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -162,6 +170,7 @@ register_launchd() {
   </dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
+  <key>AbandonProcessGroup</key><true/>
 </dict></plist>
 PLIST
   launchctl unload "$plist" >/dev/null 2>&1 || true

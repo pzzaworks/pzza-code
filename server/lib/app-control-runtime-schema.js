@@ -38,6 +38,11 @@ export const RUNTIME_APP_COMMANDS = {
   open_pull_request: command("Open the pull request of a tile's Git branch in the browser, or the branch page when it has none.", { tileId }, ["tileId"]),
   git_status: command("Read a tile's Git state without changing anything: branch (or detached), uncommitted file count and first names, commits ahead/behind its upstream, and the branch's pull request with its checks, plus a one-sentence summary.", { tileId }, ["tileId"]),
   terminate_tile: command("Terminate the tile's tmux window or session and remove its affected tiles. Rejects unsaved editors.", { tileId }, ["tileId"]),
+  terminate_session: command("Terminate a tmux session, or one window of it, on the app host (host omitted) or a trusted SSH device, and remove its tiles. The user must confirm it in the app first; a declined request fails. Rejects unsaved editors.", {
+    session: string(256),
+    window: integer(0, 2147483647),
+    host: { type: "string", maxLength: 128, pattern: "^(?:[A-Za-z0-9._][A-Za-z0-9._@-]{0,127})?$" },
+  }, ["session"]),
   get_dictation: command("Read dictation status and microphone devices without returning recorded speech."),
   configure_dictation: command("Persist dictation preferences. An empty inputDeviceId selects the default microphone.", { enabled: boolean, language: string(32), inputDeviceId: { type: "string", maxLength: 4096 } }),
   refresh_dictation_inputs: command("Refresh the available input-device list."),

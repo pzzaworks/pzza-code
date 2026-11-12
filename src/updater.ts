@@ -1,4 +1,5 @@
 import { HAS_TAURI } from "./tauriEnv";
+import { whenLocalSessionWorkSettled } from "./state/localSessionWork";
 
 // In-app updates. The Tauri updater plugin fetches latest.json from the GitHub
 // release, verifies the artifact's minisign signature against the public key
@@ -38,8 +39,11 @@ export async function checkForUpdate(): Promise<AvailableUpdate | null> {
   };
 }
 
+// Every restart (Restart to update, app control, a permission that needs one)
+// waits for a running local session refresh or restore to finish first.
 export async function relaunchApp(): Promise<void> {
   if (!HAS_TAURI) return;
+  await whenLocalSessionWorkSettled();
   const { invoke } = await import("@tauri-apps/api/core");
   await invoke("app_restart");
 }

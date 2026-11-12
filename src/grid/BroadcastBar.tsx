@@ -162,6 +162,8 @@ export function BroadcastBar({ tiles, agentTiles, onSelectAgents, onRemove, onCl
     focus: () => input.current?.focus(),
     preview: (words, activity) => setDictation({ text: words, activity: activity ?? null, at: input.current?.selectionStart ?? input.current?.value.length ?? 0 }),
     clearPreview: () => setDictation(null),
+    // The composer is a text field, not a terminal: sending checks each tile for approvals.
+    awaitingApproval: () => false,
     insert: (words) => {
       const element = input.current;
       if (!element) return false;

@@ -1,5 +1,6 @@
 import { lazySurface, type LazySurface } from "./lazySurface";
 import { useStore } from "./state/store";
+import { useTasksUi } from "./tasks/taskStore";
 import { onboardingPending, setupPending } from "./tour/progress";
 import { loadWorkspaceIconSet, needsFullIconSet } from "./workspaceIcons";
 
@@ -11,19 +12,19 @@ import { loadWorkspaceIconSet, needsFullIconSet } from "./workspaceIcons";
 // The tile code editor (CodeMirror, the file tree, Changes and diffs). Its
 // language packs load separately, with the first file (editorLanguageLoader).
 // The fallback is the panel's own empty frame.
-export const TileCodePanel = lazySurface(() => import("./grid/TileCodePanel").then((module) => module.TileCodePanel), <div className="tile-code" />);
+export const TileCodePanel = lazySurface(() => import("./grid/TileCodePanel").then((module) => module.TileCodePanel), <div className="tile-code" />, { label: "The editor", className: "tile-code grid-empty" });
 
 // What the Tasks dropdown shows: the list, the new-task form and one task (the large diff loads separately).
 export const TasksPanel = lazySurface(() => import("./tasks/TasksPanel").then((module) => module.TasksPanel));
 export const TASK_SURFACES: readonly LazySurface<never>[] = [TasksPanel];
 // A task's full details, in a window like a tile's Checkpoints (with the diff viewer).
-export const TaskWindow = lazySurface(() => import("./tasks/TaskWindow").then((module) => module.TaskWindow));
+export const TaskWindow = lazySurface(() => import("./tasks/TaskWindow").then((module) => module.TaskWindow), null, { label: "The task window", variant: "dialog", dismiss: () => useTasksUi.getState().closeDetails() });
 
-export const CommandPalette = lazySurface(() => import("./panels/CommandPalette").then((module) => module.CommandPalette));
-export const TerminalSearch = lazySurface(() => import("./panels/TerminalSearch").then((module) => module.TerminalSearch));
+export const CommandPalette = lazySurface(() => import("./panels/CommandPalette").then((module) => module.CommandPalette), null, { label: "The command palette", variant: "dialog", dismiss: (props) => props.onClose() });
+export const TerminalSearch = lazySurface(() => import("./panels/TerminalSearch").then((module) => module.TerminalSearch), null, { label: "Terminal search", variant: "dialog", dismiss: (props) => props.onClose() });
 
-export const SetupScreen = lazySurface(() => import("./tour/SetupScreen").then((module) => module.SetupScreen));
-export const OnboardingTour = lazySurface(() => import("./tour/OnboardingTour").then((module) => module.OnboardingTour));
+export const SetupScreen = lazySurface(() => import("./tour/SetupScreen").then((module) => module.SetupScreen), null, { label: "Setup", variant: "dialog" });
+export const OnboardingTour = lazySurface(() => import("./tour/OnboardingTour").then((module) => module.OnboardingTour), null, { label: "The tour", variant: "dialog", dismiss: (props) => props.onClose() });
 /** Setup is always followed by the tour, so both load together. */
 export const ONBOARDING: readonly LazySurface<never>[] = [SetupScreen, OnboardingTour];
 

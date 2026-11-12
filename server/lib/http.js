@@ -82,6 +82,12 @@ export function ndjson(res) {
   return (event) => { if (!res.destroyed) res.write(JSON.stringify(event) + "\n"); };
 }
 
+// A JSON request body that routes may dereference: a plain object, never null,
+// an array or a primitive (`null` is valid JSON and must not reach a handler).
+export function isJsonObject(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
 export function readBody(req) {
   return new Promise((resolve) => {
     let data = "";

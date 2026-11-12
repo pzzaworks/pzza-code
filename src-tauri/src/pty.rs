@@ -240,12 +240,47 @@ fn size(cols: u16, rows: u16) -> PtySize {
     }
 }
 
+// Every spawn except ssh attaches to the app's own local tmux server.
+#[cfg(target_os = "macos")]
+fn local_attach(cmd: &str) -> bool {
+    cmd != "ssh"
+}
+
 // Spawn a PTY-backed command and stream its output over `on_data` as raw byte
 // chunks (the frontend receives each as an ArrayBuffer). Returns an id used by
 // the write/resize/kill commands.
 #[tauri::command]
-pub fn pty_spawn(
+pub async fn pty_spawn(
+    app: tauri::AppHandle,
     state: tauri::State<'_, PtyState>,
+    cmd: String,
+    args: Vec<String>,
+    cwd: Option<String>,
+    cols: u16,
+    rows: u16,
+    on_data: Channel<Response>,
+    on_exit: Channel<i32>,
+) -> Result<u32, String> {
+    // A local attach never starts a server itself (tmux -N), so a server that
+    // failed to start or has ended is started again first, and whatever a
+    // new server owes is restored before the attach can take a saved name
+    // (session_refresh::prepare_local_attach). ensure_running backs off after
+    // failures and does nothing while the app quits; both can take seconds,
+    // so they run on a blocking thread, never the main thread.
+    #[cfg(target_os = "macos")]
+    if local_attach(&cmd) {
+        tauri::async_runtime::spawn_blocking(move || crate::session_refresh::prepare_local_attach(&app))
+            .await
+            .map_err(|error| error.to_string())??;
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = app;
+    spawn(&state, cmd, args, cwd, cols, rows, on_data, on_exit)
+}
+
+/// Spawns the PTY for `pty_spawn` once the server it needs is up.
+pub fn spawn(
+    state: &PtyState,
     cmd: String,
     args: Vec<String>,
     cwd: Option<String>,
@@ -262,10 +297,10 @@ pub fn pty_spawn(
     let mut builder = CommandBuilder::new(&cmd);
     #[cfg(target_os = "macos")]
     {
-        if cmd == "ssh" {
-            builder.env_remove("PZZA_TMUX_SOCKET");
-        } else {
+        if local_attach(&cmd) {
             builder.env("PZZA_TMUX_SOCKET", crate::local_tmux::socket_path());
+        } else {
+            builder.env_remove("PZZA_TMUX_SOCKET");
         }
         builder.env_remove("TMUX");
     }
@@ -410,6 +445,14 @@ pub fn pty_kill(state: tauri::State<'_, PtyState>, id: u32) -> Result<(), String
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn only_local_spawns_use_the_local_terminal_server() {
+        assert!(local_attach("sh"));
+        assert!(local_attach("tmux"));
+        assert!(!local_attach("ssh"));
+    }
 
     #[test]
     fn output_is_drained_to_eof_after_the_renderer_disconnects() {

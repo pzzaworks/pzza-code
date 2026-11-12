@@ -10,7 +10,8 @@ import { useEditorLanguage } from "./editorLanguageLoader";
 import { Eye, FolderOpen, Loader2, PanelLeft, Pencil, Save, X } from "lucide-react";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
-import { deleteFile, fileRawUrl, listDir, moveFile, readFile, writeFile, type GitChangedFile } from "../serverApi";
+import { deleteFile, fileRawUrl, FileChangedOnDiskError, listDir, moveFile, readFile, writeFile, type GitChangedFile } from "../serverApi";
+import { confirmAction } from "../ui/ConfirmDialog";
 import { tileCodeView, useStore } from "../state/store";
 import { FolderTree } from "./FileTree";
 import { changedFilePath, changesCount, CodeChangesList, CodeDiffView, CodeViewSwitch, diffLineStats, useGitChanges, useGitDiff } from "./CodeChanges";
@@ -29,6 +30,11 @@ import { broadcastLine } from "../terminal/broadcast";
 function baseName(p: string): string {
   return p.replace(/\/$/, "").split("/").pop() || p;
 }
+
+// A save refused because the file on disk changed since the buffer was read.
+const NOT_SAVED_CHANGED = "Not saved: the file changed on disk after it was opened here. Your edits are still in the editor.";
+// A file the device reports as not UTF-8 text: editing it as text would corrupt it.
+const NOT_TEXT = "This file is not UTF-8 text, so it cannot be edited here.";
 
 // File tree width bounds; the editor always keeps at least MIN_EDITOR_WIDTH px.
 const MIN_TREE_WIDTH = 120;
@@ -297,6 +303,13 @@ export function TileCodePanel({ tileId }: { tileId: string }) {
   snapshot.current = { dirty, saving, content, loaded: loaded && loadedKey.current === bufferKey, error, path: code?.path };
   const viewSnapshot = useRef({ tree: treeOpen, preview, folderPicker: pickerOpen });
   viewSnapshot.current = { tree: treeOpen, preview, folderPicker: pickerOpen };
+  // The file as it was on disk when this buffer was read or last saved: a
+  // save first checks the disk still holds it, so an agent's newer changes
+  // to the same file are never overwritten without asking.
+  const diskBase = useRef<{ host?: string; path: string; content: string; sha256?: string } | null>(null);
+  // True while the user's own Save runs: only then is overwriting asked about
+  // (app control gets an error and can reload the file instead).
+  const interactiveSave = useRef(false);
   const copying = useRef(false);
   const changeContent = useCallback((value: string, changed: boolean) => {
     snapshot.current.content = value;
@@ -364,6 +377,8 @@ export function TileCodePanel({ tileId }: { tileId: string }) {
       preservedPath.current = null;
       loadedKey.current = bufferKey;
       snapshot.current.loaded = true;
+      // The app moved the file: the same bytes now live at the new path.
+      if (diskBase.current) diskBase.current = { ...diskBase.current, path };
       return;
     }
     preservedPath.current = null;
@@ -371,6 +386,7 @@ export function TileCodePanel({ tileId }: { tileId: string }) {
       // Binary files are previewed straight from their raw URL - no text load.
       setLoaded(true);
       loadedKey.current = bufferKey;
+      diskBase.current = null;
       changeContent("", false);
       setError(null);
       setDirty(false);
@@ -381,11 +397,13 @@ export function TileCodePanel({ tileId }: { tileId: string }) {
     setError(null);
     setDirty(false);
     setPreview(false);
+    diskBase.current = null;
     readFile(path, host)
       .then((r) => {
         if (!alive) return;
         if (r.tooLarge) setError("File is too large to open here.");
-        else { loadedKey.current = bufferKey; changeContent(r.content, false); }
+        else if (r.binary) setError(NOT_TEXT);
+        else { loadedKey.current = bufferKey; diskBase.current = { host, path, content: r.content, sha256: r.sha256 }; changeContent(r.content, false); }
       })
       .catch((e) => alive && setError(String(e?.message || e)))
       .finally(() => alive && setLoaded(true));
@@ -434,6 +452,27 @@ export function TileCodePanel({ tileId }: { tileId: string }) {
       if (path.split("/").includes("..") || (path !== resolved && !path.startsWith(resolved + "/"))) throw new Error("File operations must stay inside the editor folder.");
       return { root: resolved, path };
     };
+    // Whether the file on disk is no longer the version the buffer is based
+    // on, and whether the write can still be held to that version. When a
+    // read carries no version (an agent that does not report one), the
+    // contents are compared instead and the write is not held to a version
+    // nobody could check, so a missing hash never blocks saving. A file that
+    // cannot be read now (deleted, device unreachable) is not a conflict:
+    // the write itself recreates it or reports the failure.
+    const checkDisk = async (path: string, base: { content: string; sha256?: string }): Promise<{ changed: boolean; versioned: boolean }> => {
+      let current: Awaited<ReturnType<typeof readFile>>;
+      try { current = await readFile(path, host); } catch { return { changed: false, versioned: true }; }
+      if (current.tooLarge || current.binary) return { changed: true, versioned: false };
+      if (current.sha256 && base.sha256) return { changed: current.sha256 !== base.sha256, versioned: true };
+      return { changed: current.content !== base.content, versioned: false };
+    };
+    // Only the user's own Save may replace a newer file, after saying yes.
+    const overwriteApproved = (path: string) => interactiveSave.current ? confirmAction({
+      title: "File changed on disk",
+      message: `${baseName(path)} changed on disk after it was opened here, perhaps by the agent in this tile. Saving replaces those changes with the version in this editor.`,
+      confirmLabel: "Overwrite",
+      danger: true,
+    }) : Promise.resolve(false);
     return createEditorAppController({
       read: () => {
         const current = snapshot.current;
@@ -447,7 +486,26 @@ export function TileCodePanel({ tileId }: { tileId: string }) {
       save: async (path, content) => {
         if (fileMutationPending(host, path)) throw new Error("Wait for the file operation to finish before saving.");
         try {
-          await writeFile(path, content, host);
+          const base = diskBase.current?.path === path && diskBase.current.host === host ? diskBase.current : null;
+          // Without the version the agent reports, the disk is read back and
+          // compared; with it, the agent also refuses a write racing a change.
+          let expected = base?.sha256;
+          const disk = base ? await checkDisk(path, base) : null;
+          if (disk?.changed) {
+            if (!await overwriteApproved(path)) throw new Error(NOT_SAVED_CHANGED);
+            expected = undefined;
+          } else if (disk && !disk.versioned) {
+            expected = undefined;
+          }
+          let written: { sha256?: string };
+          try {
+            written = await writeFile(path, content, host, expected);
+          } catch (cause) {
+            if (!(cause instanceof FileChangedOnDiskError)) throw cause;
+            if (!await overwriteApproved(path)) throw new Error(NOT_SAVED_CHANGED);
+            written = await writeFile(path, content, host);
+          }
+          diskBase.current = { host, path, content, sha256: written.sha256 };
           snapshot.current.error = null; setError(null);
           setChangesNonce((value) => value + 1);
         } catch (cause) {
@@ -459,6 +517,8 @@ export function TileCodePanel({ tileId }: { tileId: string }) {
       reload: async path => {
         const result = await readFile(path, host);
         if (result.tooLarge) throw new Error("File is too large to open here.");
+        if (result.binary) throw new Error(NOT_TEXT);
+        diskBase.current = { host, path, content: result.content, sha256: result.sha256 };
         snapshot.current.error = null; setError(null);
         return result.content;
       },
@@ -499,8 +559,10 @@ export function TileCodePanel({ tileId }: { tileId: string }) {
   }, [tileId, host, changeContent, closeTileFile, copyImage]);
   useEffect(() => registerEditorAppControl(tileId, controller), [tileId, controller]);
   const save = useCallback(async () => {
+    interactiveSave.current = true;
     try { await controller.execute("editor_save", { expectedRevision: revision.current.value }); }
     catch (cause) { setError(cause instanceof Error ? cause.message : "File save failed."); }
+    finally { interactiveSave.current = false; }
   }, [controller]);
 
   // Cmd/Ctrl/Alt+click a symbol to jump to its definition: across files

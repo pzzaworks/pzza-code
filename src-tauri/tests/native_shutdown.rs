@@ -16,6 +16,9 @@ mod pty;
 #[path = "../src/rdp.rs"]
 mod rdp;
 #[cfg(target_os = "macos")]
+#[path = "../src/session_refresh.rs"]
+mod session_refresh;
+#[cfg(target_os = "macos")]
 #[path = "../src/shutdown.rs"]
 mod shutdown;
 #[cfg(target_os = "macos")]
@@ -297,8 +300,10 @@ fn run_child(model: std::path::PathBuf, mode: String) {
                     assert!(Instant::now() < deadline, "Isolated sidecar did not listen");
                     std::thread::sleep(Duration::from_millis(20));
                 }
-                pty::pty_spawn(
-                    app.state(),
+                // The spawn itself: pty_spawn would first start the user's
+                // real terminal service, and this attach targets a private one.
+                pty::spawn(
+                    &app.state::<pty::PtyState>(),
                     "tmux".into(),
                     vec![
                         "-N".into(),

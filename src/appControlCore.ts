@@ -1,5 +1,6 @@
 import { registerAppControlHandler, registerAppControlState, setAppControlMenu, afterAppControlReport } from "./appControlRuntime";
-import { DICTATION_SUPPORTED, useDictation } from "./state/dictation";
+import { DICTATION_AWAITING_APPROVAL, DICTATION_SUPPORTED, useDictation } from "./state/dictation";
+import { hasPendingPermission } from "./state/permissionPrompts";
 import { redactTerminalOutput } from "./appControlTerminal";
 import { isDictationLanguage } from "./dictationLanguages";
 import { useNotifications, NOTIFICATION_EVENTS, type NotificationCategory, type NotificationEvent } from "./state/notifications";
@@ -16,6 +17,12 @@ import { ALL_WORKSPACE_ID, DEFAULT_WORKSPACE_ID } from "./workspaces";
 import { deleteWorkspaceSnapshot, relaunchWorkspaceSnapshot, renameWorkspaceSnapshot, saveWorkspaceSnapshot, snapshotSummaries, useWorkspaceSnapshots } from "./state/workspaceSnapshots";
 import { usePrompts } from "./state/prompts";
 import { openTilePullRequest, reviewTileChanges, tileGitStatus } from "./tileGit";
+import { configureSyncConfirmation, syncProjectsConfirmation, terminateSessionConfirmation } from "./appControlConfirmations";
+import { useProjectSyncPreferences } from "./state/projectSync";
+import { deviceNameFor } from "./devices";
+import { killSession } from "./serverApi";
+import { hasUnsavedEditors } from "./editorChanges";
+import { sessionConnection } from "./connection";
 
 function dictationState() {
   const state = useDictation.getState();
@@ -51,6 +58,16 @@ export async function confirmAppControlAction(action: string, args: Readonly<Rec
   } else if (action === "terminate_tile") {
     const tile = state.tiles.find(item => item.id === args.tileId);
     if (tile) options = { title: "Terminate session?", message: `Stop ${state.tileTitles[tile.id] ?? tile.name} and remove its affected tiles? Running processes will be terminated.`, confirmLabel: "Terminate", danger: true };
+  } else if (action === "terminate_session") {
+    // Always asked, open in a tile or not: this is how a device's own tool ends a session.
+    const host = typeof args.host === "string" ? args.host : "";
+    options = terminateSessionConfirmation({ session: String(args.session), window: typeof args.window === "number" ? args.window : undefined, device: host ? deviceNameFor(state.devices, host) || host : "this device" });
+  } else if (action === "sync_projects") {
+    // The Sync projects dialog's question: the toolbar asks it before every sync.
+    const { root, options: sync, devicesOff } = useProjectSyncPreferences.getState();
+    options = syncProjectsConfirmation({ root, options: sync, devices: state.activeDevices.filter(device => !devicesOff.includes(device.id)).map(device => device.name) });
+  } else if (action === "configure_sync") {
+    options = configureSyncConfirmation(useProjectSyncPreferences.getState().options, args.options);
   } else if (action === "editor_delete_file") {
     options = { title: "Delete file or folder?", message: `Permanently delete ${String(args.path)}? A folder and everything inside it will be removed. This cannot be undone.`, confirmLabel: "Delete", danger: true };
   } else if (action === "editor_discard") {
@@ -120,6 +137,20 @@ export function initCoreAppControlHandlers(): () => void {
       afterAppControlReport(async () => { if (!hasUnsavedWork()) { window.dispatchEvent(new Event("pzza:quick-chat-cancel")); await relaunchApp(); } });
       return { accepted: true, relaunching: true };
     },
+    // Confirmed in the app first (confirmAppControlAction), like terminate_tile,
+    // but by session name: it need not be open in a tile.
+    terminate_session: async args => {
+      const session = String(args.session);
+      const windowIndex = typeof args.window === "number" ? args.window : undefined;
+      const host = typeof args.host === "string" ? args.host : "";
+      const state = useStore.getState();
+      const affected = state.tiles.filter(item => (sessionConnection(item.host, state.connection).host ?? "") === host
+        && (item.session ?? item.name) === session && (windowIndex === undefined || item.window === windowIndex));
+      if (hasUnsavedEditors(affected.map(item => item.id))) throw new Error("Save or explicitly discard affected editor buffers before terminating this session.");
+      await killSession(session, windowIndex, host);
+      for (const item of affected) useStore.getState().closeTile(item.id);
+      return { terminated: true, closedTiles: affected.map(item => item.id) };
+    },
     auto_arrange: args => {
       const state = useStore.getState();
       const workspaceId = typeof args.workspaceId === "string" ? args.workspaceId : state.activeWorkspaceId;
@@ -154,6 +185,8 @@ export function initCoreAppControlHandlers(): () => void {
       if (!tile) throw new Error("The requested session tile is not open.");
       if (!state.enabled || state.model !== "ready") throw new Error("Enable voice input and install its model before recording.");
       if (state.recording) throw new Error("Stop or cancel the current recording before starting another.");
+      // Dictated words would reach the prompt, where a digit or "y" can answer it.
+      if (hasPendingPermission(tile.id)) throw new Error(DICTATION_AWAITING_APPROVAL);
       store.setWorkspace(store.sessionWs[(tile.host ? `${tile.host}::` : "") + (tile.session ?? tile.name)] ?? DEFAULT_WORKSPACE_ID);
       store.unhideTile(tile.id); store.setActive(tile.id);
       return begin("dictation_start", async () => { await state.start(tile.id); if (useDictation.getState().recording?.phase === "error") throw new Error("Voice input could not start."); });

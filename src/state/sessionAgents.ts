@@ -1,10 +1,12 @@
 import { create } from "zustand";
 import { sessionAgent, type SessionAgentChoice } from "../../server/lib/session-agents.js";
+import { useStore } from "./store";
 
 // The agent and mode a session was created with, keyed by tile id. This is
 // what the user asked for at creation; the running process is still detected
 // separately from the terminal's foreground command.
 const KEY = "pzza.session.agents.v1";
+// Entries of tiles that are gone are dropped beyond this many (see keptSessionAgents).
 const MAX_ENTRIES = 200;
 
 function load(): Record<string, SessionAgentChoice> {
@@ -25,12 +27,27 @@ function load(): Record<string, SessionAgentChoice> {
 
 export const useSessionAgents = create<{ agents: Record<string, SessionAgentChoice> }>(() => ({ agents: load() }));
 
+/**
+ * The entries to keep after a change: every one whose tile is still open
+ * (however old: a tile left open for months keeps its agent and mode), the
+ * one just written, and the newest of the rest up to `max`. Only entries of
+ * tiles that are gone ever make room, however many sessions Tasks create.
+ */
+export function keptSessionAgents(agents: Record<string, SessionAgentChoice>, open: ReadonlySet<string>, written: string, max = MAX_ENTRIES): Record<string, SessionAgentChoice> {
+  const entries = Object.entries(agents);
+  if (entries.length <= max) return agents;
+  const live = (tileId: string) => open.has(tileId) || tileId === written;
+  const room = Math.max(0, max - entries.filter(([tileId]) => live(tileId)).length);
+  const closed = entries.filter(([tileId]) => !live(tileId));
+  const keptClosed = new Set(closed.slice(closed.length - Math.min(room, closed.length)).map(([tileId]) => tileId));
+  return Object.fromEntries(entries.filter(([tileId]) => live(tileId) || keptClosed.has(tileId)));
+}
+
 export function rememberSessionAgent(tileId: string, choice: SessionAgentChoice | undefined): void {
   const agents = { ...useSessionAgents.getState().agents };
   if (choice) agents[tileId] = choice;
   else delete agents[tileId];
-  const entries = Object.entries(agents);
-  const kept = Object.fromEntries(entries.slice(Math.max(0, entries.length - MAX_ENTRIES)));
+  const kept = keptSessionAgents(agents, new Set(useStore.getState().tiles.map((tile) => tile.id)), tileId);
   useSessionAgents.setState({ agents: kept });
   try {
     localStorage.setItem(KEY, JSON.stringify(kept));

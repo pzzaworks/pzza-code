@@ -7,11 +7,15 @@ import { fetchGitStatus } from "../serverApi";
 import { agentCanAutoResume, sessionAgent, sessionAgentCommand, type SessionAgentChoice } from "../../server/lib/session-agents.js";
 import { runningAgent, sessionAtShell } from "../ui/LiveSessionIcon";
 import { DEFAULT_WORKSPACE_ID, wsKeyOf } from "../workspaces";
+import { localSessionWorkRunning } from "./localSessionWork";
 import {
-  MAX_SNAPSHOTS,
+  SNAPSHOT_LIMIT_MESSAGE,
+  canAddManualSnapshot,
+  capSnapshots,
   collectSnapshotSessions,
   exportSnapshot,
   importSnapshot,
+  keepKnownDetails,
   parseSnapshots,
   snapshotDevice,
   snapshotLaunchPlan,
@@ -69,10 +73,12 @@ function tileAgents(state: AppState): Record<string, SessionAgentChoice> {
 
 // What a snapshot of the workspace would hold right now: its sessions with
 // their layout, and its columns. Null when the workspace has no sessions.
-function captureWorkspace(state: AppState, workspaceId: string): Pick<WorkspaceSnapshot, "sessions" | "columns"> | null {
-  const sessions = collectSnapshotSessions({
+// `listedOnly` names the sessions ("host::session") whose folder came only
+// from the device's session list, not from the tile (see keepKnownDetails).
+function captureWorkspace(state: AppState, workspaceId: string): (Pick<WorkspaceSnapshot, "sessions" | "columns"> & { listedOnly: Set<string> }) | null {
+  const input = {
     tiles: state.tiles,
-    workspaceOf: tile => state.sessionWs[wsKeyOf(tile)] ?? DEFAULT_WORKSPACE_ID,
+    workspaceOf: (tile: AppState["tiles"][number]) => state.sessionWs[wsKeyOf(tile)] ?? DEFAULT_WORKSPACE_ID,
     workspaceId,
     devices: state.devices,
     sessionPaths: Object.fromEntries(state.allSessions.map(session => [session.name, session.path])),
@@ -81,10 +87,13 @@ function captureWorkspace(state: AppState, workspaceId: string): Pick<WorkspaceS
     titles: state.tileTitles,
     hidden: state.hiddenTiles,
     code: state.tileCode,
-  });
+  };
+  const sessions = collectSnapshotSessions(input);
   if (!sessions.length) return null;
+  const ownFolders = new Map(collectSnapshotSessions({ ...input, sessionPaths: {} }).map(entry => [`${entry.host}::${entry.session}`, entry.cwd]));
+  const listedOnly = new Set(sessions.flatMap(entry => (entry.cwd && !ownFolders.get(`${entry.host}::${entry.session}`) ? [`${entry.host}::${entry.session}`] : [])));
   const columns = state.workspaceColumns[workspaceId] ?? state.defaultColumns;
-  return { sessions, ...(Number.isInteger(columns) && columns >= 1 && columns <= 12 ? { columns } : {}) };
+  return { sessions, listedOnly, ...(Number.isInteger(columns) && columns >= 1 && columns <= 12 ? { columns } : {}) };
 }
 
 // The current Git branch of each session folder, by "host\nfolder" (folders
@@ -121,21 +130,30 @@ async function recordBranches(id: string): Promise<void> {
 }
 
 // Save the workspace's current sessions and layout under a name. Returns null
-// when the workspace has no sessions to record.
+// when the workspace has no sessions to record; throws when MAX_MANUAL_SNAPSHOTS
+// snapshots are already saved by hand (auto-saves never count or make room).
 export function saveWorkspaceSnapshot(workspaceId: string, name: string): WorkspaceSnapshot | null {
   const captured = captureWorkspace(useStore.getState(), workspaceId);
   if (!captured) return null;
-  const snapshot: WorkspaceSnapshot = { id: crypto.randomUUID(), workspaceId, name: name.trim().slice(0, 80), createdAt: Date.now(), ...captured };
-  persist([snapshot, ...useWorkspaceSnapshots.getState().snapshots].slice(0, MAX_SNAPSHOTS));
+  const snapshots = useWorkspaceSnapshots.getState().snapshots;
+  if (!canAddManualSnapshot(snapshots)) throw new Error(SNAPSHOT_LIMIT_MESSAGE);
+  const snapshot: WorkspaceSnapshot = { id: crypto.randomUUID(), workspaceId, name: name.trim().slice(0, 80), createdAt: Date.now(), sessions: captured.sessions, ...(captured.columns !== undefined ? { columns: captured.columns } : {}) };
+  persist(capSnapshots([snapshot, ...snapshots]));
   void recordBranches(snapshot.id);
   return snapshot;
 }
 
-/** Renames a snapshot; an empty name keeps the old one. A renamed auto snapshot is kept as a normal one. */
+/**
+ * Renames a snapshot; an empty name keeps the old one. A renamed auto
+ * snapshot is kept as a normal one, so it counts as saved by hand: throws
+ * when those are at their cap.
+ */
 export function renameWorkspaceSnapshot(id: string, name: string): void {
   const trimmed = name.replace(/[\u0000-\u001f\u007f]+/g, " ").trim().slice(0, 80);
   if (!trimmed) return;
-  persist(useWorkspaceSnapshots.getState().snapshots.map(snapshot => (snapshot.id === id ? { ...snapshot, name: trimmed, auto: undefined } : snapshot)));
+  const snapshots = useWorkspaceSnapshots.getState().snapshots;
+  if (snapshots.find(snapshot => snapshot.id === id)?.auto && !canAddManualSnapshot(snapshots)) throw new Error(SNAPSHOT_LIMIT_MESSAGE);
+  persist(capSnapshots(snapshots.map(snapshot => (snapshot.id === id ? { ...snapshot, name: trimmed, auto: undefined } : snapshot))));
 }
 
 export function deleteWorkspaceSnapshot(id: string): void {
@@ -149,24 +167,30 @@ export function exportWorkspaceSnapshot(id: string): string {
   return exportSnapshot(snapshot);
 }
 
-/** Adds a snapshot copied from PzzaCode to this workspace; throws when the text is not one. */
+/** Adds a snapshot copied from PzzaCode to this workspace; throws when the text is not one, or at the cap. */
 export function importWorkspaceSnapshot(text: string, workspaceId: string): WorkspaceSnapshot {
+  const snapshots = useWorkspaceSnapshots.getState().snapshots;
+  if (!canAddManualSnapshot(snapshots)) throw new Error(SNAPSHOT_LIMIT_MESSAGE);
   const snapshot = importSnapshot(text, workspaceId, crypto.randomUUID(), Date.now());
-  persist([snapshot, ...useWorkspaceSnapshots.getState().snapshots].slice(0, MAX_SNAPSHOTS));
+  persist(capSnapshots([snapshot, ...snapshots]));
   return snapshot;
 }
 
 // One auto-saved snapshot per workspace, replaced when the workspace changed
-// (branches, recorded afterwards, are not a change).
+// (branches, recorded afterwards, are not a change). It never forgets a
+// session's folder or agent that the live state lost (see keepKnownDetails),
+// and it only ever pushes out older auto-saves.
 function autoSave(state: AppState, workspaceId: string, name = AUTO_SNAPSHOT_NAME, branches = true): void {
   const captured = captureWorkspace(state, workspaceId);
   if (!captured) return;
   const snapshots = useWorkspaceSnapshots.getState().snapshots;
   const previous = snapshots.find(snapshot => snapshot.auto && snapshot.workspaceId === workspaceId && snapshot.name === name);
+  const sessions = keepKnownDetails(captured.sessions, previous?.sessions, captured.listedOnly);
+  const next = { sessions, ...(captured.columns !== undefined ? { columns: captured.columns } : {}) };
   const comparable = (snapshot: Pick<WorkspaceSnapshot, "sessions" | "columns">) => JSON.stringify({ sessions: snapshot.sessions.map(({ branch: _branch, ...entry }) => entry), columns: snapshot.columns });
-  if (previous && comparable(previous) === comparable(captured)) return;
-  const snapshot: WorkspaceSnapshot = { id: previous?.id ?? crypto.randomUUID(), workspaceId, name, createdAt: Date.now(), auto: true, ...captured };
-  persist([snapshot, ...snapshots.filter(entry => entry !== previous)].slice(0, MAX_SNAPSHOTS));
+  if (previous && comparable(previous) === comparable(next)) return;
+  const snapshot: WorkspaceSnapshot = { id: previous?.id ?? crypto.randomUUID(), workspaceId, name, createdAt: Date.now(), auto: true, ...next };
+  persist(capSnapshots([snapshot, ...snapshots.filter(entry => entry !== previous)]));
   if (branches) void recordBranches(snapshot.id);
 }
 
@@ -185,6 +209,9 @@ export function startSnapshotAutosave(): () => void {
   const saveAll = (branches: boolean) => {
     window.clearTimeout(timer);
     timer = undefined;
+    // While local sessions are refreshed or restored they come and go, and
+    // their agents are not running yet: save once that settles.
+    if (localSessionWorkRunning()) { changed(); return; }
     const state = useStore.getState();
     for (const workspace of state.workspaces) autoSave(state, workspace.id, AUTO_SNAPSHOT_NAME, branches);
   };

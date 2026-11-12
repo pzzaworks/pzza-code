@@ -4,8 +4,9 @@
 // setup wizard) and any external MCP client then talk to this one local backend.
 use std::path::PathBuf;
 use std::process::{Child, Command, ExitStatus, Stdio};
+use std::io::Read;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager};
 
@@ -40,12 +41,89 @@ pub struct AgentState {
     pub instance: Mutex<String>,
     // Set on app shutdown so the watchdog stops respawning the agent.
     pub shutting_down: AtomicBool,
+    // What the watchdog respawns, once a launch has found Node and the script.
+    launch: Mutex<Option<Arc<Launch>>>,
+    // Whether a watchdog thread runs; at most one does.
+    watchdog: AtomicBool,
+    // The agent exited after an update replaced the app on disk, and stays
+    // down until the app restarts into the new version.
+    restart_required: AtomicBool,
+}
+
+// Sent once to the webview when the agent stopped for good until a restart
+// (see AgentState::restart_required); agent_restart_required reads it later.
+pub const RESTART_REQUIRED_EVENT: &str = "agent-restart-required";
+
+impl AgentState {
+    // Notes that the agent stays down until a restart. True only the first
+    // time, so the webview is told once.
+    fn require_restart(&self) -> bool {
+        !self.restart_required.swap(true, Ordering::SeqCst)
+    }
+
+    // Claims the single watchdog slot.
+    fn claim_watchdog(&self) -> bool {
+        !self.watchdog.swap(true, Ordering::SeqCst)
+    }
+
+    // Called by the watchdog when it sees shutdown. Returns whether it must
+    // exit: a resume that raced this check may have found the slot still
+    // taken and started nothing, so the slot is released and then re-claimed
+    // when shutdown was called off meanwhile.
+    fn release_watchdog(&self) -> bool {
+        self.watchdog.store(false, Ordering::SeqCst);
+        self.shutting_down.load(Ordering::SeqCst) || !self.claim_watchdog()
+    }
+}
+
+// The command line the agent runs with. Respawns reuse it, so the agent keeps
+// its PATH, token and instance id across crashes.
+struct Launch {
+    node: String,
+    script: PathBuf,
+    path: String,
+    token: String,
+    instance: String,
+    origin: Option<FileIdentity>,
+}
+
+impl Launch {
+    // The script folder is the app bundle's Resources/server. An update
+    // installed in the background renames the running bundle away and moves
+    // the new one into its place, so the same path then holds another
+    // folder. Respawning from it would run the new version's agent against
+    // this still-running older app; the agent stays down until the app
+    // restarts into the new version instead.
+    fn replaced(&self) -> bool {
+        match (&self.origin, self.script.parent().and_then(file_identity)) {
+            (Some(origin), Some(current)) => *origin != current,
+            (Some(_), None) => true,
+            (None, _) => false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FileIdentity {
+    device: u64,
+    inode: u64,
+}
+
+#[cfg(unix)]
+fn file_identity(path: &std::path::Path) -> Option<FileIdentity> {
+    use std::os::unix::fs::MetadataExt;
+    let metadata = std::fs::metadata(path).ok()?;
+    Some(FileIdentity { device: metadata.dev(), inode: metadata.ino() })
+}
+
+#[cfg(not(unix))]
+fn file_identity(_path: &std::path::Path) -> Option<FileIdentity> {
+    None
 }
 
 // Fail closed: if the OS RNG cannot be read we must not fall back to a
 // predictable value, so the caller skips launching the agent instead.
 pub(crate) fn random_hex(len: usize) -> Option<String> {
-    use std::io::Read;
     let mut bytes = vec![0u8; len];
     let mut f = std::fs::File::open("/dev/urandom").ok()?;
     f.read_exact(&mut bytes).ok()?;
@@ -60,6 +138,14 @@ pub fn agent_token(state: tauri::State<AgentState>) -> String {
 #[tauri::command]
 pub fn agent_instance(state: tauri::State<AgentState>) -> String {
     state.instance.lock().unwrap().clone()
+}
+
+/// Whether the agent stopped after an update was installed and comes back
+/// only once the app restarts (the same news as RESTART_REQUIRED_EVENT, for a
+/// webview that was not listening yet).
+#[tauri::command]
+pub fn agent_restart_required(state: tauri::State<AgentState>) -> bool {
+    state.restart_required.load(Ordering::SeqCst)
 }
 
 // Locate the agent's server/index.js. In a bundled app it lives under the
@@ -82,20 +168,182 @@ fn find_agent_script(app: &AppHandle) -> Option<PathBuf> {
     None
 }
 
-// The login shell's PATH. GUI apps launched from Finder inherit only a minimal
-// PATH, so the agent (and every tool it runs: tmux, ssh, node) would miss
-// Homebrew, nvm, etc. Ask the user's login shell for its real PATH, then union
-// it with the common install locations so tmux from Homebrew always resolves.
-// The login-shell PATH, computed once. A GUI app launched from Finder/Dock
-// inherits only launchd's bare PATH, so anything installed by Homebrew (node,
-// tmux, ...) is invisible until we rebuild the PATH the user's shell would use.
-// Shared by the agent sidecar and local PTY spawns.
-pub(crate) fn login_path() -> &'static str {
-    static CACHED: OnceLock<String> = OnceLock::new();
-    CACHED.get_or_init(agent_path)
+const LOGIN_SHELL_TIMEOUT: Duration = Duration::from_secs(5);
+const NODE_LOOKUP_TIMEOUT: Duration = Duration::from_secs(3);
+// A PATH or a binary path is short; a startup file printing more is not read.
+const PROBE_OUTPUT_LIMIT: usize = 64 * 1024;
+
+// Runs a short probe of the user's shell and returns its stdout when it exits
+// successfully within `timeout`. Stdin is closed, so a prompt fails instead of
+// waiting. The probe gets its own process group: on timeout the whole group is
+// killed, including anything the startup files ran in the foreground. A
+// background job left holding stdout open never delays the result.
+fn bounded_stdout(command: &mut Command, timeout: Duration) -> Option<String> {
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    let mut child = command.spawn().ok()?;
+    let deadline = Instant::now() + timeout;
+    let output = Arc::new(Mutex::new(Vec::new()));
+    let (closed, eof) = mpsc::channel();
+    if let Some(mut stdout) = child.stdout.take() {
+        let output = output.clone();
+        std::thread::spawn(move || {
+            let mut chunk = [0u8; 4096];
+            while let Ok(read) = stdout.read(&mut chunk) {
+                if read == 0 {
+                    break;
+                }
+                let Ok(mut output) = output.lock() else { break };
+                if output.len() + read > PROBE_OUTPUT_LIMIT {
+                    break;
+                }
+                output.extend_from_slice(&chunk[..read]);
+            }
+            let _ = closed.send(());
+        });
+    }
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Some(status),
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(10)),
+            _ => break None,
+        }
+    };
+    let Some(status) = status else {
+        #[cfg(unix)]
+        // Still our unreaped child, so its process group id cannot be reused.
+        unsafe {
+            libc::kill(-(child.id() as libc::pid_t), libc::SIGKILL);
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+        return None;
+    };
+    // What the probe printed before exiting is already in the pipe.
+    let _ = eof.recv_timeout(Duration::from_millis(250));
+    if !status.success() {
+        return None;
+    }
+    let bytes = output.lock().ok()?.clone();
+    Some(String::from_utf8_lossy(&bytes).into_owned())
 }
 
-fn agent_path() -> String {
+// After a login-shell probe timed out, it is tried again in the background
+// after these delays; until one succeeds every caller gets the fallback PATH.
+const LOGIN_PATH_RETRIES: [Duration; 5] = [
+    Duration::from_secs(30),
+    Duration::from_secs(60),
+    Duration::from_secs(120),
+    Duration::from_secs(300),
+    Duration::from_secs(600),
+];
+
+/// The login-shell PATH: probed once, and kept only when the probe answered.
+/// A probe that times out (a slow profile on a cold boot, say) is not kept:
+/// callers get the common install locations plus the inherited PATH for the
+/// time being, while the probe is retried in the background.
+struct LoginPath {
+    probed: OnceLock<String>,
+    fallback: OnceLock<String>,
+    // Whether the first probe ran (later ones run in the background).
+    tried: Mutex<bool>,
+}
+
+impl LoginPath {
+    const fn new() -> Self {
+        LoginPath { probed: OnceLock::new(), fallback: OnceLock::new(), tried: Mutex::new(false) }
+    }
+
+    /// The probed PATH, or else the fallback. The first caller probes (and
+    /// the callers arriving meanwhile wait for it); after a failed probe,
+    /// `retry` is started once to keep trying.
+    fn get(&self, probe: impl FnOnce() -> Option<String>, retry: impl FnOnce()) -> &str {
+        if let Some(path) = self.probed.get() {
+            return path;
+        }
+        {
+            let mut tried = self.tried.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            if !*tried {
+                *tried = true;
+                match probe() {
+                    Some(login) => {
+                        return self.probed.get_or_init(|| compose_path(Some(&login)));
+                    }
+                    None => retry(),
+                }
+            }
+        }
+        self.probed.get().map_or_else(|| self.fallback.get_or_init(|| compose_path(None)).as_str(), String::as_str)
+    }
+
+    /// Keeps a PATH a later probe reported.
+    fn keep(&self, login: &str) {
+        let _ = self.probed.set(compose_path(Some(login)));
+    }
+
+    fn probed(&self) -> Option<&str> {
+        self.probed.get().map(String::as_str)
+    }
+}
+
+static LOGIN_PATH: LoginPath = LoginPath::new();
+
+// The login shell's PATH. A GUI app launched from Finder/Dock inherits only
+// launchd's bare PATH, so anything installed by Homebrew, nvm, asdf and the
+// like (node, tmux, ...) is invisible until we rebuild the PATH the user's
+// shell would use: its own PATH, unioned with the common install locations
+// so tmux from Homebrew always resolves. Shared by the agent sidecar, local
+// PTY spawns and the terminal service. See LoginPath for a slow shell.
+pub(crate) fn login_path() -> &'static str {
+    LOGIN_PATH.get(probe_login_path, retry_login_path)
+}
+
+/// The login-shell PATH only when the shell reported it (never the fallback),
+/// for what outlives this process, such as the terminal service definition.
+pub(crate) fn probed_login_path() -> Option<&'static str> {
+    login_path();
+    LOGIN_PATH.probed()
+}
+
+// Startup files can wait on a network call or a password prompt; past the
+// limit the probe gives up.
+fn probe_login_path() -> Option<String> {
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
+    let login = bounded_stdout(Command::new(&shell).arg("-lc").arg("printf %s \"$PATH\""), LOGIN_SHELL_TIMEOUT);
+    if login.is_none() {
+        eprintln!(
+            "PzzaCode: the login shell did not report its PATH within {}s; using the common install locations for now",
+            LOGIN_SHELL_TIMEOUT.as_secs()
+        );
+    }
+    login
+}
+
+fn retry_login_path() {
+    let spawned = std::thread::Builder::new().name("login-path-retry".into()).spawn(|| {
+        for delay in LOGIN_PATH_RETRIES {
+            std::thread::sleep(delay);
+            if let Some(login) = probe_login_path() {
+                LOGIN_PATH.keep(&login);
+                return;
+            }
+        }
+    });
+    if let Err(error) = spawned {
+        eprintln!("PzzaCode: could not retry reading the login shell PATH: {error}");
+    }
+}
+
+// The common install locations, then the login shell's PATH when known,
+// then the inherited one.
+fn compose_path(login: Option<&str>) -> String {
     let mut dirs: Vec<String> = Vec::new();
     let mut push = |p: &str| {
         let p = p.trim();
@@ -114,17 +362,8 @@ fn agent_path() -> String {
     ] {
         push(base);
     }
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
-    if let Ok(out) = Command::new(&shell)
-        .arg("-lc")
-        .arg("printf %s \"$PATH\"")
-        .output()
-    {
-        if out.status.success() {
-            for p in String::from_utf8_lossy(&out.stdout).split(':') {
-                push(p);
-            }
-        }
+    for p in login.unwrap_or_default().split(':') {
+        push(p);
     }
     if let Ok(existing) = std::env::var("PATH") {
         for p in existing.split(':') {
@@ -137,18 +376,17 @@ fn agent_path() -> String {
 // Find a Node runtime, preferring whatever the login PATH resolves (nvm / fnm /
 // asdf shims and Homebrew), falling back to the common install locations.
 pub(crate) fn find_node(path: &str) -> Option<String> {
-    let out = Command::new("/bin/sh")
-        .arg("-lc")
-        .arg("command -v node")
-        .env("PATH", path)
-        .output()
-        .ok();
-    if let Some(out) = out {
-        if out.status.success() {
-            let p = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            if !p.is_empty() {
-                return Some(p);
-            }
+    let found = bounded_stdout(
+        Command::new("/bin/sh")
+            .arg("-lc")
+            .arg("command -v node")
+            .env("PATH", path),
+        NODE_LOOKUP_TIMEOUT,
+    );
+    if let Some(found) = found {
+        let p = found.trim().to_string();
+        if !p.is_empty() {
+            return Some(p);
         }
     }
     for c in [
@@ -163,95 +401,153 @@ pub(crate) fn find_node(path: &str) -> Option<String> {
     None
 }
 
+// Starts the agent without holding the caller. The credentials are ready at
+// once, so the webview can ask for them while the slow part (the login shell,
+// the Node lookup) runs off the main thread. Starting again (after Node was
+// installed) keeps the credentials the webview already has.
 pub fn start(app: &AppHandle) {
-    let script = match find_agent_script(app) {
-        Some(s) => s,
-        None => {
-            eprintln!("pzza agent: server/index.js not found; server-backed panels disabled");
-            return;
-        }
+    let Some(state) = app.try_state::<AgentState>() else {
+        return;
     };
-    let path = login_path().to_string();
-    let node = match find_node(&path) {
-        Some(n) => n,
-        None => {
-            eprintln!("pzza agent: no Node runtime found; server-backed panels disabled");
-            return;
-        }
-    };
-    let (token, instance) = match (random_hex(24), random_hex(8)) {
-        (Some(t), Some(i)) => (t, i),
-        _ => {
-            eprintln!("pzza agent: OS randomness unavailable; refusing to launch the agent");
-            return;
-        }
-    };
-    if let Some(state) = app.try_state::<AgentState>() {
-        *state.token.lock().unwrap() = token.clone();
-        *state.instance.lock().unwrap() = instance.clone();
-    }
-    match spawn_agent_process(&node, &script, &path, &token, &instance) {
-        Ok(child) => {
-            if let Some(state) = app.try_state::<AgentState>() {
-                *state.child.lock().unwrap() = Some(child);
+    let credentials = {
+        let mut token = state.token.lock().unwrap();
+        let mut instance = state.instance.lock().unwrap();
+        if token.is_empty() || instance.is_empty() {
+            match (random_hex(24), random_hex(8)) {
+                (Some(t), Some(i)) => {
+                    *token = t;
+                    *instance = i;
+                }
+                _ => {
+                    eprintln!("pzza agent: OS randomness unavailable; refusing to launch the agent");
+                    return;
+                }
             }
         }
-        Err(e) => eprintln!("pzza agent: failed to launch: {e}"),
-    }
-
-    // Watchdog: if the agent process dies (a crash, or something outside the app
-    // killing it), bring it back with the SAME token and instance id so the
-    // webview's cached credentials stay valid - instead of leaving the app stuck
-    // on "Server unreachable" until the user restarts it.
+        (token.clone(), instance.clone())
+    };
     let app = app.clone();
-    std::thread::spawn(move || loop {
+    let spawned = std::thread::Builder::new()
+        .name("device-agent-launch".into())
+        .spawn(move || launch(&app, credentials));
+    if let Err(error) = spawned {
+        eprintln!("pzza agent: could not start launching the agent: {error}");
+    }
+}
+
+fn launch(app: &AppHandle, (token, instance): (String, String)) {
+    let Some(script) = find_agent_script(app) else {
+        eprintln!("pzza agent: server/index.js not found; server-backed panels disabled");
+        return;
+    };
+    let path = login_path().to_string();
+    let Some(node) = find_node(&path) else {
+        eprintln!("pzza agent: no Node runtime found; server-backed panels disabled");
+        return;
+    };
+    let origin = script.parent().and_then(file_identity);
+    let launch = Arc::new(Launch { node, script, path, token, instance, origin });
+    let state = app.state::<AgentState>();
+    *state.launch.lock().unwrap() = Some(launch.clone());
+    {
+        let mut child = state.child.lock().unwrap();
+        // Shutdown may have begun while Node was looked up; stop() takes the
+        // child under this lock, so nothing spawned here outlives it.
+        if state.shutting_down.load(Ordering::SeqCst) {
+            return;
+        }
+        let alive = matches!(child.as_mut().map(Child::try_wait), Some(Ok(None)));
+        if !alive {
+            match spawn_agent_process(&launch) {
+                Ok(spawned) => *child = Some(spawned),
+                Err(e) => eprintln!("pzza agent: failed to launch: {e}"),
+            }
+        }
+    }
+    start_watchdog(app);
+}
+
+// Watchdog: if the agent process dies (a crash, or something outside the app
+// killing it), bring it back with the SAME token and instance id so the
+// webview's cached credentials stay valid - instead of leaving the app stuck
+// on "Server unreachable" until the user restarts it.
+fn start_watchdog(app: &AppHandle) {
+    let state = app.state::<AgentState>();
+    if !state.claim_watchdog() {
+        return;
+    }
+    let watcher = app.clone();
+    let spawned = std::thread::Builder::new()
+        .name("device-agent-watchdog".into())
+        .spawn(move || watch(watcher));
+    if let Err(error) = spawned {
+        state.watchdog.store(false, Ordering::SeqCst);
+        eprintln!("pzza agent: could not start the watchdog: {error}");
+    }
+}
+
+fn watch(app: AppHandle) {
+    use tauri::Emitter;
+    loop {
         std::thread::sleep(Duration::from_secs(2));
         let Some(state) = app.try_state::<AgentState>() else {
             return;
         };
         if state.shutting_down.load(Ordering::SeqCst) {
-            return;
-        }
-        let mut guard = state.child.lock().unwrap();
-        // Shutdown may have started while this thread waited for the child lock.
-        if state.shutting_down.load(Ordering::SeqCst) {
-            return;
-        }
-        let alive = matches!(guard.as_mut().map(|c| c.try_wait()), Some(Ok(None)));
-        if !alive {
-            match spawn_agent_process(&node, &script, &path, &token, &instance) {
-                Ok(child) => {
-                    *guard = Some(child);
-                    eprintln!("pzza agent: respawned after it exited");
-                }
-                Err(e) => eprintln!("pzza agent: respawn failed: {e}"),
+            if state.release_watchdog() {
+                return;
             }
+            continue;
         }
-    });
+        let Some(launch) = state.launch.lock().unwrap().clone() else {
+            continue;
+        };
+        let mut guard = state.child.lock().unwrap();
+        // Shutdown may have started while this thread waited for the child
+        // lock; the next round sees it and lets the watchdog go.
+        if state.shutting_down.load(Ordering::SeqCst) {
+            continue;
+        }
+        if matches!(guard.as_mut().map(Child::try_wait), Some(Ok(None))) {
+            continue;
+        }
+        if launch.replaced() {
+            // The webview shows that a restart is needed, instead of panels
+            // that stay unreachable with no reason given.
+            if state.require_restart() {
+                eprintln!("pzza agent: exited after PzzaCode was updated on disk; restart PzzaCode to start the new version");
+                if let Err(error) = app.emit(RESTART_REQUIRED_EVENT, true) {
+                    eprintln!("pzza agent: could not report that a restart is needed: {error}");
+                }
+            }
+            continue;
+        }
+        match spawn_agent_process(&launch) {
+            Ok(child) => {
+                *guard = Some(child);
+                eprintln!("pzza agent: respawned after it exited");
+            }
+            Err(e) => eprintln!("pzza agent: respawn failed: {e}"),
+        }
+    }
 }
 
 // Spawn the agent node process. Kept separate so the initial launch and the
 // watchdog respawn share exactly the same environment (PATH, token, instance).
-fn spawn_agent_process(
-    node: &str,
-    script: &std::path::Path,
-    path: &str,
-    token: &str,
-    instance: &str,
-) -> std::io::Result<Child> {
-    let mut cmd = Command::new(node);
+fn spawn_agent_process(launch: &Launch) -> std::io::Result<Child> {
+    let mut cmd = Command::new(&launch.node);
     #[cfg(target_os = "macos")]
     cmd.env("PZZA_TMUX_SOCKET", crate::local_tmux::socket_path())
         .env_remove("TMUX");
-    cmd.arg(script)
+    cmd.arg(&launch.script)
         .env("PORT", AGENT_PORT)
         // A full PATH so the agent's child processes (tmux, ssh) resolve even
         // when the app was launched from Finder with a minimal environment.
-        .env("PATH", path)
+        .env("PATH", &launch.path)
         // The bearer token every request to the agent must carry, and the
         // instance id it echoes from /health so the webview can verify it.
-        .env("PZZA_AGENT_TOKEN", token)
-        .env("PZZA_AGENT_ID", instance)
+        .env("PZZA_AGENT_TOKEN", &launch.token)
+        .env("PZZA_AGENT_ID", &launch.instance)
         // Empty server host = source role: tmux/ports are local to this machine.
         .env("PZZA_SERVER_HOST", "")
         // Keep the write end in Child. Process exit closes it even when Rust
@@ -262,7 +558,7 @@ fn spawn_agent_process(
     if let Some((k, v)) = utf8_locale_env() {
         cmd.env(k, v);
     }
-    if let Some(dir) = script.parent() {
+    if let Some(dir) = launch.script.parent() {
         cmd.current_dir(dir);
     }
     cmd.spawn()
@@ -283,6 +579,20 @@ pub fn stop(app: &AppHandle) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+// Calls off a stop() whose shutdown did not finish: the app keeps running, so
+// the watchdog keeps the agent up again. An agent whose input stop() already
+// closed exits on its own and is respawned.
+pub fn resume(app: &AppHandle) {
+    let Some(state) = app.try_state::<AgentState>() else {
+        return;
+    };
+    state.shutting_down.store(false, Ordering::SeqCst);
+    let launched = state.launch.lock().map(|launch| launch.is_some()).unwrap_or(false);
+    if launched {
+        start_watchdog(app);
+    }
 }
 
 fn terminate_agent(child: &mut Child, grace: Duration) -> std::io::Result<ExitStatus> {
@@ -345,5 +655,113 @@ mod shutdown_tests {
         assert!(!status.success());
         assert!(start.elapsed() < Duration::from_secs(2));
         assert!(child.try_wait().unwrap().is_some());
+    }
+}
+
+#[cfg(all(test, unix))]
+mod launch_tests {
+    use super::*;
+
+    #[test]
+    fn shell_probe_returns_what_it_printed() {
+        let output = bounded_stdout(Command::new("/bin/sh").args(["-c", "printf %s /a:/b"]), Duration::from_secs(5));
+        assert_eq!(output.as_deref(), Some("/a:/b"));
+    }
+
+    #[test]
+    fn shell_probe_that_fails_reports_nothing() {
+        let output = bounded_stdout(Command::new("/bin/sh").args(["-c", "printf %s /a; exit 3"]), Duration::from_secs(5));
+        assert_eq!(output, None);
+    }
+
+    #[test]
+    fn shell_probe_that_hangs_is_killed_at_the_limit() {
+        let start = Instant::now();
+        let output = bounded_stdout(Command::new("/bin/sh").args(["-c", "sleep 30; printf late"]), Duration::from_millis(200));
+        assert_eq!(output, None);
+        assert!(start.elapsed() < Duration::from_secs(2));
+    }
+
+    #[test]
+    fn shell_probe_ignores_a_background_job_holding_its_output() {
+        let start = Instant::now();
+        let output = bounded_stdout(Command::new("/bin/sh").args(["-c", "(sleep 5) & printf %s ok"]), Duration::from_secs(5));
+        assert_eq!(output.as_deref(), Some("ok"));
+        assert!(start.elapsed() < Duration::from_secs(2));
+    }
+
+    #[test]
+    fn one_watchdog_survives_a_resume_racing_its_exit() {
+        let state = AgentState::default();
+        assert!(state.claim_watchdog());
+        assert!(!state.claim_watchdog());
+        // Shutdown: the watchdog lets its slot go.
+        state.shutting_down.store(true, Ordering::SeqCst);
+        assert!(state.release_watchdog());
+        // A resume after that exit starts a new watchdog.
+        state.shutting_down.store(false, Ordering::SeqCst);
+        assert!(state.claim_watchdog());
+        // A resume that found the slot still taken started nothing, so the
+        // exiting watchdog keeps running instead.
+        assert!(!state.release_watchdog());
+        assert!(!state.claim_watchdog());
+    }
+
+    #[test]
+    fn a_login_path_probe_that_timed_out_is_retried_not_kept() {
+        let cache = LoginPath::new();
+        let retries = std::cell::Cell::new(0);
+        let fallback = cache.get(|| None, || retries.set(retries.get() + 1)).to_string();
+        assert_eq!(fallback, compose_path(None));
+        assert_eq!(cache.probed(), None, "the fallback is never kept as the login PATH");
+        // Later callers get the fallback at once; the retry runs elsewhere.
+        let again = cache.get(|| panic!("callers never probe again themselves"), || panic!("the retry starts once")).to_string();
+        assert_eq!(again, fallback);
+        assert_eq!(retries.get(), 1);
+        // Once a retry hears from the shell, everyone gets its PATH.
+        cache.keep("/nix/profile/bin");
+        assert!(cache.get(|| None, || {}).split(':').any(|dir| dir == "/nix/profile/bin"));
+        assert!(cache.probed().is_some());
+    }
+
+    #[test]
+    fn a_login_path_the_shell_reported_is_kept() {
+        let cache = LoginPath::new();
+        let path = cache.get(|| Some("/opt/local/bin:/usr/bin".into()), || panic!("nothing to retry")).to_string();
+        assert!(path.split(':').any(|dir| dir == "/opt/local/bin"));
+        assert!(path.starts_with("/opt/homebrew/bin:"), "the common locations come first");
+        assert_eq!(cache.probed(), Some(path.as_str()));
+        assert_eq!(cache.get(|| panic!("probed once"), || panic!("nothing to retry")), path);
+    }
+
+    #[test]
+    fn an_agent_stopped_by_an_update_asks_for_a_restart_once() {
+        let state = AgentState::default();
+        assert!(!state.restart_required.load(Ordering::SeqCst));
+        assert!(state.require_restart(), "the first notice is sent");
+        assert!(!state.require_restart(), "and only once");
+        assert!(state.restart_required.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn a_replaced_bundle_is_never_respawned_from() {
+        let root = std::env::temp_dir().join(format!("pzza-agent-origin-{}", std::process::id()));
+        let server = root.join("server");
+        std::fs::create_dir_all(&server).unwrap();
+        let launch = Launch {
+            node: "node".into(),
+            script: server.join("index.js"),
+            path: String::new(),
+            token: String::new(),
+            instance: String::new(),
+            origin: file_identity(&server),
+        };
+        assert!(!launch.replaced());
+        // An update moves the running bundle away and the new one into place.
+        std::fs::rename(&server, root.join("previous")).unwrap();
+        assert!(launch.replaced());
+        std::fs::create_dir(&server).unwrap();
+        assert!(launch.replaced());
+        std::fs::remove_dir_all(&root).unwrap();
     }
 }

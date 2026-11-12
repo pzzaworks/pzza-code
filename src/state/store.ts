@@ -7,7 +7,8 @@ import {
   type Connection,
   type RemoteSession,
 } from "../connection";
-import { fetchSessions, fetchWindows, type RemoteWindow } from "../serverApi";
+import { fetchSessions, fetchWindows, locateWindows, type RemoteWindow } from "../serverApi";
+import { refreshedIdentity, validSessionCreatedAt, validWindowId, type LocatedWindow } from "../windowIdentity";
 import { HAS_TAURI } from "../tauriEnv";
 import { validHiddenBarItems, type BarItemId } from "../barItems";
 import {
@@ -30,6 +31,13 @@ export interface Session {
   cwd?: string;
   session?: string; // base tmux session (for window tiles)
   window?: number; // tmux window index (for window tiles)
+  // Window tiles: tmux's id ("@7") of the window the tile was opened on, and
+  // the creation time (ms) of the session it was read from. tmux reuses ids
+  // after a server restart, so the id counts only while that session lives
+  // (see windowIdentity.ts). Terminate never ends another window that took
+  // the tile's index.
+  windowId?: string;
+  windowSessionCreatedAt?: number;
   command?: string; // window tile: active command (icon)
   path?: string; // window tile: cwd
   host?: string; // ssh target for a session that lives on another device
@@ -89,6 +97,126 @@ function load<T>(key: string, fallback: T): T {
     /* ignore */
   }
   return fallback;
+}
+
+// Persisted values are never trusted: storage can be corrupted, edited by
+// hand or written by another version of the app. Each key is checked on its
+// own, entries that do not fit are dropped and a key that does not fit at all
+// falls back to its default, so one bad value never stops the app from
+// starting (this runs at import, before anything renders).
+function loadValid<T>(key: string, parse: (value: unknown) => T | undefined, fallback: T): T {
+  const value = load<unknown>(key, undefined);
+  if (value === undefined) return fallback;
+  try {
+    return parse(value) ?? fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+type Fields = Record<string, unknown>;
+const isFields = (value: unknown): value is Fields => !!value && typeof value === "object" && !Array.isArray(value);
+const text = (value: unknown): value is string => typeof value === "string" && value.length > 0;
+const optionalText = (value: unknown): string | undefined => (typeof value === "string" ? value : undefined);
+const finite = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
+const bool = (value: unknown): boolean | undefined => (typeof value === "boolean" ? value : undefined);
+
+function listOf<T>(parse: (value: unknown) => T | undefined): (value: unknown) => T[] | undefined {
+  return (value) => (Array.isArray(value) ? value.flatMap((item) => { const parsed = parse(item); return parsed === undefined ? [] : [parsed]; }) : undefined);
+}
+
+function recordOf<T>(parse: (value: unknown) => T | undefined): (value: unknown) => Record<string, T> | undefined {
+  return (value) => {
+    if (!isFields(value)) return undefined;
+    const out: Record<string, T> = {};
+    for (const [key, item] of Object.entries(value)) {
+      const parsed = parse(item);
+      if (parsed !== undefined) out[key] = parsed;
+    }
+    return out;
+  };
+}
+
+// Drops every entry whose `id` was already seen (React keys and lookups need them unique).
+function uniqueById<T extends { id: string }>(items: T[]): T[] {
+  const seen = new Set<string>();
+  return items.filter((item) => !seen.has(item.id) && !!seen.add(item.id));
+}
+
+function parseDevice(value: unknown): Device | undefined {
+  if (!isFields(value) || !text(value.id) || !text(value.name) || !text(value.host)) return undefined;
+  return { id: value.id, name: value.name, host: value.host, ...(text(value.user) ? { user: value.user } : {}), ...(value.disabled === true ? { disabled: true } : {}) };
+}
+
+function parseWorkspace(value: unknown): Workspace | undefined {
+  if (!isFields(value) || !text(value.id) || value.id === ALL_WORKSPACE_ID || !text(value.name)) return undefined;
+  return {
+    id: value.id, name: value.name, short: text(value.short) ? value.short : markFor(value.name),
+    ...(text(value.icon) ? { icon: value.icon } : {}), ...(text(value.color) ? { color: value.color } : {}), ...(value.system === true ? { system: true } : {}),
+  };
+}
+
+// The default workspace always exists: sessions without a workspace of their
+// own belong to it, and a deleted workspace's sessions move to it.
+function withDefaultWorkspace(workspaces: Workspace[]): Workspace[] {
+  return workspaces.some((workspace) => workspace.id === DEFAULT_WORKSPACE_ID) ? workspaces : [...DEFAULT_WORKSPACES, ...workspaces];
+}
+
+// A window tile whose window id is missing or not yet tied to its session.
+const untiedWindowTile = (tile: Session): boolean => tile.window !== undefined && tile.windowSessionCreatedAt === undefined;
+
+function parseTile(value: unknown): Session | undefined {
+  if (!isFields(value) || !text(value.id) || !text(value.name)) return undefined;
+  const tile: Session = { id: value.id, name: value.name };
+  for (const key of ["cwd", "session", "command", "path", "host"] as const) {
+    const field = optionalText(value[key]);
+    if (field !== undefined) tile[key] = field;
+  }
+  if (Number.isInteger(value.window) && (value.window as number) >= 0) {
+    tile.window = value.window as number;
+    // An id not tied to its session cannot be told apart from one a later
+    // terminal server reused; it is looked up again from the index instead.
+    if (validWindowId(value.windowId) && validSessionCreatedAt(value.windowSessionCreatedAt)) {
+      tile.windowId = value.windowId;
+      tile.windowSessionCreatedAt = value.windowSessionCreatedAt;
+    }
+  }
+  return tile;
+}
+
+function parseSpan(value: unknown): { c: number; r: number } | undefined {
+  return isFields(value) && finite(value.c) && finite(value.r) && value.c > 0 && value.r > 0 ? { c: value.c, r: value.r } : undefined;
+}
+
+const CODE_LAYOUTS: readonly TileCodeLayout[] = ["full", "side-by-side", "stacked"];
+function parseTileCode(value: unknown): TileCode | undefined {
+  if (!isFields(value) || typeof value.open !== "boolean") return undefined;
+  const layout = CODE_LAYOUTS.find((entry) => entry === value.layout);
+  return {
+    open: value.open,
+    ...(layout ? { layout } : {}),
+    ...(finite(value.split) && value.split > 0 && value.split < 1 ? { split: value.split } : {}),
+    ...(finite(value.treeWidth) && value.treeWidth > 0 ? { treeWidth: value.treeWidth } : {}),
+    ...(typeof value.root === "string" ? { root: value.root } : {}),
+    ...(typeof value.path === "string" ? { path: value.path } : {}),
+    ...(value.view === "changes" ? { view: "changes" as const } : {}),
+  };
+}
+
+function parseDeviceRdp(value: unknown): DeviceRdp | undefined {
+  if (!isFields(value) || typeof value.user !== "string" || !text(value.keychainService)) return undefined;
+  return {
+    user: value.user, keychainService: value.keychainService,
+    ...(Number.isInteger(value.port) && (value.port as number) > 0 && (value.port as number) < 65536 ? { port: value.port as number } : {}),
+    ...(typeof value.mode === "string" ? { mode: value.mode } : {}),
+  };
+}
+
+// Grid columns: AUTO_COLUMNS (0) or a fixed count.
+const parseColumns = (value: unknown): number | undefined => (Number.isInteger(value) && (value as number) >= 0 && (value as number) <= 12 ? (value as number) : undefined);
+
+function parseConnection(value: unknown): Connection | undefined {
+  return isFields(value) && (value.host === null || typeof value.host === "string") ? { host: value.host } : undefined;
 }
 
 function persist(key: string, value: unknown): void {
@@ -231,6 +359,12 @@ interface ConsoleState {
   loadSessions: () => Promise<void>;
   openSession: (name: string, cwd?: string, host?: string) => void;
   openWindow: (w: RemoteWindow, displayName: string, host?: string) => void;
+  /**
+   * Keeps window tiles' window ids tied to the session they were read from:
+   * tiles without one (or whose id is not yet tied) are looked up, and so is
+   * every window tile on `recheckHost` (its terminal server was replaced).
+   */
+  recordWindowIds: (recheckHost?: string) => Promise<void>;
   closeTile: (id: string) => void;
   reorderTile: (fromId: string, toId: string) => void;
   /** Puts back a saved workspace layout (see workspaceSnapshots): these tiles
@@ -289,11 +423,26 @@ export function tileCodeView(code: TileCode | undefined): TileCodeView {
 // make it the first entry so it is the default current device. Drop any stale
 // pre-seeded "devbox" placeholder that was never actually added by the user.
 const initialDevices = ((): Device[] => {
-  const loaded = load<Device[]>(DEVICES_KEY, DEFAULT_DEVICES).filter(
+  const loaded = uniqueById(loadValid(DEVICES_KEY, listOf(parseDevice), DEFAULT_DEVICES)).filter(
     (d) => d.id !== "devbox",
   );
   const withoutMac = loaded.filter((d) => d.id !== THIS_MAC.id);
   return [THIS_MAC, ...withoutMac];
+})();
+
+// The saved workspaces, always with the default one (installs that deleted it
+// before it was protected get it back, with the sessions that pointed to it).
+const initialWorkspaces = withDefaultWorkspace(
+  uniqueById(loadValid(WORKSPACES_KEY, listOf(parseWorkspace), DEFAULT_WORKSPACES))
+    .map((w) => (w.name === "main" ? { ...w, name: "Main", short: "M" } : w)),
+);
+
+// Session assignments to workspaces that no longer exist would hide those
+// tiles from every workspace but All: they belong to the default one instead.
+const initialSessionWs = ((): Record<string, string> => {
+  const known = new Set(initialWorkspaces.map((workspace) => workspace.id));
+  const saved = loadValid(SESSIONWS_KEY, recordOf((value) => (text(value) ? value : undefined)), {});
+  return Object.fromEntries(Object.entries(saved).filter(([, workspaceId]) => known.has(workspaceId)));
 })();
 
 // Both lists are stored together so selectors return stable references.
@@ -327,7 +476,7 @@ export const useStore = create<ConsoleState>((set, get) => ({
     persist(SPACING_KEY, next);
     set({ spacing: next });
   },
-  transparencyOptions: transparencyOptions(load<Partial<TransparencyOptions>>(TRANSPARENCY_OPTIONS_KEY, {})),
+  transparencyOptions: transparencyOptions(loadValid<Partial<TransparencyOptions>>(TRANSPARENCY_OPTIONS_KEY, (value) => (isFields(value) ? value : undefined), {})),
   setTransparencyOptions: (options) => {
     const next = transparencyOptions({ ...get().transparencyOptions, ...options });
     persist(TRANSPARENCY_OPTIONS_KEY, next);
@@ -335,7 +484,7 @@ export const useStore = create<ConsoleState>((set, get) => ({
   },
   setTransparencyNotice: (notice) => set({ transparencyNotice: notice }),
   themeId: (() => {
-    const saved = load<string>(THEME_KEY, DEFAULT_THEME_ID);
+    const saved = loadValid(THEME_KEY, (value) => (text(value) ? value : undefined), DEFAULT_THEME_ID);
     const mode = migrateThemeId(saved);
     if (mode !== saved) persist(THEME_KEY, mode);
     return mode;
@@ -346,16 +495,14 @@ export const useStore = create<ConsoleState>((set, get) => ({
     set({ themeId: selected });
   },
 
-  connection: loadConnection(),
+  connection: parseConnection(loadConnection()) ?? { host: null },
   setHost: (host) => {
     const connection = { host };
     saveConnection(connection);
     set({ connection });
   },
 
-  workspaces: load<Workspace[]>(WORKSPACES_KEY, DEFAULT_WORKSPACES).map((w) =>
-    w.name === "main" ? { ...w, name: "Main", short: "M" } : w,
-  ),
+  workspaces: initialWorkspaces,
   activeWorkspaceId: DEFAULT_WORKSPACE_ID,
   setWorkspace: (id) => {
     set((state) => {
@@ -396,7 +543,9 @@ export const useStore = create<ConsoleState>((set, get) => ({
     get().setWorkspace(id);
   },
   removeWorkspace: (id) => {
-    if (get().workspaces.find((w) => w.id === id)?.system) return; // built-in, undeletable
+    // Built-in workspaces and the default one (where unassigned and moved
+    // sessions belong) are undeletable, as in app control.
+    if (id === DEFAULT_WORKSPACE_ID || get().workspaces.find((w) => w.id === id)?.system) return;
     const workspaces = get().workspaces.filter((w) => w.id !== id);
     if (workspaces.length === 0) return; // always keep at least one
     // Move any sessions that were in the removed workspace back to the default.
@@ -434,14 +583,14 @@ export const useStore = create<ConsoleState>((set, get) => ({
     set({ workspaces });
   },
 
-  sessionWs: load<Record<string, string>>(SESSIONWS_KEY, {}),
+  sessionWs: initialSessionWs,
   assignSession: (name, wsId) => {
     const sessionWs = { ...get().sessionWs, [name]: wsId };
     persist(SESSIONWS_KEY, sessionWs);
     set({ sessionWs });
   },
 
-  hiddenTiles: load<string[]>(HIDDEN_KEY, []),
+  hiddenTiles: loadValid(HIDDEN_KEY, listOf((value) => (typeof value === "string" ? value : undefined)), []),
   hideTile: (name) => {
     const hiddenTiles = [...new Set([...get().hiddenTiles, name])];
     persist(HIDDEN_KEY, hiddenTiles);
@@ -497,14 +646,14 @@ export const useStore = create<ConsoleState>((set, get) => ({
     set(deviceLists(devices));
   },
 
-  deviceRdp: load<Record<string, DeviceRdp>>(DEVICE_RDP_KEY, {}),
+  deviceRdp: loadValid(DEVICE_RDP_KEY, recordOf(parseDeviceRdp), {}),
   setDeviceRdp: (id, cfg) => {
     const deviceRdp = { ...get().deviceRdp, [id]: cfg };
     persist(DEVICE_RDP_KEY, deviceRdp);
     set({ deviceRdp });
   },
 
-  tileTitles: load<Record<string, string>>(TILETITLES_KEY, {}),
+  tileTitles: loadValid(TILETITLES_KEY, recordOf((value) => (text(value) ? value : undefined)), {}),
   renameTile: (id, title) => {
     const tileTitles = { ...get().tileTitles };
     const trimmed = title.trim();
@@ -514,7 +663,7 @@ export const useStore = create<ConsoleState>((set, get) => ({
     set({ tileTitles });
   },
 
-  tileSpan: load<Record<string, { c: number; r: number }>>(TILESPAN_KEY, {}),
+  tileSpan: loadValid(TILESPAN_KEY, recordOf(parseSpan), {}),
   setTileSpan: (id, c, r) => {
     const tileSpan = { ...get().tileSpan, [id]: { c, r } };
     persist(TILESPAN_KEY, tileSpan);
@@ -547,8 +696,8 @@ export const useStore = create<ConsoleState>((set, get) => ({
 
   // Fall back to the old global columns value for workspaces without their own;
   // without either the canvas arranges itself.
-  defaultColumns: load<number>(COLUMNS_KEY, AUTO_COLUMNS),
-  workspaceColumns: load<Record<string, number>>(WSCOLUMNS_KEY, {}),
+  defaultColumns: loadValid(COLUMNS_KEY, parseColumns, AUTO_COLUMNS),
+  workspaceColumns: loadValid(WSCOLUMNS_KEY, recordOf(parseColumns), {}),
   setColumns: (n, workspaceId) => {
     const id = workspaceId ?? get().activeWorkspaceId;
     const workspaceColumns = { ...get().workspaceColumns, [id]: n };
@@ -556,18 +705,18 @@ export const useStore = create<ConsoleState>((set, get) => ({
     set((state) => ({ workspaceColumns, refreshNonce: state.refreshNonce + 1 }));
   },
 
-  fontSize: load<number>(FONT_KEY, 13),
+  fontSize: loadValid(FONT_KEY, (value) => (finite(value) ? Math.max(9, Math.min(20, Math.round(value))) : undefined), 13),
   setFontSize: (n) => {
     const clamped = Math.max(9, Math.min(20, n));
     persist(FONT_KEY, clamped);
     set({ fontSize: clamped });
   },
-  cursorBlink: load<boolean>(CURSOR_KEY, true),
+  cursorBlink: loadValid(CURSOR_KEY, bool, true),
   setCursorBlink: (v) => {
     persist(CURSOR_KEY, v);
     set({ cursorBlink: v });
   },
-  osc52Clipboard: load<boolean>(OSC52_KEY, false),
+  osc52Clipboard: loadValid(OSC52_KEY, bool, false),
   setOsc52Clipboard: (v) => {
     persist(OSC52_KEY, v);
     set({ osc52Clipboard: v });
@@ -586,7 +735,7 @@ export const useStore = create<ConsoleState>((set, get) => ({
 
   allSessions: [],
   allWindows: [],
-  tiles: load<Session[]>(TILES_KEY, []).filter(tile => (tile.session ?? tile.name) !== QUICK_CHAT_SESSION),
+  tiles: uniqueById(loadValid(TILES_KEY, listOf(parseTile), [])).filter(tile => (tile.session ?? tile.name) !== QUICK_CHAT_SESSION),
   activeId: null,
   refreshing: false,
   refreshNonce: 0,
@@ -634,6 +783,7 @@ export const useStore = create<ConsoleState>((set, get) => ({
                 name: `${tileTitle(w.session)} · ${w.windowName}`,
                 session: w.session,
                 window: w.window,
+                ...(validWindowId(w.windowId) ? { windowId: w.windowId } : {}),
                 command: w.command,
                 path: w.path,
               });
@@ -654,6 +804,7 @@ export const useStore = create<ConsoleState>((set, get) => ({
         persist(TILES_KEY, tiles);
         set({ tiles, activeId: tiles[0]?.id ?? null });
       }
+      if (get().tiles.some(untiedWindowTile)) void get().recordWindowIds();
     } finally {
       set({ refreshing: false });
     }
@@ -686,16 +837,50 @@ export const useStore = create<ConsoleState>((set, get) => ({
         name: displayName,
         session: w.session,
         window: w.window,
+        ...(validWindowId(w.windowId) ? { windowId: w.windowId } : {}),
         ...(host !== undefined ? { host } : {}),
         command: w.command,
         path: w.path,
       };
       const tiles = [...state.tiles, tile];
       persist(TILES_KEY, tiles);
+      // Its id is tied to the window's session (or, opened by index alone by
+      // app control, looked up) right away.
+      queueMicrotask(() => void get().recordWindowIds());
       // Fresh tiles always start on the automatic grid layout (see openSession).
       const tileSpan = dropTileSpan(state.tileSpan, id);
       return { tiles, tileSpan, activeId: id, refreshNonce: state.refreshNonce + 1 };
     }),
+
+  // A window tile opened by index alone (app control, or saved without a
+  // tied id) gets the id of the window at that index together with its
+  // session's creation time, read from its device. After its terminal server
+  // was replaced, ids read under the old one are replaced the same way. An
+  // unreachable device is tried again on the next load.
+  recordWindowIds: async (recheckHost) => {
+    const hostOf = (tile: Session, state: ConsoleState) => tile.host ?? state.connection.host ?? "";
+    const pending = get().tiles.filter((tile) => tile.window !== undefined &&
+      (untiedWindowTile(tile) || (recheckHost !== undefined && hostOf(tile, get()) === recheckHost)));
+    const hosts = [...new Set(pending.map((tile) => hostOf(tile, get())))];
+    await Promise.all(hosts.map(async (host) => {
+      let windows: LocatedWindow[];
+      try { windows = await locateWindows(host); } catch { return; }
+      set((state) => {
+        let changed = false;
+        const tiles = state.tiles.map((tile) => {
+          if (tile.window === undefined || hostOf(tile, state) !== host) return tile;
+          const row = windows.find((window) => window.session === (tile.session ?? tile.name) && window.window === tile.window);
+          const identity = refreshedIdentity(tile, row);
+          if (!identity || (identity.windowId === tile.windowId && identity.windowSessionCreatedAt === tile.windowSessionCreatedAt)) return tile;
+          changed = true;
+          return { ...tile, ...identity };
+        });
+        if (!changed) return state;
+        persist(TILES_KEY, tiles);
+        return { tiles };
+      });
+    }));
+  },
 
   closeTile: (id) =>
     set((state) => {
@@ -776,7 +961,7 @@ export const useStore = create<ConsoleState>((set, get) => ({
       activeId: "preview-1",
     })),
 
-  tileCode: load<Record<string, TileCode>>(TILECODE_KEY, {}),
+  tileCode: loadValid(TILECODE_KEY, recordOf(parseTileCode), {}),
   toggleTileCode: (id, defaultRoot) =>
     set((state) => {
       const cur = state.tileCode[id];

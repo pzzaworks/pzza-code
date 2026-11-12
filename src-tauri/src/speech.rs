@@ -110,7 +110,13 @@ mod native {
             std::thread::sleep(IDLE_CHECK);
             let state = watcher.state::<SpeechState>();
             if state.shutting_down.load(Ordering::Acquire) {
-                return;
+                // Let the slot go, but keep watching when a failed shutdown
+                // was called off meanwhile and no other watcher took over.
+                state.idle_watch.store(false, Ordering::SeqCst);
+                if state.shutting_down.load(Ordering::SeqCst) || state.idle_watch.swap(true, Ordering::SeqCst) {
+                    return;
+                }
+                continue;
             }
             if state.release_if_idle(Instant::now(), IDLE_RELEASE) {
                 crate::voice_log::log(&watcher, "dictation model released after being idle; it loads again on the next use");
@@ -158,6 +164,13 @@ mod native {
                     Err(TryLockError::WouldBlock) => return Err("Speech preparation is still stopping; native resources remain protected".into()),
                 }
             }
+        }
+
+        /// Calls off a shutdown that did not finish: the app keeps running,
+        /// so dictation accepts new work again. A recording the shutdown
+        /// cancelled stays cancelled.
+        pub fn resume(&self) {
+            self.shutting_down.store(false, Ordering::SeqCst);
         }
     }
 
@@ -2389,6 +2402,18 @@ mod native {
             release.send(()).unwrap();
             state.shutdown(Duration::from_secs(1)).unwrap();
             assert!(state.worker.lock().unwrap().is_none());
+        }
+
+        #[test]
+        fn a_called_off_shutdown_accepts_dictation_again() {
+            let state = SpeechState::default();
+            let held = state.context.lock().unwrap();
+            assert!(state.shutdown(Duration::from_millis(10)).is_err());
+            assert!(state.shutting_down.load(Ordering::Acquire));
+            drop(held);
+            state.resume();
+            assert!(!state.shutting_down.load(Ordering::Acquire));
+            state.shutdown(Duration::ZERO).unwrap();
         }
 
         #[test]

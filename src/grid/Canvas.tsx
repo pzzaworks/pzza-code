@@ -31,13 +31,15 @@ import {
   X,
   type LucideIcon,
 } from "lucide-react";
-import { useStore } from "../state/store";
+import { useStore, type Session } from "../state/store";
 import { deviceForHost, deviceNameFor } from "../devices";
 import { Modal } from "../ui/Modal";
+import { ErrorBoundary } from "../ui/ErrorBoundary";
 import { copyToClipboard, Terminal } from "../terminal/Terminal";
 import { TileCodePanel } from "../lazySurfaces";
 import { CodeSplitHandle } from "./CodeSplitHandle";
-import { duplicateSession, fetchSessionPath, killSession, type GitFolderStatus, type GitRemoteInfo } from "../serverApi";
+import { duplicateSession, fetchSessionPath, killSession, locateWindows, type GitFolderStatus, type GitRemoteInfo, type KillOutcome } from "../serverApi";
+import { terminateTarget } from "../windowIdentity";
 import { openWebPage } from "../tileGit";
 import { registerAppControlHandler, registerAppControlState } from "../appControlRuntime";
 import { confirmEditorDiscard, hasUnsavedEditors } from "../editorChanges";
@@ -331,6 +333,21 @@ interface TileDrag { id: string; from: number; to: number }
 // grid; the pointer picks a slot from these, so the reflowing preview never
 // moves the target out from under it.
 type Slot = { left: number; top: number; right: number; bottom: number };
+
+// Terminates what a tile shows. A window tile looks up the window at its
+// index right before, and ends it by id only when it is the window the tile
+// was opened on (see windowIdentity.ts); a stored id is never trusted on its
+// own, since a replaced terminal server reuses ids for other windows.
+// "already-closed" when no window holds the index and nothing was terminated.
+async function terminateTile(tile: Session, host: string): Promise<KillOutcome> {
+  const session = tile.session ?? tile.name;
+  if (tile.window === undefined) return killSession(session, undefined, host);
+  const current = (await locateWindows(host)).find(window => window.session === session && window.window === tile.window);
+  const target = terminateTarget(tile, current);
+  if (target.kind === "gone") return "already-closed";
+  if (target.kind === "moved") throw new Error("Another window has taken this window's place in the session, so nothing was terminated.");
+  return killSession(session, tile.window, host, target.windowId);
+}
 
 function moveItem<T>(items: readonly T[], from: number, to: number): T[] {
   const next = [...items];
@@ -875,12 +892,13 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
         const affected = state.tiles.filter(item => (item.host ?? state.connection.host ?? "") === (current.host ?? state.connection.host ?? "") &&
           (item.session ?? item.name) === (current.session ?? current.name) && (current.window === undefined || item.window === current.window));
         if (hasUnsavedEditors(affected.map(item => item.id))) throw new Error("Save or explicitly discard affected editor buffers before terminating this session.");
-        await killSession(current.session ?? current.name, current.window, sessionConnection(current.host, state.connection).host ?? "");
+        const outcome = await terminateTile(current, sessionConnection(current.host, state.connection).host ?? "");
         for (const item of affected) {
           if (canvasControl.current.fullId === item.id) setFullId(null);
           useStore.getState().closeTile(item.id);
         }
-        return { terminated: affected.map(item => item.id) };
+        // A window that had already closed only loses its tile.
+        return outcome === "already-closed" ? { terminated: [], closed: affected.map(item => item.id), alreadyClosed: true } : { terminated: affected.map(item => item.id) };
       }),
     ];
     return () => cleanups.forEach(cleanup => cleanup());
@@ -1165,26 +1183,30 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
         <div className={`tile-body ${codeOpen ? `tile-body-code-${tileCode[t.id]?.layout ?? "side-by-side"}` : ""}`}>
           {(refreshingLocal || launchCheckLocal) && isLocal ? <div className="term-surface term-refreshing" role="status">
             {refreshingLocal && !launchCheckLocal ? <><Loader2 size={14} className="sw-spin" aria-hidden="true" /> {restoringLocal ? "Restoring session…" : "Refreshing session…"}</> : null}
-          </div> : <Terminal
-            key={isLocal ? `${t.id}:${localGeneration}` : t.id}
-            tileId={t.id}
-            name={base}
-            host={t.host ?? connection.host ?? undefined}
-            cmd={cmd}
-            args={args}
-            cwd={t.cwd}
-            window={t.window}
-            active={activeId === t.id}
-            onStatus={(s) => setStatus(t.id, s)}
-          />}
+          </div> : <ErrorBoundary key={isLocal ? `${t.id}:${localGeneration}` : t.id} label="This terminal" className="term-surface term-refreshing">
+            {/* One broken tile never takes the grid with it; its session keeps running in tmux. */}
+            <Terminal
+              tileId={t.id}
+              name={base}
+              host={t.host ?? connection.host ?? undefined}
+              cmd={cmd}
+              args={args}
+              cwd={t.cwd}
+              window={t.window}
+              active={activeId === t.id}
+              onStatus={(s) => setStatus(t.id, s)}
+            />
+          </ErrorBoundary>}
           {codeOpen ? <TileCodePanel tileId={t.id} /> : null}
           {codeOpen ? <CodeSplitHandle tileId={t.id} /> : null}
         </div>
-        <TileCheckpoints tileId={t.id} session={base} window={t.window} host={t.host} gitHost={t.host ?? connection.host ?? ""} path={fullPath ?? (t.cwd?.startsWith("/") ? t.cwd : undefined)} />
-        {statusBarShown ? <>
+        <ErrorBoundary label="Checkpoints" variant="quiet">
+          <TileCheckpoints tileId={t.id} session={base} window={t.window} host={t.host} gitHost={t.host ?? connection.host ?? ""} path={fullPath ?? (t.cwd?.startsWith("/") ? t.cwd : undefined)} />
+        </ErrorBoundary>
+        {statusBarShown ? <ErrorBoundary label="The status bar" variant="quiet">
         <TileStatusStrip tileId={t.id} session={base} window={t.window} host={t.host} gitHost={t.host ?? connection.host ?? ""} visible={visible} path={fullPath ?? (t.cwd?.startsWith("/") ? t.cwd : undefined)} createdAt={rs?.createdAt}
           workspaceId={tileWs} workspace={workspaces.find((w) => w.id === tileWs)?.name ?? tileWs} />
-        </> : null}
+        </ErrorBoundary> : null}
         {visible && !effFull ? (
           <TileResizeHandles
             span={{ c: trackSpan.c / columnTracks, r: trackSpan.r / 2 }}
@@ -1282,7 +1304,8 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
                   }
                 };
                 try {
-                  await killSession(current.session ?? current.name, current.window, sessionConnection(current.host, connection).host ?? "");
+                  // A window that had already closed (409) only loses its tiles.
+                  await terminateTile(current, sessionConnection(current.host, connection).host ?? "");
                 } catch (error) {
                   // An unreachable device cannot terminate anything. Offer to
                   // close the windows here instead, leaving the session as is.

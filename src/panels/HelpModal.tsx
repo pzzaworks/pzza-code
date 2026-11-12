@@ -2000,7 +2000,7 @@ export const HELP_PAGES: Record<HelpTopic, HelpPage> = {
         <Step>For an agent on another device, set the <b>App SSH host</b> and <b>MCP script path</b> first.</Step>
       </Steps>
     ),
-    tips: [<>Session, file and device tools work even with window control off; <b>Check now</b> repairs installed configurations.</>],
+    tips: [<>File, device and session tools work even with window control off, except ending a session, which is confirmed in an app window with window control on; <b>Check now</b> repairs installed configurations.</>],
   },
   // --- Shortcuts & tips -------------------------------------------------------
   shortcuts: {

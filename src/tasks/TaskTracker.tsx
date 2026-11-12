@@ -73,6 +73,9 @@ function ChainWatch({ task }: { task: Task }) {
       // Real output only: a session not read yet also counts as working ("Starting").
       if (live.working) { if (live.phase === "working" && !step.sawWork) actions.markStepWorking(task.id, index); return; }
       if (!step.sawWork) return;
+      // Work left behind by an agent that exited or a session that closed is
+      // not a finished step: the user decides whether the chain goes on.
+      if (live.phase === "review" && (live.reason === "Agent exited" || live.reason === "Session closed")) { actions.pauseChain(task.id, index, live.reason); return; }
       if (live.phase === "review" || (live.phase === "needs-you" && live.reason === "Waiting for you")) {
         // An agent that stopped to ask something waits for an answer, not for the next step.
         if (step.tileId && actions.stepAskedQuestion(step.tileId, step.startedAt ?? 0)) { actions.pauseChain(task.id, index, "Asked a question"); return; }

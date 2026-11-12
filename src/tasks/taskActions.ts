@@ -18,7 +18,7 @@ import {
 import { candidateSessionNames, TASK_SLUG_MAX, taskSlug, worktreeBranch } from "./taskStatus";
 import { refreshCandidate, settledState, useTaskLive, type CandidateLive } from "./taskLive";
 import { findCandidate, useTasks, type CandidateCheck, type Task, type TaskCandidate, type TaskChain, type TaskMode } from "./taskStore";
-import { chainPreset, chainSteps, ROLE_LABEL, type StepSpec } from "./taskChain";
+import { agentAbsence, chainPreset, chainSteps, ROLE_LABEL, type StepSpec } from "./taskChain";
 
 // What Tasks does with a task: start it (a worktree and a tile per
 // agent, through the regular new-session path), send a prompt by hand,
@@ -390,6 +390,16 @@ export async function sendTaskPrompt(task: Task, candidate: TaskCandidate): Prom
   // A chain step gets its own instruction; a task its prompt.
   const chain = useTasks.getState().tasks.find((item) => item.id === task.id)?.chain;
   const step = chain?.steps.find((item) => item.status === "running" && item.tileId === candidate.tileId);
+  // Typed only into the agent itself: after it exits, the same keys would
+  // run the prompt as shell commands.
+  const agent = step?.agent.id ?? candidate.agent.id;
+  const absent = await agentAbsence(candidate.tileId, agent);
+  if (absent) {
+    const label = sessionAgent(agent)?.label ?? agent;
+    throw new Error(absent === "Session closed" ? "Open the attempt's tile first."
+      : absent === "Agent exited" ? `${label} is no longer running in the attempt's tile, so the prompt was not typed. Start ${label} there again first.`
+        : `Could not check that ${label} still runs in the attempt's tile, so the prompt was not typed.`);
+  }
   await sendPromptToTile(candidate.tileId, step?.instruction ?? task.prompt);
   useTasks.getState().updateCandidate(task.id, candidate.id, { promptDelivery: "sent" });
 }

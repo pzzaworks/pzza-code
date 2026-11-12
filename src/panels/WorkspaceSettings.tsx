@@ -170,7 +170,8 @@ export function WorkspaceSettings({ id, close }: { id: string; close: () => void
       <SnapshotSection workspaceId={id} workspaceName={ws.name} hasSessions={sessions.length > 0} />
       <WorktreeSection workspaceId={id} onHandOff={close} />
 
-      {workspaces.length > 1 && !ws.system ? (
+      {/* The default workspace stays: unassigned sessions and those of deleted workspaces belong to it. */}
+      {workspaces.length > 1 && !ws.system && ws.id !== DEFAULT_WORKSPACE_ID ? (
         <button className="btn btn-danger ws-delete" onClick={() => setConfirmDelete(true)}>
           <Trash2 size={14} strokeWidth={2} />
           Delete workspace
@@ -260,11 +261,15 @@ function SnapshotPreview({ snapshotId, onDone, onCancel }: { snapshotId: string;
 }
 
 // One snapshot: its name (click to rename), what it holds, and its actions.
-function SnapshotRow({ snapshot, open, busy, onToggle, onCopy }: { snapshot: WorkspaceSnapshot; open: boolean; busy: boolean; onToggle: () => void; onCopy: () => void }) {
+function SnapshotRow({ snapshot, open, busy, onToggle, onCopy, onError }: { snapshot: WorkspaceSnapshot; open: boolean; busy: boolean; onToggle: () => void; onCopy: () => void; onError: (message: string) => void }) {
   const [renaming, setRenaming] = useState(false);
   const [draft, setDraft] = useState(snapshot.name);
   const finish = (save: boolean) => {
-    if (save) renameWorkspaceSnapshot(snapshot.id, draft);
+    try {
+      if (save) renameWorkspaceSnapshot(snapshot.id, draft);
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "Could not rename the snapshot.");
+    }
     setRenaming(false);
   };
   const when = new Date(snapshot.createdAt).toLocaleString([], snapshot.auto ? { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" } : { month: "short", day: "numeric" });
@@ -307,7 +312,13 @@ function SnapshotSection({ workspaceId, workspaceName, hasSessions }: { workspac
   }, [note]);
 
   const save = () => {
-    const snapshot = saveWorkspaceSnapshot(workspaceId, `${workspaceName} · ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`);
+    let snapshot: WorkspaceSnapshot | null;
+    try {
+      snapshot = saveWorkspaceSnapshot(workspaceId, `${workspaceName} · ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`);
+    } catch (error) {
+      setNote({ text: error instanceof Error ? error.message : "Could not save the snapshot.", failed: true });
+      return;
+    }
     setNote(snapshot ? { text: `Saved ${snapshot.name}. Click its name to rename it.`, failed: false } : { text: "This workspace has no sessions to save.", failed: true });
   };
   const copy = async (snapshot: WorkspaceSnapshot) => {
@@ -350,7 +361,7 @@ function SnapshotSection({ workspaceId, workspaceName, hasSessions }: { workspac
             <div className="snap-list">
               {snapshots.map((snapshot) => (
                 <div key={snapshot.id} className="snap-item">
-                  <SnapshotRow snapshot={snapshot} open={previewing === snapshot.id} busy={relaunching !== null}
+                  <SnapshotRow snapshot={snapshot} open={previewing === snapshot.id} busy={relaunching !== null} onError={(text) => setNote({ text, failed: true })}
                     onToggle={() => { setNote(null); setPreviewing(previewing === snapshot.id ? null : snapshot.id); }} onCopy={() => void copy(snapshot)} />
                   {previewing === snapshot.id ? (
                     <SnapshotPreview snapshotId={snapshot.id} onCancel={() => setPreviewing(null)}

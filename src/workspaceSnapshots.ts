@@ -37,8 +37,17 @@ export interface WorkspaceSnapshot {
 export interface SnapshotTile { id: string; name: string; session?: string; host?: string; cwd?: string; path?: string }
 export interface SnapshotDevice { id: string; host: string; user?: string; disabled?: boolean }
 
+// Every copy of PzzaCode on this Mac shares the stored list, and copies up to
+// 0.2.72 read only its first MAX_SNAPSHOTS entries and write it back cut to
+// that length. So the list never holds more than MAX_SNAPSHOTS, and keeps the
+// snapshots saved by hand (or pasted) ahead of auto-saved ones: a list an
+// older copy cuts short loses auto-saves first. Saving by hand stops at
+// MAX_MANUAL_SNAPSHOTS, leaving room for auto-saves, and auto-saves never push
+// out a snapshot the user saved, only older auto-saves.
 export const MAX_SNAPSHOTS = 60;
+export const MAX_MANUAL_SNAPSHOTS = 40;
 export const MAX_SNAPSHOT_SESSIONS = 60;
+export const SNAPSHOT_LIMIT_MESSAGE = `There are already ${MAX_MANUAL_SNAPSHOTS} saved snapshots. Delete one to save another.`;
 const SESSION_NAME = /^[^\u0000-\u001f\u007f]{1,128}$/;
 const HOST = /^$|^[A-Za-z0-9._][A-Za-z0-9._@-]{0,127}$/;
 
@@ -131,11 +140,57 @@ export function collectSnapshotSessions(input: {
   return out;
 }
 
+/** Whether one more snapshot saved by hand fits (auto-saved ones never count). */
+export function canAddManualSnapshot(snapshots: readonly WorkspaceSnapshot[]): boolean {
+  return snapshots.filter(snapshot => !snapshot.auto).length < MAX_MANUAL_SNAPSHOTS;
+}
+
+/**
+ * The list within its caps: the snapshots saved by hand first (all of them up
+ * to MAX_SNAPSHOTS, as a list kept by an older copy can hold more than
+ * MAX_MANUAL_SNAPSHOTS), then the newest auto-saved ones that still fit in
+ * MAX_SNAPSHOTS. Each kind keeps its order.
+ */
+export function capSnapshots(snapshots: readonly WorkspaceSnapshot[]): WorkspaceSnapshot[] {
+  const manual = snapshots.filter(snapshot => !snapshot.auto).slice(0, MAX_SNAPSHOTS);
+  const autos = snapshots.filter(snapshot => snapshot.auto);
+  const keptAutos = new Set([...autos].sort((left, right) => right.createdAt - left.createdAt).slice(0, MAX_SNAPSHOTS - manual.length));
+  return [...manual, ...autos.filter(snapshot => keptAutos.has(snapshot))];
+}
+
+/**
+ * An auto-saved snapshot never loses what it knew. When the live state no
+ * longer says where a session works or which agent it runs (the sessions were
+ * lost, cannot be listed, or are being restored), the previous auto-save's
+ * folder and agent are kept. A folder known only from the device's session
+ * list is weaker than a saved one: a lost session reattached by name comes
+ * back as an empty shell in the default folder, so the saved folder wins.
+ * `listedOnly` holds the "host::session" keys whose folder came only from
+ * that list.
+ */
+export function keepKnownDetails(captured: readonly SnapshotSession[], previous: readonly SnapshotSession[] | undefined, listedOnly: ReadonlySet<string>): SnapshotSession[] {
+  if (!previous?.length) return [...captured];
+  const known = new Map(previous.map(entry => [`${entry.host}::${entry.session}`, entry]));
+  return captured.map(entry => {
+    const key = `${entry.host}::${entry.session}`;
+    const before = known.get(key);
+    if (!before) return entry;
+    const cwd = before.cwd && (!entry.cwd || listedOnly.has(key)) ? before.cwd : entry.cwd;
+    const agent = entry.agent ?? before.agent;
+    const branch = entry.branch ?? (before.branch && cwd === before.cwd ? before.branch : undefined);
+    // Same field order as a fresh capture, so an unchanged session compares equal.
+    const { deviceId, host, session, cwd: _cwd, agent: _agent, branch: _branch, ...layout } = entry;
+    return { deviceId, host, session, ...(cwd ? { cwd } : {}), ...(agent ? { agent } : {}), ...layout, ...(branch ? { branch } : {}) };
+  });
+}
+
 // Validate stored snapshots; malformed entries are dropped, never repaired.
 export function parseSnapshots(raw: unknown): WorkspaceSnapshot[] {
   if (!Array.isArray(raw)) return [];
   const out: WorkspaceSnapshot[] = [];
-  for (const value of raw.slice(0, MAX_SNAPSHOTS)) {
+  // Read past the caps (bounded against a huge stored value), then cap each kind,
+  // so a list stored by an older version never loses snapshots saved by hand.
+  for (const value of raw.slice(0, 1000)) {
     if (!value || typeof value !== "object") continue;
     const row = value as Record<string, unknown>;
     if (typeof row.id !== "string" || !row.id || row.id.length > 64) continue;
@@ -162,7 +217,7 @@ export function parseSnapshots(raw: unknown): WorkspaceSnapshot[] {
     const columns = typeof row.columns === "number" && Number.isInteger(row.columns) && row.columns >= 1 && row.columns <= 12 ? row.columns : undefined;
     if (sessions.length) out.push({ id: row.id, workspaceId: row.workspaceId, name: row.name, createdAt: row.createdAt, sessions, ...(columns ? { columns } : {}), ...(row.auto === true ? { auto: true } : {}) });
   }
-  return out;
+  return capSnapshots(out);
 }
 
 // Split a snapshot into sessions to create and sessions already running: open

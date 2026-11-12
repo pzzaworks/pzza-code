@@ -40,11 +40,22 @@ export PATH="$HOME/.rustup/toolchains/stable-aarch64-apple-darwin/bin:$PATH"
 # and opens a Finder window to arrange icons - so a build never pops the DMG open.
 export CI=true
 
+# CARGO_TARGET_DIR moves the whole build elsewhere: a release must never
+# overwrite a bundle that a running terminal helper was started from, since
+# that helper owns every local terminal session on this Mac.
+BUNDLE="${CARGO_TARGET_DIR:-src-tauri/target}/aarch64-apple-darwin/release/bundle"
+APP="$BUNDLE/macos/PzzaCode.app"
+APP_BINARY="$(cd "$(dirname "$APP")" 2>/dev/null && pwd)/PzzaCode.app/Contents/MacOS/pzzacode"
+# Paths compare without case (the volume is case-insensitive), against every
+# process including the launchd-started helper.
+if ps -axo command= | awk -v binary="$APP_BINARY" 'index(tolower($0), tolower(binary)) == 1 { found = 1 } END { exit !found }'; then
+  echo "A running PzzaCode process uses $APP_BINARY. Set CARGO_TARGET_DIR to another folder so the release does not replace it."
+  exit 1
+fi
+
 echo "==> Building $TAG (Apple Silicon)"
 npm run tauri build -- --target aarch64-apple-darwin --bundles app,dmg
 
-BUNDLE="src-tauri/target/aarch64-apple-darwin/release/bundle"
-APP="$BUNDLE/macos/PzzaCode.app"
 DMG="$BUNDLE/dmg/PzzaCode_${VERSION}_aarch64.dmg"
 TARGZ="$BUNDLE/macos/PzzaCode.app.tar.gz"
 SIG="$TARGZ.sig"

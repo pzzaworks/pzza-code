@@ -234,6 +234,8 @@ test("discard previews what would be lost and removes only an unchanged, unlocke
   assert.deepEqual(preview.commits.map((commit) => commit.subject), ["Add feature"]);
   assert.deepEqual(preview.uncommitted.map((file) => `${file.status}:${file.path}`).sort(),
     ["deleted:del.txt", "modified:a.txt", "renamed:new.txt", "untracked:bin.dat", "untracked:huge.txt", "untracked:u.txt"]);
+  // Ignored files are deleted with the worktree, so the preview names them.
+  assert.deepEqual(preview.ignored, ["debug.log"]);
   assert.equal(preview.truncated, false);
   assert.equal(preview.locked, false);
   assert.match(preview.fingerprint, /^[0-9a-f]{64}$/);
@@ -246,6 +248,15 @@ test("discard previews what would be lost and removes only an unchanged, unlocke
 
   await assert.rejects(previewTaskDiscard({ host: "", path: main, base: null }), { status: 409, message: /main checkout/ });
   await assert.rejects(discardTaskWorktree({ host: "", path: main, fingerprint: "0".repeat(64) }), { status: 409, message: /main checkout/ });
+
+  // A new ignored file the user never saw stops the discard too.
+  await write(path.join(worktree, "local.log"), "hand-edited ignored file\n");
+  const withIgnored = await previewTaskDiscard({ host: "", path: worktree, base: null });
+  assert.deepEqual(withIgnored.ignored, ["debug.log", "local.log"]);
+  assert.notEqual(withIgnored.fingerprint, preview.fingerprint);
+  await assert.rejects(discardTaskWorktree({ host: "", path: worktree, fingerprint: preview.fingerprint }), { status: 409, message: /changed since you reviewed it/ });
+  await fs.access(path.join(worktree, "local.log"));
+  await fs.rm(path.join(worktree, "local.log"));
 
   // Anything new since the preview stops the discard.
   await write(path.join(worktree, "late.txt"), "written after the review\n");
@@ -576,6 +587,8 @@ test("a launch cut short is reconciled on the next load: reattached while its se
   // The app quit right after the worktree step: no session, no record of the folder.
   await exec("/bin/sh", ["-c", WORKTREE_SCRIPT, "pzza-worktree", repo, "crash-task", "develop"], { timeout: 15000 });
   const dir = path.join(root, "app.worktrees", "crash-task");
+  // The setup copied the main checkout's .env in, byte for byte.
+  await write(path.join(repo, ".env"), "TOKEN=copied\n");
   await write(path.join(dir, ".env"), "TOKEN=copied\n");
 
   // Looking never changes anything and names the folder to reattach.
@@ -650,4 +663,38 @@ test("reclaim never deletes a worktree with changes, commits, a lock, or one tha
   // A kept worktree stays reachable through the regular discard.
   const preview = await previewTaskDiscard({ host: "", path: committed, base: "main" });
   assert.deepEqual(preview.commits.map((commit) => commit.subject), ["Agent commit"]);
+});
+
+test("reclaim keeps a worktree whose ignored files are not copies of the main checkout's", { timeout: 30000 }, async (t) => {
+  const root = await tempRoot(t);
+  const repo = path.join(root, "app");
+  await makeRepo(repo);
+  await write(path.join(repo, ".gitignore"), ".env*\nnode_modules/\n*.db\n");
+  await write(path.join(repo, ".env"), "TOKEN=main\n");
+  await write(path.join(repo, "node_modules", "dep", "index.js"), "module.exports = 1;\n");
+  await git(repo, "add", ".gitignore");
+  await git(repo, "commit", "-qm", "init");
+  const startedAt = Date.now();
+  const create = (slug) => exec("/bin/sh", ["-c", WORKTREE_SCRIPT, "pzza-worktree", repo, slug, "main"], { timeout: 15000 }).then(() => path.join(root, "app.worktrees", slug));
+  const reclaim = (slug) => reclaimTaskWorktree({ host: "", path: repo, slug, base: "main", startedAt, remove: true });
+
+  // A hand-edited env file, a local database and a folder the main checkout lacks are all kept.
+  const edited = await create("edited");
+  await write(path.join(edited, ".env"), "TOKEN=edited in the task\n");
+  const database = await create("database");
+  await write(path.join(database, "local.db"), "rows\n");
+  const folder = await create("folder");
+  await write(path.join(folder, ".env.cache", "state"), "state\n");
+  for (const [slug, dir] of [["edited", edited], ["database", database], ["folder", folder]]) {
+    assert.deepEqual(await reclaim(slug), { state: "kept", worktree: dir, branch: `pzza/${slug}`, reason: "changes", branchDeleted: false }, slug);
+  }
+  assert.equal(await fs.readFile(path.join(edited, ".env"), "utf8"), "TOKEN=edited in the task\n");
+  assert.equal(await fs.readFile(path.join(database, "local.db"), "utf8"), "rows\n");
+
+  // Setup copies and a dependency folder the main checkout also has are disposable.
+  const copies = await create("copies");
+  await write(path.join(copies, ".env"), "TOKEN=main\n");
+  await write(path.join(copies, "node_modules", "dep", "index.js"), "module.exports = 2;\n");
+  assert.deepEqual(await reclaim("copies"), { state: "removed", worktree: null, branch: "pzza/copies", branchDeleted: true });
+  assert.equal(await exists(copies), false);
 });

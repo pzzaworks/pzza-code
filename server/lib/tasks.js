@@ -168,8 +168,8 @@ exit 0`;
 
 // Expects $top (a linked worktree, checked). Reads what a discard would lose:
 // the main checkout, the lock, HEAD, the branch and a hash of the full
-// porcelain status (untracked files listed one by one), kept in a private
-// temporary folder.
+// porcelain status (untracked files listed one by one) plus the ignored
+// files, both kept in a private temporary folder.
 const STATE_SH = String.raw`${LINKED_SH}main=$(git worktree list --porcelain 2>/dev/null </dev/null | sed -n '1s/^worktree //p')
 [ -n "$main" ] || exit 17
 locked=0
@@ -181,7 +181,11 @@ tmpbase=$TMPDIR
 work=$(mktemp -d "$tmpbase/pzza-task.XXXXXX") || exit 4
 trap 'rm -rf -- "$work"' EXIT
 git --no-optional-locks status --porcelain=v1 -z --untracked-files=all >"$work/status" 2>/dev/null </dev/null || exit 26
-st=$(git hash-object --no-filters -- "$work/status" 2>/dev/null) || exit 26
+# Ignored files (a hand-edited .env.local, a local database) go with the
+# worktree too, so they are listed and part of the fingerprint. A wholly
+# ignored folder (node_modules) is one entry, so its contents never churn it.
+git --no-optional-locks ls-files -z --others --ignored --exclude-standard --directory >"$work/ignored" 2>/dev/null </dev/null || exit 26
+st=$({ cat -- "$work/status"; printf '\036ignored\036'; cat -- "$work/ignored"; } | git hash-object --no-filters --stdin 2>/dev/null) || exit 26
 `;
 
 // $1 folder, $2 base ("" = none given). The base is $2 when it is a local
@@ -209,6 +213,8 @@ if [ -n "$tip" ]; then
 fi
 printf '\036status\n'
 head -c ${GIT_REVIEW_LIMITS.statusBytes + 1} -- "$work/status" | base64
+printf '\n\036ignored\n'
+head -c ${GIT_REVIEW_LIMITS.statusBytes + 1} -- "$work/ignored" | base64
 printf '\n'
 exit 0`;
 
@@ -237,7 +243,8 @@ exit 0`;
 // that branch (or there is no folder and the branch is checked out nowhere),
 // unlocked, the branch's reflog starts no earlier than $4 (it is this
 // launch's, not an older one of the same name), it has no commit outside the
-// base, and the worktree has no uncommitted or untracked change. Then the
+// base, and the worktree has no uncommitted or untracked change and no
+// ignored file beyond copies of the main checkout's own. Then the
 // worktree goes with a plain `git worktree remove` (git itself refuses a
 // dirty one) and the branch with an update-ref that only deletes it while it
 // still points where it was checked: like `git branch -d`, but against the
@@ -273,6 +280,18 @@ ahead=$(git rev-list -n 1 "refs/heads/$3..$ref" -- 2>/dev/null </dev/null) || ke
 if [ "$present" = 1 ]; then
   changes=$(git -C "$dir" --no-optional-locks status --porcelain --untracked-files=all 2>/dev/null </dev/null) || keep unreadable
   [ -z "$changes" ] || keep changes
+  # git worktree remove deletes ignored files too. Only setup copies (the same
+  # bytes as the main checkout's file) and folders the main checkout also has
+  # (dependencies, build output) are disposable; anything else is kept. Names
+  # git has to quote never match a file, so they keep the worktree as well.
+  ignored=$(git -C "$dir" --no-optional-locks ls-files --others --ignored --exclude-standard --directory 2>/dev/null </dev/null) || keep unreadable
+  printf '%s\n' "$ignored" | while IFS= read -r entry; do
+    [ -n "$entry" ] || continue
+    case $entry in
+      */) [ -d "$top/$entry" ] || exit 1 ;;
+      *) [ -f "$top/$entry" ] && cmp -s -- "$dir/$entry" "$top/$entry" || exit 1 ;;
+    esac
+  done || keep changes
 fi
 if [ -n "$registered" ] && ! out=$(git worktree remove "$dir" 2>&1 </dev/null); then
   printf '\036error\n%s\n' "$(printf '%s' "$out" | tail -c 1024)"
@@ -621,6 +640,15 @@ export async function taskDiff({ host, path, base, file, from = file }, options 
   return buildDiff(before.buffer, after.buffer, before.cut || after.cut);
 }
 
+// `git ls-files -z --others --ignored --directory`: one path per NUL; a cut
+// listing drops its partial last entry. Control characters are shown as "?"
+// rather than hiding a file that is deleted all the same.
+export function parseIgnoredZ({ text, cut }) {
+  const paths = text.split("\0");
+  if (cut || paths[paths.length - 1] === "") paths.pop();
+  return { paths: paths.filter(Boolean).map((entry) => entry.replace(new RegExp(CONTROL.source, "g"), "?")), truncated: cut };
+}
+
 const fingerprintOf = (head, statusHash, branch) => crypto.createHash("sha256").update(JSON.stringify([head, statusHash, branch])).digest("hex");
 const shortRef = (ref) => ref.replace(/^refs\/heads\//, "").replace(/^refs\/remotes\//, "");
 
@@ -634,13 +662,16 @@ async function discardState({ host, path, base }, options) {
   const { commits, more } = parseCommits(found.get("commits"));
   const status = cappedSection(found, "status", GIT_REVIEW_LIMITS.statusBytes);
   const parsed = parseStatusZ(status.text, status.cut);
+  const ignored = parseIgnoredZ(cappedSection(found, "ignored", GIT_REVIEW_LIMITS.statusBytes));
   return {
     main,
     branch: branch || null,
     base: baseRef ? shortRef(baseRef) : null,
     commits,
     uncommitted: parsed.files.slice(0, TASK_LIMITS.uncommitted).map(({ path: file, status: state }) => ({ path: file, status: state })),
-    truncated: more || parsed.truncated || parsed.files.length > TASK_LIMITS.uncommitted,
+    // Ignored files and folders the removal deletes too ("dir/" for a whole folder).
+    ignored: ignored.paths.slice(0, TASK_LIMITS.uncommitted),
+    truncated: more || parsed.truncated || parsed.files.length > TASK_LIMITS.uncommitted || ignored.truncated || ignored.paths.length > TASK_LIMITS.uncommitted,
     locked: found.get("locked") === "1",
     fingerprint: fingerprintOf(head, statusHash, branch),
     head,
