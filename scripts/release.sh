@@ -45,6 +45,8 @@ export CI=true
 # that helper owns every local terminal session on this Mac.
 BUNDLE="${CARGO_TARGET_DIR:-src-tauri/target}/aarch64-apple-darwin/release/bundle"
 APP="$BUNDLE/macos/PzzaCode.app"
+# A fresh target folder has no bundle yet; create it so the path resolves.
+mkdir -p "$(dirname "$APP")"
 APP_BINARY="$(cd "$(dirname "$APP")" 2>/dev/null && pwd)/PzzaCode.app/Contents/MacOS/pzzacode"
 # Paths compare without case (the volume is case-insensitive), against every
 # process including the launchd-started helper.
