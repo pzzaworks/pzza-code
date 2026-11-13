@@ -47,3 +47,13 @@ yarn-error.log*
 # OS
 .DS_Store
 Thumbs.db
+
+# Local test suite, fixtures and audit tools stay on disk only. Just the
+# scripts the build and release need are tracked.
+/scripts/*
+!/scripts/agent-catalog.mjs
+!/scripts/agent-smoke.mjs
+!/scripts/fetch-onnxruntime.sh
+!/scripts/release.sh
+!/scripts/terminal-renderer-patch.mjs
+!/scripts/terminal-renderer-patch.d.mts
