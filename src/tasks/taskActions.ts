@@ -1,6 +1,6 @@
-import { useStore } from "../state/store";
+import { isSessionTile, sessionTileById, useStore } from "../state/store";
 import { useCheckpointsUi } from "../checkpoints";
-import { createSessionInApp, useSessionCreation, WORKTREE_COLLISION } from "../sessionActions";
+import { createSessionInApp, creationIdle, enqueueLaunch, WORKTREE_COLLISION } from "../sessionActions";
 import { deviceHost } from "../devices";
 import { ALL_WORKSPACE_ID, DEFAULT_WORKSPACE_ID } from "../workspaces";
 import { hasPendingPermission } from "../state/permissionPrompts";
@@ -78,7 +78,7 @@ function freeSlug(base: string, host: string, agents: readonly string[], elsewhe
   const taken = new Set([
     ...elsewhere,
     ...useTasks.getState().tasks.filter((task) => task.host === host).flatMap((task) => task.candidates.map((candidate) => candidate.session)),
-    ...state.tiles.filter((tile) => (tile.host ?? "") === host).map((tile) => tile.session ?? tile.name),
+    ...state.tiles.filter(isSessionTile).filter((tile) => (tile.host ?? "") === host).map((tile) => tile.session ?? tile.name),
     ...(host ? [] : state.allSessions.map((session) => session.name)),
   ]);
   for (let attempt = 1; attempt < 100; attempt++) {
@@ -92,31 +92,6 @@ function workspaceForNewTiles(): string {
   const state = useStore.getState();
   const active = state.activeWorkspaceId;
   return active === ALL_WORKSPACE_ID || !state.workspaces.some((item) => item.id === active) ? DEFAULT_WORKSPACE_ID : active;
-}
-
-// The regular session creation runs one at a time; a session the user is
-// creating meanwhile is waited for instead of failing the task.
-export function creationIdle(): Promise<void> {
-  if (useSessionCreation.getState().operation?.status !== "running") return Promise.resolve();
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => { stop(); reject(new Error("Another session took too long to start.")); }, 120000);
-    const stop = useSessionCreation.subscribe((state) => {
-      if (state.operation?.status === "running") return;
-      clearTimeout(timer);
-      stop();
-      resolve();
-    });
-  });
-}
-
-// Task launches run one after another, across tasks, chains and retries: the
-// regular session creation takes one at a time (createSessionInApp refuses a
-// second while one runs). Any number of launches can wait here; none is dropped.
-let launches: Promise<unknown> = Promise.resolve();
-export function enqueueLaunch<T>(work: () => Promise<T>): Promise<T> {
-  const run = launches.then(work, work);
-  launches = run.catch(() => undefined);
-  return run;
 }
 
 function newCandidate(host: string, name: string, agent: AgentPick): TaskCandidate {
@@ -151,7 +126,7 @@ async function launchCandidate(task: Task, candidateId: string): Promise<void> {
         name, deviceId: task.deviceId, workspaceId: task.workspaceId, cwd: task.repo, worktree: true, base: task.base,
         agent: { id: candidate.agent.id, mode: candidate.agent.mode, ...(prompt ? { prompt } : {}) },
       }, (details) => { created = { cwd: details.cwd, copied: details.setup?.copied ?? [] }; });
-      const worktree = created.cwd ?? useStore.getState().tiles.find((tile) => tile.id === tileId)?.cwd ?? "";
+      const worktree = created.cwd ?? sessionTileById(useStore.getState().tiles, tileId)?.cwd ?? "";
       updateCandidate(task.id, candidateId, { launch: "started", tileId, worktree, copied: created.copied, startedAt: Date.now(), error: undefined });
       const chain = useTasks.getState().tasks.find((item) => item.id === task.id)?.chain;
       if (chain) useTasks.getState().updateTask(task.id, { chain: { ...chain, steps: chain.steps.map((step, index) => (index === 0 ? { ...step, session: name, tileId } : step)) } });
@@ -239,7 +214,7 @@ export async function retryWithAgent(taskId: string, agent: AgentPick): Promise<
   const task = useTasks.getState().tasks.find((item) => item.id === taskId);
   if (!task) throw new Error("This task is gone.");
   const base = `${task.slug}-${agent.id}`;
-  const taken = new Set([...task.candidates.map((candidate) => candidate.session), ...useStore.getState().tiles.map((tile) => tile.session ?? tile.name)]);
+  const taken = new Set([...task.candidates.map((candidate) => candidate.session), ...useStore.getState().tiles.filter(isSessionTile).map((tile) => tile.session ?? tile.name)]);
   let name = base;
   for (let count = 2; taken.has(name); count++) name = `${base}-${count}`;
   const candidate = newCandidate(task.host, name, agent);

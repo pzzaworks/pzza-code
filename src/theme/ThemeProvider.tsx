@@ -38,10 +38,29 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
     // A full-screen transition changes native corner clipping as well as size.
     const isMac = /mac/i.test(navigator.platform || navigator.userAgent);
     if (isMac) window.addEventListener("resize", apply);
+    // The compositor keeps the background blur on the window's current
+    // surface only: activation, Space or display changes and being ordered
+    // back in can drop it silently, leaving windows behind sharp through the
+    // glass. Re-apply on those transitions (the timer above coalesces bursts).
+    const reapplyWhenVisible = () => { if (document.visibilityState === "visible") apply(); };
+    const unlisteners: Promise<() => void>[] = [];
+    if (isMac && nativeBlurRadius > 0) {
+      document.addEventListener("visibilitychange", reapplyWhenVisible);
+      unlisteners.push(import("@tauri-apps/api/window").then(({ getCurrentWindow }) => {
+        const native = getCurrentWindow();
+        return Promise.all([
+          native.onFocusChanged(({ payload: focused }) => { if (focused) apply(); }),
+          native.onScaleChanged(apply),
+          native.onMoved(apply),
+        ]).then((stops) => () => stops.forEach((stop) => stop()));
+      }).catch(() => () => undefined));
+    }
     return () => {
       alive = false;
       window.clearTimeout(timer);
       if (isMac) window.removeEventListener("resize", apply);
+      document.removeEventListener("visibilitychange", reapplyWhenVisible);
+      unlisteners.forEach((pending) => void pending.then((stop) => stop()));
     };
   }, [transparent, nativeBlurRadius]);
 

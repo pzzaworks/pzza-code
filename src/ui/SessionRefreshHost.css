@@ -44,3 +44,13 @@
   background: var(--surface-alt);
   color: var(--text);
 }
+
+/* Semi-transparent mode: the notice floats over the app like a menu, so it is
+   the same liquid glass (tokens on :root); a failed notice keeps its tinted
+   border. */
+:root[data-transparency="on"] .session-refresh-notice {
+  background: var(--glass-bg);
+  -webkit-backdrop-filter: var(--glass-filter);
+  backdrop-filter: var(--glass-filter);
+}
+:root[data-transparency="on"] .session-refresh-notice:not(.is-fail) { border-color: var(--glass-border); }

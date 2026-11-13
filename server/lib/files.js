@@ -10,7 +10,7 @@ import { execFile, spawn } from "node:child_process";
 import { DEVBOX, IS_CLIENT } from "./config.js";
 import { SSH_TOKEN, shOn, shQuote } from "./shell.js";
 import { cors, json, readBody } from "./http.js";
-import { denied, mimeType, realSafePath, remoteGuard, remotePath, safePath } from "./paths.js";
+import { denied, mimeType, realSafePath, refusalReason, remoteGuard, remotePath, safePath } from "./paths.js";
 
 import { FILE_MUTATION_SCRIPT } from "./file-mutations.js";
 import { terminalDropRouter } from "./terminal-drop.js";
@@ -465,7 +465,7 @@ export async function filesRouter(req, res, url) {
     let descriptor;
     try {
       const p = realSafePath(url.searchParams.get("path"));
-      if (!p) return json(res, 400, { error: "invalid path" }), true;
+      if (!p) return json(res, 403, { error: refusalReason(url.searchParams.get("path")) }), true;
       // The resolved path has no links left; a FIFO or device is refused unopened.
       const opened = openRegularFile(p);
       descriptor = opened.descriptor;
@@ -544,7 +544,7 @@ export async function filesRouter(req, res, url) {
     }
     try {
       const p = realSafePath(body.path);
-      if (!p) return json(res, 400, { error: "invalid path" }), true;
+      if (!p) return json(res, 403, { error: refusalReason(body.path) }), true;
       const sha256 = writeTextFileAtomic(p, content, expected);
       return json(res, 200, { ok: true, sha256 }), true;
     } catch (e) {
@@ -560,7 +560,7 @@ export async function filesRouter(req, res, url) {
     let opened;
     try {
       p = realSafePath(url.searchParams.get("path"));
-      if (!p) return json(res, 400, { error: "invalid path" }), true;
+      if (!p) return json(res, 403, { error: refusalReason(url.searchParams.get("path")) }), true;
       opened = openRegularFile(p);
     } catch (e) {
       return json(res, e.status ?? 404, { error: String(e.message || e) }), true;

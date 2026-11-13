@@ -1,8 +1,8 @@
 import { deviceNameFor } from "../devices";
-import { fetchPaneOutputActivity } from "../serverApi";
+import { OUTPUT_ACTIVITY_SHARE_MS, readPaneOutputActivity } from "./outputActivityCache";
 import { sessionDisplayName } from "../sessionMeta";
 import { notify, useNotifications } from "../state/notifications";
-import { useStore } from "../state/store";
+import { isSessionTile, useStore, type Session } from "../state/store";
 import { outputWorking } from "../tasks/taskStatus";
 import { paneForeground } from "./permissionForeground";
 import { sessionAgent, type SessionAgentId } from "../../server/lib/session-agents.js";
@@ -59,7 +59,7 @@ function hasUnreadBgDot(tileId: string): boolean {
   );
 }
 
-type Tile = ReturnType<typeof useStore.getState>["tiles"][number];
+type Tile = Session;
 
 // One dot per hidden burst, and only for a tile that is still hidden.
 function dot(tile: Tile, activity: number, title: string, body: string): void {
@@ -88,7 +88,7 @@ export async function pollBackgroundActivity(now = Date.now()): Promise<void> {
   const known = new Set(state.tiles.map((t) => t.id));
   prune(known);
   const isHiddenTile = (id: string) => state.tileObserved[id] === false;
-  const hidden = state.tiles.filter(
+  const hidden = state.tiles.filter(isSessionTile).filter(
     (t) => !t.id.startsWith("quick-chat:") && isHiddenTile(t.id),
   );
   // Visible tiles leave the streak so a later hide starts with a fresh
@@ -112,7 +112,7 @@ export async function pollBackgroundActivity(now = Date.now()): Promise<void> {
     const host = hostKey === "" ? undefined : hostKey;
     let rows;
     try {
-      rows = await fetchPaneOutputActivity(host, AbortSignal.timeout(10000));
+      rows = await readPaneOutputActivity(host, { maxAge: OUTPUT_ACTIVITY_SHARE_MS, now });
     } catch {
       return;
     }

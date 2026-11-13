@@ -62,7 +62,7 @@ const JOURNAL_VERSION: u32 = 1;
 // How long a restore waits for a refresh or restore another app copy runs.
 const RESTORE_WAIT: Duration = Duration::from_secs(60);
 // How long a refresh waits for a periodic record to let go of the journal: a
-// record makes at most seven tmux calls of 4 s each.
+// record makes at most two tmux calls of 4 s each.
 const RECORD_WAIT: Duration = Duration::from_secs(30);
 // A session restored under its own name while a session of that name is in
 // use comes back under this name instead (numbered from 2 when taken).
@@ -736,6 +736,72 @@ fn run(tmux: Tmux, args: &[String]) -> Result<Output, String> {
 
 fn read(tmux: Tmux, args: &[&str]) -> Result<String, String> {
     run(tmux, &strings(args)).map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+/// Runs several tmux commands in one call. tmux runs the commands of one call
+/// back to back on the server it connected to, so every output comes from
+/// the same server. A marker line (unguessable, so no pane path or name can
+/// fake it) printed before each command after the first splits the output.
+/// tmux skips the rest of the call once a command fails. Returns the output
+/// of each command that completed, in order, and tmux's reason when one
+/// failed (the output before it is kept).
+fn read_chained(tmux: Tmux, commands: &[&[&str]]) -> (Vec<String>, Option<String>) {
+    let Some(nonce) = crate::agent::random_hex(8) else {
+        return (Vec::new(), Some("No randomness for the tmux listing".into()));
+    };
+    let marker = format!("pzza-section-{nonce}");
+    let mut args: Vec<String> = Vec::new();
+    for (number, command) in commands.iter().enumerate() {
+        if number > 0 {
+            args.extend(strings(&[";", "display-message", "-p", &marker, ";"]));
+        }
+        args.extend(strings(command));
+    }
+    let output = match bounded(tmux().args(&args)) {
+        Ok(output) => output,
+        Err(error) => return (Vec::new(), Some(error.to_string())),
+    };
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut sections: Vec<String> = stdout.split(&format!("{marker}\n")).map(String::from).collect();
+    if output.status.success() {
+        if sections.len() == commands.len() {
+            return (sections, None);
+        }
+        return (Vec::new(), Some("tmux returned an unexpected listing".into()));
+    }
+    // The last section is the partial output of the command that failed.
+    sections.pop();
+    sections.truncate(commands.len());
+    let reason = String::from_utf8_lossy(&output.stderr).trim().chars().take(200).collect::<String>();
+    (sections, Some(if reason.is_empty() { "tmux did not accept the command".into() } else { reason }))
+}
+
+/// The running server (as server_identity reports it) and its sessions,
+/// from one tmux call; None when no server answers. Every listing comes from
+/// the server named, so no second identity check is needed.
+fn server_snapshot(tmux: Tmux) -> Result<Option<(String, Vec<SavedSession>)>, String> {
+    let (sections, failed) = read_chained(tmux, &[
+        &["display-message", "-p", SERVER_FORMAT],
+        &["list-sessions", "-F", SESSIONS_FORMAT],
+        &["list-windows", "-a", "-F", WINDOWS_FORMAT],
+        &["list-panes", "-a", "-F", PANES_FORMAT],
+    ]);
+    let Some(identity) = sections.first().map(|text| text.trim()).filter(|identity| server_name(identity)) else {
+        // The server did not even report itself: none is running.
+        return Ok(None);
+    };
+    if let Some(reason) = failed {
+        return Err(reason);
+    }
+    Ok(Some((identity.to_string(), plan_snapshot(&sections[1], &sections[2], &sections[3]))))
+}
+
+/// The running server and its placeholder sessions, from one tmux call. A
+/// listing that fails reads as no placeholders; no server, as None.
+fn server_placeholders(tmux: Tmux) -> (Option<String>, HashSet<String>) {
+    let (sections, _) = read_chained(tmux, &[&["display-message", "-p", SERVER_FORMAT], &["list-panes", "-a", "-F", PLACEHOLDER_FORMAT]]);
+    let identity = sections.first().map(|text| text.trim()).filter(|identity| server_name(identity)).map(String::from);
+    (identity, sections.get(1).map(|listing| placeholder_sessions(listing)).unwrap_or_default())
 }
 
 /// The sessions on the server right now; none when no server is running.
@@ -1639,15 +1705,9 @@ fn settle_journal(data: &Path, saved: &Saved, server: &str, owed: &Owed, recorde
 /// started and the earlier ones of windows that kept theirs. Nothing is
 /// recorded when the server stopped answering meanwhile.
 fn save_record(tmux: Tmux, data: &Path, saved: &Saved, started: Vec<AgentResume>) {
-    let Some(server) = server_identity(tmux) else {
+    let Ok(Some((server, sessions))) = server_snapshot(tmux) else {
         return;
     };
-    let Ok(sessions) = snapshot(tmux) else {
-        return;
-    };
-    if server_identity(tmux).as_deref() != Some(server.as_str()) {
-        return;
-    }
     let mut agents = started;
     for agent in saved.record.iter().flat_map(|record| &record.agents).chain(&saved.journal.agents) {
         if !agents.iter().any(|entry| entry.session == agent.session && entry.window == agent.window) {
@@ -1669,16 +1729,24 @@ pub fn record(tmux: Tmux, data: &Path, agents: Option<Vec<AgentResume>>) -> Resu
     if let Some(agents) = &agents {
         check_agents(agents)?;
     }
-    let Some(server) = server_identity(tmux) else {
+    // The server and its sessions in one tmux call: this runs every few
+    // seconds while the app is open.
+    let Some((server, live)) = server_snapshot(tmux)? else {
         return Ok(RecordStatus::default());
     };
     let saved = load(data);
-    let live = snapshot(tmux)?;
     let replaced = saved.replaced(&server);
-    let placeholders = if replaced || !saved.journal.pending.is_empty() { placeholders(tmux) } else { HashSet::new() };
-    if server_identity(tmux).as_deref() != Some(server.as_str()) {
-        return Ok(RecordStatus::default());
-    }
+    let placeholders = if replaced || !saved.journal.pending.is_empty() {
+        // Listed in a call of their own, and used only while the same server
+        // still answers.
+        let (now, placeholders) = server_placeholders(tmux);
+        if now.as_deref() != Some(server.as_str()) {
+            return Ok(RecordStatus::default());
+        }
+        placeholders
+    } else {
+        HashSet::new()
+    };
     let owed = owed_sessions(saved.record.as_ref(), &saved.journal, &server, &live, &placeholders);
     if replaced && !owed.sessions.is_empty() {
         return Ok(RecordStatus { restarted: true });
@@ -2279,6 +2347,31 @@ mod tests {
             let _ = self.client().arg("kill-server").output();
             let _ = fs::remove_dir_all(&self.directory);
         }
+    }
+
+    #[test]
+    fn one_chained_call_lists_what_separate_calls_list() {
+        let server = Server::new();
+        let client = || server.client();
+        assert_eq!(server_snapshot(&client), Ok(None), "no server running");
+        assert_eq!(server_placeholders(&client), (None, HashSet::new()));
+        server.start("1");
+        let tmux = |args: &[&str]| server.read(args);
+        tmux(&["new-session", "-d", "-s", "work one", "-x", "100", "-y", "30"]);
+        tmux(&["split-window", "-d", "-h", "-t", "=work one:1"]);
+        tmux(&["new-window", "-d", "-t", "=work one:4", "-n", "logs"]);
+        let (identity, sessions) = server_snapshot(&client).unwrap().expect("the server answers");
+        assert_eq!(Some(identity.clone()), server_identity(&client));
+        assert_eq!(sessions, snapshot(&client).unwrap());
+        assert_eq!(sessions.iter().map(|session| session.name.as_str()).collect::<Vec<_>>(), ["placeholder", "work one"]);
+        assert_eq!(sessions[1].windows.len(), 2);
+        assert_eq!(sessions[1].windows[0].panes.len(), 2);
+        assert_eq!(server_placeholders(&client), (Some(identity), placeholders(&client)));
+        // A listing that fails after the server answered is an error, never
+        // a server without sessions.
+        let (sections, failed) = read_chained(&client, &[&["display-message", "-p", "#{pid}"], &["list-windows", "-t", "=missing"], &["list-sessions"]]);
+        assert_eq!(sections.len(), 1);
+        assert!(failed.is_some_and(|reason| reason.contains("missing")));
     }
 
     #[test]

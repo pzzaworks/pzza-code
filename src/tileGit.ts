@@ -1,8 +1,8 @@
 import { fetchGitChanges, fetchGitRemote, fetchGitStatus, type GitChanges, type GitFolderStatus } from "./serverApi";
 import { openUrl } from "./forward";
 import { HAS_TAURI } from "./tauriEnv";
-import { useStore } from "./state/store";
-import { ALL_WORKSPACE_ID, DEFAULT_WORKSPACE_ID } from "./workspaces";
+import { fileTileFolder, isFileTile, useStore } from "./state/store";
+import { ALL_WORKSPACE_ID, DEFAULT_WORKSPACE_ID, wsKeyOf } from "./workspaces";
 import { gitFactsSentence, type GitFactsPullRequest } from "./gitFacts";
 
 // Git actions on the folder a tile works in, shared by the tile footer, the
@@ -23,6 +23,8 @@ export function tileGitTarget(tileId: string): TileGitTarget | null {
   const state = useStore.getState();
   const tile = state.tiles.find((candidate) => candidate.id === tileId);
   if (!tile) return null;
+  // A file tile works in its file's folder on this device, where its editor reads.
+  if (isFileTile(tile)) return { tileId, host: "", folder: fileTileFolder(tile) };
   const listed = state.allSessions.find((session) => session.name === (tile.session ?? tile.name));
   const folder = tile.path ?? listed?.path ?? (tile.cwd?.startsWith("/") ? tile.cwd : undefined);
   if (!folder?.startsWith("/")) return null;
@@ -34,7 +36,7 @@ export function openTileChangesView(tileId: string, folder: string): void {
   const state = useStore.getState();
   const tile = state.tiles.find((candidate) => candidate.id === tileId);
   if (!tile) return;
-  const workspace = state.sessionWs[(tile.host ? `${tile.host}::` : "") + (tile.session ?? tile.name)] ?? DEFAULT_WORKSPACE_ID;
+  const workspace = state.sessionWs[wsKeyOf(tile)] ?? DEFAULT_WORKSPACE_ID;
   if (state.activeWorkspaceId !== ALL_WORKSPACE_ID && state.activeWorkspaceId !== workspace) state.setWorkspace(workspace);
   if (state.hiddenTiles.includes(tileId)) state.unhideTile(tileId);
   state.openTileChanges(tileId, folder);

@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type 
 import { createPortal } from "react-dom";
 import { CircleCheck, CircleDashed, CircleX, FlaskConical, GitPullRequestArrow, LoaderCircle, MoreHorizontal, X, type LucideIcon } from "lucide-react";
 import { openWebPage } from "../tileGit";
+import { visibleInterval } from "../visibility";
 import { AgentIcon } from "../icons/AgentIcon";
 import type { GitPullRequest } from "../serverApi";
 import { sessionAgent, sessionAgentMode } from "../../server/lib/session-agents.js";
@@ -18,8 +19,8 @@ export function useNow(enabled: boolean, interval = 1000): number {
   useEffect(() => {
     if (!enabled) return;
     setNow(Date.now());
-    const timer = setInterval(() => { if (document.visibilityState !== "hidden") setNow(Date.now()); }, interval);
-    return () => clearInterval(timer);
+    // No wake-ups while the window is hidden; a tick comes due on return.
+    return visibleInterval(() => setNow(Date.now()), interval);
   }, [enabled, interval]);
   return now;
 }

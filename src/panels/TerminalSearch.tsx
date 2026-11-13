@@ -1,7 +1,7 @@
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { Regex, Search, TextSearch } from "lucide-react";
-import { useStore } from "../state/store";
+import { isSessionTile, useStore } from "../state/store";
 import { useModalFocus } from "../ui/Modal";
 import { announceMenu } from "../ui/menuBus";
 import { runLocalAppCommand } from "../appControl";
@@ -48,7 +48,7 @@ export function TerminalSearch({ open, onClose, onError }: Props) {
 
   // The active tile is searched first, then the rest in grid order.
   const order = useMemo(() => {
-    const ids = tiles.map((tile) => tile.id);
+    const ids = tiles.filter(isSessionTile).map((tile) => tile.id);
     return activeId && ids.includes(activeId) ? [activeId, ...ids.filter((id) => id !== activeId)] : ids;
   }, [tiles, activeId]);
   const orderRef = useRef(order);

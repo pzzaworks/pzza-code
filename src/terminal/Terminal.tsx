@@ -6,7 +6,7 @@ import { WebglAddon } from "@xterm/addon-webgl";
 import { registerTerminalLinks } from "./links";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import "@xterm/xterm/css/xterm.css";
-import { useStore } from "../state/store";
+import { sessionTileById, useStore } from "../state/store";
 import { themeById, terminalPalette } from "../theme/themes";
 import { killPty, resizePty, spawnPty, writePty } from "./ptyBridge";
 import { openWsPty, type WsPtyHandle } from "./wsPty";
@@ -121,6 +121,31 @@ const MAX_WEBGL_TERMINALS = 8;
 // GPU renderers a pre-warming off-screen tile leaves free for tiles on screen.
 const PREWARM_HEADROOM = 2;
 let liveWebglTerminals = 0;
+// Visible tiles that found every GPU renderer taken, in the order they asked.
+// A released renderer goes to the first one still visible, so a tile that
+// came on screen while the cap was full does not stay on the DOM renderer
+// until it happens to scroll or remount. Each waiter returns whether it took
+// the slot; one that no longer wants it is simply dropped.
+const webglWaiters = new Set<() => boolean>();
+function grantWebglSlots(): void {
+  for (const waiter of webglWaiters) {
+    if (liveWebglTerminals >= MAX_WEBGL_TERMINALS) return;
+    webglWaiters.delete(waiter);
+    waiter();
+  }
+}
+
+// `data-any-drawing` on the root while at least one tile has `data-drawing`,
+// so styles outside the tiles (menu and modal glass refreshes) can follow
+// terminal drawing without watching every tile. Counted across tiles.
+let drawingTiles = 0;
+function tileDrawing(drawing: boolean): void {
+  drawingTiles = Math.max(0, drawingTiles + (drawing ? 1 : -1));
+  const root = document.documentElement;
+  if (drawingTiles > 0) {
+    if (!("anyDrawing" in root.dataset)) root.dataset.anyDrawing = "";
+  } else delete root.dataset.anyDrawing;
+}
 const LINE_RATIO = 1.15;
 const snappedLineHeight = (fontSize: number) => Math.round(fontSize * LINE_RATIO) / fontSize;
 
@@ -131,6 +156,7 @@ function TerminalView({ tileId, name, host, cmd, args, cwd, window: win, active,
   const attachmentStatusRef = useRef(onAttachment);
   attachmentStatusRef.current = onAttachment;
   const retryRef = useRef<(() => void) | null>(null);
+  const hardRefreshRef = useRef<(() => void) | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<XTerm | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -413,15 +439,29 @@ function TerminalView({ tileId, name, host, cmd, args, cwd, window: win, active,
         useStore.getState().semiTransparent ? useStore.getState().transparencyOptions.surfaceOpacity / 100 : 1,
       ));
       let webgl: WebglAddon | null = null;
+      // This tile's turn in the GPU queue (see webglWaiters): taken only while
+      // it is still on screen in a visible window.
+      const takeFreedSlot = () => {
+        if (disposed || webgl || !tileVisible || document.visibilityState !== "visible") return false;
+        acquireRenderer();
+        return webgl !== null;
+      };
       const releaseRenderer = () => {
         if (!webgl) return;
         const renderer = webgl;
         webgl = null;
         liveWebglTerminals--;
         try { renderer.dispose(); } catch { /* Context may already be lost. */ }
+        grantWebglSlots();
       };
       const acquireRenderer = () => {
-        if (webgl || liveWebglTerminals >= MAX_WEBGL_TERMINALS) return;
+        if (webgl) return;
+        if (liveWebglTerminals >= MAX_WEBGL_TERMINALS) {
+          // Full: a tile on screen waits for the next free renderer.
+          if (tileVisible && document.visibilityState === "visible") webglWaiters.add(takeFreedSlot);
+          return;
+        }
+        webglWaiters.delete(takeFreedSlot);
         const renderer = new WebglAddon();
         try {
           term.loadAddon(renderer);
@@ -589,7 +629,7 @@ function TerminalView({ tileId, name, host, cmd, args, cwd, window: win, active,
         // An approval prompt on screen has its own, richer notice.
         if (notification.event === "terminal-bell" && hasPendingPermission(tileId)) return;
         const state = useStore.getState();
-        const tile = state.tiles.find((candidate) => candidate.id === tileId);
+        const tile = sessionTileById(state.tiles, tileId);
         const label = sessionDisplayName(tile ?? { id: tileId, name, session: name, host, window: win }, state.tileTitles)
           .replace(/[\x00-\x1f\x7f-\x9f]/g, "").slice(0, 100);
         const device = (tile?.host ?? host ?? "This device").replace(/[\x00-\x1f\x7f-\x9f]/g, "").slice(0, 100) || "This device";
@@ -627,16 +667,69 @@ function TerminalView({ tileId, name, host, cmd, args, cwd, window: win, active,
       // machine. The bell and erase paths capture on demand, so this
       // speculative per-write refresh only needs to run at most once a second.
       let lastCaptureAt = 0;
-      // While it draws (output, typing, the cursor), a semi-transparent tile
-      // re-blurs its glass every frame: WebKit did not refresh that blur where
-      // the WebGL canvas redrew, so the lines being drawn looked wrong behind.
-      // It stops shortly after drawing does (see .term-surface[data-drawing]).
+      // While a semi-transparent tile draws (output, typing, scrolling), it is
+      // flagged with data-drawing (and the root with data-any-drawing), so
+      // open glass panels re-blur every frame: WebKit did not refresh their
+      // blur where the WebGL canvas redrew. The flag drops shortly after
+      // drawing does. A cursor blink alone is not drawing: it repaints just
+      // the cursor row every 600ms with nothing written, which would keep the
+      // 700ms flag set forever on an idle, focused tile.
       let drawingTimer: ReturnType<typeof setTimeout> | undefined;
-      const drawingListener = term.onRender(() => {
-        if (!useStore.getState().semiTransparent) return;
-        container.dataset.drawing = "";
+      let wroteSinceRender = false;
+      // Last render that counted as drawing. Renders only stamp this; the one
+      // timer re-arms itself until 700ms have passed without drawing, so a
+      // streaming tile does not touch the DOM or its timer on every frame.
+      let drewAt = 0;
+      let drawing = false;
+      const DRAWING_HOLD_MS = 700;
+      const stopDrawing = () => {
         clearTimeout(drawingTimer);
-        drawingTimer = setTimeout(() => { delete container.dataset.drawing; }, 700);
+        drawingTimer = undefined;
+        if (!drawing) return;
+        drawing = false;
+        delete container.dataset.drawing;
+        tileDrawing(false);
+      };
+      const drawingElapsed = () => {
+        const left = drewAt + DRAWING_HOLD_MS - performance.now();
+        if (left > 0) { drawingTimer = setTimeout(drawingElapsed, left); return; }
+        stopDrawing();
+      };
+      // Tile glass refresh (see .tile::before): every canvas render steps the
+      // nudge in its own frame and again the frame after. Three values, so the
+      // follow-up and the next render landing in one frame still change it.
+      const tileElement = container.closest<HTMLElement>(".tile");
+      const GLASS_NUDGES = ["0px", "0.01px", "0.02px"];
+      let glassNudge = 0;
+      let glassFollowUp = 0;
+      const stepGlass = () => {
+        glassNudge = (glassNudge + 1) % GLASS_NUDGES.length;
+        tileElement?.style.setProperty("--tile-glass-nudge", GLASS_NUDGES[glassNudge]);
+      };
+      const refreshGlass = () => {
+        stepGlass();
+        cancelAnimationFrame(glassFollowUp);
+        glassFollowUp = requestAnimationFrame(() => {
+          glassFollowUp = 0;
+          stepGlass();
+        });
+      };
+      const drawingWriteListener = term.onWriteParsed(() => { wroteSinceRender = true; });
+      const drawingListener = term.onRender(({ start, end }) => {
+        const wrote = wroteSinceRender;
+        wroteSinceRender = false;
+        if (!useStore.getState().semiTransparent) return;
+        // Cursor-only renders redraw canvas pixels too: they refresh the
+        // glass, but do not count as drawing (that drives panel refreshes).
+        refreshGlass();
+        if (start === end && !wrote) return;
+        drewAt = performance.now();
+        if (!drawing) {
+          drawing = true;
+          container.dataset.drawing = "";
+          tileDrawing(true);
+        }
+        if (drawingTimer === undefined) drawingTimer = setTimeout(drawingElapsed, DRAWING_HOLD_MS);
       });
       const outputCaptureListener = term.onWriteParsed(() => {
         const now = performance.now();
@@ -646,10 +739,58 @@ function TerminalView({ tileId, name, host, cmd, args, cwd, window: win, active,
       });
       // One transport batch can contain a complete response and its replacement.
       // Observe the buffer before erasure while leaving terminal parsing unchanged.
+      // A redrawing TUI can erase many times a second, and each capture runs
+      // the full 80-row scan. An erase within ERASE_CAPTURE_MS of the last
+      // capture is skipped only when the rows that capture reads (the last 81
+      // buffer rows, as captureOutput's recentOutput reads them) and the
+      // cursor are unchanged, which would capture the very same text again;
+      // any change is still captured before it is erased.
+      const ERASE_CAPTURE_MS = 100;
+      let eraseCapturedAt = -Infinity;
+      let eraseCapturedRows: string | null = null;
+      const captureRows = () => {
+        const buffer = term.buffer.active;
+        const last = buffer.length - 1;
+        let rows = `${buffer.baseY + buffer.cursorY}`;
+        for (let row = Math.max(0, last - 80); row <= last; row++) {
+          const line = buffer.getLine(row);
+          rows += `\n${line?.isWrapped ? "+" : "-"}${line?.translateToString(false, 0, term.cols) ?? ""}`;
+        }
+        return rows;
+      };
       const eraseCaptureListeners = ["J"].map(final => term.parser.registerCsiHandler({ final }, () => {
+        const now = performance.now();
+        const rows = captureRows();
+        if (now - eraseCapturedAt < ERASE_CAPTURE_MS && rows === eraseCapturedRows) return false;
+        eraseCapturedAt = now;
+        eraseCapturedRows = rows;
         notificationSignals.captureOutput(true);
         return false;
       }));
+      // Typed input resets what the signals keep, so the next erase captures again.
+      const signalInput = (text: string) => {
+        eraseCapturedRows = null;
+        notificationSignals.input(text);
+      };
+      // Cursor blink follows the user's setting alone. tmux shows the cursor
+      // with the terminfo cnorm of xterm-256color, `CSI ? 12 l CSI ? 25 h`, on
+      // nearly every redraw, and xterm.js turns blinking off for mode 12, so
+      // the setting never took effect in any tmux tile. Programs still choose
+      // the cursor shape (DECSCUSR); only its blinking stays the user's.
+      const keepBlink = () => { if (term.options.cursorBlink !== useStore.getState().cursorBlink) term.options.cursorBlink = useStore.getState().cursorBlink; };
+      const blinkMode = (params: (number | number[])[]) => params.includes(12);
+      const blinkModeListeners = ["h", "l"].map(final => term.parser.registerCsiHandler({ prefix: "?", final }, (params) => {
+        if (!blinkMode(params)) return false;
+        // Mode 12 alone (cnorm's half) is consumed outright; combined with
+        // other modes the default handler applies them, then blink is restored.
+        if (params.length === 1) return true;
+        queueMicrotask(keepBlink);
+        return false;
+      }));
+      const cursorStyleListener = term.parser.registerCsiHandler({ intermediates: " ", final: "q" }, () => {
+        queueMicrotask(keepBlink);
+        return false;
+      });
       const messageListener = term.parser.registerOscHandler(9, (data) => notificationSignals.osc9(data));
       const titledMessageListener = term.parser.registerOscHandler(777, (data) => notificationSignals.osc777(data));
 
@@ -678,11 +819,28 @@ function TerminalView({ tileId, name, host, cmd, args, cwd, window: win, active,
 
       // Status: producing output -> active (green blink), quiet -> idle (grey),
       // pty gone -> failed (red).
+      // Output only stamps the time: "active" is reported once per burst and
+      // the one idle timer re-arms itself until 2s pass without output, so a
+      // streaming tile does not clear and restart a timer on every chunk.
       let idleTimer: ReturnType<typeof setTimeout> | undefined;
-      const markActive = () => {
-        onStatus?.("active");
+      let outputAt = 0;
+      const ACTIVE_HOLD_MS = 2000;
+      const idleElapsed = () => {
+        const left = outputAt + ACTIVE_HOLD_MS - performance.now();
+        if (left > 0) { idleTimer = setTimeout(idleElapsed, left); return; }
+        idleTimer = undefined;
+        onStatus?.("idle");
+      };
+      // Ends the current burst without reporting idle (the caller reports).
+      const endActive = () => {
         clearTimeout(idleTimer);
-        idleTimer = setTimeout(() => onStatus?.("idle"), 2000);
+        idleTimer = undefined;
+      };
+      const markActive = () => {
+        outputAt = performance.now();
+        if (idleTimer !== undefined) return;
+        onStatus?.("active");
+        idleTimer = setTimeout(idleElapsed, ACTIVE_HOLD_MS);
       };
 
       const raf = requestAnimationFrame(safeFit);
@@ -759,7 +917,7 @@ function TerminalView({ tileId, name, host, cmd, args, cwd, window: win, active,
             if (disposed || transportSuspended) return;
             if (keepAttached()) return;
             transportSuspended = true;
-            clearTimeout(idleTimer);
+            endActive();
             onStatus?.("idle");
             detachTransport();
             // Renderer leaves with the transport: one aligned teardown instead
@@ -784,12 +942,49 @@ function TerminalView({ tileId, name, host, cmd, args, cwd, window: win, active,
           useStore.getState().setTileObserved(tileId, visible);
         } catch { /* store unavailable in preview */ }
       };
+      // Grid-reshape repaint (refreshNonce, below). `paintedBox` is the box
+      // size whose paint is known good: tmux painted the whole pane at attach,
+      // or a hard refresh ran at this size. A reshape that left this tile's box
+      // as it was cannot have left stale cells, so it is skipped; so is a tile
+      // off screen (checked again when it scrolls into view) or detached (its
+      // re-attach repaints everything).
+      let paintedBox: { w: number; h: number } | null = null;
+      const markPainted = () => { paintedBox = { w: container.clientWidth, h: container.clientHeight }; };
+      const boxPainted = () => paintedBox !== null && paintedBox.w === container.clientWidth && paintedBox.h === container.clientHeight;
+      const hardRefresh = () => {
+        if (disposed || transportSuspended || !tileVisible || !container.getClientRects().length || boxPainted()) return;
+        safeFit();
+        const { cols, rows } = term;
+        // A fresh attach already earned a full tmux repaint on its own; the
+        // extra nudge would only flash twice.
+        const freshAttach = Date.now() - lastAttachAtRef.current < 2000;
+        if (!freshAttach && rows > 1) {
+          try {
+            // A real size change makes the tmux server repaint the whole pane.
+            term.resize(cols, rows - 1);
+            term.resize(cols, rows);
+          } catch {
+            /* not attached */
+          }
+        }
+        try {
+          term.refresh(0, term.rows - 1);
+        } catch {
+          /* renderer not ready */
+        }
+        markPainted();
+      };
+      hardRefreshRef.current = hardRefresh;
+      let visibleRefreshTimer: ReturnType<typeof setTimeout> | undefined;
       const visibilityObserver = new IntersectionObserver(([entry]) => {
         tileVisible = entry.isIntersecting;
         if (entry.isIntersecting) acquireRenderer();
         updateRendererVisibility();
         reportObserved(entry.isIntersecting);
         scheduleSuspendCheck();
+        // Reshaped while off screen: repaint once it settles in view.
+        clearTimeout(visibleRefreshTimer);
+        if (entry.isIntersecting && paintedBox !== null && !boxPainted()) visibleRefreshTimer = setTimeout(hardRefresh, 130);
       });
       visibilityObserver.observe(container);
       // The canvas is the scroll container, so it must be the root: with the
@@ -856,7 +1051,7 @@ function TerminalView({ tileId, name, host, cmd, args, cwd, window: win, active,
       };
       const transportFailed = (message: string, code?: number) => {
         if (disposed) return;
-        clearTimeout(idleTimer);
+        endActive();
         onStatus?.("failed");
         if (recovery) recovery.failed(message);
         else {
@@ -880,12 +1075,20 @@ function TerminalView({ tileId, name, host, cmd, args, cwd, window: win, active,
           writeOutput(bytes, consumed);
         };
         if (HAS_TAURI) {
-          const id = await spawnPty({ cmd, args, cwd, cols: term.cols, rows: term.rows }, data, code => {
+          const spawned = { cols: term.cols, rows: term.rows };
+          const id = await spawnPty({ cmd, args, cwd, ...spawned }, data, code => {
             if (current()) transportFailed("The terminal attachment closed.", code);
           });
           if (!current() || exited) { await killPty(id); return; }
           tauriId = id;
+          // A fit that landed while the spawn was in flight (a workspace
+          // return, a maximize, a reflowed grid) found no PTY to resize, so
+          // tmux would keep drawing at the old size inside the larger tile.
+          if (term.cols !== spawned.cols || term.rows !== spawned.rows) {
+            void resizePty(id, term.cols, term.rows).catch(() => {});
+          }
           lastAttachAtRef.current = Date.now();
+          markPainted();
           unregisterDictation = registerDictationTarget(tileId, {
             focus: () => { if (current() && tauriId !== null) term.focus(); },
             preview: text => { composition.suspend(!activeRef.current || !document.hasFocus()); composition.preview(text); },
@@ -909,11 +1112,12 @@ function TerminalView({ tileId, name, host, cmd, args, cwd, window: win, active,
             if (!managedChat && !gotData && !previewDispose) previewDispose = runBrowserPreview(term);
           }, () => { if (current()) transportFailed("The terminal attachment closed."); }, win, host, managedChat);
           lastAttachAtRef.current = Date.now();
+          markPainted();
         }
       };
       const inputListener = term.onData(text => {
         if (disposed || exited || !attachmentReady || (HAS_TAURI && tauriId === null)) return;
-        notificationSignals.input(text);
+        signalInput(text);
         const epoch = connectionEpoch;
         lastWrite = modeGate.send(text, "keyboard");
         void lastWrite.catch((error: unknown) => {
@@ -1027,7 +1231,7 @@ function TerminalView({ tileId, name, host, cmd, args, cwd, window: win, active,
       const sendRaw = async (value: string) => {
         if (transportSuspended) throw new Error("Terminal is paused while hidden. Reveal the tile before sending input.");
         if (!connected()) throw new Error("The terminal is disconnected.");
-        notificationSignals.input(value);
+        signalInput(value);
         cancelDictationInput();
         await modeGate.send(value, "app");
       };
@@ -1087,21 +1291,23 @@ function TerminalView({ tileId, name, host, cmd, args, cwd, window: win, active,
       // it submits. Queued with other pastes, in order. Both the paste and the
       // Enter wait on a fresh look at the screen: on an approval prompt, the
       // text would land in the prompt and Enter would take its highlighted
-      // choice, usually Yes.
-      const unregisterBroadcast = registerBroadcastTarget(tileId, text => enqueuePaste(async () => {
+      // choice, usually Yes. Without `submit` the text is only pasted.
+      const unregisterBroadcast = registerBroadcastTarget(tileId, (text, { submit = true } = {}) => enqueuePaste(async () => {
         if (/[\n\t]/.test(text) && !term.modes.bracketedPasteMode) throw new Error("This terminal takes one line at a time; a shell would run each line on its own.");
         validateTerminalPaste(text, term.modes.bracketedPasteMode);
         if (await approvalShowing()) throw new PendingApprovalError(BROADCAST_PENDING_APPROVAL);
         await insert(text, false);
+        if (!submit) return;
         if (await approvalShowing()) throw new PendingApprovalError(BROADCAST_APPROVAL_APPEARED);
         await sendRaw("\r");
-      }));
+      }), () => term.focus());
       const permissionWatcher = managedChat ? null : createPermissionWatcher(tileId, {
         screen: visibleScreen,
         freshScreen,
         // Queued behind pastes, so an answer never interleaves with one.
         send: value => enqueuePaste(() => sendRaw(value)),
         focused: () => document.hasFocus() && container.contains(document.activeElement),
+        active: () => activeRef.current === true,
         foreground: fresh => paneForeground(host, name, win, fresh),
         // The tile's buffer holds only the screen (tmux draws on the
         // alternate screen), so rows above it come from tmux's history.
@@ -1233,8 +1439,15 @@ function TerminalView({ tileId, name, host, cmd, args, cwd, window: win, active,
         bellListener.dispose();
         outputCaptureListener.dispose();
         drawingListener.dispose();
-        clearTimeout(drawingTimer);
+        drawingWriteListener.dispose();
+        // Leaves the root drawing count too.
+        stopDrawing();
+        cancelAnimationFrame(glassFollowUp);
+        tileElement?.style.removeProperty("--tile-glass-nudge");
+        webglWaiters.delete(takeFreedSlot);
         eraseCaptureListeners.forEach(listener => listener.dispose());
+        blinkModeListeners.forEach(listener => listener.dispose());
+        cursorStyleListener.dispose();
         messageListener.dispose();
         titledMessageListener.dispose();
         pasteController.abort();
@@ -1247,6 +1460,8 @@ function TerminalView({ tileId, name, host, cmd, args, cwd, window: win, active,
         clearTimeout(suspendTimer);
         clearTimeout(resumeTimer);
         clearTimeout(veilTimer);
+        clearTimeout(visibleRefreshTimer);
+        hardRefreshRef.current = null;
         clearTimeout(coverSafetyTimer);
         try {
           useStore.getState().clearTileObserved(tileId);
@@ -1317,34 +1532,14 @@ function TerminalView({ tileId, name, host, cmd, args, cwd, window: win, active,
   // When the grid is reshaped elsewhere (new session, workspace switch, layout
   // change), a resize can leave this kept-alive terminal with stale paint cells.
   // Re-fit, then nudge the row count so tmux does a full redraw that overwrites
-  // every cell, and finally repaint xterm. Runs twice to catch any transition.
+  // every cell, and finally repaint xterm (hardRefresh in the session effect).
+  // Only a visible tile whose box actually changed is refreshed; the second
+  // pass catches a transition still moving at the first and does nothing once
+  // the box has settled.
   useEffect(() => {
     if (refreshNonce === 0) return;
-    const hardRefresh = () => {
-      const term = termRef.current;
-      if (!term || !containerRef.current?.getClientRects().length) return;
-      safeFitRef.current?.();
-      const { cols, rows } = term;
-      // A fresh attach already earned a full tmux repaint on its own; the
-      // extra nudge would only flash twice.
-      const freshAttach = Date.now() - lastAttachAtRef.current < 2000;
-      if (!freshAttach && rows > 1) {
-        try {
-          // A real size change makes the tmux server repaint the whole pane.
-          term.resize(cols, rows - 1);
-          term.resize(cols, rows);
-        } catch {
-          /* not attached */
-        }
-      }
-      try {
-        term.refresh(0, term.rows - 1);
-      } catch {
-        /* renderer not ready */
-      }
-    };
-    const t1 = setTimeout(hardRefresh, 130);
-    const t2 = setTimeout(hardRefresh, 340);
+    const t1 = setTimeout(() => hardRefreshRef.current?.(), 130);
+    const t2 = setTimeout(() => hardRefreshRef.current?.(), 340);
     return () => {
       clearTimeout(t1);
       clearTimeout(t2);

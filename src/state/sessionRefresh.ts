@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { create } from "zustand";
-import { useStore } from "./store";
+import { isSessionTile, useStore } from "./store";
 import { notify } from "./notifications";
 import { noteDetectedAgents, useSessionAgents } from "./sessionAgents";
 import { PERMISSIONS, PERMISSIONS_SUPPORTED, permissionStatuses, type PermissionId, type PermissionStatus } from "./permissions";
@@ -117,7 +117,7 @@ type CanvasState = Pick<ReturnType<typeof useStore.getState>, "tiles" | "connect
  * needs to say so when none is in view.
  */
 export function localTileOnCanvas(state: CanvasState): boolean {
-  return state.tiles.some(tile => !sessionConnection(tile.host, state.connection).host && !state.hiddenTiles.includes(tile.id) &&
+  return state.tiles.filter(isSessionTile).some(tile => !sessionConnection(tile.host, state.connection).host && !state.hiddenTiles.includes(tile.id) &&
     (state.activeWorkspaceId === ALL_WORKSPACE_ID || (state.sessionWs[wsKeyOf(tile)] ?? DEFAULT_WORKSPACE_ID) === state.activeWorkspaceId));
 }
 
@@ -125,7 +125,7 @@ function localTiles(): LocalTile[] {
   const state = useStore.getState();
   const choices = useSessionAgents.getState().agents;
   return state.tiles
-    .filter(tile => !sessionConnection(tile.host, state.connection).host)
+    .filter(isSessionTile).filter(tile => !sessionConnection(tile.host, state.connection).host)
     .map(tile => ({ session: tile.session ?? tile.name, window: tile.window, choice: choices[tile.id] }));
 }
 

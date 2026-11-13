@@ -20,8 +20,14 @@ const OUTPUT_LIMIT: u64 = 64 * 1024 * 1024;
 // After a failed start, the next try waits this long, doubling up to the cap.
 const FIRST_RETRY: Duration = Duration::from_secs(10);
 const LAST_RETRY: Duration = Duration::from_secs(300);
-// Polls in a row without an answer before an adopted server counts as gone.
+// Checks in a row without an answer before an adopted server counts as gone,
+// GONE_RECHECK apart.
 const GONE_POLLS: u32 = 3;
+const GONE_RECHECK: Duration = Duration::from_millis(500);
+// How often the helper checks app ownership (one flock call) and, for an
+// adopted server, whether it still answers. A server it started is waited on
+// directly, so its exit is noticed at once.
+const OWNERSHIP_POLL: Duration = Duration::from_secs(5);
 static START_LOCK: Mutex<()> = Mutex::new(());
 static APP_LEASE: Mutex<Option<File>> = Mutex::new(None);
 // Set once the app has let go of its terminals (quitting): nothing starts
@@ -214,16 +220,14 @@ fn bounded_output_within(command: &mut Command, timeout: Duration) -> io::Result
         }
     };
     let deadline = Instant::now() + timeout;
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break status,
-            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(5)),
-            waited => {
-                let _ = child.kill();
-                let _ = child.wait();
-                waited?;
-                return Err(timed_out());
-            }
+    // Blocks until the command exits or the limit passes (no polling).
+    let status = match crate::agent::wait_child_timeout(&mut child, timeout) {
+        Ok(Some(status)) => status,
+        waited => {
+            let _ = child.kill();
+            let _ = child.wait();
+            waited?;
+            return Err(timed_out());
         }
     };
     // The pipes close with the command (and anything it left running that
@@ -688,7 +692,7 @@ fn run_server() -> io::Result<i32> {
 }
 
 fn run_service_at(socket: &Path, label: &str, command: Command) -> io::Result<i32> {
-    let code = run_server_at(socket, command)?;
+    let code = run_server_at(socket, command, OWNERSHIP_POLL)?;
     let observer = lease_file(socket.parent().unwrap())?;
     if let Some(_idle) = idle_lease(&observer)? {
         if UnixStream::connect(&socket).is_err() {
@@ -702,7 +706,7 @@ fn run_service_at(socket: &Path, label: &str, command: Command) -> io::Result<i3
     Ok(code)
 }
 
-fn run_server_at(socket: &Path, mut command: Command) -> io::Result<i32> {
+fn run_server_at(socket: &Path, mut command: Command, poll: Duration) -> io::Result<i32> {
     let directory = socket.parent().unwrap();
     private_directory(directory)?;
     let _lock = server_lock(directory)?;
@@ -711,7 +715,7 @@ fn run_server_at(socket: &Path, mut command: Command) -> io::Result<i32> {
         // The server outlived an earlier helper (it runs in a process group
         // of its own). It is never replaced: this helper takes over its
         // ownership and ends when it does.
-        return supervise(socket, &lease, None);
+        return supervise(socket, &lease, None, poll);
     }
     // Keep this signed helper alive as the responsible process. tmux must not
     // daemonize, and must not inherit a server selection from another terminal.
@@ -726,7 +730,7 @@ fn run_server_at(socket: &Path, mut command: Command) -> io::Result<i32> {
         .stdin(Stdio::null())
         .process_group(0)
         .spawn()?;
-    supervise(socket, &lease, Some(child))
+    supervise(socket, &lease, Some(child), poll)
 }
 
 /// Applies app ownership to the server until it ends: while any app holds a
@@ -734,26 +738,21 @@ fn run_server_at(socket: &Path, mut command: Command) -> io::Result<i32> {
 /// session. The server is watched as this helper's child, or (adopted, or
 /// when the child cannot be waited on) through its socket. A failed lease
 /// check counts as owned, which only keeps sessions alive.
-fn supervise(socket: &Path, lease: &File, mut child: Option<std::process::Child>) -> io::Result<i32> {
+///
+/// Between checks the helper sleeps for `poll`: a server it started is waited
+/// on by a thread of its own, so its exit ends the wait at once. An app also
+/// applies ownership itself when it starts (start_locked) and quits (stop),
+/// so the poll only backs up an app that crashed or was force-quit.
+fn supervise(socket: &Path, lease: &File, child: Option<std::process::Child>, poll: Duration) -> io::Result<i32> {
+    let mut exited = match child {
+        Some(child) => wait_on_thread(child).ok(),
+        None => None,
+    };
     // File locks disappear on normal exit, crashes and force-quit, and cannot
     // confuse a reused PID with a live app. Only ownership transitions issue
     // a tmux command; otherwise the check is two local system calls.
     let mut owner = None;
-    let mut unanswered = 0;
     loop {
-        if let Some(server) = child.as_mut() {
-            match server.try_wait() {
-                Ok(Some(status)) => return Ok(status.code().unwrap_or(1)),
-                Ok(None) => {}
-                Err(_) => child = None,
-            }
-        }
-        if child.is_none() {
-            unanswered = if UnixStream::connect(socket).is_ok() { 0 } else { unanswered + 1 };
-            if unanswered >= GONE_POLLS {
-                return Ok(0);
-            }
-        }
         // Hold exclusive ownership until the idle setting is applied, so an
         // opening app cannot race an idle decision made just before its lease.
         let idle = idle_lease(lease).unwrap_or(None);
@@ -764,8 +763,49 @@ fn supervise(socket: &Path, lease: &File, mut child: Option<std::process::Child>
             }
         }
         drop(idle);
-        std::thread::sleep(Duration::from_millis(500));
+        // Until the first setting is applied (a server still starting up),
+        // it is retried at the earlier pace.
+        let wait = if owner.is_none() { poll.min(GONE_RECHECK) } else { poll };
+        match &exited {
+            Some(status) => match status.recv_timeout(wait) {
+                Ok(Ok(status)) => return Ok(status.code().unwrap_or(1)),
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                // The child cannot be waited on: watch it through its socket.
+                Ok(Err(_)) | Err(mpsc::RecvTimeoutError::Disconnected) => exited = None,
+            },
+            None => {
+                if !answers(socket) {
+                    return Ok(0);
+                }
+                std::thread::sleep(wait);
+            }
+        }
     }
+}
+
+/// Waits for the server child on a thread of its own and sends its status.
+fn wait_on_thread(mut child: std::process::Child) -> io::Result<mpsc::Receiver<io::Result<std::process::ExitStatus>>> {
+    let (sender, receiver) = mpsc::channel();
+    std::thread::Builder::new()
+        .name("pzza-tmux-server-wait".into())
+        .spawn(move || {
+            let _ = sender.send(child.wait());
+        })?;
+    Ok(receiver)
+}
+
+/// Whether an adopted server still answers: it counts as gone only after
+/// GONE_POLLS checks in a row, GONE_RECHECK apart, find no server.
+fn answers(socket: &Path) -> bool {
+    for check in 0..GONE_POLLS {
+        if check > 0 {
+            std::thread::sleep(GONE_RECHECK);
+        }
+        if UnixStream::connect(socket).is_ok() {
+            return true;
+        }
+    }
+    false
 }
 
 pub fn headless_exit_code() -> Option<i32> {
@@ -1028,7 +1068,7 @@ mod tests {
         let helper = std::thread::spawn(move || {
             let mut command = Command::new("tmux");
             command.args(["-f", "/dev/null"]);
-            run_server_at(&helper_socket, command)
+            run_server_at(&helper_socket, command, Duration::from_millis(100))
         });
         let deadline = Instant::now() + Duration::from_secs(5);
         while UnixStream::connect(&socket).is_err() {
@@ -1134,7 +1174,7 @@ mod tests {
         let helper = std::thread::spawn(move || {
             let mut command = Command::new("tmux");
             command.args(["-f", "/dev/null"]);
-            run_server_at(&helper_socket, command)
+            run_server_at(&helper_socket, command, Duration::from_millis(100))
         });
         let wait_for = |description: &str, condition: &dyn Fn() -> bool| {
             let deadline = Instant::now() + Duration::from_secs(5);

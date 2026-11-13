@@ -109,29 +109,18 @@ fn launch_browser(url: &str) -> Result<(), String> {
         .stderr(std::process::Stdio::null())
         .spawn()
         .map_err(|error| format!("Could not start the browser launcher: {error}"))?;
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                return if status.success() {
-                    Ok(())
-                } else {
-                    Err("The system could not open the default browser".into())
-                }
+    match crate::agent::wait_child_timeout(&mut child, std::time::Duration::from_secs(5)) {
+        Ok(Some(status)) if status.success() => Ok(()),
+        Ok(Some(_)) => Err("The system could not open the default browser".into()),
+        result => {
+            let _ = child.kill();
+            let _ = child.wait();
+            Err(if result.is_err() {
+                "Could not check browser launch status"
+            } else {
+                "Browser launcher timed out"
             }
-            Ok(None) if std::time::Instant::now() < deadline => {
-                std::thread::sleep(std::time::Duration::from_millis(20))
-            }
-            result => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(if result.is_err() {
-                    "Could not check browser launch status"
-                } else {
-                    "Browser launcher timed out"
-                }
-                .into());
-            }
+            .into())
         }
     }
 }

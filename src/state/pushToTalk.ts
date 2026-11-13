@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { DICTATION_SUPPORTED, useDictation } from "./dictation";
-import { useStore } from "./store";
+import { sessionTileById, useStore } from "./store";
 import { initializeKeyTrigger, SilenceStop, TRIGGER_HOLD_MS, type TriggerMode } from "./keyTrigger";
 
 // Push to talk: either Option key on its own dictates into the active
@@ -80,7 +80,8 @@ export function initializePushToTalk(supported = DICTATION_SUPPORTED): () => voi
       // target; otherwise the active tile is.
       const focused = document.activeElement instanceof HTMLElement ? document.activeElement.closest<HTMLElement>("[data-dictation-target]")?.dataset.dictationTarget : undefined;
       const tileId = focused ?? useStore.getState().activeId;
-      if (!tileId || (!focused && !useStore.getState().tiles.some(tile => tile.id === tileId))) return;
+      // A file tile has no terminal to dictate into.
+      if (!tileId || (!focused && !sessionTileById(useStore.getState().tiles, tileId))) return;
       owned = tileId;
       silence = usePushToTalk.getState().mode === "tap" ? new SilenceStop({ maxMs: TAP_MAX_MS }) : null;
       // Push to talk keeps its own ending: the key release, or tap mode's pause.

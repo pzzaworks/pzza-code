@@ -4,7 +4,7 @@ import { fetchGitChanges, fetchSessionActivity } from "../serverApi";
 import { sessionDisplayName } from "../sessionMeta";
 import { noticeAllowed, notify, useNotifications, type NoticeAction } from "../state/notifications";
 import { useSessionAgents } from "../state/sessionAgents";
-import { useStore } from "../state/store";
+import { sessionTileById, useStore } from "../state/store";
 import { hasPendingPermission } from "../state/permissionPrompts";
 import { HAS_TAURI } from "../tauriEnv";
 import { changeSummary, filesChangedLabel, tileGitTarget } from "../tileGit";
@@ -49,7 +49,7 @@ export function agentSignalled(tileId: string, noticeId: string | undefined): vo
 // an activity row for it, the agent the session was created with counts.
 async function agentInTile(tileId: string): Promise<boolean> {
   const state = useStore.getState();
-  const tile = state.tiles.find((candidate) => candidate.id === tileId);
+  const tile = sessionTileById(state.tiles, tileId);
   if (!tile) return false;
   try {
     const rows = await fetchSessionActivity(tile.host ?? state.connection.host ?? (HAS_TAURI ? "" : undefined), AbortSignal.timeout(LOOKUP_TIMEOUT_MS));
@@ -68,7 +68,7 @@ async function announce(tileId: string, noticeId: string | undefined): Promise<v
   const changes = await fetchGitChanges(target.host, target.folder, AbortSignal.timeout(LOOKUP_TIMEOUT_MS));
   if (!changes.files.length || !noticeAllowed("terminal", "agent-finished") || hasPendingPermission(tileId)) return;
   const state = useStore.getState();
-  const tile = state.tiles.find((candidate) => candidate.id === tileId);
+  const tile = sessionTileById(state.tiles, tileId);
   if (!tile) return;
   const label = sessionDisplayName(tile, state.tileTitles).replace(/[\x00-\x1f\x7f-\x9f]/g, "").slice(0, 100) || "Agent";
   const title = `${label} finished · ${filesChangedLabel(changeSummary(changes))}`;

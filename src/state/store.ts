@@ -23,9 +23,16 @@ import { DEFAULT_DEVICES, THIS_MAC, type Device } from "../devices";
 import { QUICK_CHAT_SESSION, tileTitle } from "../sessionMeta";
 import { AUTO_COLUMNS } from "../grid/autoLayout";
 
-// A tile open on the canvas. id === tmux session name. Tile order IS the grid
-// arrangement - the canvas is a uniform N-column grid, never free-floating.
+// A tile open on the canvas: a terminal (Session) or a file shown in the
+// inline editor (FileTile). Tile order IS the grid arrangement - the canvas is
+// a uniform N-column grid, never free-floating. A file tile has no tmux
+// session, PTY or device: code that only makes sense for terminals narrows
+// with isSessionTile.
+export type Tile = Session | FileTile;
+
+// A terminal tile. id === tmux session name (host-namespaced for another device).
 export interface Session {
+  kind?: undefined;
   id: string;
   name: string; // display title
   cwd?: string;
@@ -42,6 +49,56 @@ export interface Session {
   path?: string; // window tile: cwd
   host?: string; // ssh target for a session that lives on another device
 }
+
+// A file or folder opened on this device, shown full-tile in the inline
+// editor (its state lives in tileCode like any tile's editor) until it is
+// turned into a terminal. A file tile opens on its file; a folder tile on its
+// folder's tree, with no file open. Their ids are FILE_TILE_PREFIX + file and
+// FOLDER_TILE_PREFIX + folder: session names never contain ":" or "/", so
+// neither can collide with a session tile or with each other.
+export type FileTile = OpenedFileTile | FolderTile;
+
+interface EditorTileBase {
+  kind: "file";
+  id: string;
+  name: string; // the file or folder name
+}
+
+export interface OpenedFileTile extends EditorTileBase {
+  file: string; // absolute path the tile was opened on
+  folder?: undefined;
+}
+
+export interface FolderTile extends EditorTileBase {
+  folder: string; // absolute path of the folder the editor is rooted at
+  file?: undefined;
+}
+
+export const FILE_TILE_PREFIX = "file:";
+export const FOLDER_TILE_PREFIX = "folder:";
+export const fileTileId = (file: string): string => `${FILE_TILE_PREFIX}${file}`;
+export const folderTileId = (folder: string): string => `${FOLDER_TILE_PREFIX}${folder}`;
+export const isFileTile = (tile: Tile): tile is FileTile => tile.kind === "file";
+export const isFolderTile = (tile: Tile): tile is FolderTile => tile.kind === "file" && tile.folder !== undefined;
+/** The path a file or folder tile was opened on. */
+export const fileTilePath = (tile: FileTile): string => tile.folder ?? tile.file;
+/** The folder a file or folder tile works in: the folder itself, or the one holding the file. */
+export const fileTileFolder = (tile: FileTile): string => tile.folder ?? fileFolder(tile.file);
+export const isSessionTile = (tile: Tile): tile is Session => tile.kind !== "file";
+/** The terminal tile with this id; undefined when none is open or it is a file tile. */
+export function sessionTileById(tiles: readonly Tile[], id: string | null | undefined): Session | undefined {
+  const tile = tiles.find((entry) => entry.id === id);
+  return tile && isSessionTile(tile) ? tile : undefined;
+}
+
+/** An absolute, normalized path (no empty, "." or ".." parts, no control characters), or null. */
+export function validFilePath(value: unknown): string | null {
+  if (typeof value !== "string" || !value.startsWith("/") || value.length > 4096 || /[\u0000-\u001f\u007f]/.test(value)) return null;
+  return value.split("/").slice(1).some((part) => !part || part === "." || part === "..") ? null : value;
+}
+
+export const fileBaseName = (file: string): string => file.slice(file.lastIndexOf("/") + 1);
+export const fileFolder = (file: string): string => file.slice(0, file.lastIndexOf("/")) || "/";
 
 const TILES_KEY = "pzza.tiles";
 const COLUMNS_KEY = "pzza.columns";
@@ -163,10 +220,25 @@ function withDefaultWorkspace(workspaces: Workspace[]): Workspace[] {
 }
 
 // A window tile whose window id is missing or not yet tied to its session.
-const untiedWindowTile = (tile: Session): boolean => tile.window !== undefined && tile.windowSessionCreatedAt === undefined;
+const untiedWindowTile = (tile: Tile): boolean => isSessionTile(tile) && tile.window !== undefined && tile.windowSessionCreatedAt === undefined;
 
-function parseTile(value: unknown): Session | undefined {
-  if (!isFields(value) || !text(value.id) || !text(value.name)) return undefined;
+// A file or folder tile's id is derived from its path, so a stored entry whose
+// id does not match is dropped rather than trusted; nothing but those tiles
+// may use their id namespaces, and an entry naming both a file and a folder is
+// neither.
+function parseTile(value: unknown): Tile | undefined {
+  if (!isFields(value) || !text(value.id)) return undefined;
+  if (value.kind === "file") {
+    if (value.folder !== undefined) {
+      const folder = validFilePath(value.folder);
+      if (!folder || value.file !== undefined || value.id !== folderTileId(folder)) return undefined;
+      return { kind: "file", id: value.id, name: fileBaseName(folder) || folder, folder };
+    }
+    const file = validFilePath(value.file);
+    if (!file || value.id !== fileTileId(file)) return undefined;
+    return { kind: "file", id: value.id, name: fileBaseName(file), file };
+  }
+  if (value.kind !== undefined || !text(value.name) || value.id.startsWith(FILE_TILE_PREFIX) || value.id.startsWith(FOLDER_TILE_PREFIX)) return undefined;
   const tile: Session = { id: value.id, name: value.name };
   for (const key of ["cwd", "session", "command", "path", "host"] as const) {
     const field = optionalText(value[key]);
@@ -200,6 +272,7 @@ function parseTileCode(value: unknown): TileCode | undefined {
     ...(typeof value.root === "string" ? { root: value.root } : {}),
     ...(typeof value.path === "string" ? { path: value.path } : {}),
     ...(value.view === "changes" ? { view: "changes" as const } : {}),
+    ...(value.tree === false ? { tree: false as const } : {}),
   };
 }
 
@@ -235,6 +308,26 @@ function dropTileSpan(spans: Record<string, { c: number; r: number }>, id: strin
   delete tileSpan[id];
   persist(TILESPAN_KEY, tileSpan);
   return tileSpan;
+}
+
+// Adds a file or folder tile to `workspaceId` with a full-tile editor. Every
+// part of the editor is set: whatever an earlier tile with this id left
+// behind must not decide the layout, view, tree or file.
+function withEditorTile(state: ConsoleState, tile: FileTile, workspaceId: string, code: Pick<TileCode, "root" | "path" | "tree">): Partial<ConsoleState> {
+  const { id } = tile;
+  const tiles = [...state.tiles, tile];
+  const sessionWs = { ...state.sessionWs, [id]: workspaceId };
+  const hiddenTiles = state.hiddenTiles.filter((hidden) => hidden !== id);
+  const editor: TileCode = { open: true, layout: "full", root: code.root, ...(code.path ? { path: code.path } : {}), ...(code.tree === false ? { tree: false as const } : {}) };
+  const tileCode = { ...state.tileCode, [id]: editor };
+  const tileTitles = { ...state.tileTitles };
+  delete tileTitles[id];
+  persist(TILES_KEY, tiles);
+  persist(SESSIONWS_KEY, sessionWs);
+  persist(HIDDEN_KEY, hiddenTiles);
+  persist(TILECODE_KEY, tileCode);
+  persist(TILETITLES_KEY, tileTitles);
+  return { tiles, sessionWs, hiddenTiles, tileCode, tileTitles, tileSpan: dropTileSpan(state.tileSpan, id), refreshNonce: state.refreshNonce + 1 };
 }
 
 async function listSessions(conn: Connection): Promise<RemoteSession[]> {
@@ -348,7 +441,7 @@ interface ConsoleState {
 
   allSessions: RemoteSession[];
   allWindows: RemoteWindow[];
-  tiles: Session[];
+  tiles: Tile[];
   activeId: string | null;
   refreshing: boolean;
   // Bumped whenever the grid is reshaped (tile added/removed, workspace switch,
@@ -366,6 +459,19 @@ interface ConsoleState {
    */
   recordWindowIds: (recheckHost?: string) => Promise<void>;
   closeTile: (id: string) => void;
+  /** Opens a file tile for `file` in `workspaceId`, its editor on the file at
+   *  full size and rooted at `root`; a tile already open for it is only
+   *  revealed. Returns the tile id. */
+  openFileTile: (file: string, root: string, workspaceId: string) => string;
+  /** Opens a folder tile for `folder` in `workspaceId`, its editor rooted at
+   *  the folder with the tree shown and no file open; a tile already open for
+   *  it is only revealed. Returns the tile id. */
+  openFolderTile: (folder: string, workspaceId: string) => string;
+  /** Shows a tile: switches to its workspace, unhides and focuses it. */
+  revealTile: (id: string) => void;
+  /** Puts session tile `sessionId` in file or folder tile `fileId`'s grid
+   *  position and workspace, with that tile's editor, and removes it. */
+  replaceFileTile: (fileId: string, sessionId: string) => void;
   reorderTile: (fromId: string, toId: string) => void;
   /** Puts back a saved workspace layout (see workspaceSnapshots): these tiles
    *  in this order among the positions they hold, with their sizes, titles,
@@ -385,6 +491,8 @@ interface ConsoleState {
   setTileCodePath: (id: string, path: string) => void;
   closeTileFile: (id: string) => void;
   setTileCodeView: (id: string, view: TileCodeView) => void;
+  /** Shows or hides the editor's left pane (file tree or changes). */
+  setTileCodeTree: (id: string, open: boolean) => void;
   /** Opens the tile's editor (rooted at its current folder, else `folder`) on
    *  the Changes view. */
   openTileChanges: (id: string, folder: string) => void;
@@ -411,6 +519,7 @@ export interface TileCode {
   root?: string;
   path?: string;
   view?: TileCodeView; // left pane: absent means "files"
+  tree?: false; // left pane hidden; absent means shown
 }
 
 export type TileCodeView = "files" | "changes";
@@ -735,7 +844,7 @@ export const useStore = create<ConsoleState>((set, get) => ({
 
   allSessions: [],
   allWindows: [],
-  tiles: uniqueById(loadValid(TILES_KEY, listOf(parseTile), [])).filter(tile => (tile.session ?? tile.name) !== QUICK_CHAT_SESSION),
+  tiles: uniqueById(loadValid(TILES_KEY, listOf(parseTile), [])).filter(tile => isFileTile(tile) || (tile.session ?? tile.name) !== QUICK_CHAT_SESSION),
   activeId: null,
   refreshing: false,
   refreshNonce: 0,
@@ -859,7 +968,7 @@ export const useStore = create<ConsoleState>((set, get) => ({
   // unreachable device is tried again on the next load.
   recordWindowIds: async (recheckHost) => {
     const hostOf = (tile: Session, state: ConsoleState) => tile.host ?? state.connection.host ?? "";
-    const pending = get().tiles.filter((tile) => tile.window !== undefined &&
+    const pending = get().tiles.filter(isSessionTile).filter((tile) => tile.window !== undefined &&
       (untiedWindowTile(tile) || (recheckHost !== undefined && hostOf(tile, get()) === recheckHost)));
     const hosts = [...new Set(pending.map((tile) => hostOf(tile, get())))];
     await Promise.all(hosts.map(async (host) => {
@@ -868,7 +977,7 @@ export const useStore = create<ConsoleState>((set, get) => ({
       set((state) => {
         let changed = false;
         const tiles = state.tiles.map((tile) => {
-          if (tile.window === undefined || hostOf(tile, state) !== host) return tile;
+          if (!isSessionTile(tile) || tile.window === undefined || hostOf(tile, state) !== host) return tile;
           const row = windows.find((window) => window.session === (tile.session ?? tile.name) && window.window === tile.window);
           const identity = refreshedIdentity(tile, row);
           if (!identity || (identity.windowId === tile.windowId && identity.windowSessionCreatedAt === tile.windowSessionCreatedAt)) return tile;
@@ -891,6 +1000,63 @@ export const useStore = create<ConsoleState>((set, get) => ({
       const tileObserved = { ...state.tileObserved };
       delete tileObserved[id];
       return { tiles, activeId, tileObserved, refreshNonce: state.refreshNonce + 1 };
+    }),
+
+  openFileTile: (file, root, workspaceId) => {
+    const id = fileTileId(file);
+    // A single file reads best on its own; the tree stays a click away.
+    if (!get().tiles.some((tile) => tile.id === id)) set((state) => withEditorTile(state, { kind: "file", id, name: fileBaseName(file), file }, workspaceId, { root, path: file, tree: false }));
+    get().revealTile(id);
+    return id;
+  },
+
+  openFolderTile: (folder, workspaceId) => {
+    const id = folderTileId(folder);
+    // A folder opens on its tree, ready to pick a file from.
+    if (!get().tiles.some((tile) => tile.id === id)) set((state) => withEditorTile(state, { kind: "file", id, name: fileBaseName(folder) || folder, folder }, workspaceId, { root: folder }));
+    get().revealTile(id);
+    return id;
+  },
+
+  revealTile: (id) => {
+    const state = get();
+    const tile = state.tiles.find((entry) => entry.id === id);
+    if (!tile) return;
+    state.setWorkspace(state.sessionWs[wsKeyOf(tile)] ?? DEFAULT_WORKSPACE_ID);
+    if (state.hiddenTiles.includes(id)) state.unhideTile(id);
+    get().setActive(id);
+  },
+
+  replaceFileTile: (fileId, sessionId) =>
+    set((state) => {
+      const session = state.tiles.find((tile) => tile.id === sessionId);
+      if (!session || !isSessionTile(session) || !state.tiles.some((tile) => tile.id === fileId && isFileTile(tile))) return {};
+      const tiles = state.tiles.filter((tile) => tile.id !== sessionId).map((tile) => (tile.id === fileId ? session : tile));
+      const sessionWs = { ...state.sessionWs, [wsKeyOf(session)]: state.sessionWs[fileId] ?? DEFAULT_WORKSPACE_ID };
+      delete sessionWs[fileId];
+      // The editor carries over as it was (root, open file, sizes), split so the
+      // new terminal shows next to it.
+      const tileCode = { ...state.tileCode };
+      const code = tileCode[fileId];
+      delete tileCode[fileId];
+      if (code) tileCode[sessionId] = { ...code, open: true, layout: "side-by-side" };
+      const tileSpan = { ...state.tileSpan };
+      const span = tileSpan[fileId];
+      delete tileSpan[fileId];
+      if (span) tileSpan[sessionId] = span;
+      else delete tileSpan[sessionId];
+      const tileTitles = { ...state.tileTitles };
+      delete tileTitles[fileId];
+      const hiddenTiles = state.hiddenTiles.filter((hidden) => hidden !== fileId && hidden !== sessionId);
+      const tileObserved = { ...state.tileObserved };
+      delete tileObserved[fileId];
+      persist(TILES_KEY, tiles);
+      persist(SESSIONWS_KEY, sessionWs);
+      persist(TILECODE_KEY, tileCode);
+      persist(TILESPAN_KEY, tileSpan);
+      persist(TILETITLES_KEY, tileTitles);
+      persist(HIDDEN_KEY, hiddenTiles);
+      return { tiles, sessionWs, tileCode, tileSpan, tileTitles, hiddenTiles, tileObserved, activeId: sessionId, refreshNonce: state.refreshNonce + 1 };
     }),
 
   // Move one tile to another tile's position (drag-to-reorder in the grid).
@@ -1018,6 +1184,14 @@ export const useStore = create<ConsoleState>((set, get) => ({
       const cur = state.tileCode[id];
       if (!cur || tileCodeView(cur) === view) return {};
       const tileCode = { ...state.tileCode, [id]: { ...cur, view: view === "changes" ? view : undefined } };
+      persist(TILECODE_KEY, tileCode);
+      return { tileCode };
+    }),
+  setTileCodeTree: (id, open) =>
+    set((state) => {
+      const cur = state.tileCode[id];
+      if (!cur || (cur.tree !== false) === open) return {};
+      const tileCode = { ...state.tileCode, [id]: { ...cur, tree: open ? undefined : false as const } };
       persist(TILECODE_KEY, tileCode);
       return { tileCode };
     }),

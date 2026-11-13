@@ -33,9 +33,11 @@ import { onboardingPending, setupPending } from "./tour/progress";
 import "./tour/SetupScreen.css";
 import { startSnapshotAutosave } from "./state/workspaceSnapshots";
 import { startSetupAutoInstall } from "./state/setup";
+import { startOpenFiles } from "./openFiles";
 import { UsageTool } from "./panels/UsageMenu";
 import { HAS_TAURI } from "./tauriEnv";
 import { startUpdateChecks } from "./state/updates";
+import { persistNotifications } from "./state/notifications";
 import { UpdateButton } from "./ui/UpdateButton";
 import type { BarItemId } from "./barItems";
 import { Modal } from "./ui/Modal";
@@ -129,6 +131,8 @@ export default function App() {
   const tourMounted = useOpenedOnce(tourOpen);
   // Missing requirements on this Mac install in the background on every launch.
   useEffect(() => { startSetupAutoInstall(); }, []);
+  // Files opened with PzzaCode from macOS each open in a file tile (see openFiles).
+  useEffect(() => { startOpenFiles(); }, []);
   // Every workspace keeps an auto-saved snapshot (see workspaceSnapshots).
   useEffect(() => startSnapshotAutosave(), []);
   // Settings, the palette, terminal search and the editor load once the window settles.
@@ -335,6 +339,8 @@ export default function App() {
       if (disposed) return;
       const appWindow = getCurrentWindow();
       const stop = await appWindow.onCloseRequested(async (event) => {
+        // Notification saves are debounced; a quit may never fire pagehide.
+        persistNotifications();
         if (!hasUnsavedWork() && !localSessionWorkRunning() && !confirming) { window.dispatchEvent(new Event("pzza:quick-chat-cancel")); return; }
         event.preventDefault();
         // A second request while confirming is answered with the first one.

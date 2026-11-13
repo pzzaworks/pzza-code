@@ -41,6 +41,12 @@ export function patchTerminalRenderer(source, renderer, version) {
     // blending. Clear first so repeated renders never accumulate cell alpha.
     source = replaceOnce(source, "renderBackgrounds(){this._renderVertices(this._vertices)}",
       "renderBackgrounds(){this._gl.clearColor(0,0,0,0);this._gl.clear(this._gl.COLOR_BUFFER_BIT);this._renderVertices(this._vertices)}");
+    // Resizing the canvas used to leave its new frame to the next animation
+    // frame. WebKit meanwhile shows the previous frame stretched to the new
+    // canvas box, so text grew or shrank for a frame on every resize (window,
+    // tile, editor split). Draw the resized frame in the same task instead.
+    source = replaceOnce(source, "this._refreshCharAtlas(),this._clearModel(!1)}handleCharSizeChanged(){",
+      "this._refreshCharAtlas(),this._clearModel(!1),this.renderRows(0,this._terminal.rows-1)}handleCharSizeChanged(){");
     // Read once per background-model update, not once per terminal cell.
     source = replaceOnce(source, "updateBackgrounds(e){const t=this._terminal,i=this._vertices;",
       `updateBackgrounds(e){const t=this._terminal,i=this._vertices;this._pzzaBackgroundOpacity=Math.max(0,Math.min(1,Number(t.element?.style.getPropertyValue("${OPACITY}")||"1")));`);

@@ -15,7 +15,7 @@ import {
   ServerCog,
   Trash2,
 } from "lucide-react";
-import { useStore } from "../state/store";
+import { isSessionTile, useStore } from "../state/store";
 import { Modal } from "../ui/Modal";
 import { Select } from "../ui/Select";
 import { scanDevice, killSession, fetchSshHosts, type SshHost } from "../serverApi";
@@ -163,7 +163,7 @@ export function DevicesMenu() {
     setTerminating(true);
     setKillError(null);
     try {
-      const affected = tiles.filter((tile) => (tile.host ?? connectionHost ?? "") === host && (tile.session ?? tile.name) === session);
+      const affected = tiles.filter(isSessionTile).filter((tile) => (tile.host ?? connectionHost ?? "") === host && (tile.session ?? tile.name) === session);
       if (!await confirmEditorDiscard(affected.map((tile) => tile.id))) return;
       await killSession(session, undefined, host);
       for (const tile of affected) closeTile(tile.id);

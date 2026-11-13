@@ -3,6 +3,8 @@ mod agent_catalog;
 mod terminal_drop;
 mod shutdown;
 mod menu;
+mod open_files;
+mod open_panel;
 mod pane_mode;
 mod appearance;
 mod forward;
@@ -410,6 +412,19 @@ impl Drop for StartupDone {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Tauri's default runtime starts one worker thread per CPU core. Async
+    // commands here only dispatch IPC and await spawn_blocking jobs (which
+    // use tokio's separate blocking pool), so two workers are plenty. Set
+    // before anything can touch the runtime; the static keeps it alive.
+    static RUNTIME: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
+    let runtime = RUNTIME.get_or_init(|| {
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .expect("failed to start the async runtime")
+    });
+    tauri::async_runtime::set(runtime.handle().clone());
     let context = tauri::generate_context!();
     // Before anything is built, so a second copy never shows a window.
     #[cfg(target_os = "macos")]
@@ -431,6 +446,9 @@ pub fn run() {
         .manage(AgentState::default())
         .manage(shutdown::ShutdownState::default())
         .manage(shutdown::TerminalStartup::default())
+        .manage(open_files::OpenedFiles::default())
+        .manage(open_panel::OpenPanel::default())
+        .on_page_load(open_files::page_load)
         .setup(|app| {
             #[cfg(target_os = "macos")]
             {
@@ -510,6 +528,10 @@ pub fn run() {
             permissions::permission_request,
             permissions::permission_open_settings,
             appearance::set_desktop_blur,
+            open_files::take_opened_files,
+            open_panel::pick_and_open,
+            open_files::default_editor_status,
+            open_files::set_default_editor,
         ])
         .build(context)
         .expect("error while building pzza console")
@@ -519,6 +541,7 @@ pub fn run() {
             if matches!(event, tauri::RunEvent::Exit) {
                 instance::release();
             }
+            open_files::handle_event(app, &event);
             shutdown::handle_event(app, event);
         });
 }

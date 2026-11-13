@@ -134,11 +134,30 @@ export const useNotifications = create<NotificationState>((set) => ({
   }) })),
   configure: (patch) => set(state => ({ preferences: { ...state.preferences, ...patch } })),
 }));
-function persistNotifications({ items, preferences }: Pick<NotificationState, "items" | "preferences">): void {
+// Saving serializes the whole history (up to 300 notices with full bodies),
+// so changes are written at most twice a second, and only when the history
+// or preferences actually changed. Leaving or hiding the page writes any
+// pending change at once, so nothing is lost on quit.
+const PERSIST_DELAY_MS = 500;
+let persisted: Pick<NotificationState, "items" | "preferences"> | null = null;
+let persistTimer: ReturnType<typeof setTimeout> | undefined;
+/** Writes any pending history change now. */
+export function persistNotifications(): void {
+  clearTimeout(persistTimer);
+  persistTimer = undefined;
+  const { items, preferences } = useNotifications.getState();
+  if (persisted && persisted.items === items && persisted.preferences === preferences) return;
+  persisted = { items, preferences };
   try { localStorage.setItem(storeName, JSON.stringify({ items, preferences })); } catch { /* Keep the in-memory history when storage is full or unavailable. */ }
 }
-useNotifications.subscribe(persistNotifications);
-persistNotifications(useNotifications.getState());
+useNotifications.subscribe(() => {
+  if (persistTimer === undefined) persistTimer = setTimeout(persistNotifications, PERSIST_DELAY_MS);
+});
+if (typeof document !== "undefined" && typeof document.addEventListener === "function") {
+  document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") persistNotifications(); });
+}
+if (typeof window !== "undefined" && typeof window.addEventListener === "function") window.addEventListener("pagehide", persistNotifications);
+persistNotifications();
 // History keeps the full body; cards and desktop alerts show a bounded preview
 // so a long terminal response does not take over the panel.
 export const NOTICE_PREVIEW_CHARS = 280;

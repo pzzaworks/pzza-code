@@ -209,13 +209,7 @@ fn bounded_stdout(command: &mut Command, timeout: Duration) -> Option<String> {
             let _ = closed.send(());
         });
     }
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break Some(status),
-            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(10)),
-            _ => break None,
-        }
-    };
+    let status = wait_child_timeout(&mut child, deadline.saturating_duration_since(Instant::now())).ok().flatten();
     let Some(status) = status else {
         #[cfg(unix)]
         // Still our unreaped child, so its process group id cannot be reused.
@@ -233,6 +227,59 @@ fn bounded_stdout(command: &mut Command, timeout: Duration) -> Option<String> {
     }
     let bytes = output.lock().ok()?.clone();
     Some(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// Waits up to `timeout` for `child` to exit and reaps it. None: it still
+/// runs at the deadline, and stays unreaped, so its pid (and process group)
+/// remain safe to signal. The wait blocks in waitid on a helper thread, so a
+/// running command never wakes the caller on a timer.
+pub(crate) fn wait_child_timeout(child: &mut Child, timeout: Duration) -> std::io::Result<Option<ExitStatus>> {
+    if let Some(status) = child.try_wait()? {
+        return Ok(Some(status));
+    }
+    let deadline = Instant::now() + timeout;
+    #[cfg(unix)]
+    {
+        let (exited, report) = mpsc::channel();
+        let pid = child.id();
+        std::thread::Builder::new().name("pzza-child-exit".into()).spawn(move || {
+            wait_exit(pid);
+            let _ = exited.send(());
+        })?;
+        match report.recv_timeout(timeout) {
+            Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => {}
+            Err(mpsc::RecvTimeoutError::Timeout) => return Ok(None),
+        }
+    }
+    // The child is waitable now. Only when waitid failed (or off Unix) does
+    // this poll out what is left of the timeout.
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return Ok(Some(status));
+        }
+        if Instant::now() >= deadline {
+            return Ok(None);
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// Blocks until our child `pid` has exited, without reaping it (WNOWAIT):
+/// only the owner of its Child reaps, so the pid cannot be reused while that
+/// owner may still signal it. Returns at once when there is nothing left to
+/// wait for (already reaped, or not our child).
+#[cfg(unix)]
+pub(crate) fn wait_exit(pid: u32) {
+    loop {
+        // SAFETY: siginfo_t is plain data and waitid only writes into it.
+        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        if unsafe { libc::waitid(libc::P_PID, pid as libc::id_t, &mut info, libc::WEXITED | libc::WNOWAIT) } == 0 {
+            return;
+        }
+        if std::io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
+            return;
+        }
+    }
 }
 
 // After a login-shell probe timed out, it is tried again in the background
@@ -486,13 +533,38 @@ fn start_watchdog(app: &AppHandle) {
     }
 }
 
+// The watchdog respawns at most this often, so an agent that exits at once
+// is never restarted in a tight loop. Without a running agent to wait on (no
+// launch yet, a failed respawn, an update pending a restart) it checks again
+// this often.
+const RESPAWN_INTERVAL: Duration = Duration::from_secs(2);
+
+// The pid of the agent while it runs (unreaped), for the watchdog to block on.
+fn running_agent(state: &AgentState) -> Option<u32> {
+    let mut guard = state.child.lock().unwrap();
+    let child = guard.as_mut()?;
+    matches!(child.try_wait(), Ok(None)).then(|| child.id())
+}
+
 fn watch(app: AppHandle) {
     use tauri::Emitter;
+    // launch() spawned the agent right before starting the watchdog.
+    let mut spawned = Instant::now();
     loop {
-        std::thread::sleep(Duration::from_secs(2));
         let Some(state) = app.try_state::<AgentState>() else {
             return;
         };
+        // Blocks until the agent exits (stop() ending it included), so a
+        // running agent never wakes the watchdog.
+        match running_agent(&state) {
+            #[cfg(unix)]
+            Some(pid) => wait_exit(pid),
+            _ => std::thread::sleep(RESPAWN_INTERVAL),
+        }
+        let since = spawned.elapsed();
+        if since < RESPAWN_INTERVAL && !state.shutting_down.load(Ordering::SeqCst) {
+            std::thread::sleep(RESPAWN_INTERVAL - since);
+        }
         if state.shutting_down.load(Ordering::SeqCst) {
             if state.release_watchdog() {
                 return;
@@ -522,6 +594,7 @@ fn watch(app: AppHandle) {
             }
             continue;
         }
+        spawned = Instant::now();
         match spawn_agent_process(&launch) {
             Ok(child) => {
                 *guard = Some(child);
@@ -605,12 +678,8 @@ fn terminate_agent(child: &mut Child, grace: Duration) -> std::io::Result<ExitSt
         unsafe {
             libc::kill(child.id() as libc::pid_t, libc::SIGTERM);
         }
-        let deadline = Instant::now() + grace;
-        while Instant::now() < deadline {
-            if let Some(status) = child.try_wait()? {
-                return Ok(status);
-            }
-            std::thread::sleep(Duration::from_millis(20));
+        if let Some(status) = wait_child_timeout(child, grace)? {
+            return Ok(status);
         }
     }
     #[cfg(not(unix))]

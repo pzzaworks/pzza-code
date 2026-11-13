@@ -1,4 +1,5 @@
-import type { Session, TileCodeLayout, TransparencyOptions, useStore } from "./state/store";
+import type { Tile, TileCodeLayout, TransparencyOptions, useStore } from "./state/store";
+import { wsKeyOf } from "./workspaces";
 import { APP_COMMANDS, validateAppCommand } from "../server/lib/app-control-schema.js";
 
 export type AppControlStore = Pick<ReturnType<typeof useStore.getState>,
@@ -30,8 +31,8 @@ function layout(value: unknown): TileCodeLayout {
   if (value !== "full" && value !== "side-by-side" && value !== "stacked") throw new Error("Unknown panel layout.");
   return value;
 }
-function workspaceFor(state: AppControlStore, tile: Session, fallback: string): string {
-  const key = (tile.host ? `${tile.host}::` : "") + (tile.session ?? tile.name);
+function workspaceFor(state: AppControlStore, tile: Tile, fallback: string): string {
+  const key = wsKeyOf(tile);
   return state.sessionWs[key] ?? fallback;
 }
 
@@ -53,9 +54,10 @@ export function appControlSnapshot(context: AppControlContext) {
       return {
         id: tile.id,
         name: state.tileTitles[tile.id] || tile.name,
-        session: tile.session ?? tile.name,
-        window: tile.window,
-        host: tile.host ?? state.connection.host ?? "",
+        // A file or folder tile is an editor on this device's file or folder, with no terminal.
+        ...(tile.kind === "file"
+          ? tile.folder !== undefined ? { kind: "folder" as const, folder: tile.folder } : { kind: "file" as const, file: tile.file }
+          : { kind: "session" as const, session: tile.session ?? tile.name, window: tile.window, host: tile.host ?? state.connection.host ?? "" }),
         workspaceId: workspaceFor(state, tile, context.defaultWorkspaceId),
         hidden: state.hiddenTiles.includes(tile.id),
         span: state.tileSpan?.[tile.id] ?? { c: 1, r: 1 },
@@ -108,7 +110,7 @@ export function executeAppControl(action: string, args: Record<string, unknown>,
     }
     case "assign_tile": {
       const target = requireTile(args.tileId); const id = workspace(args.workspaceId);
-      state.assignSession((target.host ? `${target.host}::` : "") + (target.session ?? target.name), id);
+      state.assignSession(wsKeyOf(target), id);
       return appControlSnapshot(context);
     }
     case "rename_tile": state.renameTile(requireTile(args.tileId).id, args.name as string); return appControlSnapshot(context);
@@ -168,7 +170,7 @@ export function executeAppControl(action: string, args: Record<string, unknown>,
     const host = args.host as string | undefined ?? "";
     const window = args.window as number | undefined;
     const id = `${host ? `${host}::` : ""}${session}${window === undefined ? "" : `::w::${window}`}`;
-    const existing = state.tiles.find(tile => (tile.session ?? tile.name) === session && (tile.host ?? state.connection.host ?? "") === host && tile.window === window);
+    const existing = state.tiles.find(tile => tile.kind !== "file" && (tile.session ?? tile.name) === session && (tile.host ?? state.connection.host ?? "") === host && tile.window === window);
     if (!existing) {
       if (state.tiles.some(tile => tile.id === id)) throw new Error("A different device already uses this tile ID.");
       if (window === undefined) state.openSession(session, cwd, host);
@@ -192,6 +194,8 @@ export function executeAppControl(action: string, args: Record<string, unknown>,
   const tile = state.tiles.find((candidate) => candidate.id === id);
   if (!tile) throw new Error("Unknown open tile.");
   const nextLayout = args.layout === undefined ? undefined : layout(args.layout);
+  // A file or folder tile has no terminal: its editor only ever fills the tile.
+  if (tile.kind === "file" && nextLayout && nextLayout !== "full") throw new Error("A file or folder tile has no terminal to split with. Open a terminal in it first.");
   const focus = () => {
     const workspace = workspaceFor(state, tile, context.defaultWorkspaceId);
     if (state.activeWorkspaceId !== context.allWorkspaceId && state.activeWorkspaceId !== workspace) state.setWorkspace(workspace);
@@ -209,7 +213,7 @@ export function executeAppControl(action: string, args: Record<string, unknown>,
       if ((!current?.open || rootChanges || pathChanges) && context.hasUnsavedEditor(id)) {
         throw new Error("The target editor has unsaved changes or is saving. Save or discard them in the app first.");
       }
-      if (!current?.open) state.toggleTileCode(id, root ?? tile.path ?? tile.cwd);
+      if (!current?.open) state.toggleTileCode(id, root ?? (tile.kind === "file" ? undefined : tile.path ?? tile.cwd));
       if (rootChanges) state.setTileCodeRoot(id, root);
       if (path !== undefined && (!current?.open || pathChanges || rootChanges)) state.setTileCodePath(id, path);
       if (nextLayout) state.setTileCodeLayout(id, nextLayout);
@@ -217,6 +221,8 @@ export function executeAppControl(action: string, args: Record<string, unknown>,
       break;
     }
     case "close_editor":
+      // A file tile is its editor: closing it means closing the tile.
+      if (tile.kind === "file") throw new Error("A file or folder tile always shows its editor. Close the tile instead.");
       if (state.tileCode[id]?.open) {
         if (context.hasUnsavedEditor(id)) throw new Error("The target editor has unsaved changes or is saving. Save or discard them in the app first.");
         state.toggleTileCode(id);

@@ -6,12 +6,25 @@ import { hasPendingPermission } from "../state/permissionPrompts";
 // then submits Enter, so broadcast input is never a raw byte stream. A writer
 // refuses multi-line text unless its terminal is in bracketed paste mode
 // (an agent's input box): a plain shell would run each line on its own.
-type Writer = (text: string) => Promise<void>;
+// With `submit: false` the writer only pastes, leaving Enter to the user.
+type Writer = (text: string, options?: { submit?: boolean }) => Promise<void>;
 const writers = new Map<string, Writer>();
+const focusers = new Map<string, () => void>();
 
-export function registerBroadcastTarget(tileId: string, writer: Writer): () => void {
+export function registerBroadcastTarget(tileId: string, writer: Writer, focus?: () => void): () => void {
   writers.set(tileId, writer);
-  return () => { if (writers.get(tileId) === writer) writers.delete(tileId); };
+  if (focus) focusers.set(tileId, focus);
+  return () => {
+    if (writers.get(tileId) === writer) writers.delete(tileId);
+    if (focus && focusers.get(tileId) === focus) focusers.delete(tileId);
+  };
+}
+
+/** Moves keyboard focus to a tile's terminal; false when it has none connected. */
+export function focusTileTerminal(tileId: string): boolean {
+  const focus = focusers.get(tileId);
+  focus?.();
+  return focus !== undefined;
 }
 
 export interface BroadcastResult { tileId: string; error: string | null; skipped?: boolean }
@@ -48,6 +61,20 @@ export async function broadcastLine(tileIds: readonly string[], text: string, { 
       return { tileId, error: error instanceof Error ? error.message : "Sending failed." };
     }
   }));
+}
+
+// Types `text` into one tile's input without pressing Enter, through the same
+// guarded paste path: validated first, refused while an approval prompt waits
+// (the text would land in the prompt), and multi-line only where the terminal
+// takes a bracketed paste (an agent's input box, or a shell line editor that
+// keeps the lines for review instead of running them).
+export async function typeIntoTile(tileId: string, text: string): Promise<void> {
+  if (!text.trim()) throw new Error("Type something to send.");
+  validateTerminalPaste(text, true);
+  if (hasPendingPermission(tileId)) throw new Error(BROADCAST_PENDING_APPROVAL);
+  const writer = writers.get(tileId);
+  if (!writer) throw new Error("This terminal is not connected yet.");
+  await writer(text, { submit: false });
 }
 
 // Sends one saved prompt to a single tile through the same guarded path as a

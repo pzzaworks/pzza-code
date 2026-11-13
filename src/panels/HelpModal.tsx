@@ -2017,6 +2017,7 @@ export const HELP_PAGES: Record<HelpTopic, HelpPage> = {
         <tbody>
           <tr><td><Kbd>{COMMAND_PALETTE_SHORTCUT.label}</Kbd></td><td>Command palette</td></tr>
           <tr><td><Kbd>{NEW_SESSION_SHORTCUT.label}</Kbd> / <Kbd>{NEW_WORKSPACE_SHORTCUT.label}</Kbd></td><td>New session / new workspace</td></tr>
+          {IS_MAC ? <tr><td><Kbd>⌘O</Kbd> / <Kbd>⌥⌘O</Kbd></td><td>Open a file / a folder in the editor</td></tr> : null}
           <tr><td><Kbd>{CMD} ,</Kbd></td><td>Settings</td></tr>
           <tr><td><Kbd>{CMD} {SHIFT} /</Kbd></td><td>PzzaCode Help</td></tr>
           <tr><td><Kbd>{altBadge(0)}</Kbd> – <Kbd>{altBadge(9)}</Kbd></td><td>All, then the Nth workspace</td></tr>
@@ -2048,8 +2049,11 @@ export const HELP_PAGES: Record<HelpTopic, HelpPage> = {
           <tr><td><Kbd>{CMD} Click</Kbd> a path</td><td>Reveal a file or open a folder in Finder</td></tr>
           <tr><td><Kbd>{CMD} V</Kbd></td><td>Paste text or an image</td></tr>
           <tr><td><Kbd>{IS_MAC ? "⌘ C" : "Ctrl Shift C"}</Kbd></td><td>Copy the selection</td></tr>
-          <tr><td><Kbd>{CMD} F</Kbd> / <Kbd>{SEARCH_TERMINALS_SHORTCUT.label}</Kbd></td><td>Find here / in every terminal</td></tr>
+          <tr><td><Kbd>{CMD} F</Kbd> / <Kbd>{SEARCH_TERMINALS_SHORTCUT.label}</Kbd></td><td>Find here / in every terminal (in an editor: in its folder)</td></tr>
           <tr><td><Kbd>{CMD} S</Kbd></td><td>Save the open file</td></tr>
+          <tr><td><Kbd>{CMD} P</Kbd></td><td>Go to a file in the editor's folder</td></tr>
+          <tr><td><Kbd>{CMD} {SHIFT} O</Kbd></td><td>Go to a symbol in the open file</td></tr>
+          <tr><td><Kbd>{CMD} L</Kbd></td><td>Send the selected code to the tile's agent</td></tr>
           <tr><td><Kbd>{CMD} {SHIFT} =</Kbd> / <Kbd>{CMD} -</Kbd></td><td>Terminal font size up / down</td></tr>
           {IS_MAC ? <tr><td><Kbd>Hold {ALT_LABEL}</Kbd></td><td>Push to talk into the active terminal</td></tr> : null}
         </tbody>

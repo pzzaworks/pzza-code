@@ -35,9 +35,10 @@ import { listAccounts } from "./lib/accounts.js";
 import { USAGE_FRESH_MS, collectUsage, fixClaudeToken } from "./lib/usage.js";
 import { createRemoteSpend, createRemoteUsage } from "./lib/device-agent.js";
 import { createMcpRepair } from "./lib/mcp-repair.js";
-import { gitProtectorRouter } from "./lib/git-protector.js";
+import { gitProtectorRouter, repairGitProtectionInstalls } from "./lib/git-protector.js";
 import { gitStatusRouter } from "./lib/git-status.js";
 import { gitReviewRouter } from "./lib/git-review.js";
+import { gitLinesRouter } from "./lib/git-lines.js";
 import { checkpointsRouter } from "./lib/checkpoints.js";
 import { worktreeSetupRouter } from "./lib/worktree-setup.js";
 import { worktreeLandRouter } from "./lib/worktree-land.js";
@@ -50,6 +51,7 @@ import { mcpConfigs, mcpInstall } from "./lib/mcp.js";
 import { createAppControl, createAppControlRouter } from "./lib/app-control.js";
 import { installAgent } from "./lib/install.js";
 import { filesRouter } from "./lib/files.js";
+import { codeSearchRouter } from "./lib/code-search.js";
 import { startPtyBridge, sweepOrphanViews } from "./lib/pty.js";
 import { PaneModeRequestError, paneLines, paneLinesRequest, paneMode, paneModeRequest } from "./lib/pane-mode.js";
 import { scanProjects, syncProjects, cancelProjectSync } from "./lib/projects.js";
@@ -62,6 +64,14 @@ const queryHost = (url) => {
 
 const remoteUsage = createRemoteUsage();
 const remoteSpend = createRemoteSpend();
+// When this device's own usage and spend were last read (the app polls usage
+// every few minutes while visible; spend only while its panel opens). The
+// background warm-ups below keep running for an hour after the last read and
+// then pause, so an unwatched agent stops scanning transcripts and calling the
+// provider endpoints. Boot counts as a read: the first panel open is instant.
+const WARM_WHILE_READ_MS = 60 * 60 * 1000;
+let usageReadAt = Date.now();
+let spendReadAt = Date.now();
 const repairMcp = createMcpRepair();
 const appControl = createAppControl();
 const appControlRouter = createAppControlRouter(appControl, json);
@@ -102,6 +112,7 @@ async function handleRequest(req, res) {
   if (await gitProtectorRouter(req, res, url, json)) return;
   if (await gitStatusRouter(req, res, url, json)) return;
   if (await gitReviewRouter(req, res, url, json)) return;
+  if (await gitLinesRouter(req, res, url, json)) return;
   if (await checkpointsRouter(req, res, url, json)) return;
   if (await worktreeSetupRouter(req, res, url, json)) return;
   if (await worktreeLandRouter(req, res, url, json)) return;
@@ -116,6 +127,7 @@ async function handleRequest(req, res) {
   if (url.pathname === "/usage") {
     const host = url.searchParams.get("host") || "";
     if (host && !SSH_TOKEN.test(host)) return json(res, 400, { error: "Invalid device host" });
+    if (!host) usageReadAt = Date.now();
     try { return json(res, 200, host ? await remoteUsage(host, url.searchParams.get("fresh") === "1") : await collectUsage({ fresh: url.searchParams.get("fresh") === "1" })); }
     catch { return json(res, 503, { error: "Usage is unavailable on this device" }); }
   }
@@ -130,12 +142,15 @@ async function handleRequest(req, res) {
   if (url.pathname === "/spend") {
     const host = url.searchParams.get("host") || "";
     if (host && !SSH_TOKEN.test(host)) return json(res, 400, { error: "Invalid device host" });
+    if (!host) spendReadAt = Date.now();
     try { return json(res, 200, host ? await remoteSpend(host, url.searchParams.get("fresh") === "1") : await computeSpend({ fresh: url.searchParams.get("fresh") === "1" })); }
     catch { return json(res, 503, { error: "Spend is unavailable on this device" }); }
   }
 
   // File access (local + ssh-proxied): /fs/list, /file/read|raw|write, /paste-image.
   if (await filesRouter(req, res, url)) return;
+  // Project file listing and text search for the editor: /code/files, /code/search.
+  if (await codeSearchRouter(req, res, url, json)) return;
 
   if (url.pathname === "/agent/install" && req.method === "POST") {
     const body = await readBody(req);
@@ -368,18 +383,33 @@ server.listen(PORT, "127.0.0.1", () => {
     `PzzaCode agent on 127.0.0.1:${PORT} · role=${IS_CLIENT ? `client (ssh ${DEVBOX})` : "source"}`,
   );
   sweepOrphanViews();
+  // Hooks written by an older release can point at a runtime that no longer
+  // exists, which breaks every ref update in that repository, and a moved
+  // repository silently loses its guard. Regenerate them, including in every
+  // folder a terminal has open (the registry only knows a moved one's old path).
+  setTimeout(() => {
+    void listWindows()
+      .then((windows) => repairGitProtectionInstalls([...new Set(windows.map((window) => window.path).filter(Boolean))]))
+      .then((repaired) => {
+        for (const { path, missingPrevious } of repaired) {
+          console.log(`PzzaCode agent: repaired Git protection in ${path}`);
+          if (missingPrevious) console.error(`PzzaCode agent: ${path} chains to missing Git hooks at ${missingPrevious}; its own hooks do not run`);
+        }
+      })
+      .catch(() => undefined);
+  }, 2000).unref();
   startPtyBridge(server);
   startForwardLoop();
   // Warm the spend estimate in the background and keep it fresh, so the usage
   // panel gets it instantly instead of waiting on a multi-second transcript scan.
   const warmSpend = () => computeSpend().catch(() => undefined);
   setTimeout(warmSpend, 1500);
-  setInterval(warmSpend, SPEND_FRESH_MS);
+  setInterval(() => { if (Date.now() - spendReadAt < WARM_WHILE_READ_MS) void warmSpend(); }, SPEND_FRESH_MS);
   // Warm the account usage the same way: the provider round-trips happen in the
   // background so the first time the panel opens it is already populated.
   const warmUsage = () => collectUsage().catch(() => undefined);
   setTimeout(warmUsage, 800);
-  setInterval(warmUsage, USAGE_FRESH_MS);
+  setInterval(() => { if (Date.now() - usageReadAt < WARM_WHILE_READ_MS) void warmUsage(); }, USAGE_FRESH_MS);
 });
 
 

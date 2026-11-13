@@ -1,5 +1,5 @@
 import { useCallback, useSyncExternalStore } from "react";
-import { fetchPaneOutputActivity } from "../serverApi";
+import { OUTPUT_ACTIVITY_SHARE_MS, readPaneOutputActivity } from "../terminal/outputActivityCache";
 import { OUTPUT_POLL_MS } from "./taskStatus";
 
 // When each task tile's output last moved, from tmux's per-window activity
@@ -33,7 +33,7 @@ async function poll(host: string | undefined): Promise<void> {
   device.controller = controller;
   const limit = setTimeout(() => controller.abort(), 10000);
   try {
-    const rows = await fetchPaneOutputActivity(host, controller.signal);
+    const rows = await readPaneOutputActivity(host, { maxAge: OUTPUT_ACTIVITY_SHARE_MS, signal: controller.signal });
     if (controller.signal.aborted || !Array.isArray(rows)) return;
     const now = Date.now();
     for (const [key, entry] of device.watches) {

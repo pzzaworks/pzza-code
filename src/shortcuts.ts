@@ -39,10 +39,18 @@ export function digitFromCode(code: string): number | null {
 
 export const SEARCH_TERMINALS_SHORTCUT = { label: IS_MAC ? "⇧⌘F" : "Ctrl Shift F", keys: IS_MAC ? "Meta+Shift+F" : "Control+Shift+F" };
 
+// Whether an event target sits in a code editor that has a folder open (an
+// editor still asking for one has no file list under its toolbar).
+export function inCodeEditorFolder(target: EventTarget | null): boolean {
+  return target instanceof Element && !!target.closest(".tile-code")?.querySelector(":scope > .code-split");
+}
+
 // Cmd+Shift+F (Ctrl+Shift+F elsewhere) searches every terminal's scrollback,
-// from anywhere: plain Cmd/Ctrl+F stays the focused terminal's or editor's find.
+// from anywhere but a code editor, where it searches the editor's folder
+// instead: plain Cmd/Ctrl+F stays the focused terminal's or editor's find.
 export function searchTerminalsShortcut(event: KeyboardEvent): boolean {
   const modifier = IS_MAC ? event.metaKey && !event.ctrlKey : event.ctrlKey && !event.metaKey;
+  if (inCodeEditorFolder(event.target)) return false;
   return modifier && event.shiftKey && !event.altKey && event.code === "KeyF" && !event.isComposing;
 }
 

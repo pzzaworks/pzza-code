@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import {
-  Accessibility, Beer, Check, ChevronDown, Copy, ExternalLink, HardDrive, Hexagon, Laptop, Loader2, LockOpen,
+  Accessibility, Beer, Check, ChevronDown, Copy, ExternalLink, FileCode, HardDrive, Hexagon, Laptop, Loader2, LockOpen,
   Mic, MonitorUp, RotateCcw, SquareTerminal, Workflow, X, type LucideIcon,
 } from "lucide-react";
 import { restartMessage, usePermissionControls, type PermissionControls } from "../panels/Permissions";
 import { PERMISSIONS, PERMISSIONS_SUPPORTED, type PermissionId, type PermissionStatus, type SetupItem } from "../state/permissions";
 import { installRequirement, refreshSetup, useSetup } from "../state/setup";
+import { makeDefaultEditor, refreshDefaultEditor, useDefaultEditor, type DefaultEditorType } from "../state/defaultEditor";
 import { fetchDoctor, SERVER_HTTP, type Doctor } from "../serverApi";
 import { IS_MAC, NEW_SESSION_SHORTCUT } from "../shortcuts";
 import { visibleInterval } from "../visibility";
@@ -383,5 +384,96 @@ export function SetupSummary() {
         {SHORTCUTS.map(shortcut => <li key={shortcut.label}><kbd>{shortcut.keys}</kbd><span>{shortcut.label}</span></li>)}
       </ul>
     </section>
+  </div>;
+}
+
+const recheckEditor = () => { void refreshDefaultEditor(); };
+const fileTypes = (n: number) => `${n} ${n === 1 ? "file type" : "file types"}`;
+
+interface TypeChooserProps {
+  types: DefaultEditorType[];
+  /** Ids of the selected types PzzaCode does not own yet. */
+  selected: ReadonlySet<string>;
+  busy: boolean;
+  onToggle: (id: string) => void;
+  onSelect: (all: boolean) => void;
+  onApply: () => void;
+}
+
+/** The file types PzzaCode can open by default; owned ones stay checked and marked Default. */
+function DefaultEditorTypes({ types, selected, busy, onToggle, onSelect, onApply }: TypeChooserProps) {
+  const pending = types.filter(type => !type.owned);
+  const chosen = pending.filter(type => selected.has(type.id)).length;
+  return <section className="tour-types" aria-label="File types">
+    <div className="tour-group-head">
+      <span className="tour-group-title">File types</span>
+      {pending.length ? <span className="tour-group-meta">{chosen} of {pending.length} selected</span> : null}
+    </div>
+    <ul className="tour-list tour-type-list">
+      {types.map(type => {
+        const extensions = type.extensions.map(extension => `.${extension}`).join(", ");
+        return <li key={type.id} className={`tour-type-row ${type.owned ? "is-owned" : ""}`} title={type.id}>
+          <label className="tour-type-choice">
+            <input type="checkbox" checked={type.owned || selected.has(type.id)} disabled={type.owned || busy} onChange={() => onToggle(type.id)} />
+            <span className="tour-type-name">{type.label}</span>
+            {extensions && extensions !== type.label ? <span className="tour-type-ext">{extensions}</span> : null}
+          </label>
+          {type.owned ? <Pill tone="ok">Default</Pill> : null}
+        </li>;
+      })}
+    </ul>
+    {pending.length ? <div className="tour-type-actions">
+      <SmallButton disabled={busy || chosen === pending.length} onClick={() => onSelect(true)}>Select all</SmallButton>
+      <SmallButton disabled={busy || chosen === 0} onClick={() => onSelect(false)}>Select none</SmallButton>
+      <SmallButton primary icon={FileCode} loading={busy} disabled={chosen === 0} onClick={onApply}>Make PzzaCode the default</SmallButton>
+    </div> : null}
+  </section>;
+}
+
+/** Which file types PzzaCode opens by default, and a chooser to take over the rest. */
+export function SetupDefaultEditor() {
+  const { status, checked, busy, result, error } = useDefaultEditor();
+  // Types the user unchecked; every other type PzzaCode does not own yet is
+  // selected, which keeps the choice valid as the status refreshes.
+  const [skipped, setSkipped] = useState<ReadonlySet<string>>(() => new Set());
+  useEffect(recheckEditor, []);
+  useFocusRecheck(recheckEditor);
+
+  if (!status) return checked
+    ? <ul className="tour-list"><SetupRow icon={FileCode} label="Default editor" detail="The file types could not be read." pill={{ tone: "fail", text: "Failed" }}
+        action={<SmallButton icon={RotateCcw} onClick={recheckEditor}>Check again</SmallButton>} /></ul>
+    : <Checking label="Checking file types" />;
+
+  const pending = status.types.filter(type => !type.owned);
+  const selected = new Set(pending.filter(type => !skipped.has(type.id)).map(type => type.id));
+  const toggle = (id: string) => setSkipped(current => {
+    const next = new Set(current);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    return next;
+  });
+  const select = (all: boolean) => setSkipped(all ? new Set() : new Set(pending.map(type => type.id)));
+
+  const pill: RowProps["pill"] = busy ? { tone: "busy", text: "Updating" }
+    : status.isDefault ? { tone: "ok", text: "Default" }
+    : status.owned > 0 ? { tone: "action", text: `${status.owned} of ${status.total}` }
+    : { tone: "action", text: "Not default" };
+  const detail = status.isDefault
+    ? `Opens all ${fileTypes(status.total)} PzzaCode supports`
+    : `Opens ${status.owned} of the ${fileTypes(status.total)} PzzaCode supports`;
+  const failedNames = result?.failed.length
+    ? `${result.failed.slice(0, 3).join(", ")}${result.failed.length > 3 ? ` and ${result.failed.length - 3} more` : ""}`
+    : "";
+  const hint = error ?? (!result ? undefined
+    : result.failed.length ? `Set for ${fileTypes(result.updated)}. ${fileTypes(result.failed.length)} could not be changed: ${failedNames}.`
+    : `Done. Set for ${fileTypes(result.updated)}.`);
+  return <div className="tour-stack">
+    <ul className="tour-list">
+      <SetupRow icon={FileCode} label="Default editor for code files" detail={detail} hint={hint}
+        hintTone={error || result?.failed.length ? "fail" : "muted"} pill={pill} />
+    </ul>
+    <DefaultEditorTypes types={status.types} selected={selected} busy={busy} onToggle={toggle} onSelect={select}
+      onApply={() => void makeDefaultEditor([...selected])} />
+    <p className="tour-group-note">Optional. Change a single file type any time in Finder with Get Info, under Open with.</p>
   </div>;
 }

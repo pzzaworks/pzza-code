@@ -754,6 +754,87 @@ export async function listDir(
   return res.json();
 }
 
+// ---- Project files and text search (the editor's Quick Open and project search) ----
+
+/** Every file under an editor folder, as paths relative to `root` (the folder as the device resolved it). */
+export interface CodeFileList {
+  root: string;
+  tool: string;
+  files: string[];
+  truncated: boolean;
+}
+export interface CodeSearchMatch {
+  line: number;
+  text: string;
+  /** Matched [from, to) character ranges in `text`. */
+  ranges: [number, number][];
+}
+export interface CodeSearchFile {
+  path: string;
+  matches: CodeSearchMatch[];
+}
+export interface CodeSearchResult {
+  root: string;
+  tool: string;
+  files: CodeSearchFile[];
+  matchCount: number;
+  truncated: boolean;
+  timedOut: boolean;
+}
+export interface CodeSearchQuery {
+  root: string;
+  host?: string;
+  query: string;
+  caseSensitive: boolean;
+  regex: boolean;
+}
+
+const isCodeRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
+const isCodeStrings = (value: unknown): value is string[] => Array.isArray(value) && value.every((item) => typeof item === "string");
+
+async function codeRequest(path: string, init: RequestInit, fallback: string): Promise<Record<string, unknown>> {
+  const res = await agentFetch(`${SERVER_HTTP}${path}`, init);
+  const value: unknown = await res.json().catch(() => null);
+  if (!res.ok) throw Object.assign(new Error(isCodeRecord(value) && typeof value.error === "string" ? value.error : fallback), { status: res.status });
+  if (!isCodeRecord(value) || typeof value.root !== "string" || typeof value.tool !== "string" || typeof value.truncated !== "boolean") throw new Error(fallback);
+  return value;
+}
+
+function parseCodeRange(value: unknown): [number, number] | null {
+  return Array.isArray(value) && value.length === 2 && Number.isInteger(value[0]) && Number.isInteger(value[1]) ? [value[0], value[1]] : null;
+}
+function parseSearchFile(value: unknown): CodeSearchFile | null {
+  if (!isCodeRecord(value) || typeof value.path !== "string" || !Array.isArray(value.matches)) return null;
+  const matches: CodeSearchMatch[] = [];
+  for (const match of value.matches) {
+    if (!isCodeRecord(match) || !Number.isInteger(match.line) || typeof match.text !== "string" || !Array.isArray(match.ranges)) return null;
+    const ranges = match.ranges.map(parseCodeRange).filter((range): range is [number, number] => range !== null);
+    matches.push({ line: Number(match.line), text: match.text, ranges });
+  }
+  return { path: value.path, matches };
+}
+
+export async function fetchCodeFiles(root: string, host?: string, signal?: AbortSignal): Promise<CodeFileList> {
+  const params = new URLSearchParams({ root });
+  if (host) params.set("host", host);
+  const value = await codeRequest(`/code/files?${params}`, { signal }, "The file list is unavailable");
+  if (!isCodeStrings(value.files)) throw new Error("The file list is unavailable");
+  return { root: String(value.root), tool: String(value.tool), files: value.files, truncated: value.truncated === true };
+}
+
+export async function searchCode(query: CodeSearchQuery, signal?: AbortSignal): Promise<CodeSearchResult> {
+  const value = await codeRequest("/code/search", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(query), signal,
+  }, "Search is unavailable");
+  if (!Array.isArray(value.files) || typeof value.matchCount !== "number") throw new Error("Search is unavailable");
+  const files = value.files.map(parseSearchFile);
+  if (files.some((file) => file === null)) throw new Error("Search is unavailable");
+  return {
+    root: String(value.root), tool: String(value.tool), files: files.filter((file): file is CodeSearchFile => file !== null),
+    matchCount: value.matchCount, truncated: value.truncated === true, timedOut: value.timedOut === true,
+  };
+}
+
 export interface SpendWindow {
   cost: number | null; // null when any tokens lack verified rates
   pricedCost: number; // known subtotal, not a complete estimate when cost is null

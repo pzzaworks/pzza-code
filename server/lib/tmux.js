@@ -287,13 +287,20 @@ export function parsePaneOutputActivity(out) {
 
 // Last-output epoch per tmux pane on a device (including sessions the app
 // never opened). Never rejects on a missing server: no tmux = no activity.
+// Concurrent callers for one device (several app features, several windows)
+// share the probe already running instead of spawning another.
+const pendingOutputActivity = new Map();
 export function paneOutputActivity(host) {
   if (host !== undefined && (typeof host !== "string" || (host && !SSH_TOKEN.test(host)))) return Promise.reject(new Error("invalid host"));
   const targetHost = host === undefined ? (IS_CLIENT ? DEVBOX : "") : host;
+  if (pendingOutputActivity.has(targetHost)) return pendingOutputActivity.get(targetHost);
+  // Remote probes ride the multiplexed connection the session-activity poll
+  // keeps open, so a poll does not pay a full SSH handshake each time.
   const run = (command, callback) => execFile(targetHost ? "ssh" : "sh", targetHost
-    ? ["-o", "BatchMode=yes", "-o", "ConnectTimeout=8", "-o", "StrictHostKeyChecking=accept-new", targetHost, command]
+    ? ["-o", "BatchMode=yes", "-o", "ConnectTimeout=8", "-o", "StrictHostKeyChecking=accept-new",
+        "-o", "ControlMaster=auto", "-o", "ControlPath=~/.ssh/pzza-mux-%C", "-o", "ControlPersist=120", targetHost, command]
     : ["-c", command], { timeout: 15000, env: deviceEnv(targetHost) }, callback);
-  return new Promise((resolve, reject) => {
+  const request = new Promise((resolve, reject) => {
     run(outputActivityScript(targetHost), (error, output, stderr) => {
       if (error && !/no server running|no sessions|error connecting.*No such file/.test(stderr || "")) return reject(new Error("Could not read output activity on this device"));
       if (error) return resolve([]);
@@ -303,7 +310,9 @@ export function paneOutputActivity(host) {
       if (!windows.length) return resolve(rows);
       run(monitorWindowsScript(targetHost, windows), () => resolve(rows));
     });
-  });
+  }).finally(() => pendingOutputActivity.delete(targetHost));
+  pendingOutputActivity.set(targetHost, request);
+  return request;
 }
 
 // Local agent sessions: the model the agent's newest reply actually used,

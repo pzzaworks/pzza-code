@@ -1,5 +1,5 @@
-import { useStore } from "../state/store";
-import { createSessionInApp } from "../sessionActions";
+import { sessionTileById, useStore } from "../state/store";
+import { createSessionInApp, creationIdle, enqueueLaunch } from "../sessionActions";
 import { sendPromptToTile } from "../terminal/broadcast";
 import { hasPendingPermission } from "../state/permissionPrompts";
 import { paneForeground } from "../terminal/permissionForeground";
@@ -8,7 +8,6 @@ import { fetchSessions, scanDevice } from "../serverApi";
 import { DEFAULT_WORKSPACE_ID } from "../workspaces";
 import { agentTakesPrompt, sessionAgent, SESSION_PROMPT_MAX_LENGTH } from "../../server/lib/session-agents.js";
 import { fetchTaskStats } from "./taskApi";
-import { creationIdle, enqueueLaunch } from "./taskActions";
 import { useTasks, type ChainPreset, type ChainRole, type ChainStep, type Task, type TaskChain } from "./taskStore";
 
 // Chains: steps that run one after another in one worktree on one branch,
@@ -181,7 +180,7 @@ async function stepContext(item: Task, steps: readonly ChainStep[], index: numbe
  */
 export async function agentAbsence(tileId: string, agent: string): Promise<string | undefined> {
   const state = useStore.getState();
-  const tile = state.tiles.find((item) => item.id === tileId);
+  const tile = sessionTileById(state.tiles, tileId);
   if (!tile) return "Session closed";
   const host = tile.host ?? state.connection.host ?? "";
   try {

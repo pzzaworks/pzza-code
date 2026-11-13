@@ -41,6 +41,18 @@ export function safePath(p, { listOnly = false } = {}) {
   return resolved;
 }
 
+// Why safePath/realSafePath refused a local path, worded for the editor that
+// shows it: outside home, or refused inside it (a credential store, a link
+// that reaches one, a dangling link).
+export function refusalReason(p) {
+  if (typeof p !== "string" || !p) return "invalid path";
+  const home = os.homedir();
+  const resolved = path.resolve(expandTilde(p, home));
+  return resolved === home || resolved.startsWith(home + path.sep)
+    ? "This file is protected and cannot be opened here."
+    : "PzzaCode only opens files inside your home folder.";
+}
+
 const within = (root, candidate) => candidate === root || candidate.startsWith(root + path.sep);
 
 // The agent's own token file, wherever XDG_CONFIG_HOME puts it.

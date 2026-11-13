@@ -6,7 +6,7 @@ import { access, copyFile, link, mkdtemp, writeFile, readFile, mkdir, rm, symlin
 import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
-import { runGitProtection } from "../lib/git-protector.js";
+import { gitProtectionWorker, repairGitProtectionInstalls, runGitProtection } from "../lib/git-protector.js";
 import { toolResult } from "../../mcp/lib/results.js";
 
 const execute = promisify(execFile);
@@ -740,4 +740,128 @@ test("hooks survive removal of the Node.js that installed them and fail closed w
     assert.match(output, /git_protect/);
     assert.match(output, /git config --unset --local core\.hooksPath/);
   }
+});
+
+async function legacyInstall(root) {
+  // Recreate what older releases left behind: wrappers whose shebang names a
+  // Node.js binary that no longer exists, and settings without a format.
+  const protection = path.join(root, ".git", "pzzacode-protection");
+  await writeFile(path.join(protection, "hooks", "reference-transaction"), "#!/nonexistent/pzza-node\n", { mode: 0o700 });
+  await writeFile(path.join(protection, "hooks.json"), JSON.stringify({ previous: path.join(root, ".git", "hooks") }), { mode: 0o600 });
+}
+
+test("repair regenerates hooks from an older release so ref updates work again", async t => {
+  const root = await repository(t);
+  assert.equal((await runGitProtection({ path: root, operation: "commit" })).approved, true);
+  await legacyInstall(root);
+  await assert.rejects(git(root, "branch", "legacy-broken"));
+  assert.equal((await gitProtectionWorker({ path: root, operation: "repair" })).repaired, true);
+  await git(root, "branch", "legacy-fixed");
+  assert.equal(await git(root, "branch", "--list", "legacy-fixed"), "legacy-fixed");
+  assert.equal((await gitProtectionWorker({ path: root, operation: "repair" })).reason, "current");
+  // Protection itself is still enforced after the repair.
+  await stage(root, ".env.local");
+  await assert.rejects(git(root, "commit", "-qm", "Attempt blocked change"));
+});
+
+test("repair never enables protection in an unprotected repository", async t => {
+  const root = await repository(t);
+  assert.deepEqual(await gitProtectionWorker({ path: root, operation: "repair" }), { repaired: false, operation: "repair", reason: "not-protected" });
+  await assert.rejects(access(path.join(root, ".git", "pzzacode-protection")));
+  await assert.rejects(git(root, "config", "--get", "core.hooksPath"));
+});
+
+test("the startup sweep repairs registered repositories and drops deleted ones", async t => {
+  const root = await repository(t);
+  const deleted = await repository(t);
+  assert.equal((await runGitProtection({ path: root, operation: "commit" })).approved, true);
+  assert.equal((await runGitProtection({ path: deleted, operation: "commit" })).approved, true);
+  const realRoot = await git(root, "rev-parse", "--show-toplevel");
+  const realDeleted = await git(deleted, "rev-parse", "--show-toplevel");
+  await legacyInstall(root);
+  await rm(deleted, { recursive: true, force: true });
+  const registry = path.join(os.homedir(), ".cache", "pzzacode", "git-protection", "repositories");
+  const entry = (value) => path.join(registry, crypto.createHash("sha256").update(value).digest("hex"));
+  assert.equal(await readFile(entry(realRoot), "utf8"), realRoot);
+  assert.equal(await readFile(entry(realDeleted), "utf8"), realDeleted);
+  assert.ok((await repairGitProtectionInstalls()).some((item) => item.path === realRoot));
+  await git(root, "branch", "swept");
+  assert.equal(await readFile(entry(realRoot), "utf8"), realRoot);
+  await assert.rejects(access(entry(realDeleted)));
+});
+
+test("the startup sweep repairs a moved repository found through an open folder", async t => {
+  const original = await repository(t);
+  const parent = await mkdtemp(path.join(os.tmpdir(), "pzza-git-swept-"));
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  assert.equal((await runGitProtection({ path: original, operation: "commit" })).approved, true);
+  const moved = path.join(parent, "moved");
+  await execute("mv", [original, moved]);
+  await mkdir(path.join(moved, "src"));
+  const repaired = await repairGitProtectionInstalls([path.join(moved, "src"), moved]);
+  const root = await git(moved, "rev-parse", "--show-toplevel");
+  assert.deepEqual(repaired, [{ path: root }]);
+  await stage(moved, ".env.local");
+  await assert.rejects(git(moved, "commit", "-qm", "Blocked after the sweep"));
+});
+
+test("a move rebases chained hooks in the old working tree and reports ones that are gone", async t => {
+  const original = await repository(t);
+  const parent = await mkdtemp(path.join(os.tmpdir(), "pzza-git-chain-"));
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  const originalRoot = await git(original, "rev-parse", "--show-toplevel");
+  await mkdir(path.join(original, ".husky"));
+  await writeFile(path.join(original, ".husky", "post-commit"), "#!/bin/sh\nprintf ran > .git/husky-ran\n", { mode: 0o700 });
+  await git(original, "config", "core.hooksPath", path.join(originalRoot, ".husky"));
+  assert.equal((await runGitProtection({ path: original, operation: "commit" })).approved, true);
+  const moved = path.join(parent, "moved");
+  await execute("mv", [original, moved]);
+  const result = await gitProtectionWorker({ path: moved, operation: "repair" });
+  const root = await git(moved, "rev-parse", "--show-toplevel");
+  assert.deepEqual(result, { repaired: true, operation: "repair", path: root });
+  await stage(moved, "safe.txt", "Safe.\n");
+  await git(moved, "commit", "-qm", "Husky still runs");
+  assert.equal(await readFile(path.join(root, ".git", "husky-ran"), "utf8"), "ran");
+  // A chained directory that really is gone is reported, not hidden.
+  await rm(path.join(root, ".husky"), { recursive: true, force: true });
+  await writeFile(path.join(root, ".git", "pzzacode-protection", "hooks.json"), JSON.stringify({ previous: path.join(root, ".husky") }), { mode: 0o600 });
+  assert.equal((await gitProtectionWorker({ path: moved, operation: "repair" })).missingPrevious, path.join(root, ".husky"));
+});
+
+test("repair re-enables protection in a repository moved after it was protected", async t => {
+  const original = await repository(t);
+  const parent = await mkdtemp(path.join(os.tmpdir(), "pzza-git-moved-"));
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  await writeFile(path.join(original, ".git", "hooks", "post-commit"), "#!/bin/sh\nprintf ran > .git/chained-hook-ran\n", { mode: 0o700 });
+  assert.equal((await runGitProtection({ path: original, operation: "commit" })).approved, true);
+  const moved = path.join(parent, "moved");
+  await execute("mv", [original, moved]);
+  // Git skips the vanished hooks directory, so the moved repository is unguarded.
+  await stage(moved, ".env.local");
+  await git(moved, "commit", "-qm", "Unguarded after the move");
+  assert.equal((await gitProtectionWorker({ path: moved, operation: "repair" })).repaired, true);
+  const root = await git(moved, "rev-parse", "--show-toplevel");
+  assert.equal(await git(moved, "config", "--get", "core.hooksPath"), path.join(root, ".git", "pzzacode-protection", "hooks"));
+  const settings = JSON.parse(await readFile(path.join(root, ".git", "pzzacode-protection", "hooks.json"), "utf8"));
+  assert.equal(settings.previous, path.join(root, ".git", "hooks"));
+  await stage(moved, "secrets.json", "{}\n");
+  await assert.rejects(git(moved, "commit", "-qm", "Blocked again after repair"));
+  await git(moved, "rm", "-q", "--cached", "secrets.json");
+  await stage(moved, "safe.txt", "Safe.\n");
+  await git(moved, "commit", "-qm", "Chained hooks still run");
+  assert.equal(await readFile(path.join(root, ".git", "chained-hook-ran"), "utf8"), "ran");
+});
+
+test("repair heals a chain into a vanished protection directory from an older release", async t => {
+  const root = await repository(t);
+  await writeFile(path.join(root, ".git", "hooks", "post-commit"), "#!/bin/sh\nprintf ran > .git/own-hook-ran\n", { mode: 0o700 });
+  assert.equal((await runGitProtection({ path: root, operation: "commit" })).approved, true);
+  const top = await git(root, "rev-parse", "--show-toplevel");
+  await writeFile(path.join(top, ".git", "pzzacode-protection", "hooks.json"), JSON.stringify({ previous: "/nonexistent/old/.git/pzzacode-protection/hooks" }), { mode: 0o600 });
+  const result = await gitProtectionWorker({ path: root, operation: "repair" });
+  assert.deepEqual(result, { repaired: true, operation: "repair", path: top });
+  assert.equal(JSON.parse(await readFile(path.join(top, ".git", "pzzacode-protection", "hooks.json"), "utf8")).previous, path.join(top, ".git", "hooks"));
+  await stage(root, "safe.txt", "Safe.\n");
+  await git(root, "commit", "-qm", "Own hooks run again");
+  assert.equal(await readFile(path.join(top, ".git", "own-hook-ran"), "utf8"), "ran");
 });
