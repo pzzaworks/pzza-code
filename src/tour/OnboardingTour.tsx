@@ -59,7 +59,8 @@ const ALL_STEPS: Step[] = [
     phase: "tour",
     title: "Session tiles",
     body: "Every tile is a live terminal. Click to work in it, drag headers to reorder, and find every control in the tile's top-right corner.",
-    targets: [".tile:not(.tile-off) .tile-head", ".empty-session-create"],
+    // File tiles are editors, not terminals: the step points at a session tile.
+    targets: [".tile:not(.tile-off):not(.tile-file) .tile-head", ".empty-session-create"],
   },
   {
     id: "settings",

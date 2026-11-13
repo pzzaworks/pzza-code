@@ -52,8 +52,13 @@ mod native {
     // The loaded model holds over a gigabyte. It is released after this long
     // without dictation and loaded again on the next use (the microphone
     // records meanwhile, so nothing said is lost).
-    const IDLE_RELEASE: Duration = Duration::from_secs(10 * 60);
-    const IDLE_CHECK: Duration = Duration::from_secs(30);
+    // Five minutes keeps a dictating stretch warm (a reload delays the first
+    // words and backs audio up for the final pass) while an idle app still
+    // gives the memory back soon.
+    const IDLE_RELEASE: Duration = Duration::from_secs(5 * 60);
+    // How soon a release that could not happen yet (a recording, a decode or
+    // a load holding the model) is tried again.
+    const IDLE_RETRY: Duration = Duration::from_secs(15);
 
     /// Whether an idle model may be released: never while a recording or its
     /// worker runs, nor before IDLE_RELEASE has passed since the last use.
@@ -98,8 +103,30 @@ mod native {
             drop(context);
             released
         }
+
+        /// Whether a model is loaded; None while its lock is held (a load or
+        /// a decode running, so one is, or is about to be).
+        fn model_loaded(&self) -> Option<bool> {
+            match self.context.try_lock() {
+                Ok(context) => Some(context.is_some()),
+                Err(_) => None,
+            }
+        }
+
+        /// How long the idle watcher sleeps before its next check: until the
+        /// idle period since the last use ends, or IDLE_RETRY once it has.
+        fn idle_wait(&self, now: Instant) -> Duration {
+            let last_used = self.last_used.lock().map(|at| *at).unwrap_or(None);
+            last_used
+                .map(|at| (at + IDLE_RELEASE).saturating_duration_since(now))
+                .filter(|wait| !wait.is_zero())
+                .unwrap_or(IDLE_RETRY)
+        }
     }
 
+    // The watcher runs only while a model is loaded: it sleeps until the idle
+    // period ends, releases the model, and exits; the next preparation starts
+    // it again.
     fn watch_idle(app: &AppHandle) {
         let state = app.state::<SpeechState>();
         if state.idle_watch.swap(true, Ordering::AcqRel) {
@@ -107,7 +134,7 @@ mod native {
         }
         let watcher = app.clone();
         let started = std::thread::Builder::new().name("dictation-idle".into()).spawn(move || loop {
-            std::thread::sleep(IDLE_CHECK);
+            std::thread::sleep(watcher.state::<SpeechState>().idle_wait(Instant::now()));
             let state = watcher.state::<SpeechState>();
             if state.shutting_down.load(Ordering::Acquire) {
                 // Let the slot go, but keep watching when a failed shutdown
@@ -120,6 +147,14 @@ mod native {
             }
             if state.release_if_idle(Instant::now(), IDLE_RELEASE) {
                 crate::voice_log::log(&watcher, "dictation model released after being idle; it loads again on the next use");
+            }
+            if state.model_loaded() == Some(false) {
+                // Let the slot go, but keep watching when a preparation loaded
+                // a model meanwhile and found the slot still taken.
+                state.idle_watch.store(false, Ordering::SeqCst);
+                if state.model_loaded() == Some(false) || state.idle_watch.swap(true, Ordering::SeqCst) {
+                    return;
+                }
             }
         });
         if started.is_err() {
@@ -293,6 +328,9 @@ mod native {
         committed: String,
         heard: Option<(String, f32)>,
         redecoded: bool,
+        // The words this pass left pending in its preview.
+        #[serde(default)]
+        preview: String,
     }
 
     unsafe extern "C" fn recording_cancelled(data: *mut std::ffi::c_void) -> bool {
@@ -809,15 +847,14 @@ mod native {
         language_transition: bool,
         missing_prefix: bool,
         boundary_suffix: Vec<Word>,
+        // The previous hypothesis was decoded in a language its audio was not
+        // spoken in, so its preview was withheld (never shown to the user).
+        previous_withheld: bool,
     }
 
     impl TranscriptWindow {
         fn update(&mut self, words: Vec<Word>, duration: usize, complete: bool) -> Transcript {
-            let words = if complete && words.is_empty() {
-                let count = self.previous.iter().zip(&self.earlier)
-                    .take_while(|(word, old)| same_word(&word.text, &old.text)).count();
-                self.previous[..count].to_vec()
-            } else { words };
+            let words = if complete { self.with_shown_tail(words, duration) } else { words };
             let language_changed = mem::take(&mut self.language_changed);
             let language_transition = mem::take(&mut self.language_transition);
             let omitted_prefix = language_changed && !self.confirmed.is_empty()
@@ -902,6 +939,45 @@ mod native {
             // represents the same audio. Preserve the already entered frontier.
             self.confirmed.last().map(|last| words.iter()
                 .take_while(|word| word.end <= last.end).count()).unwrap_or(0)
+        }
+
+        /// The untyped words the last preview showed the user.
+        fn shown(&self) -> &[Word] {
+            if self.previous_withheld { return &[]; }
+            &self.previous[self.entered(&self.previous)..]
+        }
+
+        /// Before an utterance is typed whole, the previewed words its reading
+        /// may fall back on (with_shown_tail) pass the same test as the
+        /// reading's own words, now that the voice model heard all their audio.
+        fn withdraw_unspoken_preview(&mut self, speech: &super::SpeechMask) {
+            let entered = self.entered(&self.previous);
+            let mut shown = self.previous.split_off(entered);
+            drop_unspoken(&mut shown, speech);
+            self.previous.extend(shown);
+        }
+
+        /// The hypothesis that ends an utterance, extended by the previewed
+        /// words it lacks at its end. A final decode may refine the words the
+        /// preview showed, but whisper sometimes stops early or returns nothing
+        /// for audio it read fine a moment before; words the user already saw
+        /// must not vanish on release. Only words heard within this window
+        /// (`duration`) count: after an utterance boundary the rest belongs to
+        /// the next phrase. A final reading that shares no word with the
+        /// preview (decoded again in the language actually spoken) wins.
+        fn with_shown_tail(&self, mut words: Vec<Word>, duration: usize) -> Vec<Word> {
+            let shown: Vec<Word> = self.shown().iter().filter(|word| word.start < duration).cloned().collect();
+            if shown.is_empty() { return words; }
+            let pending = &words[self.entered(&words)..];
+            // The prefix of the shown words the final reading covers, word
+            // for word: what follows it was shown and is missing from it.
+            let covered = if pending.is_empty() { 0 } else {
+                let (covered, matched) = alignment(&shown, pending, false);
+                if matched == 0 { return words; }
+                covered
+            };
+            words.extend_from_slice(&shown[covered..]);
+            words
         }
 
         fn remember_boundary_suffix(&mut self, words: &[Word], duration: usize) {
@@ -1120,7 +1196,12 @@ mod native {
             });
         }
         let duration = audio.len();
-        let commit_all = boundary.is_some() || finalizing || audio.len() >= 400_000;
+        // The pause that ends an utterance, reached with previewed words still
+        // untyped (unspoken_audio decodes then): type them now, as at a boundary.
+        let typed_until = window.confirmed.last().map_or(0, |word| word.end);
+        let pause_ended = boundary.is_none() && !finalizing && !speech.speech_after(typed_until)
+            && duration.saturating_sub(typed_until) >= UNSPOKEN_UTTERANCE_END;
+        let commit_all = boundary.is_some() || finalizing || pause_ended || audio.len() >= 400_000;
         // Very short utterances still need a full decoder input frame.
         if audio.len() < 16_000 {
             audio.resize(16_000, 0.0);
@@ -1253,12 +1334,15 @@ mod native {
         #[cfg(test)]
         let raw_words = word_text(&words);
         drop_unspoken(&mut words, &speech);
+        if commit_all { window.withdraw_unspoken_preview(&speech); }
+        let decoded_any = !words.is_empty();
         #[cfg(test)]
         let mut transcript = Transcript { raw_words, ..window.update(words, duration, commit_all) };
         #[cfg(not(test))]
         let mut transcript = window.update(words, duration, commit_all);
-        // Never preview a translation either.
+        // Never preview a translation either, nor fall back on it later.
         if mismatch { transcript.preview.clear(); }
+        if decoded_any { window.previous_withheld = mismatch; }
         // A settled language hints the next decodes of this utterance.
         if let Some(choice) = decision.filter(|choice| choice.share >= SETTLED_SHARE && !commit_all) {
             window.observe_language(choice.language, duration);
@@ -1269,10 +1353,13 @@ mod native {
                 audio_samples: audio.len(), audio_ctx: decode_context(audio.len(), multilingual), detect_ms,
                 decode_ms, multilingual, finalizing, language: decode_language,
                 committed: transcript.committed.clone(), heard, redecoded,
+                preview: transcript.preview.clone(),
             });
         }
         if commit_all {
-            transcript.consumed = utterance_samples;
+            // After a pause, keep a little preroll as unspoken_audio does, so a
+            // word beginning right there is not cut.
+            transcript.consumed = if pause_ended { samples.len().saturating_sub(rate as usize / 5) } else { utterance_samples };
             *window = TranscriptWindow::default();
         } else if let Some(last) = window.confirmed.last() {
             if last.end >= 96_000 {
@@ -1308,7 +1395,8 @@ mod native {
     /// "Altyazı M.K."), so a window is decoded only while something after
     /// the last typed word is speech: before anything is typed, the whole
     /// window; after that, the pause that follows the typed words, the final
-    /// pass's leftover included. Returns None to decode, else the captured
+    /// pass's leftover included; and always while the preview shows words
+    /// not typed yet. Returns None to decode, else the captured
     /// samples to let go without decoding (0 to wait for more audio).
     /// `duration` is the window's 16 kHz length, cut at `boundary` (the
     /// captured samples up to an utterance boundary) when there is one, and
@@ -1323,7 +1411,11 @@ mod native {
         finalizing: bool,
     ) -> Option<usize> {
         let typed_until = window.confirmed.last().map_or(0, |word| word.end);
-        if speech.speech_after(typed_until) {
+        // Words the preview showed are never let go unheard: the decode that
+        // follows types them (at the utterance's end) or confirms them, even
+        // when the voice model missed their audio or a typed word's timing
+        // ran over it.
+        if speech.speech_after(typed_until) || !window.shown().is_empty() {
             return None;
         }
         let consumed = if let Some(boundary) = boundary {
@@ -1735,11 +1827,88 @@ mod native {
                 assert_eq!(window.update(words(revision), 48_000, false).committed, "");
                 assert_eq!(window.update(words("one two three four"), 56_000, true).committed, "four");
             }
+            // A final reading that comes back empty falls back on the words
+            // the preview showed, typed once.
             let mut window = TranscriptWindow::default();
             window.update(words("keep listening"), 24_000, false);
+            assert_eq!(window.update(Vec::new(), 32_000, true).committed, "keep listening");
             assert_eq!(window.update(Vec::new(), 32_000, true).committed, "");
-            assert_eq!(window.update(words("keep listening"), 24_000, false).committed, "keep");
-            assert_eq!(window.update(Vec::new(), 32_000, true).committed, "listening");
+        }
+
+        #[test]
+        fn words_the_preview_showed_survive_a_final_reading_that_drops_them() {
+            // Logged: 7 words pending in the last preview, of which the final
+            // pass typed the 2 its two last hypotheses agreed on.
+            let shown = || {
+                let mut window = TranscriptWindow::default();
+                window.update(words("one two"), 24_000, false);
+                let transcript = window.update(words("one two three four five six seven"), 64_000, false);
+                assert_eq!((transcript.committed.as_str(), transcript.preview.as_str()), ("one", "one two three four five six seven"));
+                window
+            };
+            assert_eq!(shown().update(Vec::new(), 64_000, true).committed, "two three four five six seven");
+            // A reading that stops early keeps its own words and adds the rest.
+            assert_eq!(shown().update(words("one two three"), 64_000, true).committed, "two three four five six seven");
+            // It may still revise a shown word; nothing is typed twice.
+            assert_eq!(shown().update(words("one two three for five six seven"), 64_000, true).committed, "two three for five six seven");
+            assert_eq!(shown().update(words("one two three four five six seven eight"), 72_000, true).committed, "two three four five six seven eight");
+        }
+
+        #[test]
+        fn a_final_reading_in_another_language_or_a_withheld_preview_is_not_mixed_in() {
+            // Decoded again in the language actually spoken: it shares no word
+            // with the translated preview, and replaces it.
+            let mut window = TranscriptWindow::default();
+            window.update(words("What you need to do"), 40_000, false);
+            assert_eq!(window.update(words("Ne yapman gerekiyorsa"), 40_000, true).committed, "Ne yapman gerekiyorsa");
+            // A preview that was never shown (a translation) is never typed.
+            let mut window = TranscriptWindow::default();
+            window.update(words("What you need to do"), 40_000, false);
+            window.previous_withheld = true;
+            assert_eq!(window.update(Vec::new(), 40_000, true).committed, "");
+            // At an utterance boundary, shown words heard after it belong to the next phrase.
+            let mut window = TranscriptWindow::default();
+            window.update(words("open the file now"), 32_000, false);
+            assert_eq!(window.update(Vec::new(), 24_000, true).committed, "open the file");
+        }
+
+        #[test]
+        fn previewed_words_are_never_let_go_unheard() {
+            // "open settings" typed, "and save" shown, and the voice model
+            // missed the soft "and save" (or the typed word's timing ran over it).
+            let typed = timed_words(&[("open", 8_000, 16_000), ("settings", 16_000, 32_000)]);
+            let mut previous = typed.clone();
+            previous.extend(timed_words(&[("and", 33_000, 38_000), ("save", 38_000, 44_000)]));
+            let window = || TranscriptWindow { confirmed: typed.clone(), previous: previous.clone(), ..Default::default() };
+            let audio = [loud(2.0), loud(0.8), quiet(0.6)].concat();
+            let missed = mask(&audio, &[heard(2.0, 0.95), heard(1.4, 0.03)]);
+            // Before, the final pass let this audio go and the shown words with it.
+            for finalizing in [true, false] {
+                let mut window = window();
+                assert_eq!(unspoken_audio(&mut window, &missed, audio.len(), None, audio.len(), 16_000, finalizing), None);
+                assert_eq!(window.shown().len(), 2);
+                // The decode that follows types them even if it reads nothing.
+                window.withdraw_unspoken_preview(&missed);
+                assert_eq!(window.update(Vec::new(), audio.len(), true).committed, "and save");
+            }
+            // Once nothing is shown, the pause is let go as before.
+            let mut window = TranscriptWindow { confirmed: typed.clone(), previous: typed.clone(), ..Default::default() };
+            assert_eq!(unspoken_audio(&mut window, &missed, audio.len(), None, audio.len(), 16_000, true), Some(audio.len()));
+        }
+
+        #[test]
+        fn previewed_words_made_up_from_silence_are_withdrawn_before_typing() {
+            // One second of speech, three of silence the voice model heard as
+            // such; the live preview (judged by the level before the model
+            // caught up) showed the decoder's "Thank you." and "Adobe" there.
+            let audio = [loud(1.0), quiet(3.0)].concat();
+            let speech = mask(&audio, &[heard(1.0, 0.9), heard(3.0, 0.02)]);
+            let typed = timed_words(&[("Open", 3_200, 8_000)]);
+            let mut previous = typed.clone();
+            previous.extend(timed_words(&[("settings.", 9_600, 16_000), ("Thank", 20_000, 23_000), ("you.", 23_000, 26_000), ("Adobe", 40_000, 44_000)]));
+            let mut window = TranscriptWindow { confirmed: typed, previous, ..Default::default() };
+            window.withdraw_unspoken_preview(&speech);
+            assert_eq!(window.update(Vec::new(), audio.len(), true).committed, "settings.");
         }
 
         #[test]
@@ -2440,6 +2609,21 @@ mod native {
             assert!(!idle_release_due(false, Some(now - Duration::from_secs(599)), now, idle), "not before the idle period");
             assert!(idle_release_due(false, Some(now - idle), now, idle));
             assert!(idle_release_due(false, None, now, idle));
+        }
+
+        #[test]
+        fn the_idle_watcher_sleeps_until_the_idle_period_ends() {
+            let state = SpeechState::default();
+            let now = Instant::now();
+            assert_eq!(state.idle_wait(now), IDLE_RETRY, "never used: checked again soon");
+            *state.last_used.lock().unwrap() = Some(now);
+            assert_eq!(state.idle_wait(now), IDLE_RELEASE, "one wake-up for the whole idle period");
+            assert_eq!(state.idle_wait(now + Duration::from_secs(60)), IDLE_RELEASE - Duration::from_secs(60));
+            assert_eq!(state.idle_wait(now + IDLE_RELEASE), IDLE_RETRY, "due but held (a recording): tried again later");
+            assert_eq!(state.model_loaded(), Some(false));
+            let held = state.context.lock().unwrap();
+            assert_eq!(state.model_loaded(), None, "a model loading counts as loaded for the watcher");
+            drop(held);
         }
 
         #[test]
@@ -3337,6 +3521,46 @@ mod native {
                 }
             }
             assert!(failures.is_empty(), "{failures:#?}");
+        }
+
+        // Releasing the key must type every word the live preview showed:
+        // the final pass may refine them, never drop them. Phrases with pauses
+        // between them, at a normal and at a soft, noisy level.
+        #[test]
+        #[ignore = "needs the installed speech model, the voice activity model and macOS voices"]
+        fn real_model_release_types_every_previewed_word() {
+            whisper_rs::install_logging_hooks();
+            let model = std::path::PathBuf::from(std::env::var("HOME").unwrap()).join("Library/Application Support/com.pzzacode.app/speech/ggml-large-v3-q5_0.bin");
+            let mut engine = Engine::load(&model, Arc::new(AtomicBool::new(false))).unwrap();
+            let passages: [(&str, &[&str]); 3] = [
+                (TR, &["Şimdi bu fonksiyonu açıp hata kontrolünü ekleyelim.", "Sonra testleri çalıştırıp sonuçlara birlikte bakalım.", "Gerekirse tasarımı değiştiririz, tamam mı?"]),
+                (EN, &["Okay so I want you to open the settings page.", "Look at how the spacing is handled in the header.", "Then tell me whether we should move it into a shared component."]),
+                (TR, &["Bu dosyadaki hatayı düzelt.", "Testleri tekrar çalıştır ve sonucu bana bildir.", "Ama önce değişiklikleri kaydet."]),
+            ];
+            let mut lost = Vec::new();
+            for (voice, sentences) in passages {
+                for (speech_db, noise_db) in [(-26.0f32, -60.0f32), (-40.0, -56.0)] {
+                    let mut samples = vec![0.0f32; RATE / 2];
+                    for (index, text) in sentences.iter().enumerate() {
+                        if index > 0 { samples.extend(std::iter::repeat_n(0.0, RATE * 9 / 10)); }
+                        let spoken = say(voice, text, 0);
+                        let level = active_rms(&spoken);
+                        samples.extend(spoken.iter().map(|value| value / level * decibels(speech_db)));
+                    }
+                    let noise = room_noise(samples.len(), 5);
+                    let samples: Vec<f32> = samples.iter().zip(&noise).map(|(sample, noise)| sample + noise * decibels(noise_db)).collect();
+                    let capture = Arc::new(Capture { languages: vec!["en".into(), "tr".into()], ..Capture::new("release".into()) });
+                    let (typed, passes, _) = dictate(&mut engine, &capture, &samples);
+                    // The last preview's words, against the typed text's tail.
+                    let shown = passes.iter().rev().find(|(_, pass)| !pass.finalizing).map(|(_, pass)| normalized_words(&pass.preview)).unwrap_or_default();
+                    let typed_words = normalized_words(&typed);
+                    let tail = &typed_words[typed_words.len().saturating_sub(shown.len() + 2)..];
+                    let missing = shown.iter().filter(|word| !tail.contains(word)).count();
+                    eprintln!("RELEASE {} {speech_db} dB: shown {shown:?} typed {typed:?}", if missing == 0 { "ok  " } else { "LOST" });
+                    if missing > 0 { lost.push(format!("{speech_db} dB {typed:?} lost {missing} of {shown:?}")); }
+                }
+            }
+            assert!(lost.is_empty(), "{lost:#?}");
         }
     }
 

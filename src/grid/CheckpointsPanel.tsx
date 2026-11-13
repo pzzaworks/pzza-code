@@ -7,7 +7,7 @@ import {
 } from "../checkpoints";
 import type { GitChangedFile } from "../serverApi";
 import { sessionIcon } from "../sessionMeta";
-import { useStore } from "../state/store";
+import { sessionTileById, useStore } from "../state/store";
 import { themeById } from "../theme/themes";
 import { Modal } from "../ui/Modal";
 import { CodeDiffView, type GitDiffState } from "./CodeChanges";
@@ -391,7 +391,7 @@ export function CheckpointsPanel({ tileId, host, path, onClose }: { tileId: stri
   const [now, setNow] = useState(() => Date.now());
   const [undoState, setUndoState] = useState<UndoState>({ status: "unknown" });
   const session = useStore((store) => {
-    const tile = store.tiles.find((entry) => entry.id === tileId);
+    const tile = sessionTileById(store.tiles, tileId);
     return tile ? store.tileTitles[tileId] ?? tile.session ?? tile.name : "";
   });
   useEffect(() => { const timer = setInterval(() => setNow(Date.now()), 30000); return () => clearInterval(timer); }, []);

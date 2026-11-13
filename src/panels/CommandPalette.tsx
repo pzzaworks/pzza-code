@@ -3,9 +3,10 @@ import { createPortal } from "react-dom";
 import {
   Bell, Blocks, CircleQuestionMark, Code2, Columns2, Columns3, Columns4, Contrast, Copy, EthernetPort, EyeOff, FolderOpen, FolderSync, GitCompare,
   HardDrive, Info, LayoutDashboard, LayoutGrid, Maximize2, MessageSquare, Mic, Minimize2, Minus, Monitor, Moon, Palette, Plus, Radio, RefreshCw, Rocket, Search,
-  Server, Settings, Sparkles, SquareDashed, Sun, Type, Wand2, Wrench, type LucideIcon,
+  Server, Settings, Sparkles, SquareDashed, SquareTerminal, Sun, Type, Wand2, Wrench, FileText, Folder, type LucideIcon,
 } from "lucide-react";
-import { useStore } from "../state/store";
+import { fileTilePath, isFileTile, isFolderTile, isSessionTile, useStore } from "../state/store";
+import { NATIVE_OPEN_PANELS, openTerminalInFileTile, showOpenPanel } from "../openFiles";
 import { useModalFocus } from "../ui/Modal";
 import { announceMenu } from "../ui/menuBus";
 import { runLocalAppCommand } from "../appControl";
@@ -28,7 +29,8 @@ import { BUILTIN_THEMES } from "../theme/themes";
 import { SPACING_RANGE } from "../state/store";
 import { HAS_TAURI } from "../tauriEnv";
 import { altBadge, COMMAND_PALETTE_SHORTCUT, ctrlBadge, IS_MAC, NEW_SESSION_SHORTCUT, NEW_WORKSPACE_SHORTCUT } from "../shortcuts";
-import { ListPlus, ListTodo, MessageSquareText, TextSearch } from "lucide-react";
+import { FileSearch, ListPlus, ListTodo, ListTree, MessageSquareText, TextSearch } from "lucide-react";
+import { CODE_PICKERS, openCodePicker, type CodePickerKind } from "../code/pickerBus";
 import { TASK_SURFACES } from "../lazySurfaces";
 import { whenLoaded } from "../lazySurface";
 import { useTasksUi } from "../tasks/taskStore";
@@ -147,16 +149,17 @@ function usePaletteItems(open: boolean): PaletteItem[] {
     const workspaceOf = (tile: (typeof tiles)[number]) => sessionWs[wsKeyOf(tile)] ?? DEFAULT_WORKSPACE_ID;
     const workspaceName = (id: string) => workspaces.find(entry => entry.id === id)?.name ?? "Main";
     const visible = tiles.filter(tile => (activeWorkspaceId === ALL_WORKSPACE_ID || workspaceOf(tile) === activeWorkspaceId) &&
-      !hiddenTiles.includes(tile.id) && !(tile.host && deviceForHost(devices, tile.host)?.disabled));
+      !hiddenTiles.includes(tile.id) && !(isSessionTile(tile) && tile.host && deviceForHost(devices, tile.host)?.disabled));
     const items: PaletteItem[] = [];
 
     for (const tile of tiles) {
       const index = visible.indexOf(tile);
-      const notes = [workspaceName(workspaceOf(tile)), deviceNameFor(devices, tile.host)];
+      const notes = [workspaceName(workspaceOf(tile)), isFileTile(tile) ? (isFolderTile(tile) ? "Folder" : "File") : deviceNameFor(devices, tile.host)];
       if (tile.id === activeId) notes.unshift("Active");
       if (hiddenTiles.includes(tile.id)) notes.push("Hidden");
-      items.push({ id: `tile:${tile.id}`, group: "sessions", icon: sessionIcon(tile.command), label: sessionDisplayName(tile, tileTitles), detail: notes.join(" · "),
-        shortcut: index >= 0 && index < 9 ? ctrlBadge(index + 1) : undefined, keywords: `${tile.session ?? tile.name} ${tile.path ?? tile.cwd ?? ""}`, run: command("focus_tile", { tileId: tile.id }) });
+      items.push({ id: `tile:${tile.id}`, group: "sessions", icon: isFileTile(tile) ? (isFolderTile(tile) ? Folder : FileText) : sessionIcon(tile.command), label: sessionDisplayName(tile, tileTitles), detail: notes.join(" · "),
+        shortcut: index >= 0 && index < 9 ? ctrlBadge(index + 1) : undefined,
+        keywords: isFileTile(tile) ? fileTilePath(tile) : `${tile.session ?? tile.name} ${tile.path ?? tile.cwd ?? ""}`, run: command("focus_tile", { tileId: tile.id }) });
     }
 
     const counts = new Map<string, number>();
@@ -172,12 +175,27 @@ function usePaletteItems(open: boolean): PaletteItem[] {
       items.push({ id: `action:${id}`, group: "actions", icon, label, run, ...extra });
     action("new-session", Plus, "New session", command("navigate", { target: "new_session" }), { shortcut: NEW_SESSION_SHORTCUT.label, keywords: "create terminal open" });
     action("new-workspace", Plus, "New workspace", command("navigate", { target: "new_workspace" }), { shortcut: NEW_WORKSPACE_SHORTCUT.label, keywords: "create" });
+    // The native macOS open panels, the same as File > Open File… and Open Folder….
+    if (NATIVE_OPEN_PANELS) {
+      action("open-file", FileText, "Open File…", () => showOpenPanel("file"), { shortcut: "⌘O", keywords: "open file finder editor" });
+      action("open-folder", FolderOpen, "Open Folder…", () => showOpenPanel("folder"), { shortcut: "⌥⌘O", keywords: "open folder project directory finder editor tree" });
+    }
     action("add-device", Server, "Add a device", command("navigate", { target: "setup" }), { keywords: "ssh remote machine agent install" });
     action("quick-chat", MessageSquare, "Open Quick Chat", command("open_quick_chat"), { keywords: "agent ask" });
     action("tasks", ListTodo, "Show tasks", () => whenLoaded(TASK_SURFACES, () => useTasksUi.getState().show()), { shortcut: TASKS_SHORTCUT.label, keywords: "sidebar board worktree agents review merge" });
     action("new-task", ListPlus, "New task", () => whenLoaded(TASK_SURFACES, () => useTasksUi.getState().show({ kind: "new" })), { keywords: "agent worktree best of n compare prompt" });
 
-    const active = tiles.find(tile => tile.id === activeId);
+    const activeTile = tiles.find(tile => tile.id === activeId);
+    // A file or folder tile has only its tile actions and the way to a terminal.
+    if (activeTile && isFileTile(activeTile)) {
+      const name = sessionDisplayName(activeTile, tileTitles);
+      const fullTileId = (readAppControlRuntime().canvas as { fullTileId?: string | null } | undefined)?.fullTileId ?? null;
+      const maximized = fullTileId === activeTile.id;
+      action("open-terminal", SquareTerminal, "Open terminal here", () => openTerminalInFileTile(activeTile.id), { detail: name, keywords: "session shell convert file folder" });
+      action("maximize", maximized ? Minimize2 : Maximize2, maximized ? "Restore tile" : "Maximize tile", command("set_fullscreen", { tileId: activeTile.id, enabled: !maximized }), { detail: name, keywords: "full screen focus mode" });
+      action("hide", EyeOff, "Hide tile", command("hide_tile", { tileId: activeTile.id }), { detail: name, keywords: "keep open" });
+    }
+    const active = activeTile && isSessionTile(activeTile) ? activeTile : undefined;
     if (active) {
       const name = sessionDisplayName(active, tileTitles);
       const folder = active.path ?? allSessions.find(entry => entry.name === (active.session ?? active.name))?.path ?? active.cwd;
@@ -199,13 +217,25 @@ function usePaletteItems(open: boolean): PaletteItem[] {
       for (const prompt of prompts) action(`prompt-${prompt.id}`, MessageSquareText, `Prompt: ${prompt.name}`, () => sendPromptToTile(active.id, prompt.text),
         { detail: `Send to ${name}`, keywords: `saved prompt agent ${prompt.text}` });
     }
+    // The active tile's editor pickers, while that editor has a folder open.
+    const editorCode = activeTile && (isFileTile(activeTile) || tileCode[activeTile.id]?.open) ? tileCode[activeTile.id] : undefined;
+    if (activeTile && editorCode?.root) {
+      const name = sessionDisplayName(activeTile, tileTitles);
+      const picker = (kind: CodePickerKind) => () => {
+        if (!openCodePicker(activeTile.id, kind)) throw new Error("The editor is still loading. Try again in a moment.");
+      };
+      action("code-files", FileSearch, CODE_PICKERS.files.label, picker("files"), { detail: name, shortcut: CODE_PICKERS.files.shortcut, keywords: "quick open find file name editor" });
+      action("code-search", TextSearch, CODE_PICKERS.search.label, picker("search"), { detail: name, shortcut: CODE_PICKERS.search.shortcut, keywords: "find in files project grep text editor" });
+      if (editorCode.path) action("code-symbols", ListTree, CODE_PICKERS.symbols.label, picker("symbols"), { detail: name, shortcut: CODE_PICKERS.symbols.shortcut, keywords: "outline function class method heading editor" });
+    }
     action("search-terminals", TextSearch, "Search all terminals", openTerminalSearch, { shortcut: SEARCH_TERMINALS_SHORTCUT.label, keywords: "find scrollback output grep every tile" });
-    if (visible.length >= 2) action("broadcast", Radio, "Broadcast to visible tiles", async () => {
+    const terminals = visible.filter(isSessionTile);
+    if (terminals.length >= 2) action("broadcast", Radio, "Broadcast to visible tiles", async () => {
       const fullTileId = (readAppControlRuntime().canvas as { fullTileId?: string | null } | undefined)?.fullTileId;
       if (fullTileId) await runLocalAppCommand("set_fullscreen", { tileId: fullTileId, enabled: false });
       window.dispatchEvent(new Event("pzza:broadcast-visible"));
-    }, { detail: `${visible.length} tiles`, keywords: "send line all sessions select" });
-    const agents = visible.filter(tile => runningAgent(tile.session ?? tile.name, tile.window, tile.host) !== undefined);
+    }, { detail: `${terminals.length} tiles`, keywords: "send line all sessions select" });
+    const agents = terminals.filter(tile => runningAgent(tile.session ?? tile.name, tile.window, tile.host) !== undefined);
     if (agents.length >= 2) action("broadcast-agents", Radio, "Broadcast to every agent", async () => {
       const fullTileId = (readAppControlRuntime().canvas as { fullTileId?: string | null } | undefined)?.fullTileId;
       if (fullTileId) await runLocalAppCommand("set_fullscreen", { tileId: fullTileId, enabled: false });

@@ -1,3 +1,4 @@
+use crate::open_panel::{self, PickKind};
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem, Submenu},
     Emitter, Manager,
@@ -9,6 +10,17 @@ const COMMAND_PALETTE_ACCELERATOR: Option<&str> = if cfg!(target_os = "macos") {
     Some("CmdOrCtrl+K")
 } else {
     None
+};
+
+// Cmd+Shift+O stays with the editor (Go to symbol), so Open Folder… takes
+// Option+Cmd+O. Off macOS there is no native picker, so the items are left out.
+const OPEN_ITEMS: &[(&str, &str, Option<&str>)] = if cfg!(target_os = "macos") {
+    &[
+        ("open-file", "Open File…", Some("CmdOrCtrl+O")),
+        ("open-folder", "Open Folder…", Some("Alt+CmdOrCtrl+O")),
+    ]
+} else {
+    &[]
 };
 
 pub fn install(app: &tauri::AppHandle) -> tauri::Result<()> {
@@ -69,6 +81,16 @@ pub fn install(app: &tauri::AppHandle) -> tauri::Result<()> {
             let item = MenuItem::with_id(app, format!("pzza:{id}"), *label, true, *shortcut)?;
             let position = if *id == "general" { 2 } else { offset };
             submenu.insert(&item, position)?;
+        }
+        // Open File… and Open Folder… follow in their own group (macOS only,
+        // where open_panel shows the native panel).
+        let pickers = if title == "File" { OPEN_ITEMS } else { &[] };
+        if !pickers.is_empty() {
+            submenu.insert(&PredefinedMenuItem::separator(app)?, items.len())?;
+            for (offset, (id, label, shortcut)) in pickers.iter().enumerate() {
+                let item = MenuItem::with_id(app, format!("pzza:{id}"), *label, true, *shortcut)?;
+                submenu.insert(&item, items.len() + 1 + offset)?;
+            }
         }
         if title == "Help" {
             submenu.append(&PredefinedMenuItem::separator(app)?)?;
@@ -185,13 +207,30 @@ pub fn install(app: &tauri::AppHandle) -> tauri::Result<()> {
                 if items[0].0 == "general" {
                     3
                 } else {
-                    items.len()
+                    items.len() + if pickers.is_empty() { 0 } else { pickers.len() + 1 }
                 },
             )?;
         }
     }
     app.set_menu(menu)?;
     app.on_menu_event(|app, event| {
+        // The pickers are native: shown here, their choice delivered through
+        // open_files like files opened from Finder.
+        let picker = match event.id().as_ref() {
+            "pzza:open-file" => Some(PickKind::File),
+            "pzza:open-folder" => Some(PickKind::Folder),
+            _ => None,
+        };
+        if let Some(kind) = picker {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+            if let Err(error) = open_panel::pick(app, kind) {
+                eprintln!("PzzaCode could not show the open panel: {error}");
+            }
+            return;
+        }
         if let Some(action) = event.id().as_ref().strip_prefix("pzza:") {
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.show();

@@ -1,6 +1,6 @@
 import { registerAppControlHandler } from "./appControlRuntime";
 import { redactTerminalOutput } from "./appControlTerminal";
-import { useStore } from "./state/store";
+import { isSessionTile, useStore } from "./state/store";
 import { addPrompt, deletePrompt, usePrompts } from "./state/prompts";
 import { refreshUsage, useUsage } from "./state/usage";
 import { useSessionAgents } from "./state/sessionAgents";
@@ -27,6 +27,8 @@ const SEARCH_LINE_CHARS = 200;
 function requireTile(tileId: unknown) {
   const tile = useStore.getState().tiles.find(item => item.id === tileId);
   if (!tile) throw new Error("The requested session tile is not open.");
+  // Every workflow command works through the tile's terminal or its session.
+  if (!isSessionTile(tile)) throw new Error("This is a file or folder tile without a terminal. Open a terminal in it first.");
   return tile;
 }
 
@@ -83,7 +85,7 @@ export function initWorkflowAppControlHandlers(): () => void {
       const state = useStore.getState();
       const pattern = compileQuery(args.query as string, args.regex === true);
       if (!pattern) throw new Error("That search pattern is not valid.");
-      const groups = await searchTerminals(state.tiles.map(tile => tile.id), pattern, AbortSignal.timeout(10000), () => {});
+      const groups = await searchTerminals(state.tiles.filter(isSessionTile).map(tile => tile.id), pattern, AbortSignal.timeout(10000), () => {});
       let budget = SEARCH_LINES;
       return {
         tiles: groups.filter(group => group.matches.length).map(group => {

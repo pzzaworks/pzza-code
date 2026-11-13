@@ -1,0 +1,121 @@
+/* Editor Git gutter, inline blame, hunk popover and selection action bar
+   (gitEditor.ts, selectionActions.ts). */
+
+/* Change gutter: a thin bar per added or changed line, a small wedge where
+   lines were deleted. The column only takes room in a repository. */
+.code-editor-pane .cm-pz-git-gutter { width: 0; }
+.code-editor-pane .cm-pz-git-repo .cm-pz-git-gutter { width: 7px; }
+.code-editor-pane .cm-pz-git-gutter .cm-gutterElement { position: relative; padding: 0; }
+.cm-pz-git-mark { position: absolute; top: 0; bottom: 0; left: 2px; width: 3px; border-radius: 1px; cursor: pointer; }
+.cm-pz-git-mark:hover { left: 1px; width: 5px; }
+.cm-pz-git-added { background: var(--success); }
+.cm-pz-git-modified { background: var(--warning); }
+.cm-pz-git-deleted-above,
+.cm-pz-git-deleted-below {
+  width: 0;
+  height: 0;
+  border-radius: 0;
+  border-top: 3px solid transparent;
+  border-bottom: 3px solid transparent;
+  border-left: 5px solid var(--danger);
+}
+.cm-pz-git-deleted-above { top: -3px; bottom: auto; }
+.cm-pz-git-deleted-below { top: auto; bottom: -3px; }
+.cm-pz-git-deleted-above:hover,
+.cm-pz-git-deleted-below:hover { left: 2px; width: 0; }
+/* The wedges sit on the boundary between two lines. */
+.code-editor-pane .cm-pz-git-gutter { overflow: visible; }
+
+/* Inline blame after the cursor line's end: dim, never selectable. */
+.code-editor-pane .cm-pz-blame {
+  margin-left: 3em;
+  color: var(--muted);
+  opacity: 0.75;
+  white-space: pre;
+  user-select: none;
+  cursor: default;
+}
+
+/* Floating surfaces in the editor: the selection bar and the hunk popover.
+   Scoped under the pane so they win over the editor theme's tooltip colors. */
+.code-editor-pane .cm-tooltip:is(.cm-pz-selbar, .cm-pz-hunk) {
+  --bg: var(--opaque-bg);
+  --surface: var(--opaque-surface);
+  --surface-alt: var(--opaque-surface-alt);
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--surface-edge);
+  box-shadow: var(--surface-shadow);
+  font-family: ui-sans-serif, -apple-system, "SF Pro Text", system-ui, sans-serif;
+  font-size: var(--fs-xs);
+}
+:root[data-transparency="on"] .code-editor-pane .cm-tooltip:is(.cm-pz-selbar, .cm-pz-hunk) {
+  background: var(--glass-bg);
+  border-color: var(--glass-border);
+  -webkit-backdrop-filter: var(--glass-filter);
+  backdrop-filter: var(--glass-filter);
+}
+
+.code-editor-pane .cm-tooltip.cm-pz-selbar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  max-width: min(420px, calc(100vw - 16px));
+  padding: 3px;
+  border-radius: var(--r-sm);
+}
+/* A little air between the bar and the selection it sits beside. */
+.code-editor-pane .cm-tooltip-below.cm-pz-selbar { margin-top: 4px; }
+.code-editor-pane .cm-tooltip-above.cm-pz-selbar { margin-top: -4px; }
+:is(.cm-pz-selbar-btn, .cm-pz-hunk-btn) {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  height: 22px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: var(--r-xs);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+}
+:is(.cm-pz-selbar-btn, .cm-pz-hunk-btn):hover:not(:disabled) { background: var(--hover); }
+:is(.cm-pz-selbar-btn, .cm-pz-hunk-btn):focus-visible { outline: 2px solid var(--focus-ring); outline-offset: -1px; }
+.cm-pz-selbar-btn:disabled { opacity: 0.55; cursor: default; }
+.cm-pz-selbar-status {
+  min-width: 0;
+  padding: 0 6px;
+  color: var(--danger-foreground, var(--danger));
+  line-height: 1.3;
+}
+
+.code-editor-pane .cm-tooltip.cm-pz-hunk {
+  min-width: 220px;
+  max-width: min(560px, calc(100vw - 16px));
+  border-radius: var(--r-md);
+  overflow: hidden;
+}
+.cm-pz-hunk-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 4px 4px 10px;
+  border-bottom: 1px solid var(--divider);
+}
+.cm-pz-hunk-title { flex: 1 1 auto; min-width: 0; color: var(--muted); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cm-pz-hunk-close { padding: 0 7px; font-size: var(--fs-md); }
+.cm-pz-hunk-old {
+  margin: 0;
+  padding: 6px 10px;
+  max-height: 240px;
+  overflow: auto;
+  background: color-mix(in srgb, var(--danger) 14%, transparent);
+  font-family: ui-monospace, "SF Mono", Menlo, Monaco, monospace;
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre;
+}
+.cm-pz-hunk-note { margin: 0; padding: 8px 10px; color: var(--muted); font-size: var(--fs-sm); }

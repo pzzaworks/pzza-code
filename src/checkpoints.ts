@@ -1,10 +1,11 @@
 import { create } from "zustand";
-import { fetchPaneOutputActivity, GitRequestError, postGitReview, type PaneOutputActivity } from "./serverApi";
+import { GitRequestError, postGitReview, type PaneOutputActivity } from "./serverApi";
+import { OUTPUT_ACTIVITY_SHARE_MS, readPaneOutputActivity } from "./terminal/outputActivityCache";
 import { sessionDisplayName } from "./sessionMeta";
 import { useNotifications } from "./state/notifications";
 import { hasPendingPermission } from "./state/permissionPrompts";
 import { useSessionAgents } from "./state/sessionAgents";
-import { useStore } from "./state/store";
+import { isSessionTile, sessionTileById, useStore } from "./state/store";
 import { HAS_TAURI } from "./tauriEnv";
 import { tileGitTarget } from "./tileGit";
 import { runningAgent } from "./ui/LiveSessionIcon";
@@ -210,7 +211,7 @@ interface TileContext { host: string; folder: string; agent: string; session: st
 function tileContext(tileId: string): TileContext | null {
   const target = tileGitTarget(tileId);
   const state = useStore.getState();
-  const tile = state.tiles.find((candidate) => candidate.id === tileId);
+  const tile = sessionTileById(state.tiles, tileId);
   if (!target || !tile) return null;
   const session = tile.session ?? tile.name;
   const host = tile.host ?? state.connection.host ?? (HAS_TAURI ? "" : undefined);
@@ -308,7 +309,7 @@ async function watchTurns(): Promise<void> {
     for (const id of [...turnWatch.keys()]) if (!known.has(id)) turnWatch.delete(id);
     for (const id of [...unlabelled.keys()]) if (!known.has(id)) unlabelled.delete(id);
     const devices = new Map<string, { host: string | undefined; tiles: WatchedTile[] }>();
-    for (const tile of state.tiles) {
+    for (const tile of state.tiles.filter(isSessionTile)) {
       if (tile.id.startsWith("quick-chat:")) continue;
       const session = tile.session ?? tile.name;
       const host = tile.host ?? state.connection.host ?? (HAS_TAURI ? "" : undefined);
@@ -320,7 +321,9 @@ async function watchTurns(): Promise<void> {
     }
     await Promise.all([...devices.values()].map(async ({ host, tiles }) => {
       let rows: PaneOutputActivity[];
-      try { rows = await fetchPaneOutputActivity(host, AbortSignal.timeout(10000)); } catch { return; /* The next poll retries. */ }
+      // Shared with the other output-activity pollers; this watch also runs
+      // while the window is hidden, since agents keep finishing turns then.
+      try { rows = await readPaneOutputActivity(host, { maxAge: OUTPUT_ACTIVITY_SHARE_MS }); } catch { return; /* The next poll retries. */ }
       const now = Date.now();
       for (const tile of tiles) {
         const activity = Math.max(-1, ...rows.filter((row) => row.session === tile.session && (tile.window === undefined || row.window === tile.window)).map((row) => row.activity));
@@ -359,13 +362,14 @@ const BUSY_SAMPLE_MS = 2200;
  */
 export async function agentLooksBusy(tileId: string, signal?: AbortSignal): Promise<boolean> {
   const state = useStore.getState();
-  const tile = state.tiles.find((candidate) => candidate.id === tileId);
+  const tile = sessionTileById(state.tiles, tileId);
   if (!tile) return false;
   const session = tile.session ?? tile.name;
   const host = tile.host ?? state.connection.host ?? (HAS_TAURI ? "" : undefined);
   if (!runningAgent(session, tile.window, host)) return false;
   const sample = async () => {
-    const rows = await fetchPaneOutputActivity(host, signal);
+    // Each sample asks the device anew: a shared reading could be older than the gap.
+    const rows = await readPaneOutputActivity(host, { maxAge: 0, signal });
     return Math.max(-1, ...rows.filter((row) => row.session === session && (tile.window === undefined || row.window === tile.window)).map((row) => row.activity));
   };
   try {

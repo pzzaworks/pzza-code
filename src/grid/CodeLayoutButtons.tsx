@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 import { Columns2, Maximize2, Minimize2, Rows2, X } from "lucide-react";
 import { confirmEditorDiscard } from "../editorChanges";
-import { useStore } from "../state/store";
+import { isFileTile, useStore } from "../state/store";
 
 type SplitLayout = "side-by-side" | "stacked";
 
@@ -17,6 +17,9 @@ export function CodeLayoutButtons({ tileId }: { tileId: string }) {
   useEffect(() => { if (layout !== "full") lastSplit.current = layout; }, [layout]);
   const split = layout === "full" ? lastSplit.current : layout;
   const full = layout === "full";
+  // A file tile is its editor: no terminal to split with, and closing is the tile's own Close.
+  const fileTile = useStore((s) => s.tiles.some((tile) => tile.id === tileId && isFileTile(tile)));
+  if (fileTile) return null;
   const flipLabel = full
     ? `Split ${split === "stacked" ? "stacked" : "side by side"}`
     : split === "stacked" ? "Stacked: switch to side by side" : "Side by side: switch to stacked";

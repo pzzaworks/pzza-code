@@ -4,7 +4,7 @@ import { Select } from "../ui/Select";
 import { PathField } from "../ui/PathField";
 import { DeviceIcon } from "../ui/DeviceIcon";
 import { AgentIcon } from "../icons/AgentIcon";
-import { useStore } from "../state/store";
+import { fileTileFolder, isFileTile, useStore } from "../state/store";
 import { deviceHost } from "../devices";
 import { compactPath } from "../grid/compactPath";
 import { agentSelectOptions } from "../agentChoices";
@@ -126,7 +126,8 @@ export function TaskComposer({ retryOf }: { retryOf?: string }) {
   // The repository: the task's when retrying, else the last one used on this
   // device, else the active tile's folder, else the most recent folder.
   const activeTile = tiles.find((tile) => tile.id === activeId);
-  const activeFolder = activeTile && (activeTile.host ?? "") === host
+  const activeFolder = activeTile && isFileTile(activeTile) ? (host ? undefined : fileTileFolder(activeTile))
+    : activeTile && (activeTile.host ?? "") === host
     ? activeTile.path ?? allSessions.find((session) => session.name === (activeTile.session ?? activeTile.name))?.path ?? activeTile.cwd : undefined;
   const initialRepo = (id: string) => rememberedRepo(id) ?? (activeFolder?.startsWith("/") ? activeFolder : undefined) ?? readRecentFolders()[id]?.[0] ?? "";
   const [repo, setRepo] = useState(() => retryTask?.repo ?? initialRepo(deviceId));

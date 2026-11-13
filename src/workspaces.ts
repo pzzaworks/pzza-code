@@ -40,7 +40,8 @@ export function markFor(name: string): string {
 
 // Workspace-assignment key for a tile: the base session name, namespaced by
 // host so the same session name on two devices maps independently. Window tiles
-// of a session share their base session's key. Every place that reads or
-// writes sessionWs must use this, or tiles silently fall back to Main.
-export const wsKeyOf = (t: { host?: string; session?: string; name: string }): string =>
-  (t.host ? `${t.host}::` : "") + (t.session ?? t.name);
+// of a session share their base session's key; a file tile's key is its id.
+// Every place that reads or writes sessionWs must use this, or tiles silently
+// fall back to Main.
+export const wsKeyOf = (t: { kind?: undefined; host?: string; session?: string; name: string } | { kind: "file"; id: string }): string =>
+  t.kind === "file" ? t.id : (t.host ? `${t.host}::` : "") + (t.session ?? t.name);

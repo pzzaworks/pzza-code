@@ -5,6 +5,11 @@ import { Channel, invoke } from "@tauri-apps/api/core";
 // message and the runtime delivers it as an ArrayBuffer, so nothing is
 // base64-encoded or decoded on either side of the bridge.
 
+// Must stay well below the Rust side's OUTPUT_CREDIT (256 KiB), which also
+// has to fit one in-flight batch of up to ~72 KiB.
+const CREDIT_RETURN_BYTES = 64 * 1024;
+const CREDIT_RETURN_DELAY_MS = 50;
+
 export interface SpawnOptions {
   cmd: string;
   args: string[];
@@ -20,20 +25,27 @@ export async function spawnPty(
 ): Promise<number> {
   const channel = new Channel<ArrayBuffer>();
   let ptyId: number | undefined;
-  let earlyCredit = 0;
-  // A parsed write releases all of its chunks in one synchronous loop; their
-  // credit is summed and returned in one IPC call after that loop.
+  // Consumed output is acknowledged cumulatively instead of once per batch:
+  // credit goes back once enough has piled up to matter for the 256 KiB
+  // window on the Rust side, or after a short delay so the tail of a burst
+  // (and the credit the exit report waits for) is never held back.
   let pendingCredit = 0;
+  let creditTimer: ReturnType<typeof setTimeout> | undefined;
   const returnCredit = () => {
+    if (creditTimer !== undefined) {
+      clearTimeout(creditTimer);
+      creditTimer = undefined;
+    }
+    // Credit consumed before spawn resolved is returned once the id is known.
+    if (ptyId === undefined || !pendingCredit) return;
     const bytes = pendingCredit;
     pendingCredit = 0;
-    if (!bytes) return;
-    if (ptyId === undefined) earlyCredit += bytes;
-    else void invoke("pty_ack", { id: ptyId, bytes }).catch(() => {});
+    void invoke("pty_ack", { id: ptyId, bytes }).catch(() => {});
   };
   const acknowledge = (bytes: number) => {
-    if (pendingCredit === 0) queueMicrotask(returnCredit);
     pendingCredit += bytes;
+    if (pendingCredit >= CREDIT_RETURN_BYTES) returnCredit();
+    else if (creditTimer === undefined) creditTimer = setTimeout(returnCredit, CREDIT_RETURN_DELAY_MS);
   };
   channel.onmessage = (chunk) => {
     let consumed = false;
@@ -55,11 +67,7 @@ export async function spawnPty(
     onExit: exitChannel,
   });
   ptyId = id;
-  if (earlyCredit) {
-    const bytes = earlyCredit;
-    earlyCredit = 0;
-    acknowledge(bytes);
-  }
+  returnCredit();
   return id;
 }
 

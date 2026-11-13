@@ -12,7 +12,7 @@ import { marked } from "marked";
 import DOMPurify from "dompurify";
 import { deleteFile, fileRawUrl, FileChangedOnDiskError, listDir, moveFile, readFile, writeFile, type GitChangedFile } from "../serverApi";
 import { confirmAction } from "../ui/ConfirmDialog";
-import { tileCodeView, useStore } from "../state/store";
+import { sessionTileById, tileCodeView, useStore } from "../state/store";
 import { FolderTree } from "./FileTree";
 import { changedFilePath, changesCount, CodeChangesList, CodeDiffView, CodeViewSwitch, diffLineStats, useGitChanges, useGitDiff } from "./CodeChanges";
 import { FilePicker } from "../panels/FilePicker";
@@ -25,6 +25,8 @@ import { SplitHandle } from "../ui/SplitHandle";
 import { IS_MAC } from "../shortcuts";
 import { activityAgent, useSessionActivity } from "../ui/LiveSessionIcon";
 import { broadcastLine } from "../terminal/broadcast";
+import { InlineBlameToggle, useEditorAssist } from "./editorAssist";
+import { useCodePickers } from "../code/CodePickers";
 
 
 function baseName(p: string): string {
@@ -242,11 +244,11 @@ const gotoHoverField = StateField.define<DecorationSet>({
 // editor and terminal without discarding the editor's unsaved buffer.
 export function TileCodePanel({ tileId }: { tileId: string }) {
   const code = useStore((s) => s.tileCode[tileId]);
-  // A remote tile edits files on its own device over ssh.
-  const host = useStore((s) => s.tiles.find((t) => t.id === tileId)?.host);
+  // A remote tile edits files on its own device over ssh; a file tile edits this device's.
+  const host = useStore((s) => sessionTileById(s.tiles, tileId)?.host);
   // Questions about diff lines go to the coding agent in this tile's terminal.
-  const tileSession = useStore((s) => { const tile = s.tiles.find((t) => t.id === tileId); return tile ? tile.session ?? tile.name : ""; });
-  const tileWindow = useStore((s) => s.tiles.find((t) => t.id === tileId)?.window);
+  const tileSession = useStore((s) => { const tile = sessionTileById(s.tiles, tileId); return tile ? tile.session ?? tile.name : ""; });
+  const tileWindow = useStore((s) => sessionTileById(s.tiles, tileId)?.window);
   const agentRunning = activityAgent(useSessionActivity(tileSession, tileWindow, host)) !== undefined;
   const diffAsk = useMemo(() => ({
     tileId,
@@ -264,7 +266,10 @@ export function TileCodePanel({ tileId }: { tileId: string }) {
   const treeRef = useRef<HTMLDivElement>(null);
   const sidePanelId = useId();
 
-  const [treeOpen, setTreeOpen] = useState(true);
+  const [treeOpen, setTreeOpen] = useState(code?.tree !== false);
+  const setTileCodeTree = useStore((s) => s.setTileCodeTree);
+  // The choice outlives the panel (reopening the editor, a reload).
+  useEffect(() => { setTileCodeTree(tileId, treeOpen); }, [setTileCodeTree, tileId, treeOpen]);
   const sideView = tileCodeView(code);
   // The changed file whose diff fills the editor pane, with the repository
   // top-level its repo-relative path belongs to.
@@ -334,6 +339,8 @@ export function TileCodePanel({ tileId }: { tileId: string }) {
   }, []);
   const navigate = async (action: () => void) => { if (await requestDiscard()) action(); };
   const viewRef = useRef<EditorView | null>(null);
+  // Bumped when CodeMirror mounts a view, which lands a render after the editor is shown.
+  const [viewGeneration, setViewGeneration] = useState(0);
   useEffect(() => registerEditorDiscard(tileId, requestDiscard), [tileId, requestDiscard]);
   useEffect(() => registerEditorFile(tileId, () => ({ host, path: snapshot.current.path, saving: snapshot.current.saving, dirty: snapshot.current.dirty, revision: revision.current.value })), [tileId, host]);
   useEffect(() => () => { discardResolve.current?.(false); }, []);
@@ -416,12 +423,14 @@ export function TileCodePanel({ tileId }: { tileId: string }) {
   // extension. The text shows once both the file and its language are in.
   const highlighting = useEditorLanguage(isBinary ? null : path);
   const shown = loaded && highlighting.ready;
+  // Git change gutter, inline blame and the selection action bar.
+  const assist = useEditorAssist({ tileId, host, path, root, reload: changesNonce, agentRunning });
   const extensions = useMemo(() => {
     // Cmd/Ctrl+F find panel plus selection-match highlights, alongside the
     // go-to-definition hover field.
-    const base = [gotoHoverField, keymap.of(searchKeymap), highlightSelectionMatches()];
+    const base = [gotoHoverField, keymap.of(searchKeymap), highlightSelectionMatches(), ...assist];
     return highlighting.language ? [...base, highlighting.language] : base;
-  }, [highlighting.language]);
+  }, [highlighting.language, assist]);
 
   const html = useMemo(
     () => (preview && isMd ? DOMPurify.sanitize(marked.parse(content) as string) : ""),
@@ -692,6 +701,7 @@ export function TileCodePanel({ tileId }: { tileId: string }) {
       viewRef.current.dom.removeEventListener("mouseleave", onEditorMouseLeave);
     }
     viewRef.current = view;
+    setViewGeneration((value) => value + 1);
     view.dom.addEventListener("click", onEditorClick);
     view.dom.addEventListener("mousemove", onEditorMouseMove);
     view.dom.addEventListener("mouseleave", onEditorMouseLeave);
@@ -716,14 +726,16 @@ export function TileCodePanel({ tileId }: { tileId: string }) {
   }, [applyHover]);
 
   useEffect(() => {
-    if (!jump || !shown || jump.path !== path) return;
+    // Wait for the target's own buffer: right after the path changes, the
+    // previous file's text is still on screen for one render.
+    if (!jump || !shown || jump.path !== path || !snapshot.current.loaded) return;
     const view = viewRef.current;
-    if (!view || view.state.doc.lines === 0) return;
+    if (!view || !view.dom.isConnected || view.state.doc.lines === 0) return;
     const at = view.state.doc.line(Math.max(1, Math.min(jump.line, view.state.doc.lines)));
     view.dispatch({ selection: { anchor: at.from }, scrollIntoView: true });
     view.focus();
     setJump(null);
-  }, [jump, shown, path, content]);
+  }, [jump, shown, path, content, viewGeneration]);
 
   // Changes view: git status of the folder's repository, plus one file's diff.
   useEffect(() => onFileMutation((mutation) => {
@@ -748,6 +760,18 @@ export function TileCodePanel({ tileId }: { tileId: string }) {
     const target = diffPath;
     void navigate(() => { setDiffTarget(null); setTileCodePath(tileId, target); });
   };
+  // Quick Open, project search and the symbol outline: picks open through the
+  // same unsaved-changes guard as the tree, and land on their line via `jump`.
+  const pickers = useCodePickers({
+    tileId, host, root, path,
+    view: () => (viewRef.current?.dom.isConnected ? viewRef.current : null),
+    open: (target, line) => {
+      // A file opened without a line still lands in the editor, at its top.
+      const land = () => { if (line) setPreview(false); setJump({ token: Math.random(), path: target, line: line ?? 1 }); };
+      if (target === snapshot.current.path) { if (line) land(); else viewRef.current?.focus(); return; }
+      void navigate(() => { setTileCodePath(tileId, target); land(); });
+    },
+  });
 
   if (!root) {
     return (
@@ -858,6 +882,7 @@ export function TileCodePanel({ tileId }: { tileId: string }) {
           <span className="tile-code-path" title={root}>{baseName(root)}</span>
         )}
         <div className="tile-head-spacer" />
+        {path && !isBinary && !showDiff ? <InlineBlameToggle /> : null}
         {isMd ? (
           <button
             className={`tile-btn ${preview ? "tile-btn-on" : ""}`}
@@ -868,6 +893,7 @@ export function TileCodePanel({ tileId }: { tileId: string }) {
             <Eye size={13} />
           </button>
         ) : null}
+        {pickers.buttons}
         <CodeLayoutButtons tileId={tileId} />
       </div>
 
@@ -966,6 +992,7 @@ export function TileCodePanel({ tileId }: { tileId: string }) {
             />
           )}
         </div>
+        {pickers.overlay}
       </div>
 
       <FilePicker

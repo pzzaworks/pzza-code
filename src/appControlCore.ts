@@ -8,12 +8,12 @@ import { requestDesktopAlerts } from "./desktopNotifications";
 import { openNotice } from "./panels/Notifications";
 import { confirmAction, type ConfirmationOptions } from "./ui/ConfirmDialog";
 import { hasUnsavedWork } from "./state/unsavedWork";
-import { useStore } from "./state/store";
+import { isSessionTile, useStore } from "./state/store";
 import { createSessionInApp, useSessionCreation, type SessionCreationInput } from "./sessionActions";
 import { sessionAgent } from "../server/lib/session-agents.js";
 import { HAS_TAURI } from "./tauriEnv";
 import { relaunchApp } from "./updater";
-import { ALL_WORKSPACE_ID, DEFAULT_WORKSPACE_ID } from "./workspaces";
+import { ALL_WORKSPACE_ID, DEFAULT_WORKSPACE_ID, wsKeyOf } from "./workspaces";
 import { deleteWorkspaceSnapshot, relaunchWorkspaceSnapshot, renameWorkspaceSnapshot, saveWorkspaceSnapshot, snapshotSummaries, useWorkspaceSnapshots } from "./state/workspaceSnapshots";
 import { usePrompts } from "./state/prompts";
 import { openTilePullRequest, reviewTileChanges, tileGitStatus } from "./tileGit";
@@ -56,7 +56,8 @@ export async function confirmAppControlAction(action: string, args: Readonly<Rec
     const device = state.devices.find(item => item.id === args.deviceId);
     if (device) options = { title: "Remove device?", message: `Remove ${device.name} from this app? The remote machine and its sessions are not deleted.`, confirmLabel: "Remove device", danger: true };
   } else if (action === "terminate_tile") {
-    const tile = state.tiles.find(item => item.id === args.tileId);
+    // A file tile has nothing to terminate; its handler refuses it unasked.
+    const tile = state.tiles.filter(isSessionTile).find(item => item.id === args.tileId);
     if (tile) options = { title: "Terminate session?", message: `Stop ${state.tileTitles[tile.id] ?? tile.name} and remove its affected tiles? Running processes will be terminated.`, confirmLabel: "Terminate", danger: true };
   } else if (action === "terminate_session") {
     // Always asked, open in a tile or not: this is how a device's own tool ends a session.
@@ -144,7 +145,7 @@ export function initCoreAppControlHandlers(): () => void {
       const windowIndex = typeof args.window === "number" ? args.window : undefined;
       const host = typeof args.host === "string" ? args.host : "";
       const state = useStore.getState();
-      const affected = state.tiles.filter(item => (sessionConnection(item.host, state.connection).host ?? "") === host
+      const affected = state.tiles.filter(isSessionTile).filter(item => (sessionConnection(item.host, state.connection).host ?? "") === host
         && (item.session ?? item.name) === session && (windowIndex === undefined || item.window === windowIndex));
       if (hasUnsavedEditors(affected.map(item => item.id))) throw new Error("Save or explicitly discard affected editor buffers before terminating this session.");
       await killSession(session, windowIndex, host);
@@ -181,13 +182,13 @@ export function initCoreAppControlHandlers(): () => void {
     start_dictation: args => {
       const state = requireDictation();
       const store = useStore.getState();
-      const tile = store.tiles.find(value => value.id === args.tileId);
+      const tile = store.tiles.filter(isSessionTile).find(value => value.id === args.tileId);
       if (!tile) throw new Error("The requested session tile is not open.");
       if (!state.enabled || state.model !== "ready") throw new Error("Enable voice input and install its model before recording.");
       if (state.recording) throw new Error("Stop or cancel the current recording before starting another.");
       // Dictated words would reach the prompt, where a digit or "y" can answer it.
       if (hasPendingPermission(tile.id)) throw new Error(DICTATION_AWAITING_APPROVAL);
-      store.setWorkspace(store.sessionWs[(tile.host ? `${tile.host}::` : "") + (tile.session ?? tile.name)] ?? DEFAULT_WORKSPACE_ID);
+      store.setWorkspace(store.sessionWs[wsKeyOf(tile)] ?? DEFAULT_WORKSPACE_ID);
       store.unhideTile(tile.id); store.setActive(tile.id);
       return begin("dictation_start", async () => { await state.start(tile.id); if (useDictation.getState().recording?.phase === "error") throw new Error("Voice input could not start."); });
     },

@@ -16,6 +16,7 @@ import {
   FileText,
   FileVideo,
   Folder,
+  FolderInput,
   FolderOpen,
   Loader2,
   Pencil,
@@ -448,7 +449,7 @@ export function FolderTree({ root, activePath, onOpenFile, onPickRoot, host, con
         {error ? <p role="alert">{error}</p> : null}
         <div className="modal-actions">
           <button className="btn" type="button" disabled={busy} onClick={() => setOperation(null)}>Cancel</button>
-          <AsyncButton className={`btn ${operation?.kind === "delete" ? "btn-danger" : "btn-accent"}`} type="submit" loading={busy}>{operation?.kind === "delete" ? "Delete permanently" : operation?.kind === "move" ? "Move" : "Rename"}</AsyncButton>
+          <AsyncButton className={`btn ${operation?.kind === "delete" ? "btn-danger" : "btn-accent"}`} type="submit" loading={busy} icon={operation?.kind === "delete" ? Trash2 : operation?.kind === "move" ? FolderInput : Pencil}>{operation?.kind === "delete" ? "Delete permanently" : operation?.kind === "move" ? "Move" : "Rename"}</AsyncButton>
         </div>
       </form>
     </Modal>

@@ -318,13 +318,13 @@ test("a project folder linked outside home opens and saves; links never reach cr
   await writeFile(token, "token\n");
   const tokenLink = path.join(base, "token");
   await symlink(token, tokenLink);
-  assert.equal((await read(tokenLink)).status, 400);
-  assert.equal((await write({ path: tokenLink, content: "x\n" })).status, 400);
+  assert.equal((await read(tokenLink)).status, 403);
+  assert.equal((await write({ path: tokenLink, content: "x\n" })).status, 403);
   assert.equal(await readFile(token, "utf8"), "token\n");
   // A dangling link is never written through.
   const dangling = path.join(base, "dangling.txt");
   await symlink(path.join(outside, "missing.txt"), dangling);
-  assert.equal((await write({ path: dangling, content: "x\n" })).status, 400);
+  assert.equal((await write({ path: dangling, content: "x\n" })).status, 403);
   assert.deepEqual((await readdir(outside)).sort(), ["new.txt", "project.txt"]);
   // A link that stays inside home still works and edits its target.
   const target = path.join(base, "target.txt");

@@ -1,14 +1,16 @@
-import { useState, type ReactNode } from "react";
-import { ChevronRight, Laptop, Loader2, Package, RefreshCw, RotateCcw, ShieldCheck, type LucideIcon } from "lucide-react";
+import { useEffect, useState, type ReactNode } from "react";
+import { ChevronRight, FileCode, Laptop, Loader2, Package, RefreshCw, RotateCcw, ShieldCheck, type LucideIcon } from "lucide-react";
 import { PERMISSIONS, PERMISSIONS_SUPPORTED } from "../state/permissions";
 import { useSetup } from "../state/setup";
+import { refreshDefaultEditor, useDefaultEditor } from "../state/defaultEditor";
 import { usePermissionControls } from "./Permissions";
 import { refreshLocalSessions, useSessionRefresh } from "../state/sessionRefresh";
-import { AllowAllButton, PermissionGuide, SetupHealth, SetupPermissions, SetupRequirements, useRequirementsReady } from "../tour/SetupSteps";
+import { AllowAllButton, PermissionGuide, SetupDefaultEditor, SetupHealth, SetupPermissions, SetupRequirements, useRequirementsReady } from "../tour/SetupSteps";
 import { confirmAction } from "../ui/ConfirmDialog";
 import "../tour/OnboardingTour.css";
 
-type Tone = "ok" | "busy" | "action";
+// Neutral marks an optional group that never opens on its own.
+type Tone = "ok" | "busy" | "action" | "neutral";
 
 // Restarting the terminal server stops every program in this Mac's sessions,
 // so it only runs when asked for and confirmed.
@@ -43,6 +45,9 @@ export function SetupSettings() {
   const installing = useSetup((state) => state.busy !== null);
   const refreshing = useSessionRefresh((state) => state.running);
   const [toggled, setToggled] = useState<Record<string, boolean>>({});
+  const editor = useDefaultEditor((state) => state.status);
+  // Decides whether the default editor group is shown; no-op off macOS.
+  useEffect(() => { void refreshDefaultEditor(); }, []);
 
   const permissionGroup = (subject: "app" | "tmux", title: string): Group => {
     const items = PERMISSIONS.filter((item) => item.subject === subject);
@@ -71,6 +76,15 @@ export function SetupSettings() {
       body: <SetupRequirements />,
     },
     ...(PERMISSIONS_SUPPORTED ? [permissionGroup("app", "PzzaCode permissions"), permissionGroup("tmux", "tmux permissions")] : []),
+    // Optional, and only where the macOS app reports it can change default apps.
+    ...(editor?.supported ? [{
+      id: "default-editor",
+      icon: FileCode,
+      title: "Default editor",
+      summary: editor.isDefault ? "Default for all file types" : `Default for ${editor.owned} of ${editor.total} file types`,
+      tone: editor.isDefault ? "ok" as const : "neutral" as const,
+      body: <SetupDefaultEditor />,
+    }] : []),
     { id: "health", icon: Laptop, title: "This device", summary: "Agent, storage and terminals", tone: "ok", body: <SetupHealth /> },
   ];
   // Until toggled, a group is open exactly when it needs action.

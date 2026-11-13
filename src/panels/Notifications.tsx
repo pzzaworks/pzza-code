@@ -8,7 +8,7 @@ import { ScrollMore } from "../ui/ScrollMore";
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
 import { useNotifications, NOTIFICATION_EVENTS, NOTIFICATION_EVENT_CATEGORIES, type NotificationEvent, type Notice, type NotificationCategory } from "../state/notifications";
 import { useStore } from "../state/store";
-import { DEFAULT_WORKSPACE_ID } from "../workspaces";
+import { DEFAULT_WORKSPACE_ID, wsKeyOf } from "../workspaces";
 import { Dropdown } from "../ui/Dropdown";
 import { openTileChangesView } from "../tileGit";
 
@@ -21,7 +21,7 @@ export function openNotice(item: Notice) {
     const state = useStore.getState();
     const tile = state.tiles.find(entry => entry.id === item.target?.tileId);
     if (!tile) return;
-    const key = (tile.host ? `${tile.host}::` : "") + (tile.session ?? tile.name);
+    const key = wsKeyOf(tile);
     state.setWorkspace(state.sessionWs[key] ?? DEFAULT_WORKSPACE_ID);
     state.unhideTile(tile.id); state.setActive(tile.id);
     window.dispatchEvent(new Event("pzza-notification-terminal"));

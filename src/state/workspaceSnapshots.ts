@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { useStore } from "./store";
+import { isSessionTile, useStore } from "./store";
 import { useDetectedAgents, useSessionAgents } from "./sessionAgents";
 import { createSessionInApp } from "../sessionActions";
 import { runLocalAppCommand } from "../appControl";
@@ -52,7 +52,7 @@ function persist(snapshots: WorkspaceSnapshot[]): void {
 
 const find = (id: string) => useWorkspaceSnapshots.getState().snapshots.find(snapshot => snapshot.id === id);
 const keyOf = (entry: Pick<SnapshotSession, "host" | "session">) => `${entry.host}::${entry.session}`;
-const tileOf = (entry: Pick<SnapshotSession, "host" | "session">) => useStore.getState().tiles.find(tile => (tile.host ?? "") === entry.host && (tile.session ?? tile.name) === entry.session);
+const tileOf = (entry: Pick<SnapshotSession, "host" | "session">) => useStore.getState().tiles.filter(isSessionTile).find(tile => (tile.host ?? "") === entry.host && (tile.session ?? tile.name) === entry.session);
 
 type AppState = ReturnType<typeof useStore.getState>;
 
@@ -62,7 +62,7 @@ type AppState = ReturnType<typeof useStore.getState>;
 function tileAgents(state: AppState): Record<string, SessionAgentChoice> {
   const agents = { ...useSessionAgents.getState().agents };
   const detected = useDetectedAgents.getState().agents;
-  for (const tile of state.tiles) {
+  for (const tile of state.tiles.filter(isSessionTile)) {
     if (tile.host) continue;
     const agent = sessionAgent(detected[tile.session ?? tile.name] ?? "");
     const recorded = agents[tile.id];
@@ -77,7 +77,8 @@ function tileAgents(state: AppState): Record<string, SessionAgentChoice> {
 // from the device's session list, not from the tile (see keepKnownDetails).
 function captureWorkspace(state: AppState, workspaceId: string): (Pick<WorkspaceSnapshot, "sessions" | "columns"> & { listedOnly: Set<string> }) | null {
   const input = {
-    tiles: state.tiles,
+    // Snapshots relaunch sessions; file tiles are not part of them.
+    tiles: state.tiles.filter(isSessionTile),
     workspaceOf: (tile: AppState["tiles"][number]) => state.sessionWs[wsKeyOf(tile)] ?? DEFAULT_WORKSPACE_ID,
     workspaceId,
     devices: state.devices,
@@ -256,7 +257,7 @@ export function snapshotPreview(id: string, continueChats: boolean): PreviewEntr
   const snapshot = find(id);
   if (!snapshot) return [];
   const state = useStore.getState();
-  const { launch } = snapshotLaunchPlan(snapshot, state.tiles, state.allSessions.map(session => session.name));
+  const { launch } = snapshotLaunchPlan(snapshot, state.tiles.filter(isSessionTile), state.allSessions.map(session => session.name));
   const missing = new Set(launch.map(keyOf));
   return snapshot.sessions.map(entry => {
     const tile = tileOf(entry);
@@ -295,7 +296,7 @@ export async function relaunchWorkspaceSnapshot(id: string, options: { continueC
     const chosen = options.only ? new Set(options.only) : null;
     const sessions = chosen ? snapshot.sessions.filter(entry => chosen.has(keyOf(entry))) : snapshot.sessions;
     const state = useStore.getState();
-    const { launch, running } = snapshotLaunchPlan({ ...snapshot, sessions }, state.tiles, state.allSessions.map(session => session.name));
+    const { launch, running } = snapshotLaunchPlan({ ...snapshot, sessions }, state.tiles.filter(isSessionTile), state.allSessions.map(session => session.name));
     const result: RelaunchResult = { started: [], running: running.map(entry => entry.session), resumed: [], failed: [], branches: [] };
     let workspaceId: string | undefined = snapshot.workspaceId;
     if (!state.workspaces.some(workspace => workspace.id === snapshot.workspaceId)) {

@@ -342,7 +342,7 @@ function startScan(fresh = false) {
 
 // Serve usage without ever blocking on the network once warm: a fresh cache is
 // returned as-is, a stale one is returned immediately and refreshed in the
-// background, and only a cold start waits for the first fetch (sharing one
+// background, and only a cold start (or a cache left far past its window) waits for the first fetch (sharing one
 // in-flight scan). The cache is warmed at boot, so the menu is instant. `fresh`
 // (the panel's refresh button) re-reads credentials, respecting provider cooldowns.
 export function collectUsage({ fresh = false } = {}) {
@@ -350,7 +350,11 @@ export function collectUsage({ fresh = false } = {}) {
     return (usageScan ?? startScan(fresh)).catch(() => usageCache.data ?? Promise.reject(new Error("usage unavailable")));
   }
   const ttl = usageCache.failed ? USAGE_RETRY_MS : USAGE_FRESH_MS;
-  if (Date.now() - usageCache.at >= ttl && !usageScan) startScan().catch(() => undefined);
+  const age = Date.now() - usageCache.at;
+  if (age >= ttl && !usageScan) startScan().catch(() => undefined);
+  // Far past its window (the agent pauses its background warm-up while nobody
+  // reads usage): wait for the new reading rather than show a long-stale one.
+  if (age >= USAGE_FRESH_MS * 2 && usageScan) return usageScan.catch(() => usageCache.data);
   return Promise.resolve(usageCache.data);
 }
 

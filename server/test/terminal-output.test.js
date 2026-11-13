@@ -103,7 +103,7 @@ test("a lone chunk is written without a copy", () => {
   scheduler.dispose();
 });
 
-test("streaming output returns its credit in one acknowledgement per parsed write", async () => {
+test("streaming output returns its credit cumulatively", async () => {
   const calls = [];
   const previous = globalThis.__ptyAudit;
   globalThis.__ptyAudit = { invoke(command, args) {
@@ -128,11 +128,22 @@ test("streaming output returns its credit in one acknowledgement per parsed writ
       await Promise.resolve();
     }
     while (parsing.length) { parsing.shift()(); await Promise.resolve(); }
+    // Credit below the bulk threshold is returned by a short timer, so the
+    // tail of a stream is always acknowledged.
+    await new Promise((resolve) => setTimeout(resolve, 100));
     const acks = calls.filter((call) => call.command === "pty_ack");
     assert.equal(acks.reduce((sum, call) => sum + call.args.bytes, 0), 250 * 100);
     assert.ok(acks.every((call) => call.args.id === 9));
-    // One per parsed write instead of one per chunk.
-    assert.ok(acks.length <= 64, `${acks.length} acknowledgements`);
+    // Cumulative instead of one per chunk or per parsed write.
+    assert.ok(acks.length <= 2, `${acks.length} acknowledgements`);
+    // Bulk output returns its credit as soon as 64 KiB have been parsed,
+    // without waiting for the timer.
+    calls.length = 0;
+    for (let index = 0; index < 2; index++) {
+      channel.onmessage(new Uint8Array(32 * 1024).buffer);
+      parsing.shift()();
+    }
+    assert.deepEqual(calls.map((call) => call.args.bytes), [64 * 1024]);
     scheduler.dispose();
   } finally {
     if (previous === undefined) delete globalThis.__ptyAudit;

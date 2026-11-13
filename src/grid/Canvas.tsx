@@ -1,7 +1,7 @@
 import { activityAgent, LiveSessionIcon, runningAgent, useSessionActivity } from "../ui/LiveSessionIcon";
 import { useDelayedLoading } from "../ui/useDelayedLoading";
 import { DeviceIcon } from "../ui/DeviceIcon";
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type HTMLAttributes, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type HTMLAttributes, type ReactNode } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { createPortal } from "react-dom";
 import { MotionConfig, motion } from "framer-motion";
@@ -9,6 +9,8 @@ import {
   Copy,
   EyeOff,
   FileCode,
+  FileText,
+  Folder,
   FolderInput,
   FolderPlus,
   ArrowDown,
@@ -27,11 +29,13 @@ import {
   Mic,
   Plus,
   Send,
+  SquareTerminal,
   TriangleAlert,
   X,
   type LucideIcon,
 } from "lucide-react";
-import { useStore, type Session } from "../state/store";
+import { fileTileFolder, fileTilePath, isFileTile, isSessionTile, sessionTileById, useStore, type FileTile, type Session, type Tile } from "../state/store";
+import { openTerminalInFileTile, useFileTileConversions } from "../openFiles";
 import { deviceForHost, deviceNameFor } from "../devices";
 import { Modal } from "../ui/Modal";
 import { ErrorBoundary } from "../ui/ErrorBoundary";
@@ -53,6 +57,7 @@ import {
   type TileStatus,
 } from "../sessionMeta";
 import { ALL_WORKSPACE_ID, DEFAULT_WORKSPACE_ID, wsKeyOf } from "../workspaces";
+import { useWorkspaceIconSet, workspaceIcon } from "../workspaceIcons";
 import { ctrlBadge, digitFromCode, IS_MAC } from "../shortcuts";
 import { useDictation } from "../state/dictation";
 import { DictationButton } from "../ui/Dictation";
@@ -73,7 +78,11 @@ import { moveAgentToWorktree } from "../sessionActions";
 import { landWorktree, useWorktreeInfo, useWorktreeTaskTitle, type LandKind, type LandResult } from "../worktreeLand";
 import { installFolderDrops, useFolderDrag } from "../terminal/folderDrop";
 
+// Header buttons in display order. A terminal tile has every one but
+// "terminal"; a file tile has "terminal" (Open terminal here), move,
+// fullscreen, hide and close.
 const HEADER_ACTIONS = [
+  { id: "terminal", Icon: SquareTerminal },
   { id: "mic", Icon: Mic },
   { id: "code", Icon: FileCode },
   { id: "move", Icon: FolderInput },
@@ -83,34 +92,52 @@ const HEADER_ACTIONS = [
   { id: "close", Icon: X },
 ] as const satisfies ReadonlyArray<{ id: string; Icon: LucideIcon }>;
 type HeaderAction = typeof HEADER_ACTIONS[number]["id"];
+// The empty workspace's preview header shows a terminal tile's buttons.
+const PREVIEW_ACTIONS = HEADER_ACTIONS.filter(({ id }) => id !== "terminal");
 const PreviewSessionIcon = sessionIcon();
+
+// What differs between a terminal tile and a file tile: its icon, device
+// badge, own header actions, body and footer. Move, maximize and hide are
+// shared (see Canvas's `tile`).
+interface TileParts {
+  icon: ReactNode;
+  device?: { host?: string; name: string };
+  actions: Partial<Record<HeaderAction, ReactNode>>;
+  bodyClass: string;
+  body: ReactNode;
+  footer?: ReactNode;
+}
 
 // Every header button stays visible: narrow tiles make them compact, group
 // them, and move the whole row under the title (container queries on .tile).
+// Without `actions` it is a static preview; with them, only the given ones show.
 function SessionHeader({ status, icon, title, shortcut, device, actions, ...events }: Omit<HTMLAttributes<HTMLDivElement>, "title"> & {
   status: TileStatus;
   icon: ReactNode;
   title: ReactNode;
   shortcut?: number;
-  device: { host?: string; name: string };
-  actions?: Record<HeaderAction, ReactNode>;
+  device?: { host?: string; name: string };
+  actions?: Partial<Record<HeaderAction, ReactNode>>;
 }) {
-  // Items can be turned off in Settings; the title and Close always stay.
+  // Items can be turned off in Settings; the title, Close and a file tile's
+  // way to a terminal always stay.
   const hidden: readonly string[] = useStore((s) => s.hiddenBarItems);
-  const shown = (id: HeaderAction | "device" | "shortcut") => id === "close" || !hidden.includes(`header:${id}`);
+  const shown = (id: HeaderAction | "device" | "shortcut") => id === "close" || id === "terminal" || !hidden.includes(`header:${id}`);
   return <div className="tile-head" {...events}>
     <span className={`stat stat-${status}`} title={status} />
     <span className="tile-icon">{icon}</span>
     {title}
     {shortcut && shown("shortcut") ? <kbd className="kbd tile-kbd" title="Activate">{ctrlBadge(shortcut)}</kbd> : null}
-    {shown("device") ? <span className="tile-device" title={`Running on ${device.name}`}>
+    {device && shown("device") ? <span className="tile-device" title={`Running on ${device.name}`}>
       <DeviceIcon host={device.host} size={11} /><span className="tile-device-name">{device.name}</span>
     </span> : null}
     <div className="tile-head-spacer" />
     <div className="tile-actions">
-      {HEADER_ACTIONS.filter(({ id }) => shown(id)).map(({ id, Icon }) => <span key={id} className={`tile-action tile-action-${id}`}>
-        {actions ? actions[id] : <span className={`tile-btn ${id === "close" ? "tile-btn-danger" : ""}`}><Icon size={id === "close" ? 14 : 13} /></span>}
-      </span>)}
+      {actions
+        ? HEADER_ACTIONS.filter(({ id }) => shown(id) && actions[id] !== undefined).map(({ id }) => <span key={id} className={`tile-action tile-action-${id}`}>{actions[id]}</span>)
+        : PREVIEW_ACTIONS.filter(({ id }) => shown(id)).map(({ id, Icon }) => <span key={id} className={`tile-action tile-action-${id}`}>
+          <span className={`tile-btn ${id === "close" ? "tile-btn-danger" : ""}`}><Icon size={id === "close" ? 14 : 13} /></span>
+        </span>)}
     </div>
   </div>;
 }
@@ -408,6 +435,7 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
   const defaultColumns = useStore((s) => s.defaultColumns);
   const activeId = useStore((s) => s.activeId);
   const closeTile = useStore((s) => s.closeTile);
+  const convertingFiles = useFileTileConversions((s) => s.converting);
   const connection = useStore((s) => s.connection);
   // Local terminals step aside while their tmux server restarts or lost
   // sessions are restored, then attach again (a new key per refresh). At
@@ -478,6 +506,8 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
   // "Move to workspace" popup, opened from a tile's toolbar button.
   const assignSession = useStore((s) => s.assignSession);
   const [moveFor, setMoveFor] = useState<{ id: string; x: number; y: number } | null>(null);
+  // Re-render once the full icon set loads, so custom workspace icons show.
+  useWorkspaceIconSet();
   const closeTileMenus = useCallback(() => setMoveFor(null), []);
   const tileMenuOpen = moveFor !== null;
   useExclusiveMenu("tile-menu", tileMenuOpen, closeTileMenus);
@@ -524,7 +554,7 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
         (sessionWs[wsKeyOf(t)] ?? DEFAULT_WORKSPACE_ID) === activeWorkspaceId) &&
       !hiddenTiles.includes(t.id) &&
       // Sessions on a disabled device stay running there but leave the grid.
-      !(t.host && deviceForHost(devices, t.host)?.disabled),
+      !(isSessionTile(t) && t.host && deviceForHost(devices, t.host)?.disabled),
   );
 
   // The grid runs at half resolution: every column unit is at least two CSS
@@ -618,7 +648,7 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
       for (const item of useNotifications.getState().items) {
         if (!item.read && item.category === "terminal" && item.target?.tileId) waiting.add(item.target.tileId);
       }
-      const candidates = state.tiles.filter((tile) => waiting.has(tile.id) && !(tile.host && deviceForHost(state.devices, tile.host)?.disabled));
+      const candidates = state.tiles.filter((tile) => waiting.has(tile.id) && !(isSessionTile(tile) && tile.host && deviceForHost(state.devices, tile.host)?.disabled));
       if (!candidates.length) return;
       e.preventDefault();
       e.stopPropagation();
@@ -761,13 +791,14 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
   const clearSelection = useCallback(() => setSelectedIds([]), []);
   // Tiles in this workspace with a coding agent in the foreground, read from
   // the activity rows the tiles already poll.
-  const agentTileIds = useCallback(() => wsTilesRef.current
+  const agentTileIds = useCallback(() => wsTilesRef.current.filter(isSessionTile)
     .filter((tile) => runningAgent(tile.session ?? tile.name, tile.window, tile.host) !== undefined)
     .map((tile) => tile.id), []);
   const selectAgents = useCallback(() => setSelectedIds((current) => [...new Set([...current, ...agentTileIds()])]), [agentTileIds]);
   // The command palette selects every visible tile, or every agent tile, for a broadcast.
   useEffect(() => {
-    const selectVisible = () => setSelectedIds(wsTilesRef.current.map((tile) => tile.id));
+    // Only terminals take part in a broadcast; file tiles have nothing to type into.
+    const selectVisible = () => setSelectedIds(wsTilesRef.current.filter(isSessionTile).map((tile) => tile.id));
     const selectAgentTiles = () => setSelectedIds(agentTileIds());
     window.addEventListener("pzza:broadcast-visible", selectVisible);
     window.addEventListener("pzza:broadcast-agents", selectAgentTiles);
@@ -804,8 +835,33 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
     (activeWorkspaceId === ALL_WORKSPACE_ID ||
       (sessionWs[wsKeyOf(fullTile)] ?? DEFAULT_WORKSPACE_ID) === activeWorkspaceId);
   const effFull = fullInActiveWs ? fullId : null;
+  // Saved spans: a row unit is the height the auto layout gives a row, set
+  // from the live canvas height. With 1fr rows the tracks in use stretched to
+  // fill the canvas, so a lone tile (or a lone row) never got shorter when
+  // resized, and the size only showed once another tile arrived.
+  const sizedRows = arrangement.sized && !effFull;
+  const rowUnits = arrangement.rows;
+  useLayoutEffect(() => {
+    const grid = gridRef.current;
+    const canvas = grid?.parentElement;
+    if (!grid || !canvas || !sizedRows) {
+      grid?.style.removeProperty("--row-track");
+      return;
+    }
+    const apply = () => {
+      const style = getComputedStyle(canvas);
+      const height = canvas.clientHeight - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom);
+      const gap = parseFloat(getComputedStyle(grid).rowGap) || 0;
+      const trackCount = rowUnits * 2;
+      grid.style.setProperty("--row-track", `${Math.max(0, (height - gap * (trackCount - 1)) / trackCount)}px`);
+    };
+    apply();
+    const observer = new ResizeObserver(apply);
+    observer.observe(canvas);
+    return () => observer.disconnect();
+  }, [sizedRows, rowUnits]);
   // Only tiles currently on screen take part in a broadcast.
-  const selectedTiles = wsTiles.filter((tile) => selectedIds.includes(tile.id) && (!effFull || tile.id === effFull));
+  const selectedTiles = wsTiles.filter(isSessionTile).filter((tile) => selectedIds.includes(tile.id) && (!effFull || tile.id === effFull));
   // The composer slides away with its last chips once fewer than two tiles are selected.
   const broadcast = useBroadcastPresence(selectedTiles.length >= 2
     ? selectedTiles.map((entry) => ({ id: entry.id, name: sessionDisplayName(entry, tileTitles), agent: runningAgent(entry.session ?? entry.name, entry.window, entry.host) }))
@@ -822,7 +878,7 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
     }).join("\0"),
   ].join("\n");
 
-  const duplicate = async (source: (typeof tiles)[number]) => {
+  const duplicate = async (source: Session) => {
     if (duplicationPending.current) throw new Error("A session duplication is already running.");
     duplicationPending.current = true;
     setDuplicating(source.id);
@@ -868,6 +924,11 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
       if (!target) throw new Error("The requested session tile is not open.");
       return target;
     };
+    const requireSessionTile = (id: unknown) => {
+      const target = requireTile(id);
+      if (!isSessionTile(target)) throw new Error("This is a file tile without a session. Open a terminal in it first, or close it.");
+      return target;
+    };
     const reveal = (id: unknown) => {
       const target = requireTile(id);
       const state = useStore.getState();
@@ -885,11 +946,11 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
       // Focus mode is the maximize: the focused tile fills the canvas.
       registerAppControlHandler("set_focus_mode", maximize),
       registerAppControlHandler("set_fullscreen", maximize),
-      registerAppControlHandler("duplicate_tile", async args => ({ tileId: await canvasControl.current.duplicate(requireTile(args.tileId)) })),
+      registerAppControlHandler("duplicate_tile", async args => ({ tileId: await canvasControl.current.duplicate(requireSessionTile(args.tileId)) })),
       registerAppControlHandler("terminate_tile", async args => {
-        const current = requireTile(args.tileId);
+        const current = requireSessionTile(args.tileId);
         const state = useStore.getState();
-        const affected = state.tiles.filter(item => (item.host ?? state.connection.host ?? "") === (current.host ?? state.connection.host ?? "") &&
+        const affected = state.tiles.filter(isSessionTile).filter(item => (item.host ?? state.connection.host ?? "") === (current.host ?? state.connection.host ?? "") &&
           (item.session ?? item.name) === (current.session ?? current.name) && (current.window === undefined || item.window === current.window));
         if (hasUnsavedEditors(affected.map(item => item.id))) throw new Error("Save or explicitly discard affected editor buffers before terminating this session.");
         const outcome = await terminateTile(current, sessionConnection(current.host, state.connection).host ?? "");
@@ -904,29 +965,13 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
     return () => cleanups.forEach(cleanup => cleanup());
   }, []);
 
-  const tile = (t: (typeof tiles)[number]) => {
+  const sessionParts = (t: Session, visible: boolean, tileWs: string): TileParts => {
     const base = t.session ?? t.name;
     const { cmd, args } = attachCommand(sessionConnection(t.host, connection), base, t.cwd, t.window);
     const isLocal = !sessionConnection(t.host, connection).host;
     const rs = allSessions.find((s) => s.name === base);
     const fullPath = t.path ?? rs?.path;
     const codeOpen = tileCode[t.id]?.open ?? false;
-    const wsColor = workspaces.find(
-      (w) => w.id === (sessionWs[wsKeyOf(t)] ?? DEFAULT_WORKSPACE_ID),
-    )?.color;
-    const status = statuses[t.id] ?? "idle";
-    // Grey by default; solid green only while this tile owns unread
-    // notifications. Output activity no longer blinks the dot.
-    const hasUnread = unreadTileSet.has(t.id);
-    const displayStatus = hasUnread ? "notify" : status === "failed" ? "failed" : "idle";
-    const displayName = sessionDisplayName(t, tileTitles);
-    const isRenaming = renaming?.id === t.id;
-    const shortcutIdx = wsTiles.findIndex((x) => x.id === t.id);
-    const isFull = fullId === t.id;
-    const toggleFull = () => {
-      activateTile(t.id);
-      setFullId(isFull ? null : t.id);
-    };
     // Header actions, shared by the inline buttons and the narrow-tile More menu.
     const toggleCode = () => {
       if (codeOpen) {
@@ -947,12 +992,154 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
         }
       });
     };
+    const codeLabel = codeOpen ? "Back to terminal" : "Code editor";
+    const folder = fullPath ?? (t.cwd?.startsWith("/") ? t.cwd : undefined);
+    return {
+      icon: <LiveSessionIcon session={base} window={t.window} host={t.host} />,
+      device: { host: t.host, name: tileDevice(t.host) },
+      actions: {
+        mic: (<DictationButton tileId={t.id} activate={() => activateTile(t.id)} />),
+        code: (<button
+          className={`tile-btn ${codeOpen ? "tile-btn-on" : ""}`}
+          title={codeLabel}
+          aria-label={codeLabel}
+          onMouseDown={(e) => e.stopPropagation()}
+          onPointerEnter={() => void TileCodePanel.preload()}
+          onClick={(e) => {
+            e.stopPropagation();
+            toggleCode();
+          }}
+        >
+          <FileCode size={13} />
+        </button>),
+        duplicate: (<button
+          className="tile-btn"
+          title="Duplicate session"
+          aria-label="Duplicate session"
+          disabled={duplicating !== null}
+          aria-busy={duplicating === t.id}
+          onMouseDown={(event) => event.stopPropagation()}
+          onClick={(event) => { event.stopPropagation(); void duplicate(t).catch(() => {}); }}
+        >
+          {showDuplicateSpinner && duplicating === t.id ? <Loader2 size={13} className="async-spinner" /> : <Copy size={13} />}
+        </button>),
+        close: (<button
+          className="tile-btn tile-btn-danger"
+          title="Terminate"
+          aria-label="Terminate"
+          onMouseDown={(e) => e.stopPropagation()}
+          onClick={(e) => {
+            e.stopPropagation();
+            setCloseError(null);
+            setClosing(t.id);
+          }}
+        >
+          <X size={14} />
+        </button>),
+      },
+      bodyClass: codeOpen ? `tile-body-code-${tileCode[t.id]?.layout ?? "side-by-side"}` : "",
+      body: <>
+        {(refreshingLocal || launchCheckLocal) && isLocal ? <div className="term-surface term-refreshing" role="status">
+          {refreshingLocal && !launchCheckLocal ? <><Loader2 size={14} className="sw-spin" aria-hidden="true" /> {restoringLocal ? "Restoring session…" : "Refreshing session…"}</> : null}
+        </div> : <ErrorBoundary key={isLocal ? `${t.id}:${localGeneration}` : t.id} label="This terminal" className="term-surface term-refreshing">
+          {/* One broken tile never takes the grid with it; its session keeps running in tmux. */}
+          <Terminal
+            tileId={t.id}
+            name={base}
+            host={t.host ?? connection.host ?? undefined}
+            cmd={cmd}
+            args={args}
+            cwd={t.cwd}
+            window={t.window}
+            active={activeId === t.id}
+            onStatus={(s) => setStatus(t.id, s)}
+          />
+        </ErrorBoundary>}
+        {codeOpen ? <TileCodePanel tileId={t.id} /> : null}
+        {codeOpen ? <CodeSplitHandle tileId={t.id} /> : null}
+      </>,
+      footer: <>
+        <ErrorBoundary label="Checkpoints" variant="quiet">
+          <TileCheckpoints tileId={t.id} session={base} window={t.window} host={t.host} gitHost={t.host ?? connection.host ?? ""} path={folder} />
+        </ErrorBoundary>
+        {statusBarShown ? <ErrorBoundary label="The status bar" variant="quiet">
+        <TileStatusStrip tileId={t.id} session={base} window={t.window} host={t.host} gitHost={t.host ?? connection.host ?? ""} visible={visible} path={folder} createdAt={rs?.createdAt}
+          workspaceId={tileWs} workspace={workspaces.find((w) => w.id === tileWs)?.name ?? tileWs} />
+        </ErrorBoundary> : null}
+      </>,
+    };
+  };
+
+  // A file or folder tile is only its editor, full-tile, on this device: no
+  // terminal, footer or device. Its first action turns it into a session.
+  const fileParts = (t: FileTile): TileParts => {
+    const converting = convertingFiles.includes(t.id);
+    const close = () => {
+      void confirmEditorDiscard([t.id]).then((confirmed) => {
+        if (!confirmed) return;
+        if (fullId === t.id) setFullId(null);
+        closeTile(t.id);
+      });
+    };
+    return {
+      icon: t.folder !== undefined ? <Folder size={14} aria-hidden="true" /> : <FileText size={14} aria-hidden="true" />,
+      actions: {
+        terminal: (<button
+          className="tile-btn"
+          title={`Open terminal here\nStarts a session in ${fileTileFolder(t)} and keeps this ${t.folder !== undefined ? "folder" : "file"} open beside it`}
+          aria-label="Open terminal here"
+          disabled={converting}
+          aria-busy={converting || undefined}
+          onMouseDown={(e) => e.stopPropagation()}
+          onClick={(e) => {
+            e.stopPropagation();
+            void openTerminalInFileTile(t.id);
+          }}
+        >
+          {converting ? <Loader2 size={13} className="async-spinner" /> : <SquareTerminal size={13} />}
+        </button>),
+        close: (<button
+          className="tile-btn tile-btn-danger"
+          title="Close"
+          aria-label="Close"
+          onMouseDown={(e) => e.stopPropagation()}
+          onClick={(e) => {
+            e.stopPropagation();
+            close();
+          }}
+        >
+          <X size={14} />
+        </button>),
+      },
+      bodyClass: "tile-body-code-full tile-body-file",
+      body: <TileCodePanel tileId={t.id} />,
+    };
+  };
+
+  const tile = (t: Tile) => {
+    const wsColor = workspaces.find(
+      (w) => w.id === (sessionWs[wsKeyOf(t)] ?? DEFAULT_WORKSPACE_ID),
+    )?.color;
+    const status = statuses[t.id] ?? "idle";
+    // Grey by default; solid green only while this tile owns unread
+    // notifications. Output activity no longer blinks the dot.
+    const hasUnread = unreadTileSet.has(t.id);
+    const displayStatus = hasUnread ? "notify" : status === "failed" ? "failed" : "idle";
+    const displayName = sessionDisplayName(t, tileTitles);
+    const isRenaming = renaming?.id === t.id;
+    const shortcutIdx = wsTiles.findIndex((x) => x.id === t.id);
+    const isFull = fullId === t.id;
+    const toggleFull = () => {
+      activateTile(t.id);
+      setFullId(isFull ? null : t.id);
+    };
     const toggleMove = (anchor: DOMRect) => setMoveFor(moveFor?.id === t.id ? null : { id: t.id, x: anchor.right, y: anchor.bottom });
     const hide = () => {
       if (fullId === t.id) setFullId(null);
       hideTile(t.id);
     };
-    const codeLabel = codeOpen ? "Back to terminal" : "Code editor";
+    // Hiding a terminal keeps its session running; a file tile simply stays open.
+    const hideLabel = isFileTile(t) ? "Hide" : "Hide (keeps running)";
     const borderBg = wsColor
       ? `linear-gradient(140deg, ${wsColor} 0%, var(--border) 22%)`
       : undefined;
@@ -978,8 +1165,10 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
       activeWorkspaceId === ALL_WORKSPACE_ID || tileWs === activeWorkspaceId;
     const visible = inWorkspace && !hiddenTiles.includes(t.id) && (!effFull || isFull);
     const isSelected = visible && selectedIds.includes(t.id);
+    const parts = isFileTile(t) ? fileParts(t) : sessionParts(t, visible, tileWs);
     const cls = [
       "tile",
+      isFileTile(t) ? "tile-file" : "",
       visible ? "" : "tile-off",
       isActive ? "tile-active" : "",
       dragId === t.id ? "tile-dragging" : "",
@@ -1049,11 +1238,12 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
           }}
           onClickCapture={(e) => {
             // Shift+click anywhere on the header (title included, buttons
-            // excluded) toggles this tile in the broadcast selection.
+            // excluded) toggles this tile in the broadcast selection. A file
+            // tile has no terminal to broadcast to.
             if (!e.shiftKey || (e.target instanceof Element && e.target.closest("button, input"))) return;
             e.preventDefault();
             e.stopPropagation();
-            toggleSelected(t.id);
+            if (isSessionTile(t)) toggleSelected(t.id);
           }}
           onDoubleClick={(e) => {
             // Double-clicking the header background maximizes or restores.
@@ -1063,7 +1253,7 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
             toggleFull();
           }}
           status={displayStatus}
-          icon={<LiveSessionIcon session={base} window={t.window} host={t.host} />}
+          icon={parts.icon}
           title={isRenaming ? (
             <input
               className="tile-title-input"
@@ -1089,7 +1279,7 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
           ) : (
             <span
               className="tile-title"
-              title={`${displayName}\nClick to rename`}
+              title={`${isFileTile(t) ? fileTilePath(t) : displayName}\nClick to rename`}
               onMouseDown={(e) => e.stopPropagation()}
               onClick={(e) => {
                 e.stopPropagation();
@@ -1100,22 +1290,9 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
             </span>
           )}
           shortcut={shortcutIdx >= 0 && shortcutIdx < 9 ? shortcutIdx + 1 : undefined}
-          device={{ host: t.host, name: tileDevice(t.host) }}
+          device={parts.device}
           actions={{
-            mic: (<DictationButton tileId={t.id} activate={() => activateTile(t.id)} />),
-            code: (<button
-              className={`tile-btn ${codeOpen ? "tile-btn-on" : ""}`}
-              title={codeLabel}
-              aria-label={codeLabel}
-              onMouseDown={(e) => e.stopPropagation()}
-              onPointerEnter={() => void TileCodePanel.preload()}
-              onClick={(e) => {
-                e.stopPropagation();
-                toggleCode();
-              }}
-            >
-              <FileCode size={13} />
-            </button>),
+            ...parts.actions,
             move: (<button
               className="tile-btn"
               title="Move to workspace"
@@ -1127,17 +1304,6 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
               }}
             >
               <FolderInput size={13} />
-            </button>),
-            duplicate: (<button
-              className="tile-btn"
-              title="Duplicate session"
-              aria-label="Duplicate session"
-              disabled={duplicating !== null}
-              aria-busy={duplicating === t.id}
-              onMouseDown={(event) => event.stopPropagation()}
-              onClick={(event) => { event.stopPropagation(); void duplicate(t).catch(() => {}); }}
-            >
-              {showDuplicateSpinner && duplicating === t.id ? <Loader2 size={13} className="async-spinner" /> : <Copy size={13} />}
             </button>),
             fullscreen: (<button
               className={`tile-btn ${isFull ? "tile-btn-on" : ""}`}
@@ -1154,8 +1320,8 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
             </button>),
             hide: (<button
               className="tile-btn"
-              title="Hide (keeps running)"
-              aria-label="Hide (keeps running)"
+              title={hideLabel}
+              aria-label={hideLabel}
               onMouseDown={(e) => e.stopPropagation()}
               onClick={(e) => {
                 e.stopPropagation();
@@ -1164,49 +1330,13 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
             >
               <EyeOff size={13} />
             </button>),
-            close: (<button
-              className="tile-btn tile-btn-danger"
-              title="Terminate"
-              aria-label="Terminate"
-              onMouseDown={(e) => e.stopPropagation()}
-              onClick={(e) => {
-                e.stopPropagation();
-                setCloseError(null);
-                setClosing(t.id);
-              }}
-            >
-              <X size={14} />
-            </button>),
           }}
         />
         {borderBg ? <div className="tile-color-border" aria-hidden="true" style={{ background: borderBg }} /> : null}
-        <div className={`tile-body ${codeOpen ? `tile-body-code-${tileCode[t.id]?.layout ?? "side-by-side"}` : ""}`}>
-          {(refreshingLocal || launchCheckLocal) && isLocal ? <div className="term-surface term-refreshing" role="status">
-            {refreshingLocal && !launchCheckLocal ? <><Loader2 size={14} className="sw-spin" aria-hidden="true" /> {restoringLocal ? "Restoring session…" : "Refreshing session…"}</> : null}
-          </div> : <ErrorBoundary key={isLocal ? `${t.id}:${localGeneration}` : t.id} label="This terminal" className="term-surface term-refreshing">
-            {/* One broken tile never takes the grid with it; its session keeps running in tmux. */}
-            <Terminal
-              tileId={t.id}
-              name={base}
-              host={t.host ?? connection.host ?? undefined}
-              cmd={cmd}
-              args={args}
-              cwd={t.cwd}
-              window={t.window}
-              active={activeId === t.id}
-              onStatus={(s) => setStatus(t.id, s)}
-            />
-          </ErrorBoundary>}
-          {codeOpen ? <TileCodePanel tileId={t.id} /> : null}
-          {codeOpen ? <CodeSplitHandle tileId={t.id} /> : null}
+        <div className={`tile-body ${parts.bodyClass}`}>
+          {parts.body}
         </div>
-        <ErrorBoundary label="Checkpoints" variant="quiet">
-          <TileCheckpoints tileId={t.id} session={base} window={t.window} host={t.host} gitHost={t.host ?? connection.host ?? ""} path={fullPath ?? (t.cwd?.startsWith("/") ? t.cwd : undefined)} />
-        </ErrorBoundary>
-        {statusBarShown ? <ErrorBoundary label="The status bar" variant="quiet">
-        <TileStatusStrip tileId={t.id} session={base} window={t.window} host={t.host} gitHost={t.host ?? connection.host ?? ""} visible={visible} path={fullPath ?? (t.cwd?.startsWith("/") ? t.cwd : undefined)} createdAt={rs?.createdAt}
-          workspaceId={tileWs} workspace={workspaces.find((w) => w.id === tileWs)?.name ?? tileWs} />
-        </ErrorBoundary> : null}
+        {parts.footer}
         {visible && !effFull ? (
           <TileResizeHandles
             span={{ c: trackSpan.c / columnTracks, r: trackSpan.r / 2 }}
@@ -1227,7 +1357,7 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
       </Modal>
       <div
         ref={gridRef}
-        className={`grid ${effFull ? "grid-full" : ""} ${broadcast.shown ? "grid-with-broadcast" : ""}`}
+        className={`grid ${effFull ? "grid-full" : ""} ${sizedRows ? "grid-sized" : ""} ${broadcast.shown ? "grid-with-broadcast" : ""}`}
         style={{
           gridTemplateColumns: effFull
             ? "minmax(0, 1fr)"
@@ -1279,7 +1409,7 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
 
       <Modal open={!!closing} onClose={() => { if (!terminating) setClosing(null); }} title="Terminate session" size="sm">
         <p className="move-q">
-          Terminate ends {tiles.find((tile) => tile.id === closing)?.window !== undefined ? "this window" : "the session"} and everything running in it. This cannot be undone.
+          Terminate ends {sessionTileById(tiles, closing)?.window !== undefined ? "this window" : "the session"} and everything running in it. This cannot be undone.
         </p>
         {closeError ? <p className="pj-error" role="alert">{closeError}</p> : null}
         <div className="modal-actions">
@@ -1288,12 +1418,12 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
             className="btn btn-danger"
             disabled={terminating}
             onClick={async () => {
-              const current = tiles.find((tile) => tile.id === closing);
+              const current = sessionTileById(tiles, closing);
               if (!current || terminating) return;
               setTerminating(true);
               setCloseError(null);
               try {
-                const affected = tiles.filter((tile) => (tile.host ?? connection.host ?? "") === (current.host ?? connection.host ?? "") &&
+                const affected = tiles.filter(isSessionTile).filter((tile) => (tile.host ?? connection.host ?? "") === (current.host ?? connection.host ?? "") &&
                   (tile.session ?? tile.name) === (current.session ?? current.name) &&
                   (current.window === undefined || tile.window === current.window));
                 if (!await confirmEditorDiscard(affected.map((tile) => tile.id))) return;
@@ -1344,8 +1474,9 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
                   const target = tiles.find((x) => x.id === moveFor.id);
                   const key = target ? wsKeyOf(target) : "";
                   const current = sessionWs[key] ?? DEFAULT_WORKSPACE_ID;
-                  return workspaces.map((w) => (
-                    <button
+                  return workspaces.map((w) => {
+                    const Icon = workspaceIcon(w.icon);
+                    return <button
                       key={w.id}
                       className={`menu-item ${current === w.id ? "menu-item-on" : ""}`}
                       onClick={() => {
@@ -1353,9 +1484,11 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
                         setMoveFor(null);
                       }}
                     >
+                      {/* Same icon and color as the workspace tab. */}
+                      <Icon size={14} className="ws-tab-icon" style={w.color ? { color: w.color } : undefined} aria-hidden="true" />
                       {w.name}
-                    </button>
-                  ));
+                    </button>;
+                  });
                 })()}
               </div>
             </div>,

@@ -373,6 +373,77 @@
   color: var(--muted);
 }
 
+/* Default editor: the file types to take over, in a list that scrolls
+   inside a bounded height so the step and the Settings group stay short. */
+.tour-types {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.tour-types .tour-group-head {
+  margin-bottom: 0;
+}
+
+.tour-type-list {
+  max-height: 216px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.tour-type-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 12px;
+}
+
+.tour-type-row + .tour-type-row {
+  border-top: 1px solid var(--tour-line);
+}
+
+.tour-type-choice {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  min-height: 36px;
+  cursor: pointer;
+}
+
+.tour-type-row.is-owned .tour-type-choice {
+  cursor: default;
+}
+
+.tour-type-name {
+  flex: 0 0 auto;
+  font-size: var(--fs-md);
+  font-weight: 550;
+  color: var(--text);
+}
+
+.tour-type-ext {
+  min-width: 0;
+  overflow: hidden;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: var(--fs-xs);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--muted);
+}
+
+.tour-type-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.tour-type-actions .btn-accent {
+  margin-left: auto;
+}
+
 .tour-chips {
   display: flex;
   flex-wrap: wrap;

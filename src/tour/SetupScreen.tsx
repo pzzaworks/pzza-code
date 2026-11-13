@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState, type ComponentType } from "react";
 import { createPortal } from "react-dom";
-import { ArrowRight, Loader2, Package, ShieldCheck, type LucideIcon } from "lucide-react";
+import { ArrowRight, FileCode, Loader2, Package, ShieldCheck, type LucideIcon } from "lucide-react";
 import { PERMISSIONS_SUPPORTED } from "../state/permissions";
+import { refreshDefaultEditor, useDefaultEditor } from "../state/defaultEditor";
 import { useStore } from "../state/store";
-import { SetupHealth, SetupPermissions, SetupRequirements, useRequirementsReady } from "./SetupSteps";
+import { SetupDefaultEditor, SetupHealth, SetupPermissions, SetupRequirements, useRequirementsReady } from "./SetupSteps";
 import "./OnboardingTour.css";
 import "./SetupScreen.css";
 import { markSetupDone } from "./progress";
@@ -47,14 +48,29 @@ const STEPS: SetupStep[] = [
   }] : []),
 ];
 
+// Optional, and only where the macOS app reports it can change default apps.
+const DEFAULT_EDITOR_STEP: SetupStep = {
+  id: "default-editor",
+  icon: FileCode,
+  title: "Open code files with PzzaCode",
+  body: "Code and text files you open from Finder open right in the editor. Open a terminal next to one whenever you need it.",
+  content: SetupDefaultEditor,
+};
+
+function useSetupSteps(): SetupStep[] {
+  const editorSupported = useDefaultEditor(state => state.status?.supported === true);
+  return editorSupported ? [...STEPS, DEFAULT_EDITOR_STEP] : STEPS;
+}
+
 function Welcome() {
+  const steps = useSetupSteps();
   return <div className="setup-welcome">
     <p className="setup-lead">
       Every terminal and every coding agent, on one grid. Setup installs what PzzaCode runs on and allows
       what your tools need on this Mac; it takes about a minute.
     </p>
     <ol className="setup-plan">
-      {STEPS.map((step) => {
+      {steps.map((step) => {
         const StepIcon = step.icon;
         return <li key={step.id} className="setup-plan-item">
           <span className="setup-plan-icon" aria-hidden="true"><StepIcon size={13} /></span>
@@ -65,10 +81,7 @@ function Welcome() {
   </div>;
 }
 
-const PAGES: SetupStep[] = [
-  { id: "welcome", icon: ShieldCheck, title: "Welcome to PzzaCode", body: "A minute of setup before the first session.", content: Welcome },
-  ...STEPS,
-];
+const WELCOME: SetupStep = { id: "welcome", icon: ShieldCheck, title: "Welcome to PzzaCode", body: "A minute of setup before the first session.", content: Welcome };
 
 // Setup fills the window with one centered column: where you are in the
 // steps, the current step, and its Back / Continue right below it.
@@ -78,9 +91,15 @@ export function SetupScreen({ open, onDone }: { open: boolean; onDone: () => voi
   const [index, setIndex] = useState(0);
   const primaryRef = useRef<HTMLButtonElement>(null);
   const ready = useRequirementsReady();
+  const steps = useSetupSteps();
+  const pages = [WELCOME, ...steps];
 
   useEffect(() => {
     if (open) setIndex(0);
+  }, [open]);
+  // Decides whether the default editor step is part of setup.
+  useEffect(() => {
+    if (open) void refreshDefaultEditor();
   }, [open]);
   useEffect(() => {
     useStore.getState().setSetupVisible(open);
@@ -91,8 +110,8 @@ export function SetupScreen({ open, onDone }: { open: boolean; onDone: () => voi
   }, [open, index]);
 
   if (!open) return null;
-  const page = PAGES[index];
-  const last = index === PAGES.length - 1;
+  const page = pages[Math.min(index, pages.length - 1)];
+  const last = index === pages.length - 1;
   const waiting = page.id === "requirements" && !ready;
   const go = (step: 1 | -1) => {
     if (waiting && step === 1) return;
@@ -101,7 +120,7 @@ export function SetupScreen({ open, onDone }: { open: boolean; onDone: () => voi
       onDone();
       return;
     }
-    setIndex(Math.min(PAGES.length - 1, Math.max(0, index + step)));
+    setIndex(Math.min(pages.length - 1, Math.max(0, index + step)));
   };
   const Content = page.content;
 
@@ -113,11 +132,11 @@ export function SetupScreen({ open, onDone }: { open: boolean; onDone: () => voi
         <div className="setup-page">
           <div className="setup-stage">
             <div key={page.id}>
-                <div className="setup-count" role="group" aria-label={`Step ${index + 1} of ${PAGES.length}`}>
+                <div className="setup-count" role="group" aria-label={`Step ${index + 1} of ${pages.length}`}>
                   <span className="setup-dots" aria-hidden="true">
-                    {PAGES.map((entry, position) => <span key={entry.id} className={position === index ? "on" : position < index ? "done" : ""} />)}
+                    {pages.map((entry, position) => <span key={entry.id} className={position === index ? "on" : position < index ? "done" : ""} />)}
                   </span>
-                  Step {index + 1} of {PAGES.length}
+                  Step {index + 1} of {pages.length}
                 </div>
                 <header className="setup-page-head">
                   {page.id === "welcome" ? <img src="/pzzacode.svg" alt="" className="setup-logo" /> : null}

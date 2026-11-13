@@ -23,12 +23,35 @@
 
 /* The status dot is the Usage menu's; it takes the task's tone and pulses while the agent works. */
 .usage-dot[class*="task-tone-"] { background: var(--tone); }
-.task-dot-live { box-shadow: 0 0 0 0 color-mix(in srgb, var(--tone) 55%, transparent); animation: task-pulse 1.8s ease-out infinite; }
-@keyframes task-pulse {
-  70% { box-shadow: 0 0 0 5px transparent; }
-  100% { box-shadow: 0 0 0 0 transparent; }
+/* The pulse is a ring layer animating transform and opacity (composited, no
+   repaint per frame) in place of an animated box-shadow. The ring (::before) is
+   a disk 5px wider than the dot on every side, scaled from the dot's size
+   (radius / (radius + 5px)) to full; its tone at 55% fades out as it grows,
+   the same as the shadow's spread 0 -> 5px and alpha 55% -> 0. The dot's own
+   fill moves onto ::after, painted once above the ring so the ring only shows
+   outside the dot, as the shadow did; it inherits the dot's color, including
+   its selected state and that state's transition. box-shadow: none keeps the
+   checkpoint node's halo off the live dot, as before. */
+.task-dot-live { --pulse-from: calc(4 / 9); position: relative; box-shadow: none; }
+.cp-node.task-dot-live { --pulse-from: calc(9 / 19); }
+/* Hides only the element's own fill: there is no text to clip to. The :is()
+   outranks the background shorthands that set the dot's color (they reset the
+   clip). */
+:is(.usage-dot, .cp-item.on .cp-node).task-dot-live { -webkit-background-clip: text; background-clip: text; }
+.task-dot-live::before,
+.task-dot-live::after { content: ""; position: absolute; border-radius: 50%; pointer-events: none; }
+.task-dot-live::before {
+  inset: -5px;
+  background: color-mix(in srgb, var(--tone) 55%, transparent);
+  opacity: 0;
+  animation: task-pulse 1.8s ease-out infinite;
 }
-@media (prefers-reduced-motion: reduce) { .task-dot-live { animation: none; } }
+.task-dot-live::after { inset: 0; border-radius: inherit; background-color: inherit; }
+@keyframes task-pulse {
+  0% { opacity: 1; transform: scale(var(--pulse-from)); }
+  70%, 100% { opacity: 0; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) { .task-dot-live::before { animation: none; } }
 
 .task-add { color: var(--success-foreground, var(--success)); font-variant-numeric: tabular-nums; }
 .task-del { color: var(--danger-foreground, var(--danger)); font-variant-numeric: tabular-nums; }

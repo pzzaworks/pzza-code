@@ -5,7 +5,7 @@ import {
   type PermissionPrompt, type Screen,
 } from "../terminal/permissionPrompts";
 import { notify, useNotifications, type PermissionOutcome } from "./notifications";
-import { useStore } from "./store";
+import { isSessionTile, useStore } from "./store";
 import { sessionDisplayName } from "../sessionMeta";
 import { deviceNameFor } from "../devices";
 
@@ -26,6 +26,8 @@ export interface PermissionTarget {
   send(data: string): Promise<void>;
   /** Whether the terminal has keyboard focus in a focused window. */
   focused(): boolean;
+  /** Whether this is the active tile, scanned soonest after output; treated as active when absent. */
+  active?(): boolean;
   /** What runs in the pane this tile's input reaches; `fresh` skips any cache. */
   foreground(fresh: boolean): Promise<PaneForeground | null>;
   /**
@@ -75,6 +77,14 @@ const CONFIRM_MS = 180;
 // a re-attach repaints the pane and can show a blank frame first.
 const ABSENT_MS = 700;
 const SCAN_THROTTLE_MS = 220;
+// Output-driven scans. The active tile scans once its output has been quiet
+// this long (a CLI drawing a prompt sends it in a burst), and at least this
+// often while output keeps streaming; other tiles scan at most once a second.
+// Each scan reads the whole screen through the prompt detector, so scanning
+// on every parsed write of a streaming agent is pure CPU burn.
+const OUTPUT_QUIET_MS = 150;
+const OUTPUT_MAX_WAIT_MS = 1000;
+const BACKGROUND_SCAN_MS = 1000;
 // After keys were sent, the prompt should leave the screen within this time.
 const SENT_TIMEOUT_MS = 5000;
 const RECENT_BELL_MS = 15_000;
@@ -111,7 +121,8 @@ function noticeSource(tileId: string): string {
   const tile = state.tiles.find(candidate => candidate.id === tileId);
   const clean = (text: string) => text.replace(/[\x00-\x1f\x7f-\x9f]/g, "").slice(0, 100);
   const label = tile ? clean(sessionDisplayName(tile, state.tileTitles)) : clean(tileId);
-  const device = clean(tile?.host ? deviceNameFor(state.devices, tile.host) || tile.host : "This device") || "This device";
+  const host = tile && isSessionTile(tile) ? tile.host : undefined;
+  const device = clean(host ? deviceNameFor(state.devices, host) || host : "This device") || "This device";
   return `${label || "Terminal"} (${device})`;
 }
 
@@ -223,6 +234,13 @@ export function createPermissionWatcher(tileId: string, target: PermissionTarget
   let timer: ReturnType<typeof setTimeout> | undefined;
   let timerAt = 0;
   let lastScan = 0;
+  // Whether the pending timer was armed by output (see scheduleForOutput),
+  // when output not yet scanned started arriving (0: none), and when the
+  // output-armed scan is due; the timer re-arms itself for a later due time
+  // instead of being replaced on every write.
+  let timerFromOutput = false;
+  let burstAt = 0;
+  let outputDue = 0;
   let candidate: { prompt: PermissionPrompt; at: number } | null = null;
   let absentSince = 0;
   let checking = false;
@@ -317,6 +335,8 @@ export function createPermissionWatcher(tileId: string, target: PermissionTarget
   const scan = () => {
     timer = undefined;
     if (disposed) return;
+    burstAt = 0;
+    outputDue = 0;
     lastScan = performance.now();
     const prompt = read();
     const entry = usePermissionPrompts.getState().pending[tileId];
@@ -349,21 +369,60 @@ export function createPermissionWatcher(tileId: string, target: PermissionTarget
     onScreen.set(tileId, prompt);
     verify(prompt);
   };
-  // New output scans soon (throttled); an explicit delay sets the next scan.
-  // A long recheck wait never holds back a scan that output asks for.
+  // A rescan the watcher asks for itself runs soon (throttled); an explicit
+  // delay sets the next scan. A long recheck wait never holds back a scan
+  // that is asked for.
   function schedule(delay?: number) {
     if (disposed) return;
     const wait = delay ?? Math.max(0, SCAN_THROTTLE_MS - (performance.now() - lastScan));
     const at = performance.now() + wait;
     if (timer !== undefined) {
-      if (delay === undefined && timerAt <= at) return;
+      if (delay === undefined && timerAt <= at) {
+        // An output-armed timer must not re-arm past this scan.
+        outputDue = Math.min(outputDue, at);
+        return;
+      }
       clearTimeout(timer);
     }
     timerAt = at;
+    timerFromOutput = false;
     timer = setTimeout(scan, wait);
   }
+  const fireOutput = () => {
+    const now = performance.now();
+    if (outputDue - now > 4) {
+      timerAt = outputDue;
+      timer = setTimeout(fireOutput, outputDue - now);
+      return;
+    }
+    scan();
+  };
+  // New output: the active tile scans once output has been quiet for
+  // OUTPUT_QUIET_MS (at most OUTPUT_MAX_WAIT_MS after the burst began), any
+  // other tile at most once per BACKGROUND_SCAN_MS, always after the latest
+  // output (trailing), so a prompt drawn last is still read. An earlier scan
+  // already pending reads this output too and stays.
+  function scheduleForOutput() {
+    if (disposed) return;
+    const now = performance.now();
+    if (!burstAt) burstAt = now;
+    const active = target.active?.() ?? true;
+    const due = active
+      ? Math.min(now + OUTPUT_QUIET_MS, burstAt + OUTPUT_MAX_WAIT_MS)
+      : Math.max(now, lastScan + BACKGROUND_SCAN_MS);
+    if (timer !== undefined && timerAt <= due) {
+      // Debounce: a quieter due time moves the output-armed scan later.
+      if (timerFromOutput && active) outputDue = Math.max(outputDue, due);
+      return;
+    }
+    clearTimeout(timer);
+    timerAt = due;
+    outputDue = due;
+    timerFromOutput = true;
+    timer = setTimeout(fireOutput, due - now);
+  }
   return {
-    schedule: () => schedule(),
+    schedule: scheduleForOutput,
     dispose() {
       disposed = true;
       clearTimeout(timer);

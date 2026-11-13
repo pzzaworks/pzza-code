@@ -20,6 +20,11 @@ export interface Arrangement {
   // CSS grid column tracks; each row unit is two row tracks.
   tracks: number;
   spans: Map<string, Span>;
+  // Row units the auto layout fills the canvas with; a saved row span is
+  // measured in these, so one unit is that tall whatever the other tiles do.
+  rows: number;
+  // Whether any tile has a saved span (the grid then sizes its rows itself).
+  sized: boolean;
 }
 
 const gcd = (a: number, b: number): number => (b ? gcd(b, a % b) : a);
@@ -91,11 +96,11 @@ export function arrangeTiles({ ids, saved, setting, size, maxRows }: {
     for (const perRow of rows) {
       for (const c of split(tracks, perRow)) spans.set(ids[index++], { c, r: 2 });
     }
-    return { columns, tracks, spans };
+    return { columns, tracks, spans, rows: rows.length, sized: false };
   }
   const tracks = columns * 2;
   placeMixed(ids, saved, tracks, maxRows * 2, spans);
-  return { columns, tracks, spans };
+  return { columns, tracks, spans, rows: Math.max(1, rows.length), sized: true };
 }
 
 const toTracks = (span: Span, tracks: number): Span => ({

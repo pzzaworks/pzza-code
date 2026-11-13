@@ -165,11 +165,13 @@ export function deriveChrome(t: TerminalPalette, appearance: Theme["appearance"]
     bg,
     surface: mix(bg, fg, 0.045),
     surfaceAlt: mix(bg, fg, 0.11),
-    border: mix(bg, fg, 0.17),
-    controlBorder: mix(bg, fg, 0.32),
-    divider: translucent(fg, 6),
-    hairline: translucent(fg, 9),
-    hairlineStrong: translucent(fg, 14),
+    // Lines stay quiet but readable; control boundaries reach 3:1 on fields
+    // and panels, as in the light palette.
+    border: mix(bg, fg, 0.24),
+    controlBorder: mix(bg, fg, 0.51),
+    divider: translucent(fg, 8),
+    hairline: translucent(fg, 12),
+    hairlineStrong: translucent(fg, 18),
     input: mix(bg, fg, 0.08),
     hover: mix(bg, fg, 0.14),
     selected: mix(bg, fg, 0.17),
@@ -180,8 +182,10 @@ export function deriveChrome(t: TerminalPalette, appearance: Theme["appearance"]
     inactiveOverlay: "rgb(0 0 0 / 26%)",
     focusOverlay: "rgb(27 36 52 / 30%)",
     text: fg,
-    muted: mix(fg, bg, 0.45),
-    accent: "#454a54",
+    // Secondary text keeps 4.5:1 even on a hovered row; the neutral button
+    // fill separates from panels at 3:1 with white text above 6:1.
+    muted: mix(fg, bg, 0.27),
+    accent: "#5f636c",
     accentText: "#ffffff",
     success: t.green,
     warning: t.yellow,

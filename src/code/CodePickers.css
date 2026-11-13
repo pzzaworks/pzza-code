@@ -1,0 +1,106 @@
+/* The editor's pickers (Quick Open, project search, symbol outline): a menu
+   surface (glass in semi-transparent mode, like every .menu) floating at the
+   top of the editor's body, with command palette rows. */
+
+.tile-code > .code-split { position: relative; }
+
+.menu.code-picker {
+  top: 8px;
+  right: 0;
+  left: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  width: min(560px, calc(100% - 16px));
+  max-height: min(440px, calc(100% - 16px));
+  margin: 0 auto;
+  padding: 0;
+  overflow: hidden;
+  color: var(--text);
+}
+.menu.code-picker.code-picker-search-panel { width: min(680px, calc(100% - 16px)); max-height: min(560px, calc(100% - 16px)); }
+
+.code-picker-search {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px 4px 12px;
+  border-bottom: 1px solid var(--divider);
+  color: var(--muted);
+}
+.code-picker-search-icon { flex: 0 0 auto; }
+.code-picker-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 30px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: var(--fs-md);
+  outline: none;
+}
+.code-picker .code-picker-input:focus-visible { outline: none; }
+.code-picker-input::placeholder { color: var(--muted); }
+.code-picker-toggle { flex: 0 0 auto; }
+.code-picker-toggle:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: -2px; }
+
+.code-picker-status {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  border-bottom: 1px solid var(--divider);
+  color: var(--muted);
+  font-size: var(--fs-sm);
+  overflow-wrap: anywhere;
+}
+.code-picker-error { color: var(--danger-foreground, var(--danger)); }
+
+.code-picker-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 4px; }
+.code-picker-list:empty { display: none; }
+.code-picker .cmdk-row { height: 28px; gap: 8px; }
+.code-picker .cmdk-empty { min-height: 64px; padding: 0 12px; }
+.code-picker-dir { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: var(--fs-sm); }
+.code-picker-dir mark { background: transparent; color: var(--text); font-weight: 600; }
+.code-picker-tag { flex: 0 0 auto; color: var(--muted); font-size: var(--fs-xs); }
+.code-picker-line { flex: 0 0 auto; min-width: 2.5em; color: var(--muted); font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: var(--fs-xs); font-variant-numeric: tabular-nums; text-align: right; }
+
+/* Project search: a quiet heading per file, its matching lines under it. */
+.code-picker-group + .code-picker-group { margin-top: 4px; }
+.code-picker-file {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 24px;
+  padding: 0 10px;
+  border-radius: var(--r-md);
+  color: var(--muted);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+  user-select: none;
+}
+.code-picker-file:hover { background: var(--surface-alt); color: var(--text); }
+.code-picker-file-name { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); font-weight: 600; }
+.code-picker-count { flex: 0 0 auto; margin-left: auto; padding: 0 5px; border-radius: 999px; background: var(--surface-alt); font-size: var(--fs-xs); font-variant-numeric: tabular-nums; }
+.code-picker-match { padding-left: 14px; }
+.code-picker-match .code-picker-line { order: -1; min-width: 3em; }
+.code-picker-text { flex: 1 1 auto; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: var(--fs-sm); white-space: pre; }
+/* A match in a code line reads as a highlighted run, in both themes. */
+.code-picker .code-picker-text mark {
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--accent) 28%, transparent);
+  color: inherit;
+  font-weight: 600;
+  text-decoration: none;
+}
+:root[data-appearance="light"] .code-picker .code-picker-text mark { color: inherit; }
+
+/* Narrow editors keep their file name: the pickers stay on their shortcuts
+   and the command palette. */
+@container code (width <= 520px) {
+  .tile-code-bar > .code-picker-btn { display: none; }
+}

@@ -1,7 +1,7 @@
 import { LiveSessionIcon } from "../ui/LiveSessionIcon";
 import { DeviceIcon } from "../ui/DeviceIcon";
 import { useEffect, useId, useRef, useState } from "react";
-import { Check, ChevronRight, ClipboardPaste, Copy, Eye, EyeOff, GitMerge, GitPullRequestCreateArrow, Loader2, RotateCcw, Save, ShieldCheck, Trash2 } from "lucide-react";
+import { Check, ChevronRight, ClipboardPaste, Copy, Eye, EyeOff, FileText, Folder, GitMerge, GitPullRequestCreateArrow, Loader2, RotateCcw, Save, ShieldCheck, Trash2 } from "lucide-react";
 import { approveWorktreeSetup, fetchGitWorktrees, fetchWorktreeSetup, removeGitWorktree, saveWorktreeSetup, type GitMergeKind, type GitWorktree, type WorktreeSetup } from "../serverApi";
 import { landWorktree, worktreeTask, type LandRequest, type LandResult } from "../worktreeLand";
 import { useTasks } from "../tasks/taskStore";
@@ -11,7 +11,7 @@ import { compactPath } from "../grid/compactPath";
 import { AsyncButton } from "../ui/AsyncButton";
 import { deleteWorkspaceSnapshot, exportWorkspaceSnapshot, importWorkspaceSnapshot, relaunchWorkspaceSnapshot, renameWorkspaceSnapshot, saveWorkspaceSnapshot, snapshotPreview, useWorkspaceSnapshots, type PreviewStatus, type RelaunchResult } from "../state/workspaceSnapshots";
 import type { WorkspaceSnapshot } from "../workspaceSnapshots";
-import { useStore } from "../state/store";
+import { fileTileFolder, isFileTile, isFolderTile, useStore, type Tile } from "../state/store";
 import { Modal } from "../ui/Modal";
 import { sessionDisplayName } from "../sessionMeta";
 import { DEFAULT_WORKSPACE_ID, WORKSPACE_COLORS, wsKeyOf } from "../workspaces";
@@ -142,16 +142,16 @@ export function WorkspaceSettings({ id, close }: { id: string; close: () => void
         ) : (
           <div className="ws-sess-list">
             {sessions.map((t) => {
-              const base = t.session ?? t.name;
+              const file = isFileTile(t);
               const isHidden = hiddenTiles.includes(t.id);
               return (
                 <div key={t.id} className={`ws-sess-row ${isHidden ? "hidden" : ""}`}>
                   <span className="ws-sess-icon">
-                    <LiveSessionIcon session={base} window={t.window} host={t.host} />
+                    {file ? (isFolderTile(t) ? <Folder size={14} aria-hidden="true" /> : <FileText size={14} aria-hidden="true" />) : <LiveSessionIcon session={t.session ?? t.name} window={t.window} host={t.host} />}
                   </span>
                   <span className="ws-sess-name">{sessionDisplayName(t, tileTitles)}</span>
                   <span className="ws-sess-device" title="Running on">
-                    <DeviceIcon host={t.host} size={11} />{deviceNameFor(devices, t.host)}
+                    <DeviceIcon host={file ? undefined : t.host} size={11} />{deviceNameFor(devices, file ? undefined : t.host)}
                   </span>
                   <button
                     className="ws-sess-toggle"
@@ -380,7 +380,8 @@ function SnapshotSection({ workspaceId, workspaceName, hasSessions }: { workspac
 
 // The folder a tile works in: its own absolute cwd, or the connected device's
 // session list for tiles that live there.
-function tileFolder(tile: { host?: string; cwd?: string; session?: string; name: string }, sessionPaths: ReadonlyMap<string, string>): string | undefined {
+function tileFolder(tile: Tile, sessionPaths: ReadonlyMap<string, string>): string | undefined {
+  if (isFileTile(tile)) return fileTileFolder(tile);
   if (tile.cwd?.startsWith("/")) return tile.cwd;
   return tile.host ? undefined : sessionPaths.get(tile.session ?? tile.name);
 }
@@ -418,7 +419,7 @@ function WorktreeSection({ workspaceId, onHandOff }: { workspaceId: string; onHa
   const sessionPaths = new Map(allSessions.flatMap((session) => (session.path ? [[session.name, session.path] as const] : [])));
   const folderOf = (tile: (typeof tiles)[number]) => {
     const folder = tileFolder(tile, sessionPaths);
-    return folder ? { host: tile.host ?? connectionHost, folder } : null;
+    return folder ? { host: (isFileTile(tile) ? undefined : tile.host) ?? connectionHost, folder } : null;
   };
   const sources = [...new Map(tiles
     .filter((tile) => (sessionWs[wsKeyOf(tile)] ?? DEFAULT_WORKSPACE_ID) === workspaceId)

@@ -141,7 +141,12 @@ button {
 }
 /* Tool groups (work tools | status | settings) split by the same short
    divider as a tile header's button groups. */
-.topbar-tools-sep { flex: 0 0 auto; width: 1px; height: 14px; margin: 0 5px; background: var(--border); }
+/* Short group dividers (top bar tools, tile header buttons). A 1px line
+   needs more contrast than a panel border to read at all, more so over glass:
+   in dark mode it sits between the panel border and a control edge. */
+:root { --group-divider: var(--border); }
+:root[data-appearance="dark"] { --group-divider: color-mix(in srgb, var(--control-border) 80%, transparent); }
+.topbar-tools-sep { flex: 0 0 auto; width: 1px; height: 14px; margin: 0 5px; background: var(--group-divider); }
 /* New session keeps the bordered look of a .btn, as an icon-only square. */
 .topbar [data-tour="new-session"] > .icon-btn { width: 30px; height: 30px; margin-left: 4px; border: 1px solid var(--hairline-strong); border-radius: var(--r-md); background: transparent; }
 .topbar [data-tour="new-session"] > .icon-btn:hover:not(:disabled) { border-color: var(--muted); background: var(--surface-alt); }
@@ -945,6 +950,11 @@ button {
 /* One tile maximized: single full-height cell. */
 .grid-full {
   grid-auto-rows: minmax(0, 1fr);
+}
+/* Saved tile sizes: rows have a fixed unit height (set by Canvas from the
+   canvas height), so a resized tile keeps its size instead of stretching. */
+.grid-sized {
+  grid-auto-rows: minmax(150px, var(--row-track, 1fr));
 }
 .grid-full .tile {
   height: 100%;
@@ -3464,7 +3474,7 @@ button.tile-strip-shared:disabled { cursor: default; opacity: 0.7; }
   width: 1px;
   height: 12px;
   transform: translateY(-50%);
-  background: var(--border);
+  background: var(--group-divider);
 }
 /* Tiles you are not working in keep every button, just quieter; a button
    under the pointer, a focused one and a live dictation stay at full strength. */
@@ -5579,8 +5589,13 @@ html[data-transparency="on"] .tile::before {
   z-index: -1;
   border-radius: inherit;
   background: var(--surface);
-  -webkit-backdrop-filter: blur(var(--surface-blur)) saturate(var(--surface-saturation));
-  backdrop-filter: blur(var(--surface-blur)) saturate(var(--surface-saturation));
+  /* WebKit does not re-blur where the WebGL canvas above redrew, which let
+     the sharp content behind show through. Terminal steps --tile-glass-nudge
+     (an imperceptible 0.01px) on each frame its canvas renders, and once more
+     the frame after, so the whole backdrop is recomputed exactly when it can
+     go stale instead of every frame for as long as the terminal draws. */
+  -webkit-backdrop-filter: blur(calc(var(--surface-blur) + var(--tile-glass-nudge, 0px))) saturate(var(--surface-saturation));
+  backdrop-filter: blur(calc(var(--surface-blur) + var(--tile-glass-nudge, 0px))) saturate(var(--surface-saturation));
   pointer-events: none;
 }
 html[data-transparency="on"] .modal-backdrop {
@@ -5728,8 +5743,24 @@ html[data-transparency="on"] .tile-code { background: transparent; }
   -webkit-backdrop-filter: var(--glass-filter);
   backdrop-filter: var(--glass-filter);
 }
+/* The hint is invisible (opacity 0) until hovered, so its blur is only applied
+   while shown: a hidden backdrop-filter still re-blurs whatever redraws behind
+   it. On hide, the filter is held through the 0.12s fade, then dropped. */
 :root[data-transparency="on"] .ft-root-hint {
   background: var(--glass-bg-strong);
+  transition: opacity 0.12s, -webkit-backdrop-filter 0s 0.12s, backdrop-filter 0s 0.12s;
+}
+:root[data-transparency="on"] .ft-root:is(:hover, :focus-visible) .ft-root-hint {
+  -webkit-backdrop-filter: var(--glass-filter);
+  backdrop-filter: var(--glass-filter);
+  transition: opacity 0.12s;
+}
+/* The terminal find bar floats over terminal text: the stronger glass, whose
+   blur keeps the text under it from ghosting through as the solid bar's
+   opacity did in a normal window. */
+:root[data-transparency="on"] .term-find-bar {
+  background: var(--glass-bg-strong);
+  border-color: var(--glass-border);
   -webkit-backdrop-filter: var(--glass-filter);
   backdrop-filter: var(--glass-filter);
 }
@@ -5894,6 +5925,13 @@ input[type="checkbox"]:disabled { opacity: .45; cursor: not-allowed; }
 :root[data-appearance="light"] :is(.segmented-on, .usage-seg > .on, .settings-segment > button[aria-pressed="true"], .code-diff-mode > button.on) { background: var(--input); color: var(--text); font-weight: 600; box-shadow: 0 1px 3px rgb(31 35 40 / 16%), 0 1px 1px rgb(31 35 40 / 8%); }
 /* Meters and progress bars: the unfilled part keeps a quiet, visible tone. */
 :root[data-appearance="light"] :is(.usage-bar, .usage-chip-meter) { background: var(--track); }
+/* Dark: the unfilled part is a translucent shade of the bar it sits on, so
+   it reads darker while glass still shows through, with a faint edge so the
+   fill's share reads at a glance. */
+:root[data-appearance="dark"] :is(.usage-bar, .usage-chip-meter) {
+  background: rgb(0 0 0 / 30%);
+  box-shadow: inset 0 0 0 1px var(--hairline);
+}
 :root[data-appearance="light"] .dictation-download progress { -webkit-appearance: none; appearance: none; border: 0; border-radius: var(--r-xs); overflow: hidden; background: var(--track); }
 :root[data-appearance="light"] .dictation-download progress::-webkit-progress-bar { background: var(--track); }
 :root[data-appearance="light"] .dictation-download progress::-webkit-progress-value { background: var(--accent); }
@@ -6146,24 +6184,19 @@ input[type="range"]:disabled { cursor: not-allowed; }
   :root[data-transparency="on"] .cselect-menu.cselect-menu-list::before,
   :root[data-transparency="on"] .menu.new-workspace-panel::before { animation: menu-in 0.14s ease-out; }
 }
-
-/* A semi-transparent tile re-blurs what is behind it every frame while its
-   terminal draws (Terminal sets data-drawing), the same refresh the glass
-   panels use: WebKit skipped it where the WebGL canvas redrew. */
-@keyframes tile-glass-refresh {
-  from, to {
-    -webkit-backdrop-filter: blur(var(--surface-blur)) saturate(var(--surface-saturation));
-    backdrop-filter: blur(var(--surface-blur)) saturate(var(--surface-saturation));
-  }
-  50% {
-    -webkit-backdrop-filter: blur(calc(var(--surface-blur) + 0.01px)) saturate(var(--surface-saturation));
-    backdrop-filter: blur(calc(var(--surface-blur) + 0.01px)) saturate(var(--surface-saturation));
-  }
-}
-html[data-transparency="on"] .tile:has(.term-surface[data-drawing])::before { animation: tile-glass-refresh 1s linear infinite; }
-@media (prefers-reduced-transparency: reduce) {
-  html[data-transparency="on"] .tile:has(.term-surface[data-drawing])::before { animation: none; }
-}
+/* The refresh only matters while a terminal redraws under the glass
+   (data-any-drawing); otherwise the backdrop is static and the refresh would
+   just make the window re-composite every frame. Only its play state flips
+   (the second animation in each list): changing the animation list would
+   restart the opening animation. Paused, it holds its from keyframe, the
+   glass's own filter. Declared after the rules above so it wins over their
+   shorthands. */
+:root[data-transparency="on"] :is(.menu, .cselect-menu, .modal, .cmdk),
+:root[data-transparency="on"] .cselect-menu.cselect-menu-list::before,
+:root[data-transparency="on"] .menu.new-workspace-panel::before { animation-play-state: running, paused; }
+:root[data-transparency="on"][data-any-drawing] :is(.menu, .cselect-menu, .modal, .cmdk),
+:root[data-transparency="on"][data-any-drawing] .cselect-menu.cselect-menu-list::before,
+:root[data-transparency="on"][data-any-drawing] .menu.new-workspace-panel::before { animation-play-state: running; }
 
 /* Notification rows: the buttons sit in the top-right corner beside the title
    (which keeps room for them), so the text below uses the full width. The

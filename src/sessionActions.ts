@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { useStore } from "./state/store";
+import { isSessionTile, useStore } from "./state/store";
 import { deviceForHost, deviceHost } from "./devices";
 import { ALL_WORKSPACE_ID, DEFAULT_WORKSPACE_ID, wsKeyOf } from "./workspaces";
 import { createSession, type WorktreeSetupReport } from "./serverApi";
@@ -27,6 +27,55 @@ interface Creation {
   id: string; status: "running" | "completed" | "failed"; name: string; host: string; workspaceId: string; tileId?: string;
 }
 export const useSessionCreation = create<{ operation: Creation | null; error: string | null }>(() => ({ operation: null, error: null }));
+
+// The regular session creation runs one at a time; a session the user is
+// creating meanwhile is waited for instead of failing the caller.
+export function creationIdle(): Promise<void> {
+  if (useSessionCreation.getState().operation?.status !== "running") return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => { stop(); reject(new Error("Another session took too long to start.")); }, 120000);
+    const stop = useSessionCreation.subscribe((state) => {
+      if (state.operation?.status === "running") return;
+      clearTimeout(timer);
+      stop();
+      resolve();
+    });
+  });
+}
+
+// Programmatic launches (tasks, chains, retries, file tiles opening a terminal)
+// run one after another: createSessionInApp refuses a second creation while
+// one runs. Any number of launches can wait here; none is dropped.
+let launches: Promise<unknown> = Promise.resolve();
+export function enqueueLaunch<T>(work: () => Promise<T>): Promise<T> {
+  const run = launches.then(work, work);
+  launches = run.catch(() => undefined);
+  return run;
+}
+
+/** A valid session name built from free text (a file or session name), with room left for a suffix. */
+export function sessionNameBase(text: string, fallback = "session"): string {
+  return text.replace(/[^A-Za-z0-9_ -]+/g, "-").replace(/^[\s-]+|[\s-]+$/g, "").slice(0, 100) || fallback;
+}
+
+/** `base`, or the first `base-N` (N from 2) that is not taken. */
+export function uniqueSessionName(base: string, taken: ReadonlySet<string>): string {
+  if (!taken.has(base)) return base;
+  for (let suffix = 2; suffix < 1000; suffix++) {
+    const name = `${base}-${suffix}`;
+    if (!taken.has(name)) return name;
+  }
+  return `${base}-${Date.now().toString(36)}`;
+}
+
+/** Session names already in use on a device ("" = this device): its open tiles, and this device's listed sessions. */
+export function takenSessionNames(host: string): Set<string> {
+  const state = useStore.getState();
+  return new Set([
+    ...state.tiles.filter(isSessionTile).filter(tile => (tile.host ?? "") === host).map(tile => tile.session ?? tile.name),
+    ...(host ? [] : state.allSessions.map(item => item.name)),
+  ]);
+}
 
 export function createSessionInApp(input: SessionCreationInput, created?: (details: SessionCreated) => void): Promise<string> {
   const state = useStore.getState();
@@ -106,12 +155,8 @@ export async function moveAgentToWorktree(input: { tileId: string; session: stri
   });
   if (!accepted) return null;
 
-  const base = input.session.replace(/[^A-Za-z0-9_ -]+/g, "-").replace(/^[\s-]+|[\s-]+$/g, "").slice(0, 100) || "session";
-  const host = deviceHost(device);
-  const taken = new Set([
-    ...useStore.getState().tiles.filter(tile => (tile.host ?? "") === (input.host ?? "")).map(tile => tile.session ?? tile.name),
-    ...(host ? [] : useStore.getState().allSessions.map(item => item.name)),
-  ]);
+  const base = sessionNameBase(input.session);
+  const taken = takenSessionNames(deviceHost(device));
   const workspaceId = useStore.getState().sessionWs[wsKeyOf(source)] ?? DEFAULT_WORKSPACE_ID;
   // A worktree left behind by an earlier session keeps its name; the next free suffix is tried instead.
   for (let attempt = 1, tried = 0; tried < 5; attempt++) {

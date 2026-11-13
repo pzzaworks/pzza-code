@@ -1,5 +1,6 @@
 import { useCallback, useSyncExternalStore } from "react";
-import { fetchSessionActivity, type SessionActivity } from "../serverApi";
+import type { SessionActivity } from "../serverApi";
+import { readSessionActivity } from "../terminal/sessionActivityCache";
 import { HAS_TAURI } from "../tauriEnv";
 import { useStore } from "../state/store";
 import { sessionIcon, iconColor, sessionIconTooltip, launcherAgent } from "../sessionMeta";
@@ -10,6 +11,8 @@ import { sessionAgent, type SessionAgentId } from "../../server/lib/session-agen
 // autosave still read these rows) and refreshes as soon as it is shown again.
 const POLL_MS = 3000;
 const HIDDEN_POLL_MS = 30000;
+// A reading this young, taken for another caller, serves a poll as well.
+const SHARE_MS = 1000;
 
 interface DeviceActivity {
   rows: SessionActivity[] | null;
@@ -45,7 +48,8 @@ function subscribe(host: string | undefined, listener: () => void): () => void {
     const refresh = async () => {
       const previous = device.rows;
       try {
-        const rows = await fetchSessionActivity(host, device.controller.signal);
+        // Reuses a reading another feature (a foreground check) just took.
+        const rows = await readSessionActivity(host, { maxAge: SHARE_MS, signal: device.controller.signal });
         if (!device.controller.signal.aborted) device.rows = reuseActivityRows(device.rows, rows);
       } catch {
         if (!device.controller.signal.aborted) device.rows = null;

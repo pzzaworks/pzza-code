@@ -2,7 +2,7 @@ import { LiveSessionIcon } from "../ui/LiveSessionIcon";
 import { DeviceIcon } from "../ui/DeviceIcon";
 import { useEffect, useId, useRef, useState } from "react";
 import { ChevronRight, CornerDownLeft, Eye, FilePen, GitBranch, History, LayoutGrid, ListChecks, ShieldCheck, ShieldOff, Sparkles, SquareTerminal, UserRound, X, type LucideIcon } from "lucide-react";
-import { useStore } from "../state/store";
+import { fileTileFolder, isFileTile, isSessionTile, useStore } from "../state/store";
 import { tileTitle, sessionDisplayName } from "../sessionMeta";
 import { Select } from "../ui/Select";
 import { HAS_TAURI } from "../tauriEnv";
@@ -174,7 +174,9 @@ export function SessionMenu({ close }: { close: () => void }) {
   // One-click folders: the active tile's folder when it lives on the selected
   // device, then this device's recent session folders.
   const activeTile = tiles.find((t) => t.id === activeId);
-  const activeFolder = activeTile && (activeTile.host ?? "") === host
+  // A file tile's folder is the one holding its file, on this device.
+  const activeFolder = activeTile && isFileTile(activeTile) ? (host ? undefined : fileTileFolder(activeTile))
+    : activeTile && (activeTile.host ?? "") === host
     ? activeTile.path ?? allSessions.find((s) => s.name === (activeTile.session ?? activeTile.name))?.path ?? activeTile.cwd
     : undefined;
   const folderShortcuts = [
@@ -238,7 +240,7 @@ export function SessionMenu({ close }: { close: () => void }) {
     }, tileTitles);
 
   const isWindowOpen = (w: (typeof allWindows)[number]) =>
-    tiles.some(
+    tiles.filter(isSessionTile).some(
       (t) =>
         !t.host && ((t.session === w.session && t.window === w.window) ||
         (t.id === w.session && w.active)),

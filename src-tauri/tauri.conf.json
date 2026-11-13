@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "PzzaCode",
-  "version": "0.2.73",
+  "version": "0.2.74",
   "identifier": "com.pzzacode.app",
   "build": {
     "beforeDevCommand": "npm run fetch:onnxruntime && npm run build:mcp && npm run dev",
@@ -61,7 +61,51 @@
       "frameworks": ["./frameworks/libonnxruntime.1.dylib"],
       "entitlements": "./Entitlements.plist"
     },
-    "createUpdaterArtifacts": true
+    "createUpdaterArtifacts": true,
+    "fileAssociations": [
+      { "name": "Plain Text", "ext": ["txt"], "role": "Editor", "rank": "Alternate" },
+      { "name": "JSON", "ext": ["json"], "role": "Editor", "rank": "Alternate" },
+      { "name": "XML", "ext": ["xml"], "role": "Editor", "rank": "Alternate" },
+      { "name": "HTML", "ext": ["html", "htm"], "role": "Editor", "rank": "Alternate" },
+      {
+        "name": "Source Code",
+        "ext": [
+          "ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs",
+          "py", "pyi", "rb", "go", "rs", "java", "kt", "kts", "swift",
+          "c", "h", "cc", "cpp", "cxx", "hh", "hpp", "hxx", "m", "mm", "cs",
+          "php", "sh", "bash", "zsh", "fish", "lua", "dart", "scala",
+          "ex", "exs", "erl", "hrl", "hs", "clj", "cljs", "r", "pl", "pm",
+          "vue", "svelte", "astro", "sql", "graphql", "gql", "gradle", "groovy",
+          "zig", "jl", "tf", "proto"
+        ],
+        "role": "Editor",
+        "rank": "Alternate"
+      },
+      {
+        "name": "Stylesheet",
+        "ext": ["css", "scss", "sass", "less"],
+        "role": "Editor",
+        "rank": "Alternate"
+      },
+      {
+        "name": "Markdown",
+        "ext": ["md", "mdx", "markdown", "rst", "adoc"],
+        "role": "Editor",
+        "rank": "Alternate"
+      },
+      {
+        "name": "Configuration",
+        "ext": ["jsonc", "json5", "yaml", "yml", "toml", "ini", "cfg", "conf", "env", "properties", "lock"],
+        "role": "Editor",
+        "rank": "Alternate"
+      },
+      {
+        "name": "Text Data",
+        "ext": ["log", "csv", "tsv", "diff", "patch"],
+        "role": "Editor",
+        "rank": "Alternate"
+      }
+    ]
   },
   "plugins": {
     "updater": {

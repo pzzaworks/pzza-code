@@ -27,10 +27,12 @@ export function tileTitle(name: string): string {
 // terminate, and assign sessions. Window overrides take precedence over the
 // parent session's name.
 export function sessionDisplayName(
-  tile: { id: string; name: string; session?: string; host?: string; window?: number },
+  tile: { kind?: "file"; id: string; name: string; session?: string; host?: string; window?: number },
   titles: Readonly<Record<string, string>>,
 ): string {
   if (titles[tile.id]) return titles[tile.id];
+  // A file tile is named by its file, exactly as written.
+  if (tile.kind === "file") return tile.name;
   const fallback = tileTitle(tile.name);
   if (tile.session && tile.window !== undefined) {
     const parentId = (tile.host ? `${tile.host}::` : "") + tile.session;
