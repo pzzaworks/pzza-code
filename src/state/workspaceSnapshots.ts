@@ -4,7 +4,7 @@ import { useDetectedAgents, useSessionAgents } from "./sessionAgents";
 import { createSessionInApp } from "../sessionActions";
 import { runLocalAppCommand } from "../appControl";
 import { fetchGitStatus } from "../serverApi";
-import { agentCanAutoResume, sessionAgent, sessionAgentCommand, type SessionAgentChoice } from "../../server/lib/session-agents.js";
+import { agentCanContinue, sessionAgent, sessionAgentCommand, type SessionAgentChoice } from "../../server/lib/session-agents.js";
 import { runningAgent, sessionAtShell } from "../ui/LiveSessionIcon";
 import { DEFAULT_WORKSPACE_ID, wsKeyOf } from "../workspaces";
 import { localSessionWorkRunning } from "./localSessionWork";
@@ -312,7 +312,10 @@ export async function relaunchWorkspaceSnapshot(id: string, options: { continueC
     // Only an agent whose "last conversation" is per folder continues; one whose
     // last conversation may come from another folder (or that cannot continue
     // from the command line) starts fresh in its recorded mode.
-    const agentOf = (entry: SnapshotSession) => (entry.agent && options.continueChats && agentCanAutoResume(sessionAgent(entry.agent.id)) ? { ...entry.agent, resume: true } : entry.agent);
+    // Only an agent that continues its folder's last conversation by itself: one
+    // resumed by id needs a refresh's lookup of that id, so it starts afresh.
+    const continues = (agent: ReturnType<typeof sessionAgent>) => agentCanContinue(agent) && agent?.resume.scope === "directory";
+    const agentOf = (entry: SnapshotSession) => (entry.agent && options.continueChats && continues(sessionAgent(entry.agent.id)) ? { ...entry.agent, resume: true } : entry.agent);
     for (const entry of launch) {
       const device = snapshotDevice(entry, useStore.getState().activeDevices);
       if (!device) {

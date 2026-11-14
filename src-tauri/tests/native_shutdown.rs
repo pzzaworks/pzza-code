@@ -4,6 +4,9 @@
 #[path = "../src/agent_catalog.rs"]
 mod agent_catalog;
 #[cfg(target_os = "macos")]
+#[path = "../src/agent_sessions.rs"]
+mod agent_sessions;
+#[cfg(target_os = "macos")]
 #[path = "../src/agent.rs"]
 mod agent;
 #[cfg(target_os = "macos")]

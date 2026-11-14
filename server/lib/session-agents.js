@@ -15,7 +15,10 @@
 //   settings may allow more. An agent with no asking mode at all (Amp) is
 //   tagged for what it does, so the app warns before starting it.
 // - resume: how the last conversation continues and how wide "last" reaches.
-//   Only `continue-last` with `directory` scope is resumed automatically.
+//   Resumed automatically: `continue-last` with `directory` scope, and
+//   `by-id` with a `lookup`: the restore reads the id of the conversation a
+//   pane's folder last ran from the agent's own store (agent_sessions.rs) and
+//   puts it in place of RESUME_SESSION.
 // - prompt: how a starting prompt is passed (`arg`, `flag` or `none`).
 // - detect: process rules for spotting the agent in a terminal (see
 //   matchAgentProcess); `programs` are names tmux shows as the pane command.
@@ -213,8 +216,10 @@ export const SESSION_AGENTS = [
       mode("allowTools", "Allow all tools", "Runs every tool without asking", ["--allow-all-tools"], BYPASS),
       mode("yolo", "YOLO", "Allows all tools, paths and URLs", ["--yolo"], BYPASS),
     ],
-    // `--continue` falls back to the newest session from any folder.
-    resume: { kind: "continue-last", scope: "global", args: ["--continue"] },
+    // `--continue` resumes the newest session in this folder (since 1.0.35;
+    // the newest anywhere only when this folder has none, which a pane that
+    // ran Copilot here never lacks).
+    resume: { kind: "continue-last", scope: "directory", args: ["--continue"] },
     prompt: { style: "flag", flag: "-i" },
     install: [
       { method: "brew", command: "brew install copilot-cli" },
@@ -267,7 +272,9 @@ export const SESSION_AGENTS = [
       mode("plan", "Plan", "Plans first, asks before acting", ["--auto-approve", "false", "-p"], RESTRICTED),
       mode("yolo", "YOLO", "Approves every action", ["-y"], BYPASS),
     ],
-    resume: { kind: "by-id", scope: "global", args: ["--id"] },
+    // `--id <session>`; the session that ran in a folder is read from Cline's
+    // own session store (agent_sessions.rs).
+    resume: { kind: "by-id", scope: "global", args: ["--id"], lookup: "cline" },
     // A bare prompt runs headless and exits; -i keeps the session open.
     prompt: { style: "flag", flag: "-i" },
     install: [{ method: "npm", command: "npm install -g cline" }],
@@ -294,8 +301,10 @@ export const SESSION_AGENTS = [
       mode("chat", "Chat only", "No tools or file changes", [], RESTRICTED, { GOOSE_MODE: "chat" }),
       mode("auto", "Auto", "Approves every action", [], BYPASS, { GOOSE_MODE: "auto" }),
     ],
-    // `goose session --resume` takes the newest session from any folder.
-    resume: { kind: "continue-last", scope: "global", args: ["--resume"] },
+    // A bare `goose session --resume` takes the newest session from any
+    // folder, so the session that ran in a folder is read from goose's own
+    // session store and resumed by id (agent_sessions.rs).
+    resume: { kind: "by-id", scope: "global", args: ["--resume", "--session-id"], lookup: "goose" },
     prompt: { style: "flag", flag: "-t", baseArgs: ["run", "-s"] },
     install: [
       { method: "brew", command: "brew install block-goose-cli" },
@@ -532,7 +541,8 @@ export const SESSION_AGENTS = [
       mode("plan", "Plan", "Reads and plans only", ["--permission-mode", "plan"], RESTRICTED),
       mode("bypass", "Bypass", "Skips permission checks", ["-y"], BYPASS),
     ],
-    resume: { kind: "continue-last", scope: "global", args: ["-c"] },
+    // `-c` loads the most recent conversation in the current directory.
+    resume: { kind: "continue-last", scope: "directory", args: ["-c"] },
     prompt: { style: "arg" },
     install: [
       { method: "npm", command: "npm install -g @tencent-ai/codebuddy-code" },
@@ -713,7 +723,9 @@ export const SESSION_AGENTS = [
       mode("acceptEdits", "Accept edits", "Edits files without asking", ["--permission-mode", "acceptEdits"], AUTO),
       mode("yolo", "Unrestricted", "Approves every action", ["--yolo"], BYPASS),
     ],
-    resume: { kind: "continue-last", scope: "account", args: [] },
+    // Plain `letta` restores the agent and conversation last used in the
+    // current directory (kept in <cwd>/.letta/settings.local.json).
+    resume: { kind: "continue-last", scope: "directory", args: [] },
     prompt: { style: "none" },
     install: [{ method: "npm", command: "npm install -g @letta-ai/letta-code" }],
     detect: {
@@ -736,7 +748,8 @@ export const SESSION_AGENTS = [
       mode("acceptEdits", "Accept edits", "Edits files without asking", ["--permission-mode", "accept_edits"], AUTO),
       mode("bypass", "YOLO", "Skips permission checks", ["--yolo"], BYPASS),
     ],
-    resume: { kind: "continue-last", scope: "global", args: ["-c"] },
+    // `-c` continues the most recent session for the current project.
+    resume: { kind: "continue-last", scope: "directory", args: ["-c"] },
     prompt: { style: "flag", flag: "-i" },
     install: [{ method: "npm", command: "npm install -g @qoder-ai/qodercli" }],
     detect: {
@@ -759,7 +772,9 @@ export const SESSION_AGENTS = [
       mode("sage", "Sage (research)", "Reads and answers, no changes", ["--agent", "sage"], RESTRICTED),
       mode("forge", "Forge", "Edits and runs commands, never asks", ["--agent", "forge"], BYPASS),
     ],
-    resume: { kind: "by-id", scope: "global", args: ["--conversation-id"] },
+    // The newest conversation of a folder is the first one
+    // `forge conversation list --porcelain` lists there (agent_sessions.rs).
+    resume: { kind: "by-id", scope: "global", args: ["--conversation-id"], lookup: "forge" },
     prompt: { style: "none" },
     install: [
       { method: "curl", command: "curl -fsSL https://forgecode.dev/cli | sh" },
@@ -842,12 +857,21 @@ export function agentCanContinue(agent) {
 
 /**
  * Whether a restarted terminal can continue the agent's conversation by itself:
- * only when "last" means the last one in that folder, so a restore never picks
- * up a conversation from somewhere else.
+ * only when "last" means the last one in that folder, or when the restore can
+ * read which conversation the folder ran (a `lookup`), so a restore never
+ * picks up a conversation from somewhere else.
  */
 export function agentCanAutoResume(agent) {
-  return agent?.resume.kind === "continue-last" && agent.resume.scope === "directory";
+  return (agent?.resume.kind === "continue-last" && agent.resume.scope === "directory")
+    || (agent?.resume.kind === "by-id" && typeof agent.resume.lookup === "string");
 }
+
+/**
+ * Stands for the conversation id in the resume command of a `by-id` agent;
+ * the restore puts the id it read in its place. Plain shell characters, so it
+ * is typed (and matched) as is.
+ */
+export const RESUME_SESSION = "@SESSION@";
 
 /** Whether the agent accepts a starting prompt on its command line. */
 export function agentTakesPrompt(agent) {
@@ -873,9 +897,11 @@ export function validSessionPrompt(value) {
 
 /**
  * The launch for a catalog choice as environment entries and argv, before shell
- * quoting. Throws for anything outside the catalog.
+ * quoting. Throws for anything outside the catalog. `restore` (never part of
+ * a request) lets a resume-by-id agent continue too: only the restore reads
+ * the id that takes RESUME_SESSION's place.
  */
-export function sessionAgentLaunch(value) {
+export function sessionAgentLaunch(value, restore = false) {
   if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).some(key => !["id", "mode", "resume", "prompt", "account"].includes(key))) {
     throw new Error("Choose a supported agent.");
   }
@@ -884,7 +910,7 @@ export function sessionAgentLaunch(value) {
   if (!agent || !selected) throw new Error("Choose a supported agent and mode.");
   if (value.account !== undefined && !validAgentAccount(agent, value.account)) throw new Error(`Choose a valid ${agent.label} account folder.`);
   if (value.resume !== undefined && typeof value.resume !== "boolean") throw new Error("Choose whether to continue the last conversation.");
-  if (value.resume && !agentCanContinue(agent)) throw new Error(`${agent.label} cannot continue its last conversation from the command line.`);
+  if (value.resume && !agentCanContinue(agent) && !(restore && agent.resume.lookup)) throw new Error(`${agent.label} cannot continue its last conversation from the command line.`);
   if (value.prompt !== undefined) {
     if (!agentTakesPrompt(agent)) throw new Error(`${agent.label} does not take a starting prompt.`);
     const promptError = sessionPromptError(value.prompt);
@@ -898,7 +924,8 @@ export function sessionAgentLaunch(value) {
       : [...(agent.prompt.separator ? [agent.prompt.separator] : []), value.prompt.trim()];
   return {
     env: [...(value.account !== undefined ? [[agent.account.env, value.account]] : []), ...Object.entries(selected.env ?? {})],
-    argv: [agent.command, ...base, ...(value.resume ? agent.resume.args : agent.freshArgs), ...selected.args, ...prompt],
+    argv: [agent.command, ...base, ...(value.resume ? agent.resume.args : agent.freshArgs),
+      ...(value.resume && agent.resume.kind === "by-id" ? [RESUME_SESSION] : []), ...selected.args, ...prompt],
   };
 }
 
@@ -959,8 +986,8 @@ export function agentModeRules() {
 
 // Returns the shell line typed into the new session, or throws for anything
 // outside the catalog. Every token except the quoted prompt is a fixed literal.
-export function sessionAgentCommand(value) {
-  const { env, argv } = sessionAgentLaunch(value);
+export function sessionAgentCommand(value, restore = false) {
+  const { env, argv } = sessionAgentLaunch(value, restore);
   const words = argv.map(shellWord);
   return env.length ? ["env", ...env.map(([key, item]) => shellWord(`${key}=${item}`)), ...words].join(" ") : words.join(" ");
 }
@@ -980,7 +1007,7 @@ export function sessionAgentResumeCommand(id, recorded) {
   const same = recorded?.id === agent.id;
   const selected = same && agent.modes.some(item => item.id === recorded.mode) ? recorded.mode : agent.defaultMode;
   const account = same && validAgentAccount(agent, recorded.account) ? { account: recorded.account } : {};
-  return sessionAgentCommand({ id: agent.id, mode: selected, resume: true, ...account });
+  return sessionAgentCommand({ id: agent.id, mode: selected, resume: true, ...account }, true);
 }
 
 /**
@@ -992,10 +1019,11 @@ export function sessionAgentResumeCommand(id, recorded) {
 export function sessionAgentResumeAllowlist() {
   return SESSION_AGENTS.filter(agentCanAutoResume).flatMap(agent => agent.modes.map(item => ({
     agent: agent.id,
-    command: sessionAgentCommand({ id: agent.id, mode: item.id, resume: true }),
+    command: sessionAgentCommand({ id: agent.id, mode: item.id, resume: true }, true),
     programs: [...agent.detect.programs],
     versionProgram: agent.detect.versionProgram === true,
     account: agent.account ? { ...agent.account } : null,
+    lookup: agent.resume.kind === "by-id" ? agent.resume.lookup : null,
   })));
 }
 

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { build } from "esbuild";
 
 const built = await build({ entryPoints: ["src/terminal/dictationComposition.ts"], bundle: true, write: false, format: "esm", platform: "node", logLevel: "silent", external: ["@xterm/xterm"] });
-const { pendingColor, separatedFromCaret } = await import(`data:text/javascript;base64,${Buffer.from(built.outputFiles[0].text).toString("base64")}`);
+const { commonPrefixLength, pendingColor, separatedFromCaret } = await import(`data:text/javascript;base64,${Buffer.from(built.outputFiles[0].text).toString("base64")}`);
 
 test("pending dictation words are drawn in the terminal foreground, dimmed", () => {
   assert.equal(pendingColor("#ffffff"), "rgba(255, 255, 255, 0.55)");
@@ -22,13 +22,22 @@ const buffer = (line, column) => ({
 });
 
 test("dictated words after a word start with a space instead of running into it", () => {
-  assert.equal(separatedFromCaret(buffer("> Bu ve", 7), "üst kısmında"), " üst kısmında");
+  assert.equal(separatedFromCaret(buffer("> Open the", 10), "settings page"), " settings page");
   // After a space, at the line start, after the prompt's space, or text that brings its own: as is.
-  assert.equal(separatedFromCaret(buffer("> Bu ve ", 8), "üst"), "üst");
-  assert.equal(separatedFromCaret(buffer("", 0), "üst"), "üst");
-  assert.equal(separatedFromCaret(buffer("> ", 2), "üst"), "üst");
-  assert.equal(separatedFromCaret(buffer("> Bu ve", 7), " sonra"), " sonra");
-  assert.equal(separatedFromCaret(buffer("> Bu ve", 7), ""), "");
+  assert.equal(separatedFromCaret(buffer("> Open the ", 11), "menu"), "menu");
+  assert.equal(separatedFromCaret(buffer("", 0), "menu"), "menu");
+  assert.equal(separatedFromCaret(buffer("> ", 2), "menu"), "menu");
+  assert.equal(separatedFromCaret(buffer("> Open the", 10), " menu"), " menu");
+  assert.equal(separatedFromCaret(buffer("> Open the", 10), ""), "");
   // An empty cell before the caret (nothing written there) is not a word.
-  assert.equal(separatedFromCaret(buffer("> Bu", 6), "ve"), "ve");
+  assert.equal(separatedFromCaret(buffer("> Open", 8), "menu"), "menu");
+});
+
+test("only the text that changed since the last render counts as new", () => {
+  assert.equal(commonPrefixLength("Listening", "Transcribing"), 0);
+  assert.equal(commonPrefixLength("open the menu ", "open the menu and the bar "), 14);
+  assert.equal(commonPrefixLength("", "new"), 0);
+  assert.equal(commonPrefixLength("café", "café"), 4);
+  // Characters, not UTF-16 units: an emoji counts once.
+  assert.equal(commonPrefixLength("ok 👍 done", "ok 👍 next"), 5);
 });

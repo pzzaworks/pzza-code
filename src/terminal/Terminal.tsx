@@ -1091,14 +1091,14 @@ function TerminalView({ tileId, name, host, cmd, args, cwd, window: win, active,
           markPainted();
           unregisterDictation = registerDictationTarget(tileId, {
             focus: () => { if (current() && tauriId !== null) term.focus(); },
-            preview: text => { composition.suspend(!activeRef.current || !document.hasFocus()); composition.preview(text); },
+            preview: (status, activity) => { composition.suspend(!activeRef.current || !document.hasFocus()); composition.preview(status, activity); },
             clearPreview: composition.clear,
             // A prompt the watcher flagged, or one on screen it has not confirmed yet.
             awaitingApproval: () => hasPendingPermission(tileId) || detectPermissionPrompt(visibleScreen()) !== null,
             insert: async text => {
               if (!current() || tauriId === null || !attachmentReady) return false;
               const previousWrite = lastWrite;
-              composition.beginConfirmedWrite();
+              composition.beginConfirmedWrite(text);
               term.paste(separatedFromCaret(term.buffer.active, text));
               if (lastWrite === previousWrite) return false;
               await lastWrite;

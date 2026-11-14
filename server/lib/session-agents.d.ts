@@ -17,11 +17,13 @@ export interface SessionAgentMode {
 }
 
 export interface SessionAgentResume {
-  /** continue-last: a flag or subcommand continues the newest conversation; by-id: only with an id the app does not track. */
+  /** continue-last: a flag or subcommand continues the newest conversation; by-id: only with the conversation's id. */
   kind: "none" | "continue-last" | "by-id";
-  /** How far "newest" reaches. Only directory scope is resumed automatically. */
+  /** How far "newest" reaches. Directory scope is resumed automatically. */
   scope: "directory" | "global" | "account";
   args: readonly string[];
+  /** by-id: where the restore reads the id a folder last ran (agent_sessions.rs). */
+  lookup?: "cline" | "goose" | "forge";
 }
 
 export interface SessionAgentPrompt {
@@ -127,6 +129,7 @@ export interface SessionAgentResumeEntry {
   programs: string[];
   versionProgram: boolean;
   account: SessionAgentAccount | null;
+  lookup: string | null;
 }
 
 export interface AgentModeRule {
@@ -175,11 +178,12 @@ export function defaultSessionAgentMode(agent: SessionAgentDefinition): SessionA
 export function sessionAgentMode(agent: SessionAgentDefinition, modeId: unknown): SessionAgentMode;
 export function agentCanContinue(agent: SessionAgentDefinition | undefined): boolean;
 export function agentCanAutoResume(agent: SessionAgentDefinition | undefined): boolean;
+export const RESUME_SESSION: string;
 export function agentTakesPrompt(agent: SessionAgentDefinition | undefined): boolean;
 export function sessionPromptError(value: unknown): string | null;
 export function validSessionPrompt(value: unknown): boolean;
-export function sessionAgentLaunch(value: unknown): SessionAgentLaunch;
-export function sessionAgentCommand(value: unknown): string;
+export function sessionAgentLaunch(value: unknown, restore?: boolean): SessionAgentLaunch;
+export function sessionAgentCommand(value: unknown, restore?: boolean): string;
 export function sessionAgentResumeCommand(id: unknown, recorded?: Pick<SessionAgentChoice, "id" | "mode" | "account">): string | null;
 export const AGENT_ACCOUNT_MAX_LENGTH: number;
 export function validAgentAccount(agent: SessionAgentDefinition | undefined, value: unknown): value is string;
