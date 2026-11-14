@@ -92,6 +92,9 @@ pub struct CatalogResume {
     pub version_program: bool,
     /// The agent can run with another config folder (see CatalogAccount).
     pub account: Option<CatalogAccount>,
+    /// Resumed by id: the store the id a folder last ran is read from
+    /// (agent_sessions.rs); the command holds agent_sessions::PLACEHOLDER.
+    pub lookup: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -164,7 +167,19 @@ mod tests {
         assert!(catalog.agents.len() >= 29);
         assert!(resume_entry("claude -c --permission-mode manual").is_some_and(|entry| entry.version_program));
         assert!(resume_entry("claude -c").is_none(), "plain claude starts in auto mode, so it is never resumed that way");
-        assert!(catalog.resume.iter().all(|entry| !entry.programs.is_empty()));
+        // Only an agent whose name other tools share (goose, forge) has no
+        // program names: it resumes where detection saw it, never by a name.
+        assert!(catalog.resume.iter().all(|entry| !entry.programs.is_empty() || entry.lookup.is_some()));
+        // Agents resumed by id: their template holds the placeholder.
+        let goose = resume_entry("env GOOSE_MODE=approve goose session --resume --session-id @SESSION@").expect("goose resumes by id");
+        assert_eq!(goose.lookup.as_deref(), Some("goose"));
+        assert!(resume_entry("cline --id @SESSION@ --auto-approve false").is_some_and(|entry| entry.lookup.as_deref() == Some("cline")));
+        assert!(resume_entry("forge --conversation-id @SESSION@ --agent sage").is_some_and(|entry| entry.lookup.as_deref() == Some("forge")));
+        assert!(resume_entry("cline --id 1794686844123_a9z0k --auto-approve false").is_none(), "an id is put in only when typing");
+        // Agents that now continue their folder's last conversation.
+        for command in ["copilot --continue", "codebuddy -c --permission-mode default", "letta --permission-mode standard", "qodercli -c --permission-mode default"] {
+            assert!(resume_entry(command).is_some(), "{command}");
+        }
     }
 
     #[test]

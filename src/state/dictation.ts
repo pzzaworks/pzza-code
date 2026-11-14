@@ -132,8 +132,9 @@ function savedInputDevice(): InputDeviceSelection | null {
 interface TranscriptTarget {
   insert: (text: string) => boolean | Promise<boolean>;
   focus: () => void;
-  // `activity` animates dots after the words: speech is heard, or the final pass runs.
-  preview: (text: string, activity?: PreviewActivity | null) => void;
+  // `status` is the ghost text at the caret (see dictationPreview); `activity`
+  // says which: speech is heard, or a phrase is being written.
+  preview: (status: string, activity: PreviewActivity) => void;
   clearPreview: () => void;
   /**
    * Whether the target waits on an approval prompt. Words typed there would
@@ -179,16 +180,21 @@ export function dictationPendingText(preview: string, committed: string): string
 }
 
 export type PreviewActivity = "listening" | "finishing";
+/** The ghost status shown at the caret for each activity. */
+export const PREVIEW_STATUS: Record<PreviewActivity, string> = { listening: "Listening", finishing: "Transcribing" };
 /**
- * What the caret shows for a recording: the pending words and an activity
- * indicator. Speech gets the indicator at once, before its words are
- * recognized; after Stop only the indicator remains (the final pass may
- * revise the pending words) until the final text is typed.
+ * What the caret shows for a recording: a ghost status, never the words
+ * being recognized. Each phrase is read whole once the speaker pauses, so
+ * words guessed mid-phrase would only be replaced; the caret shows that
+ * speech is heard, then that its phrase is being written, and the text
+ * appears once, when it is typed.
  */
-export function dictationPreview(recording: Pick<Recording, "phase" | "text" | "voice">, delivered: string): { text: string; activity: PreviewActivity | null } | null {
-  if (recording.phase === "finalizing") return { text: "", activity: "finishing" };
+export function dictationPreview(recording: Pick<Recording, "phase" | "text" | "voice">, delivered: string): { text: string; activity: PreviewActivity } | null {
+  if (recording.phase === "finalizing") return { text: PREVIEW_STATUS.finishing, activity: "finishing" };
   if (recording.phase !== "listening") return null;
-  return { text: dictationPendingText(recording.text, delivered), activity: recording.voice ? "listening" : null };
+  if (recording.voice) return { text: PREVIEW_STATUS.listening, activity: "listening" };
+  // Speech has paused with words not typed yet: their phrase is being read.
+  return dictationPendingText(recording.text, delivered) ? { text: PREVIEW_STATUS.finishing, activity: "finishing" } : null;
 }
 
 function renderPreview(id: string) {

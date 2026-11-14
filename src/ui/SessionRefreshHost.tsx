@@ -10,8 +10,8 @@ const OK_NOTICE_MS = 6000;
 /**
  * The non-blocking notice for local session refreshes and restores, wherever
  * they were started. It also reads permissions once after launch, so a grant
- * that needed a relaunch still refreshes the terminals, and says when the
- * terminals still run the version installed before an update.
+ * that needed a relaunch still refreshes the terminals, and moves the
+ * terminals onto this version after an update.
  */
 export function SessionRefreshHost() {
   const running = useSessionRefresh(state => state.running);

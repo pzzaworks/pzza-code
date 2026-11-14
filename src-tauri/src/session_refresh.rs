@@ -659,6 +659,8 @@ pub struct AgentTarget {
     // The saved pane it replaces.
     pane: String,
     command: String,
+    // The pane's folder, where a resume-by-id agent's conversation is looked up.
+    folder: Option<String>,
 }
 
 /// The panes to type an agent command into: the active pane of each
@@ -677,8 +679,9 @@ pub fn agent_targets(
 ) -> (Vec<AgentTarget>, Vec<FailedSession>) {
     let mut targets: Vec<AgentTarget> = Vec::new();
     let mut skipped: Vec<FailedSession> = Vec::new();
-    // An agent's conversation in a folder, per account folder (each keeps its own).
-    let mut continued: Vec<(&[String], Option<&str>, Option<&str>)> = Vec::new();
+    // An agent (its program names, or for one resumed by id its store) in a
+    // folder, per account folder (each keeps its own conversations).
+    let mut continued: Vec<(&[String], Option<&str>, Option<&str>, Option<&str>)> = Vec::new();
     for agent in agents {
         let Some(session) = sessions.iter().find(|session| session.name == agent.session) else {
             continue;
@@ -697,7 +700,7 @@ pub fn agent_targets(
             continue;
         }
         if let Some(entry) = crate::agent_catalog::resume_entry(&agent.command) {
-            let conversation = (entry.programs.as_slice(), pane.cwd.as_deref(), crate::agent_catalog::resume_account(&agent.command));
+            let conversation = (entry.programs.as_slice(), pane.cwd.as_deref(), crate::agent_catalog::resume_account(&agent.command), entry.lookup.as_deref());
             let running = panes_of(busy).any(|(_, live)| live.cwd.as_deref() == conversation.1 && agent_named(&live.command, &agent.command));
             if running || continued.contains(&conversation) {
                 if !skipped.iter().any(|entry| entry.session == session.name) {
@@ -708,7 +711,7 @@ pub fn agent_targets(
             }
             continued.push(conversation);
         }
-        targets.push(AgentTarget { session: session.name.clone(), window: window.index, target, pane: pane.id.clone(), command: agent.command.clone() });
+        targets.push(AgentTarget { session: session.name.clone(), window: window.index, target, pane: pane.id.clone(), command: agent.command.clone(), folder: pane.cwd.clone() });
     }
     (targets, skipped)
 }
@@ -1224,7 +1227,22 @@ pub fn restore(
     let made_window = |session: &str, window: u32| created.contains(&(session.to_string(), window));
     let (targets, skipped) = agent_targets(&restored, &agents, busy, &made_window);
     outcome.report.skipped = skipped;
-    for AgentTarget { session, window, target, pane, command } in targets {
+    for AgentTarget { session, window, target, pane, command, folder } in targets {
+        // A resume-by-id agent continues the conversation its folder last
+        // ran, read from the agent's own store; without one it stays at the
+        // shell rather than start or pick some other conversation.
+        let typed_command = match crate::agent_catalog::resume_entry(&command).and_then(|entry| entry.lookup.as_deref()) {
+            Some(lookup) => match folder.as_deref().and_then(|folder| crate::agent_sessions::resolve(&command, lookup, Path::new(folder))) {
+                Some(resolved) => resolved,
+                None => {
+                    if !outcome.report.skipped.iter().any(|entry| entry.session == session) {
+                        outcome.report.skipped.push(FailedSession { session: session.clone(), error: "Its agent was left at the shell: its conversation could not be found.".into() });
+                    }
+                    continue;
+                }
+            },
+            None => command.clone(),
+        };
         // Type once the pane has printed (and deleted) its saved output, so
         // the command is not echoed into the middle of it.
         if let Some(link) = links.get(&(session.clone(), pane)) {
@@ -1233,7 +1251,7 @@ pub fn restore(
                 std::thread::sleep(Duration::from_millis(50));
             }
         }
-        let typed = run(tmux, &strings(&["send-keys", "-t", &target, "-l", &command]))
+        let typed = run(tmux, &strings(&["send-keys", "-t", &target, "-l", &typed_command]))
             .and_then(|_| run(tmux, &strings(&["send-keys", "-t", &target, "Enter"])));
         match typed {
             Ok(_) => {
@@ -2244,7 +2262,7 @@ mod tests {
         let all = |_: &str, _: u32| true;
         let targets = |agents: &[AgentResume]| agent_targets(&sessions, agents, &[], &all).0;
         let found = targets(&[agent("work", 0, true), agent("work", 0, false), agent("work", 1, true), agent("gone", 0, false), agent("work", 9, false)]);
-        assert_eq!(found, [AgentTarget { session: "work".into(), window: 0, target: "=work:0.1".into(), pane: "%1".into(), command: "claude -c --permission-mode manual".into() }]);
+        assert_eq!(found, [AgentTarget { session: "work".into(), window: 0, target: "=work:0.1".into(), pane: "%1".into(), command: "claude -c --permission-mode manual".into(), folder: Some("/".into()) }]);
         // A detected agent resumes even where the pane now shows its shell.
         assert_eq!(targets(&[agent("work", 1, false)])[0].target, "=work:1.0");
         // Without a window, the session's active one.
@@ -2280,6 +2298,13 @@ mod tests {
         let mut node = session("live", "/repo");
         node.windows[0].panes[0].command = "node".into();
         assert_eq!(agent_targets(&sessions, &[agent("a", claude)], &[node], &all).0.len(), 1);
+        // Two agents resumed by id (no program names of their own) in one
+        // folder are two conversations, carried with their placeholder.
+        let goose = "env GOOSE_MODE=approve goose session --resume --session-id @SESSION@";
+        let forge = "forge --conversation-id @SESSION@ --agent muse";
+        let (targets, skipped) = agent_targets(&sessions, &[agent("a", goose), agent("b", forge), agent("d", goose)], &[], &all);
+        assert_eq!(targets.iter().map(|target| (target.session.as_str(), target.command.as_str())).collect::<Vec<_>>(), [("a", goose), ("b", forge)]);
+        assert_eq!(skipped.iter().map(|entry| entry.session.as_str()).collect::<Vec<_>>(), ["d"]);
     }
 
     struct Server {

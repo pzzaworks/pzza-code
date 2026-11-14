@@ -350,23 +350,32 @@ export function observePermissionStatuses(next: Statuses): void {
  * After an update the terminals keep running on the previous version (an
  * update never stops them). macOS then lets none of the app's permissions
  * reach them, and asks for none: Full Disk Access, Automation and the rest
- * look granted in System Settings but fail in every terminal. Says so once
- * at launch, with the way out.
+ * look granted in System Settings but fail in every terminal. So the first
+ * launch of a new version refreshes them onto it, once the launch's own
+ * restore check is done; agents continue their conversations. A refresh that
+ * fails says so in its notice and is not retried on its own.
  */
 export function checkTerminalsUpdated(delayMs = 3000): () => void {
   if (!LOCAL_SESSIONS_KEPT) return () => {};
+  let stopped = false;
   const timer = window.setTimeout(() => {
-    void invoke<boolean>("local_tmux_outdated").then(outdated => {
-      if (!outdated) return;
+    void invoke<boolean>("local_tmux_outdated").then(async outdated => {
+      if (!outdated || stopped) return;
+      // Wait for the launch restore (or a refresh started by hand) to finish.
+      while (!stopped && (useSessionRefresh.getState().pending || useSessionRefresh.getState().running)) {
+        await new Promise(resolve => window.setTimeout(resolve, 500));
+      }
+      if (stopped) return;
       notify({
         category: "app",
-        title: "Terminals still run the previous version",
-        body: "PzzaCode was updated while your terminals kept running, so they don't get its permissions yet: Full Disk Access, Automation and Screen Recording fail in them, even though System Settings shows them allowed. Refresh sessions in Settings > Setup moves them to this version; agents continue their conversations.",
+        title: "Moving terminals to the new version",
+        body: "PzzaCode was updated while your terminals kept running, so they could not use its permissions (Full Disk Access, Automation, Screen Recording). Their sessions are being refreshed onto this version; agents continue their conversations.",
         dedupeKey: "terminals-outdated",
       });
+      await refreshLocalSessions().catch(() => { /* Already refreshing: that refresh moves them. */ });
     }, () => { /* No terminal service: nothing runs on an old version. */ });
   }, delayMs);
-  return () => window.clearTimeout(timer);
+  return () => { stopped = true; window.clearTimeout(timer); };
 }
 
 export function checkPermissionsAtLaunch(delayMs = 3000): () => void {

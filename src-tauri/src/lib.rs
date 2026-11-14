@@ -1,5 +1,6 @@
 mod agent;
 mod agent_catalog;
+mod agent_sessions;
 mod terminal_drop;
 mod shutdown;
 mod menu;

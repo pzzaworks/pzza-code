@@ -4,7 +4,7 @@ import { existsSync, readFileSync } from "node:fs";
 import test from "node:test";
 import { promisify } from "node:util";
 import {
-  SESSION_AGENTS, SESSION_AGENT_IDS, agentCanAutoResume, agentCanContinue, agentForProgram, agentTakesPrompt,
+  RESUME_SESSION, SESSION_AGENTS, SESSION_AGENT_IDS, agentCanAutoResume, agentCanContinue, agentForProgram, agentTakesPrompt,
   defaultSessionAgentMode, sessionAgent, sessionAgentCommand, sessionAgentMode, sessionAgentResumeAllowlist,
   agentBinaryAllowed, agentBinaryPathRules, sessionAgentResumeCommand, sessionPromptError, validSessionPrompt,
 } from "../lib/session-agents.js";
@@ -43,13 +43,13 @@ const COMMANDS = [
   ["copilot","yolo","copilot --yolo","copilot --continue --yolo","copilot --yolo -i 'fix it'"],
   ["pi","readOnly","pi --tools read,grep,find,ls","pi --continue --tools read,grep,find,ls","pi --tools read,grep,find,ls -- 'fix it'"],
   ["pi","default","pi","pi --continue","pi -- 'fix it'"],
-  ["cline","ask","cline --auto-approve false",null,"cline --auto-approve false -i 'fix it'"],
-  ["cline","plan","cline --auto-approve false -p",null,"cline --auto-approve false -p -i 'fix it'"],
-  ["cline","yolo","cline -y",null,"cline -y -i 'fix it'"],
-  ["goose","approve","env GOOSE_MODE=approve goose session","env GOOSE_MODE=approve goose session --resume","env GOOSE_MODE=approve goose run -s -t 'fix it'"],
-  ["goose","smartApprove","env GOOSE_MODE=smart_approve goose session","env GOOSE_MODE=smart_approve goose session --resume","env GOOSE_MODE=smart_approve goose run -s -t 'fix it'"],
-  ["goose","chat","env GOOSE_MODE=chat goose session","env GOOSE_MODE=chat goose session --resume","env GOOSE_MODE=chat goose run -s -t 'fix it'"],
-  ["goose","auto","env GOOSE_MODE=auto goose session","env GOOSE_MODE=auto goose session --resume","env GOOSE_MODE=auto goose run -s -t 'fix it'"],
+  ["cline","ask","cline --auto-approve false","cline --id @SESSION@ --auto-approve false","cline --auto-approve false -i 'fix it'"],
+  ["cline","plan","cline --auto-approve false -p","cline --id @SESSION@ --auto-approve false -p","cline --auto-approve false -p -i 'fix it'"],
+  ["cline","yolo","cline -y","cline --id @SESSION@ -y","cline -y -i 'fix it'"],
+  ["goose","approve","env GOOSE_MODE=approve goose session","env GOOSE_MODE=approve goose session --resume --session-id @SESSION@","env GOOSE_MODE=approve goose run -s -t 'fix it'"],
+  ["goose","smartApprove","env GOOSE_MODE=smart_approve goose session","env GOOSE_MODE=smart_approve goose session --resume --session-id @SESSION@","env GOOSE_MODE=smart_approve goose run -s -t 'fix it'"],
+  ["goose","chat","env GOOSE_MODE=chat goose session","env GOOSE_MODE=chat goose session --resume --session-id @SESSION@","env GOOSE_MODE=chat goose run -s -t 'fix it'"],
+  ["goose","auto","env GOOSE_MODE=auto goose session","env GOOSE_MODE=auto goose session --resume --session-id @SESSION@","env GOOSE_MODE=auto goose run -s -t 'fix it'"],
   ["antigravity","default","agy","agy -c","agy -i 'fix it'"],
   ["antigravity","acceptEdits","agy --mode accept-edits","agy -c --mode accept-edits","agy --mode accept-edits -i 'fix it'"],
   ["antigravity","plan","agy --mode plan","agy -c --mode plan","agy --mode plan -i 'fix it'"],
@@ -102,9 +102,9 @@ const COMMANDS = [
   ["qoder","plan","qodercli --permission-mode plan","qodercli -c --permission-mode plan","qodercli --permission-mode plan -i 'fix it'"],
   ["qoder","acceptEdits","qodercli --permission-mode accept_edits","qodercli -c --permission-mode accept_edits","qodercli --permission-mode accept_edits -i 'fix it'"],
   ["qoder","bypass","qodercli --yolo","qodercli -c --yolo","qodercli --yolo -i 'fix it'"],
-  ["forgecode","muse","forge --agent muse",null,null],
-  ["forgecode","sage","forge --agent sage",null,null],
-  ["forgecode","forge","forge --agent forge",null,null],
+  ["forgecode","muse","forge --agent muse","forge --conversation-id @SESSION@ --agent muse",null],
+  ["forgecode","sage","forge --agent sage","forge --conversation-id @SESSION@ --agent sage",null],
+  ["forgecode","forge","forge --agent forge","forge --conversation-id @SESSION@ --agent forge",null],
   ["rovodev","default","acli rovodev run","acli rovodev run --restore",null],
   ["rovodev","yolo","acli rovodev run --yolo","acli rovodev run --restore --yolo",null],
   ["junie","default","junie","junie --resume","junie --prompt 'fix it'"],
@@ -118,10 +118,13 @@ test("every catalog agent and mode builds the expected launch, continue and prom
     const agent = sessionAgent(id);
     assert.equal(sessionAgentCommand({ id, mode }), launch, `${id}/${mode}`);
     if (resume === null) assert.throws(() => sessionAgentCommand({ id, mode, resume: true }), `${id} cannot continue`);
-    else assert.equal(sessionAgentCommand({ id, mode, resume: true }), resume, `${id}/${mode} continue`);
+    else assert.equal(sessionAgentCommand({ id, mode, resume: true }, resume.includes(RESUME_SESSION)), resume, `${id}/${mode} continue`);
+    // A resume-by-id command is built only for a restore, never from a request.
+    if (resume?.includes(RESUME_SESSION)) assert.throws(() => sessionAgentCommand({ id, mode, resume: true }), `${id} continues only in a restore`);
     if (prompt === null) assert.throws(() => sessionAgentCommand({ id, mode, prompt: "fix it" }), `${id} takes no prompt`);
     else assert.equal(sessionAgentCommand({ id, mode, prompt: "fix it" }), prompt, `${id}/${mode} prompt`);
-    assert.equal(agentCanContinue(agent), resume !== null);
+    // Resumed by id only in a restore (the id is read then): not offered as "continue".
+    assert.equal(agentCanContinue(agent), resume !== null && !resume.includes(RESUME_SESSION));
     assert.equal(agentTakesPrompt(agent), prompt !== null);
   }
 });
@@ -214,7 +217,8 @@ test("starting prompts are one line and can never become a flag", () => {
   }
   assert.equal(sessionPromptError("fix the login bug"), null);
   assert.match(sessionPromptError("--yolo"), /cannot start with "-"/);
-  assert.throws(() => sessionAgentCommand({ id: "goose", mode: "approve", resume: true, prompt: "x" }), /cannot continue a conversation with a starting prompt/);
+  // goose continues only by id in a restore: never from a request, with or without a prompt.
+  assert.throws(() => sessionAgentCommand({ id: "goose", mode: "approve", resume: true, prompt: "x" }), /cannot continue/);
   for (const value of [null, "claude", { id: "claude" }, { id: "claude", mode: "yolo" }, { id: "bash", mode: "default" }, { id: "codex", mode: "default", args: "--x" }, { id: "claude", mode: "default", resume: "yes" }]) {
     assert.throws(() => sessionAgentCommand(value));
   }
@@ -247,14 +251,17 @@ test("restarted terminals resume only agents whose last conversation is per fold
       assert.equal(command, null, agent.id);
       continue;
     }
-    assert.equal(agent.resume.scope, "directory");
-    assert.equal(command, sessionAgentCommand({ id: agent.id, mode: agent.defaultMode, resume: true }));
-    for (const mode of agent.modes) assert.equal(sessionAgentResumeCommand(agent.id, { id: agent.id, mode: mode.id }), sessionAgentCommand({ id: agent.id, mode: mode.id, resume: true }));
+    assert.ok(agent.resume.scope === "directory" || agent.resume.lookup, agent.id);
+    assert.equal(command, sessionAgentCommand({ id: agent.id, mode: agent.defaultMode, resume: true }, true));
+    for (const mode of agent.modes) assert.equal(sessionAgentResumeCommand(agent.id, { id: agent.id, mode: mode.id }), sessionAgentCommand({ id: agent.id, mode: mode.id, resume: true }, true));
     // Recorded as another agent, or with a mode the catalog no longer has: the default mode.
     assert.equal(sessionAgentResumeCommand(agent.id, { id: agent.id === "claude" ? "codex" : "claude", mode: "bypass" }), command);
     assert.equal(sessionAgentResumeCommand(agent.id, { id: agent.id, mode: "unknown" }), command);
   }
-  for (const id of ["goose", "cline", "amp", "warp", "forgecode", "cursor", "letta", "copilot"]) assert.equal(sessionAgentResumeCommand(id), null, id);
+  // No safe way to tell which conversation a folder ran: left at the shell.
+  for (const id of ["amp", "warp", "cursor", "auggie", "junie"]) assert.equal(sessionAgentResumeCommand(id), null, id);
+  assert.equal(sessionAgentResumeCommand("goose"), "env GOOSE_MODE=approve goose session --resume --session-id @SESSION@");
+  assert.equal(sessionAgentResumeCommand("copilot"), "copilot --continue");
   assert.equal(sessionAgentResumeCommand("gemini"), "gemini --resume latest --approval-mode default");
   assert.throws(() => sessionAgentResumeCommand("bash"));
 });
@@ -278,7 +285,7 @@ test("the native restore allowlist matches the catalog and fits its length limit
   assert.ok(allowlist.length > 0);
   for (const entry of allowlist) {
     assert.ok(entry.command.length <= 256, entry.command);
-    assert.ok(entry.programs.length > 0, entry.command);
+    assert.ok(entry.programs.length > 0 || entry.lookup, entry.command);
     assert.ok(agentCanAutoResume(sessionAgent(entry.agent)));
   }
   assert.ok(!allowlist.some(entry => entry.command === "claude -c"), "plain claude starts in auto mode");

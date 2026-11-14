@@ -300,7 +300,9 @@ mod native {
     }
 
     fn audio_context(samples: usize) -> i32 {
-        // Each encoder frame covers 20 ms, with two seconds of padding.
+        // Each encoder frame covers 20 ms, with two seconds of padding. Below
+        // 768 frames the encoder is faster but misreads real voices: measured
+        // on FLEURS recordings, 512 tripled and 384 quadrupled the error rate.
         (samples.div_ceil(320).saturating_add(100).div_ceil(128) * 128).clamp(768, 1500) as i32
     }
 
@@ -322,6 +324,9 @@ mod native {
         // The words this pass left pending in its preview.
         #[serde(default)]
         preview: String,
+        // When the pass ended, in seconds from the start of a replay (set by the harness).
+        #[serde(default)]
+        seconds: f64,
     }
 
     unsafe extern "C" fn recording_cancelled(data: *mut std::ffi::c_void) -> bool {
@@ -877,8 +882,10 @@ mod native {
         // The language the current phrase is decoded in: its own audio's
         // settled language, else the last phrase's.
         language: Option<String>,
-        // The preview the user saw for the current phrase.
+        // The preview the user saw for the current phrase, and how much of
+        // the phrase's audio (16 kHz samples) it was read from.
         shown: Vec<Word>,
+        shown_until: usize,
     }
 
     /// Where the first phrase in the window ends: the end of its speech and
@@ -983,7 +990,7 @@ mod native {
                 decode_ms: decoding.elapsed().as_secs_f64() * 1_000.0, multilingual: false, finalizing: typing,
                 language: if redecoded { heard.as_ref().map_or(decode_language, |(language, _)| language.clone()) } else { decode_language },
                 committed: if typing { word_text(&words) } else { String::new() },
-                heard, redecoded, preview: if typing { String::new() } else { word_text(&words) },
+                heard, redecoded, preview: if typing { String::new() } else { word_text(&words) }, seconds: 0.0,
             });
         }
         Ok(Some((words, spoken)))
@@ -995,7 +1002,7 @@ mod native {
     /// first spoken words and are placed where its speech starts
     /// (`speech_start`; left in the silence, the voice model's check dropped
     /// them), unless together they are a phrase the decoder makes up from
-    /// silence ("Altyazı").
+    /// silence ("Thank you.").
     fn after_lead(mut words: Vec<Word>, speech_start: usize) -> Vec<Word> {
         let lead = words.iter().take_while(|word| word.end <= PHRASE_LEAD).count();
         if lead > 0 && super::silence_phrase(words[..lead].iter().map(|word| word.text.as_str())) {
@@ -1034,6 +1041,16 @@ mod native {
         best.filter(|(start, end)| end - start >= 2).map(|(start, end)| (start + end) / 2 * frame)
     }
 
+    /// The captured samples (at `rate`, `captured` of them) up to `position`
+    /// of their 16 kHz resampling (`resampled` long). Its end is the end of
+    /// what was captured: at 48 kHz the last one or two captured samples
+    /// resample to nothing, and leaving them made the final pass loop forever
+    /// on an empty window, flooding the window with events until it froze
+    /// and macOS ended the app.
+    fn captured_until(position: usize, resampled: usize, rate: u32, captured: usize) -> usize {
+        if position >= resampled { captured } else { (position * rate as usize / 16_000).min(captured) }
+    }
+
     fn characters(words: &[Word]) -> usize {
         words.iter().map(|word| word.text.chars().count()).sum()
     }
@@ -1051,7 +1068,8 @@ mod native {
         let mut audio = super::resample(samples, rate);
         super::normalize_level(&mut audio);
         let speech = super::SpeechMask::new(&audio, voice);
-        let captured = |position: usize| (position * rate as usize / 16_000).min(samples.len());
+        let resampled = audio.len();
+        let captured = move |position: usize| captured_until(position, resampled, rate, samples.len());
         let transcript = |preview: String, committed: String, consumed: usize| Transcript {
             preview, committed, consumed,
             #[cfg(test)]
@@ -1070,6 +1088,28 @@ mod native {
         if let Some((speech_end, next)) = end {
             // The phrase ended: type it in the language it was spoken in.
             let duration = speech_end.min(audio.len());
+            // The last preview already read all of its speech, in the
+            // language it was spoken in: type that reading at once rather
+            // than decode the phrase again, which held every phrase back by
+            // a whole decode after the speaker paused. Only the final pass
+            // after Stop, which has no live preview to stand on for its last
+            // words, reads again.
+            // The preview must also have stopped in the pause: one that read on
+            // into the next phrase holds the start of its first word, which
+            // came twice ("all All") or as the decoder's guess at a word
+            // barely begun; word times are too rough to cut it off (soft
+            // speech is timed late), so that phrase is read again, cut where
+            // its speech ends.
+            if !finalizing && !window.shown.is_empty() && window.shown_until >= duration && window.shown_until <= next {
+                let mut words = mem::take(&mut window.shown);
+                drop_unspoken(&mut words, &speech);
+                window.language = None;
+                #[cfg(test)]
+                if let Ok(mut stats) = capture.stats.lock() {
+                    stats.push(PassStats { audio_samples: duration, finalizing: true, committed: word_text(&words), ..Default::default() });
+                }
+                return Ok(transcript(String::new(), word_text(&words), captured(next.max(1))));
+            }
             let mut phrase = audio[..duration].to_vec();
             phrase.resize(phrase.len().max(16_000), 0.0);
             let Some((mut words, _)) = decode_phrase(engine, capture, language, window, &phrase, duration, speech_start, true)? else {
@@ -1077,7 +1117,7 @@ mod native {
             };
             drop_unspoken(&mut words, &speech);
             // The typing decode sometimes stops early or reads only noise
-            // ("Altyazı"): the shown words win over a much shorter reading.
+            // ("Thank you."): the shown words win over a much shorter reading.
             let shown = mem::take(&mut window.shown);
             if characters(&words) * 5 < characters(&shown) * 3 { words = shown; }
             window.language = None;
@@ -1085,6 +1125,15 @@ mod native {
         }
         // Still speaking: preview the phrase so far.
         let duration = audio.len();
+        // Nothing was said since the preview read the phrase (a pause that
+        // has not ended it yet): reading the same speech again changes
+        // nothing, and the decode only held back typing the phrase once the
+        // pause ends it.
+        let spoken_until = (0..speech.loud.len()).rev().find(|frame| speech.voiced(*frame))
+            .map_or(0, |frame| (frame + 1) * super::SpeechMask::FRAME);
+        if !window.shown.is_empty() && window.shown_until >= spoken_until && duration < PHRASE_LONG {
+            return Ok(transcript(word_text(&window.shown), String::new(), 0));
+        }
         let mut phrase = audio.clone();
         phrase.resize(phrase.len().max(16_000), 0.0);
         let long = duration >= PHRASE_LONG;
@@ -1096,7 +1145,7 @@ mod native {
             // No pause for a long time: type what this reading and the shown
             // one agree on, up to a second before the newest audio, and cut in
             // a break the voice model heard between two words. Word times are
-            // too rough to cut on: a cut inside "hiç" typed it twice.
+            // too rough to cut on: a cut inside "never" typed it twice.
             let forced = duration >= PHRASE_MAX;
             let agreed = words.iter().enumerate().take_while(|(index, word)| {
                 word.end + 16_000 <= duration
@@ -1117,12 +1166,16 @@ mod native {
                     word.end = word.end.saturating_sub(cut);
                 }
                 window.shown = rest;
+                window.shown_until = duration.saturating_sub(cut);
                 return Ok(transcript(word_text(&window.shown), word_text(&words), captured(cut)));
             }
         }
         // A reading in another language than the one spoken is a translation:
         // keep showing the last preview until the next pass decodes it right.
-        if spoken { window.shown = words; }
+        if spoken {
+            window.shown = words;
+            window.shown_until = duration;
+        }
         Ok(transcript(word_text(&window.shown), String::new(), 0))
     }
 
@@ -1169,7 +1222,7 @@ mod native {
     }
 
     /// Keeps one copy of a phrase of 1 to 8 words said three or more times in
-    /// a row: the decoder sometimes loops ("bu konuda, bu konuda, bu konuda"),
+    /// a row: the decoder sometimes loops ("at this, at this, at this"),
     /// and live passes skip the fallback decode that would catch it. Real
     /// speech rarely repeats the same phrase three times back to back.
     fn collapse_loops(words: &mut Vec<Word>) {
@@ -1209,12 +1262,12 @@ mod native {
         fn decoder_loops_keep_one_copy_and_real_repeats_stay() {
             let words = |text: &str| text.split_whitespace().enumerate().map(|(index, word)| Word { text: word.into(), start: index * 1_000, end: index * 1_000 + 900 }).collect::<Vec<_>>();
             let text = |mut list: Vec<Word>| { collapse_loops(&mut list); word_text(&list) };
-            assert_eq!(text(words("yaptıkları konuda, bu konuda, bu konuda, bu konuda, bu konuda, bu konuda, bu")), "yaptıkları konuda, bu");
-            assert_eq!(text(words("Sürücü davranışı %100 Sürücü davranışı %100 Sürücü davranışı %100")), "Sürücü davranışı %100");
-            // Twice is real speech ("evet evet", "çok çok iyi"), never collapsed.
-            assert_eq!(text(words("evet evet tamam")), "evet evet tamam");
-            assert_eq!(text(words("çok çok iyi oldu")), "çok çok iyi oldu");
-            assert_eq!(text(words("Testleri çalıştır, sonra push et.")), "Testleri çalıştır, sonra push et.");
+            assert_eq!(text(words("we looked at this, at this, at this, at this, at this, at")), "we looked at this, at");
+            assert_eq!(text(words("Driver behavior 100% Driver behavior 100% Driver behavior 100%")), "Driver behavior 100%");
+            // Twice is real speech ("yes yes", "very very good"), never collapsed.
+            assert_eq!(text(words("yes yes okay")), "yes yes okay");
+            assert_eq!(text(words("very very good indeed")), "very very good indeed");
+            assert_eq!(text(words("Run the tests, then push.")), "Run the tests, then push.");
         }
         #[test]
         fn decoder_cancellation_reads_only_the_live_atomic_flag() {
@@ -1263,6 +1316,18 @@ mod native {
         }
 
         #[test]
+        fn the_whole_window_is_let_go_at_every_capture_rate() {
+            // Two samples at 48 kHz resample to none: the window's end still takes them.
+            for (rate, captured) in [(48_000u32, 2usize), (48_000, 3_001), (44_100, 1), (44_100, 4_411), (16_000, 7)] {
+                let resampled = super::super::resample(&vec![0.0; captured], rate).len();
+                assert_eq!(captured_until(resampled, resampled, rate, captured), captured, "{rate} Hz, {captured} samples");
+                assert!(captured_until(resampled.saturating_sub(4_800), resampled, rate, captured) <= captured);
+            }
+            // Inside the window it maps by rate.
+            assert_eq!(captured_until(16_000, 32_000, 48_000, 96_000), 48_000);
+        }
+
+        #[test]
         fn a_pause_the_voice_model_hears_ends_a_phrase() {
             // 1 s of speech, then a pause: the phrase ends once 0.2 s of it is heard.
             let audio = [loud(1.0), quiet(1.0)].concat();
@@ -1301,20 +1366,20 @@ mod native {
 
         #[test]
         fn words_read_in_the_lead_silence_are_the_phrases_first_words() {
-            // Decoded after PHRASE_LEAD of silence: "Bu ve" timed into it, then the rest.
-            let decoded = timed_words(&[("Bu", 0, 2_000), ("ve", 2_000, PHRASE_LEAD), ("Refresh", PHRASE_LEAD + 8_000, PHRASE_LEAD + 14_000)]);
+            // Decoded after PHRASE_LEAD of silence: "This and" timed into it, then the rest.
+            let decoded = timed_words(&[("This", 0, 2_000), ("and", 2_000, PHRASE_LEAD), ("Refresh", PHRASE_LEAD + 8_000, PHRASE_LEAD + 14_000)]);
             let words = after_lead(decoded, 8_000);
-            assert_eq!(word_text(&words), "Bu ve Refresh");
+            assert_eq!(word_text(&words), "This and Refresh");
             assert!(words[..2].iter().all(|word| word.start == 8_000), "placed where the speech starts");
             assert_eq!((words[2].start, words[2].end), (8_000, 14_000));
             // The voice model's check keeps them: they sit at the speech.
             let audio = [quiet(0.5), loud(1.0)].concat();
             let mut kept = words.clone();
             drop_unspoken(&mut kept, &mask(&audio, &[heard(0.5, 0.05), heard(1.0, 0.9)]));
-            assert_eq!(word_text(&kept), "Bu ve Refresh");
+            assert_eq!(word_text(&kept), "This and Refresh");
             // What the decoder makes up from silence is dropped there instead.
-            let made_up = timed_words(&[("Altyazı", 0, 2_000), ("M.K.", 2_000, PHRASE_LEAD), ("Testleri", PHRASE_LEAD + 1_000, PHRASE_LEAD + 9_000)]);
-            assert_eq!(word_text(&after_lead(made_up, 1_000)), "Testleri");
+            let made_up = timed_words(&[("Thank", 0, 2_000), ("you.", 2_000, PHRASE_LEAD), ("Run", PHRASE_LEAD + 1_000, PHRASE_LEAD + 9_000)]);
+            assert_eq!(word_text(&after_lead(made_up, 1_000)), "Run");
         }
 
         #[test]
@@ -1434,7 +1499,8 @@ mod native {
                     "reference": expected, "transcript": committed, "liveUpdates": live_updates, "events": events,
                 })).unwrap();
             }
-            assert!(live_updates >= 2, "Expected multiple terminal updates before Stop, got {live_updates}");
+            // Each phrase is typed when its pause comes, before Stop.
+            assert!(live_updates >= 1, "Expected the phrase to be typed before Stop, got {live_updates} updates");
             let normalize = |text: &str| text.to_lowercase().chars()
                 .filter(|character| character.is_alphanumeric() || character.is_whitespace()).collect::<String>()
                 .split_whitespace().collect::<Vec<_>>().join(" ");
@@ -1647,7 +1713,10 @@ mod native {
     const DECODE_POLL: Duration = Duration::from_millis(10);
 
     fn decode_due(new_samples: usize, rate: usize) -> bool {
-        new_samples >= rate / 4
+        // An eighth of a second: a pass in a pause skips decoding (the preview
+        // already read every word), so checking that often only types a
+        // phrase sooner once its pause is long enough.
+        new_samples >= rate / 8
     }
 
     fn run(app: AppHandle, capture: Arc<Capture>, language: String, input_device_id: Option<String>) {
@@ -1739,6 +1808,11 @@ mod native {
             {
                 let transcript = transcribe(&app, &capture, &language, &mut window, true)?;
                 apply(&capture, &transcript, &mut committed)?;
+                // Every final pass must take audio, or this loop never ends:
+                // what a pass could not take is too little to hold a word.
+                if transcript.consumed == 0 {
+                    capture.samples.lock().map_err(|_| "Audio lock failed")?.clear();
+                }
             }
             // Counts only, never the words: dictation can hold anything.
             let rate = capture.rate.lock().map(|rate| *rate).unwrap_or(16_000).max(1);
@@ -2424,6 +2498,7 @@ mod native {
             let mut passes = Vec::new();
             let (mut offset, mut consumed) = (0, 0);
             let voice = voice_probabilities(samples);
+            let clock = Instant::now();
             let mut pass = |engine: &mut Engine, window: &mut PhraseWindow, committed: &mut String, consumed: &mut usize, finalizing: bool, offset: usize| {
                 // The capture thread analyzes the audio a little behind the
                 // microphone, and all of it before the final pass.
@@ -2435,7 +2510,7 @@ mod native {
                 let heard = capture.window_voice(*consumed, audio.len(), RATE as u32);
                 let before = capture.stats.lock().unwrap().len();
                 let transcript = transcribe_phrase(engine, capture, "auto", window, &audio, &heard, RATE as u32, finalizing).unwrap();
-                if let Some(stats) = capture.stats.lock().unwrap().get(before).cloned() { passes.push((*consumed, stats)); }
+                if let Some(mut stats) = capture.stats.lock().unwrap().get(before).cloned() { stats.seconds = clock.elapsed().as_secs_f64(); passes.push((*consumed, stats)); }
                 *consumed += transcript.consumed;
                 apply(capture, &transcript, committed).unwrap();
                 transcript.consumed
@@ -3156,7 +3231,7 @@ const OUTSIDE_LANGUAGE_SHARE: f32 = 0.9;
 // detected language, so every misdetection strengthened itself.
 #[cfg(any(target_os = "macos", test))]
 const CONTINUITY_ADVANTAGE: f32 = 1.5;
-// An unsure decision (short turns like "Selam" or "İyiyim, sen?" spread their
+// An unsure decision (short turns like "Hi" or "Fine, you?" spread their
 // weight over unrelated languages) keeps the previous language unless the top
 // one is clearly ahead: measured with the real model, 1.5 let that noise switch
 // Turkish speech to English and decode it in English.

@@ -160,11 +160,11 @@ test("restarted terminals resume every folder-scoped catalog agent in its record
     }
     for (const mode of agent.modes) {
       const command = sessionAgentResumeCommand(agent.id, { id: agent.id, mode: mode.id });
-      assert.equal(command, sessionAgentCommand({ id: agent.id, mode: mode.id, resume: true }));
+      assert.equal(command, sessionAgentCommand({ id: agent.id, mode: mode.id, resume: true }, true));
       assert.ok(command.includes(agent.resume.args.join(" ")), agent.id);
     }
     // Detected without a record, or recorded as another agent: the default mode.
-    const fallback = sessionAgentCommand({ id: agent.id, mode: agent.defaultMode, resume: true });
+    const fallback = sessionAgentCommand({ id: agent.id, mode: agent.defaultMode, resume: true }, true);
     assert.equal(sessionAgentResumeCommand(agent.id), fallback);
     const other = SESSION_AGENTS.find(item => item.id !== agent.id);
     assert.equal(sessionAgentResumeCommand(agent.id, { id: other.id, mode: other.modes.at(-1).id }), fallback);

@@ -96,7 +96,7 @@ test("strict UI action and argument validation rejects unsafe or unsupported req
   // Tile spans snap to half columns and rows.
   assert.deepEqual(validateCommand("set_tile_span", { tileId: "tile", columns: 1.5, rows: 0.5 }), { tileId: "tile", columns: 1.5, rows: 0.5 });
   assert.deepEqual(validateCommand("open_editor", { tileId: "tile", root: "/project", layout: "side-by-side" }), { tileId: "tile", root: "/project", layout: "side-by-side" });
-  for (const tileId of ["devbox::my session", "session::w::2", "devbox::çalışma"]) assert.equal(validateCommand("focus_tile", { tileId }).tileId, tileId);
+  for (const tileId of ["devbox::my session", "session::w::2", "devbox::café"]) assert.equal(validateCommand("focus_tile", { tileId }).tileId, tileId);
 });
 
 test("MCP UI tools require explicit clients and expose no page-content automation", () => {

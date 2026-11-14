@@ -104,7 +104,7 @@ export function pendingColor(foreground: string): string {
 /**
  * Dictated words as they go in at the caret: after a word (anything but
  * whitespace right before the caret) they start with a space, as system
- * dictation does, instead of running into it ("ve" + "üst" read "veüst").
+ * dictation does, instead of running into it ("and" + "then" read "andthen").
  */
 export function separatedFromCaret(buffer: IBuffer, text: string): string {
   if (!text || /^\s/.test(text) || buffer.cursorX === 0) return text;
@@ -112,7 +112,16 @@ export function separatedFromCaret(buffer: IBuffer, text: string): string {
   return before !== "" && !/\s/.test(before) ? ` ${text}` : text;
 }
 
-/** Activity shown after the pending words: speech is being heard, or the final pass runs. */
+/** How many characters two texts share from their start (whole characters, not UTF-16 units). */
+export function commonPrefixLength(left: string, right: string): number {
+  const a = Array.from(left);
+  const b = Array.from(right);
+  let length = 0;
+  while (length < a.length && length < b.length && a[length] === b[length]) length++;
+  return length;
+}
+
+/** What the ghost status at the caret says: speech is being heard, or a phrase is being written. */
 export type DictationIndicator = "listening" | "finishing";
 // Three one-cell dots, so they lay out like any other text at the caret.
 export const INDICATOR_DOTS = "···";
@@ -132,12 +141,15 @@ export function splitIndicator(lines: string[], dots: number): { text: string; f
 // Composition belongs to the terminal view. It never enters the PTY or buffer.
 // The screen bounds are the rendered cell grid in both normal and TUI buffers.
 export function createDictationComposition(term: Terminal) {
-  // Pending words to show at the caret.
+  // The ghost status to show at the caret.
   let text = "";
   let indicator: DictationIndicator | null = null;
-  // Words being pasted stay on screen at the old caret until the PTY echo is
-  // parsed, so confirmed text never blinks out between preview and echo.
+  // Words being pasted replace the status at the old caret until the PTY echo is
+  // parsed, so typed text never blinks out between the status and the echo.
   let held = "";
+  // The words and typed state of the last render (see render).
+  let renderedWords = "";
+  let renderedTyped = false;
   let suspended = false;
   let awaitingEcho = false;
   let disposed = false;
@@ -148,14 +160,19 @@ export function createDictationComposition(term: Terminal) {
   let markerListener: IDisposable | undefined;
   const releaseMarker = () => { markerListener?.dispose(); markerListener = undefined; marker?.dispose(); marker = undefined; };
   const hide = () => { if (layer) layer.hidden = true; };
-  const clear = () => { text = ""; indicator = null; held = ""; awaitingEcho = false; hide(); releaseMarker(); };
+  const clear = () => { text = ""; indicator = null; held = ""; awaitingEcho = false; renderedWords = ""; renderedTyped = false; hide(); releaseMarker(); };
   const lineElement = (index: number) => {
     let element = lineElements[index];
     if (!element) {
       element = document.createElement("div");
       Object.assign(element.style, { position: "absolute", overflow: "hidden", whiteSpace: "pre" });
+      // The background (hiding the terminal cells beneath) is on the outer
+      // span; the ghost text and its shimmer are on the inner one, so the
+      // shimmer's mask never uncovers those cells.
       const content = document.createElement("span");
-      Object.assign(content.style, { textDecoration: "underline dotted", textUnderlineOffset: "2px" });
+      const ghost = document.createElement("span");
+      ghost.className = "terminal-dictation-ghost";
+      content.appendChild(ghost);
       element.appendChild(content);
       const dots = document.createElement("span");
       dots.className = "terminal-dictation-indicator";
@@ -175,6 +192,12 @@ export function createDictationComposition(term: Terminal) {
   const render = () => {
     frame = 0;
     const words = separatedFromCaret(term.buffer.active, awaitingEcho ? held : text);
+    // Only the text that changed since the last render fades in; a render
+    // for a cursor move or a resize keeps the text (and its animation) as is.
+    const changed = words !== renderedWords || awaitingEcho !== renderedTyped;
+    const changedFrom = !changed || awaitingEcho !== renderedTyped ? Number.POSITIVE_INFINITY : commonPrefixLength(renderedWords, words);
+    renderedWords = words;
+    renderedTyped = awaitingEcho;
     const dots = indicator ? INDICATOR_DOTS : "";
     const shown = words && dots ? `${words} ${dots}` : words || dots;
     if (disposed || !shown || suspended) { hide(); return; }
@@ -224,6 +247,10 @@ export function createDictationComposition(term: Terminal) {
     const pending = pendingColor(term.options.theme?.foreground ?? "#ffffff");
     layer.setAttribute("data-indicator", indicator ?? "");
     const parts = splitIndicator(lines, Array.from(dots).length);
+    layer.setAttribute("data-typed", awaitingEcho ? "true" : "");
+    // Where the first laid-out character sits in `words` (the start may be
+    // cut behind an ellipsis when the words do not fit).
+    let position = Array.from(words).length - parts.reduce((sum, part) => sum + Array.from(part.text).length, 0);
     lines.forEach((_, index) => {
       const start = index === 0 ? firstStart : region.left;
       const element = lineElement(index);
@@ -232,10 +259,23 @@ export function createDictationComposition(term: Terminal) {
         width: `${(region.right - start) * cellWidth}px`, height: `${cellHeight}px`,
       });
       const content = element.children[0] as HTMLSpanElement;
-      content.textContent = parts[index].text;
+      const characters = Array.from(parts[index].text);
+      if (changed) {
+        const ghost = content.children[0] as HTMLSpanElement;
+        const split = Math.max(0, Math.min(characters.length, changedFrom - position));
+        ghost.replaceChildren();
+        if (split > 0) ghost.append(characters.slice(0, split).join(""));
+        if (split < characters.length) {
+          const fresh = document.createElement("span");
+          fresh.className = "terminal-dictation-new";
+          fresh.textContent = characters.slice(split).join("");
+          ghost.append(fresh);
+        }
+      }
+      position += characters.length;
       content.style.backgroundColor = background;
       // Words written to the terminal and waiting for its echo are typed:
-      // full color. Words still being recognized are dimmed.
+      // full color. The status is a dimmed ghost.
       content.style.color = awaitingEcho ? "" : pending;
       // Each line shows only as many dots as it holds; the rest stay hidden.
       const indicatorDots = element.children[1] as HTMLSpanElement;
@@ -263,18 +303,18 @@ export function createDictationComposition(term: Terminal) {
     }),
   ];
   return {
-    // `activity` adds animated dots after the words, or alone at the caret
-    // before the first words arrive.
+    // `value` is the ghost status; `activity` animates the dots after it and
+    // its shimmer while speech is heard.
     preview(value: string, activity: DictationIndicator | null = null) {
       text = value.replace(/[\x00-\x1f\x7f-\x9f]/g, " ").slice(0, 8192);
       indicator = activity;
-      // While a paste is in flight the held words stay up; the new remainder
-      // takes over at the moved caret once the echo is parsed.
+      // While a paste is in flight the held words stay up; the status
+      // returns at the moved caret once the echo is parsed.
       if (awaitingEcho || text || indicator) schedule();
       else { hide(); releaseMarker(); }
     },
     clear,
-    beginConfirmedWrite() { held = text; awaitingEcho = true; schedule(); },
+    beginConfirmedWrite(words: string) { held = words.replace(/[\x00-\x1f\x7f-\x9f]/g, " ").slice(0, 8192); awaitingEcho = true; schedule(); },
     suspend(value: boolean) { suspended = value; if (value) hide(); else schedule(); },
     dispose() { disposed = true; cancelAnimationFrame(frame); clear(); for (const listener of listeners) listener.dispose(); layer?.remove(); },
   };
