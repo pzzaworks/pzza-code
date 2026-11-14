@@ -677,7 +677,8 @@ pub fn agent_targets(
 ) -> (Vec<AgentTarget>, Vec<FailedSession>) {
     let mut targets: Vec<AgentTarget> = Vec::new();
     let mut skipped: Vec<FailedSession> = Vec::new();
-    let mut continued: Vec<(&[String], Option<&str>)> = Vec::new();
+    // An agent's conversation in a folder, per account folder (each keeps its own).
+    let mut continued: Vec<(&[String], Option<&str>, Option<&str>)> = Vec::new();
     for agent in agents {
         let Some(session) = sessions.iter().find(|session| session.name == agent.session) else {
             continue;
@@ -696,7 +697,7 @@ pub fn agent_targets(
             continue;
         }
         if let Some(entry) = crate::agent_catalog::resume_entry(&agent.command) {
-            let conversation = (entry.programs.as_slice(), pane.cwd.as_deref());
+            let conversation = (entry.programs.as_slice(), pane.cwd.as_deref(), crate::agent_catalog::resume_account(&agent.command));
             let running = panes_of(busy).any(|(_, live)| live.cwd.as_deref() == conversation.1 && agent_named(&live.command, &agent.command));
             if running || continued.contains(&conversation) {
                 if !skipped.iter().any(|entry| entry.session == session.name) {

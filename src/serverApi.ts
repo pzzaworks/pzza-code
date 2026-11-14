@@ -129,6 +129,14 @@ export interface SessionActivity {
   effectiveModel: string | null;
   effectiveProvider: EffectiveModelProvider | null;
   effectiveModelEvidence: EffectiveModelEvidence | null;
+  /** How the detected agent was started: its catalog mode and account folder, when known. */
+  launch?: SessionAgentLaunchInfo;
+}
+export interface SessionAgentLaunchInfo {
+  mode: string | null;
+  account: string | null;
+  /** The agent runs with a config folder that cannot be passed back: never restart it with the default one. */
+  accountUnusable?: true;
 }
 export async function fetchSessionActivity(host?: string, signal?: AbortSignal): Promise<SessionActivity[]> {
   const response = await agentFetch(`${SERVER_HTTP}/sessions/activity${host !== undefined ? `?host=${encodeURIComponent(host)}` : ""}`, { signal });
@@ -540,11 +548,13 @@ function isQuickChatResponse(value: unknown, host: string): value is QuickChatSe
     "identity" in value && typeof value.identity === "string" && /^\$[0-9]+:[0-9]+:[0-9]+$/.test(value.identity));
 }
 
-export async function openQuickChat(host: string, agent: QuickChatAgent): Promise<QuickChatSession> {
+// `account`: the config folder the agent runs with on that device (see
+// quickChatAccount), so the chat opens the same account as its sessions.
+export async function openQuickChat(host: string, agent: QuickChatAgent, account?: string): Promise<QuickChatSession> {
   const response = await agentFetch(`${SERVER_HTTP}/quick-chat/open`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ host, agent }),
+    body: JSON.stringify({ host, agent, ...(account ? { account } : {}) }),
     signal: AbortSignal.timeout(20000),
   });
   const value: unknown = await response.json();

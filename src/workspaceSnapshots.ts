@@ -1,4 +1,4 @@
-import { sessionAgent, type SessionAgentChoice } from "../server/lib/session-agents.js";
+import { sessionAgent, validAgentAccount, type SessionAgentChoice } from "../server/lib/session-agents.js";
 
 // A workspace snapshot records what is needed to recreate each of its
 // sessions (the device, the tmux session name, the working folder and the
@@ -65,7 +65,8 @@ function validAgent(value: unknown): SessionAgentChoice | undefined {
   if (!value || typeof value !== "object") return undefined;
   const choice = value as Record<string, unknown>;
   const agent = sessionAgent(choice.id);
-  return agent && typeof choice.mode === "string" && agent.modes.some(mode => mode.id === choice.mode) ? { id: agent.id, mode: choice.mode } : undefined;
+  if (!agent || typeof choice.mode !== "string" || !agent.modes.some(mode => mode.id === choice.mode)) return undefined;
+  return { id: agent.id, mode: choice.mode, ...(validAgentAccount(agent, choice.account) ? { account: choice.account } : {}) };
 }
 
 // A Git branch name as git accepts it, in short.

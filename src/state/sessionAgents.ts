@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { sessionAgent, type SessionAgentChoice } from "../../server/lib/session-agents.js";
+import { sessionAgent, type SessionAgentChoice, type SessionAgentId } from "../../server/lib/session-agents.js";
 import { useStore } from "./store";
 
 // The agent and mode a session was created with, keyed by tile id. This is
@@ -59,12 +59,21 @@ export function rememberSessionAgent(tileId: string, choice: SessionAgentChoice 
 // The agent last seen running in each local session's active window, by
 // session name: what a snapshot records for sessions whose agent was not
 // started through the app. Kept in memory; the native side keeps its own copy.
-export const useDetectedAgents = create<{ agents: Record<string, string> }>(() => ({ agents: {} }));
+// Each carries how its process was started (mode and account folder), when
+// the device could tell, so a relaunch starts it the same way.
+export interface DetectedAgent {
+  id: SessionAgentId;
+  mode: string | null;
+  account: string | null;
+}
 
-export function noteDetectedAgents(agents: Record<string, string>): void {
+export const useDetectedAgents = create<{ agents: Record<string, DetectedAgent> }>(() => ({ agents: {} }));
+
+export function noteDetectedAgents(agents: Record<string, DetectedAgent>): void {
   const previous = useDetectedAgents.getState().agents;
   const keys = Object.keys(agents);
-  if (keys.length === Object.keys(previous).length && keys.every((key) => previous[key] === agents[key])) return;
+  const same = (left: DetectedAgent | undefined, right: DetectedAgent) => left?.id === right.id && left.mode === right.mode && left.account === right.account;
+  if (keys.length === Object.keys(previous).length && keys.every((key) => same(previous[key], agents[key]))) return;
   useDetectedAgents.setState({ agents });
 }
 

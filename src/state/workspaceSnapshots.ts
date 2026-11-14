@@ -57,16 +57,20 @@ const tileOf = (entry: Pick<SnapshotSession, "host" | "session">) => useStore.ge
 type AppState = ReturnType<typeof useStore.getState>;
 
 // The agent each tile's session runs: the one it was started with, or the one
-// detected running in a local session (its recorded mode when it is the same
-// agent, else the agent's default mode).
+// detected running in a local session, started the way its process was (its
+// mode and account folder; else its recorded mode when it is the same agent,
+// else the agent's default mode).
 function tileAgents(state: AppState): Record<string, SessionAgentChoice> {
   const agents = { ...useSessionAgents.getState().agents };
   const detected = useDetectedAgents.getState().agents;
   for (const tile of state.tiles.filter(isSessionTile)) {
     if (tile.host) continue;
-    const agent = sessionAgent(detected[tile.session ?? tile.name] ?? "");
-    const recorded = agents[tile.id];
-    if (agent && recorded?.id !== agent.id) agents[tile.id] = { id: agent.id, mode: agent.defaultMode };
+    const found = detected[tile.session ?? tile.name];
+    const agent = sessionAgent(found?.id);
+    if (!found || !agent) continue;
+    const recorded = agents[tile.id]?.id === agent.id ? agents[tile.id] : undefined;
+    const mode = found.mode ?? recorded?.mode ?? agent.defaultMode;
+    agents[tile.id] = { id: agent.id, mode, ...(found.account ? { account: found.account } : {}) };
   }
   return agents;
 }

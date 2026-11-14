@@ -73,6 +73,30 @@ test("Quick Chat starts every agent in its safe default mode, never the CLI's ow
   for (const agent of ["sh", "claude; id", "../codex", "", "CLAUDE"]) assert.throws(() => quickChatCommand(agent), /Choose a supported agent/);
 });
 
+test("Quick Chat opens the account folder the device's sessions use, still in the safe mode", async () => {
+  const launch = quickChatCommand("claude", "", "/Users/dev/.claude-pz").split("\n").find(line => line.includes("new-session"));
+  assert.match(launch, / -e 'CLAUDE_CONFIG_DIR=\/Users\/dev\/.claude-pz' .*quick-chat "\$executable" '--permission-mode' 'manual' /);
+  assert.doesNotMatch(quickChatCommand("claude"), /CLAUDE_CONFIG_DIR/);
+  let ran = 0;
+  const run = (_command, args, _options, callback) => { ran++; assert.match(args.at(-1), /CLAUDE_CONFIG_DIR=\/Users\/dev\/.claude-pz/); callback(null, "claude\nclaude\n$1:100:200"); };
+  assert.equal((await openQuickChat({ host: "", agent: "claude", account: "/Users/dev/.claude-pz" }, run)).agent, "claude");
+  assert.equal(ran, 1);
+  for (const body of [
+    { host: "", agent: "claude", account: "/Users/dev/other" },
+    { host: "", agent: "claude", account: "/Users/dev/.claude-x'; id; '" },
+    { host: "", agent: "codex", account: "/Users/dev/.claude-pz" },
+  ]) await assert.rejects(openQuickChat(body, () => assert.fail("must not execute")), { status: 400 });
+  // Only opening takes an account.
+  await assert.rejects(verifyQuickChat({ host: "", agent: "claude", identity: "$1:100:200", account: "/Users/dev/.claude-pz" }, () => assert.fail("must not execute")), { status: 400 });
+});
+
+test("a Quick Chat conversation that ended is reported gone (410), not unreachable", async () => {
+  const gone = (code) => (_command, _args, _options, callback) => callback(Object.assign(new Error("exit"), { code }), "");
+  await assert.rejects(verifyQuickChat({ host: "", agent: "claude", identity: "$1:100:200" }, gone(45)), { status: 410 });
+  await assert.rejects(verifyQuickChat({ host: "", agent: "claude", identity: "$1:100:200" }, gone(255)), { status: 503 });
+  await assert.rejects(openQuickChat({ host: "", agent: "claude" }, gone(45)), { status: 503 });
+});
+
 test("Quick Chat falls back to well-known install locations off PATH", () => {
   const command = quickChatCommand("opencode");
   assert.match(command, /\.opencode\/bin/);

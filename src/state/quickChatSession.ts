@@ -54,7 +54,9 @@ export function createQuickChatPreparation(
 }
 
 export interface AttachmentStatus {
-  phase: "connecting" | "connected" | "retrying" | "disconnected";
+  // ended: the conversation is gone for good (its device answered 410), so
+  // nothing is retried and Quick Chat starts a new one.
+  phase: "connecting" | "connected" | "retrying" | "disconnected" | "ended";
   attempt: number;
   message: string;
   delayMs?: number;
@@ -114,7 +116,19 @@ export function createAttachmentRecovery(options: RecoveryOptions) {
       if (stopped || current.signal.aborted) return;
       await options.attach(current.signal);
     } catch (error: unknown) {
-      if (!stopped && !current.signal.aborted) failed(error instanceof Error ? error.message : "Could not reattach your conversation.");
+      if (stopped || current.signal.aborted) return;
+      const message = error instanceof Error ? error.message : "Could not reattach your conversation.";
+      if (error instanceof Error && "status" in error && error.status === 410) {
+        // Retrying can never bring this conversation back.
+        stopped = true;
+        clear();
+        controller?.abort();
+        connected = false;
+        options.detach();
+        options.status({ phase: "ended", attempt, message });
+        return;
+      }
+      failed(message);
     }
   };
   return {

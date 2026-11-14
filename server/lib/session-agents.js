@@ -19,6 +19,9 @@
 // - prompt: how a starting prompt is passed (`arg`, `flag` or `none`).
 // - detect: process rules for spotting the agent in a terminal (see
 //   matchAgentProcess); `programs` are names tmux shows as the pane command.
+// - account: the environment variable that picks another config folder (a
+//   second account), and the name that folder must have (`<folder>` or
+//   `<folder>-<suffix>`), so a relaunch uses the account the agent ran with.
 // - storage: where transcripts live, for usage readers.
 
 // Single-quotes one shell word unless it is plainly safe. Kept local (same as
@@ -62,6 +65,9 @@ export const SESSION_AGENTS = [
       mode("dontAsk", "Don't ask", "Runs pre-approved tools without asking and denies the rest", ["--permission-mode", "dontAsk"], AUTO),
       mode("bypass", "Bypass", "Skips every permission check", ["--dangerously-skip-permissions"], BYPASS),
     ],
+    // A config folder other than ~/.claude (a second account) is chosen with
+    // CLAUDE_CONFIG_DIR, so a resumed or Quick Chat session keeps using it.
+    account: { env: "CLAUDE_CONFIG_DIR", folder: ".claude" },
     resume: { kind: "continue-last", scope: "directory", args: ["-c"] },
     prompt: { style: "arg" },
     install: [
@@ -870,12 +876,13 @@ export function validSessionPrompt(value) {
  * quoting. Throws for anything outside the catalog.
  */
 export function sessionAgentLaunch(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).some(key => !["id", "mode", "resume", "prompt"].includes(key))) {
+  if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).some(key => !["id", "mode", "resume", "prompt", "account"].includes(key))) {
     throw new Error("Choose a supported agent.");
   }
   const agent = sessionAgent(value.id);
   const selected = agent?.modes.find(item => item.id === value.mode);
   if (!agent || !selected) throw new Error("Choose a supported agent and mode.");
+  if (value.account !== undefined && !validAgentAccount(agent, value.account)) throw new Error(`Choose a valid ${agent.label} account folder.`);
   if (value.resume !== undefined && typeof value.resume !== "boolean") throw new Error("Choose whether to continue the last conversation.");
   if (value.resume && !agentCanContinue(agent)) throw new Error(`${agent.label} cannot continue its last conversation from the command line.`);
   if (value.prompt !== undefined) {
@@ -890,9 +897,64 @@ export function sessionAgentLaunch(value) {
     : agent.prompt.style === "flag" ? [agent.prompt.flag, value.prompt.trim()]
       : [...(agent.prompt.separator ? [agent.prompt.separator] : []), value.prompt.trim()];
   return {
-    env: Object.entries(selected.env ?? {}),
+    env: [...(value.account !== undefined ? [[agent.account.env, value.account]] : []), ...Object.entries(selected.env ?? {})],
     argv: [agent.command, ...base, ...(value.resume ? agent.resume.args : agent.freshArgs), ...selected.args, ...prompt],
   };
+}
+
+export const AGENT_ACCOUNT_MAX_LENGTH = 160;
+
+/**
+ * Whether `value` is an account folder the agent can be started with: an
+ * absolute path of plain path characters (so it is typed without quoting, at
+ * most AGENT_ACCOUNT_MAX_LENGTH long) whose last part is the agent's config
+ * folder name, alone or with a suffix: /Users/me/.claude-work for
+ * CLAUDE_CONFIG_DIR. The native restore checks commands the same way.
+ *
+ * Self-contained on purpose: it is serialized into the remote probe script.
+ */
+export function validAgentAccount(agent, value) {
+  if (!agent?.account || typeof value !== "string" || !value.startsWith("/") || value.length > 160) return false;
+  const segments = value.slice(1).split("/");
+  if (segments.length < 2 || segments.some(segment => !/^[A-Za-z0-9_@%+:,.-]+$/.test(segment) || segment === "." || segment === "..")) return false;
+  const name = segments.at(-1);
+  const { folder } = agent.account;
+  return name === folder || (name.startsWith(`${folder}-`) && name.length > folder.length + 1);
+}
+
+/**
+ * The catalog mode an agent process was started in, from its arguments: the
+ * mode whose flags appear in order (`--permission-mode plan` or
+ * `--permission-mode=plan`), the one with the most flags when several do.
+ * Null when none does (the agent's own default, or a mode set only through
+ * the environment). `args` must be the exact argv: a prompt word is one
+ * argument, so it never matches a flag. `modes` is [{ id, args }], plain data.
+ *
+ * Self-contained on purpose: it is serialized into the remote probe script.
+ */
+export function matchAgentMode(args, modes) {
+  if (!Array.isArray(args)) return null;
+  // Everything after "--" is a positional argument (a prompt), never a flag.
+  const end = args.indexOf("--");
+  const words = (end < 0 ? args : args.slice(0, end)).flatMap(argument => {
+    const text = String(argument);
+    const equals = text.indexOf("=");
+    return text.startsWith("--") && equals > 2 ? [text.slice(0, equals), text.slice(equals + 1)] : [text];
+  });
+  let best = null;
+  for (const mode of modes) {
+    const flags = mode.args;
+    if (!flags.length || (best && best.args.length >= flags.length)) continue;
+    for (let start = 0; start + flags.length <= words.length; start++) {
+      if (flags.every((flag, offset) => words[start + offset] === flag)) { best = mode; break; }
+    }
+  }
+  return best ? best.id : null;
+}
+
+/** Plain-data mode rules per agent, safe to serialize into a remote probe script. */
+export function agentModeRules() {
+  return Object.fromEntries(SESSION_AGENTS.map(agent => [agent.id, agent.modes.map(item => ({ id: item.id, args: [...item.args] }))]));
 }
 
 // Returns the shell line typed into the new session, or throws for anything
@@ -907,19 +969,25 @@ export function sessionAgentCommand(value) {
  * The command that continues an agent's conversation in a restarted terminal,
  * or null when it cannot do that by itself (see agentCanAutoResume). It uses
  * the mode the session was started with when it is the same agent, otherwise
- * the agent's default mode. Throws for an agent outside the catalog.
+ * the agent's default mode, and the account folder it ran with, if any (one
+ * the agent cannot be started with is left out, never typed). Throws for an
+ * agent outside the catalog.
  */
 export function sessionAgentResumeCommand(id, recorded) {
   const agent = sessionAgent(id);
   if (!agent) throw new Error("Choose a supported agent.");
   if (!agentCanAutoResume(agent)) return null;
-  const selected = recorded?.id === agent.id && agent.modes.some(item => item.id === recorded.mode) ? recorded.mode : agent.defaultMode;
-  return sessionAgentCommand({ id: agent.id, mode: selected, resume: true });
+  const same = recorded?.id === agent.id;
+  const selected = same && agent.modes.some(item => item.id === recorded.mode) ? recorded.mode : agent.defaultMode;
+  const account = same && validAgentAccount(agent, recorded.account) ? { account: recorded.account } : {};
+  return sessionAgentCommand({ id: agent.id, mode: selected, resume: true, ...account });
 }
 
 /**
  * Every command a restarted terminal may type, with the program names tmux can
- * show while that agent runs. The native session restore accepts only these.
+ * show while that agent runs. The native session restore accepts only these,
+ * each also with `env <accountEnv>=<account folder>` in front for an agent
+ * that has accounts (the folder checked as validAgentAccount does).
  */
 export function sessionAgentResumeAllowlist() {
   return SESSION_AGENTS.filter(agentCanAutoResume).flatMap(agent => agent.modes.map(item => ({
@@ -927,6 +995,7 @@ export function sessionAgentResumeAllowlist() {
     command: sessionAgentCommand({ id: agent.id, mode: item.id, resume: true }),
     programs: [...agent.detect.programs],
     versionProgram: agent.detect.versionProgram === true,
+    account: agent.account ? { ...agent.account } : null,
   })));
 }
 

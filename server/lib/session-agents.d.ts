@@ -75,6 +75,13 @@ export interface SessionAgentStorage {
   limits: "api" | "files" | "cli" | null;
 }
 
+export interface SessionAgentAccount {
+  /** The environment variable that names the config folder. */
+  env: string;
+  /** The folder name: exactly this, or this with a "-suffix". */
+  folder: string;
+}
+
 export interface SessionAgentDefinition {
   id: SessionAgentId;
   label: string;
@@ -95,6 +102,8 @@ export interface SessionAgentDefinition {
   prompt: SessionAgentPrompt;
   install: readonly SessionAgentInstall[];
   detect: SessionAgentDetect;
+  /** Another config folder (a second account), picked with this environment variable. */
+  account?: SessionAgentAccount;
   storage: SessionAgentStorage;
 }
 
@@ -103,6 +112,8 @@ export interface SessionAgentChoice {
   mode: string;
   resume?: boolean;
   prompt?: string;
+  /** The account folder the agent runs with (see validAgentAccount). */
+  account?: string;
 }
 
 export interface SessionAgentLaunch {
@@ -115,6 +126,12 @@ export interface SessionAgentResumeEntry {
   command: string;
   programs: string[];
   versionProgram: boolean;
+  account: SessionAgentAccount | null;
+}
+
+export interface AgentModeRule {
+  id: string;
+  args: string[];
 }
 
 export interface AgentProcessRule {
@@ -163,7 +180,11 @@ export function sessionPromptError(value: unknown): string | null;
 export function validSessionPrompt(value: unknown): boolean;
 export function sessionAgentLaunch(value: unknown): SessionAgentLaunch;
 export function sessionAgentCommand(value: unknown): string;
-export function sessionAgentResumeCommand(id: unknown, recorded?: Pick<SessionAgentChoice, "id" | "mode">): string | null;
+export function sessionAgentResumeCommand(id: unknown, recorded?: Pick<SessionAgentChoice, "id" | "mode" | "account">): string | null;
+export const AGENT_ACCOUNT_MAX_LENGTH: number;
+export function validAgentAccount(agent: SessionAgentDefinition | undefined, value: unknown): value is string;
+export function matchAgentMode(args: readonly unknown[] | null | undefined, modes: readonly AgentModeRule[]): string | null;
+export function agentModeRules(): Record<SessionAgentId, AgentModeRule[]>;
 export function sessionAgentResumeAllowlist(): SessionAgentResumeEntry[];
 export function agentForProgram(value: unknown): SessionAgentId | undefined;
 export function agentProcessRules(): AgentProcessRule[];

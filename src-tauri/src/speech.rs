@@ -850,7 +850,15 @@ mod native {
         // The previous hypothesis was decoded in a language its audio was not
         // spoken in, so its preview was withheld (never shown to the user).
         previous_withheld: bool,
+        // Where the speech of the next hypothesis's window ends (set for each
+        // pass, read once by update): its last word may be typed live after
+        // a pause instead of waiting for a word after it.
+        spoken_until: Option<usize>,
     }
+
+    /// Quiet after the last spoken word (16 kHz samples) that lets it be typed
+    /// live, once two hypotheses agree on it, without a word after it.
+    const SPEECH_OVER: usize = 9_600;
 
     impl TranscriptWindow {
         fn update(&mut self, words: Vec<Word>, duration: usize, complete: bool) -> Transcript {
@@ -886,11 +894,25 @@ mod native {
             // busy machine decodes seldom); passes close together need a
             // third, so a word is not typed on what is nearly the same evidence.
             let independent = duration.saturating_sub(self.previous_duration) >= INDEPENDENT_AUDIO;
+            // The speaker paused after the words: the last one is complete.
+            // The decoder often times a last word into the quiet after it,
+            // up to the window's end, so it ends where the speech did.
+            let spoken_until = self.spoken_until.take();
+            let speech_over = spoken_until.filter(|end| duration.saturating_sub(*end) >= SPEECH_OVER);
             let count = if complete { pending.len() } else if !self.boundary_suffix.is_empty() || self.language_pending { 0 } else {
                 pending.iter().enumerate().take_while(|(index, word)| {
+                    // Only a word spoken before the pause is cut back to it: one
+                    // that starts in the quiet was made up from it (drop_unspoken
+                    // keeps words near the newest, unanalyzed audio) and waits.
+                    let end = match speech_over {
+                        Some(spoken) if word.start < spoken => word.end.min(spoken),
+                        Some(_) => usize::MAX,
+                        None => word.end,
+                    };
+                    let speech_over = speech_over.is_some();
                     // Keep the newest half-second and incomplete last word open.
-                    word.end.saturating_add(8_000) <= duration
-                        && previous.len() > index + 1
+                    end.saturating_add(8_000) <= duration
+                        && (previous.len() > index + 1 || (speech_over && previous.len() == index + 1 && pending.len() == index + 1))
                         && same_word(&previous[*index].text, &word.text)
                         && (independent || earlier.get(*index).is_none_or(|old| same_word(&old.text, &word.text)))
                 }).count()
@@ -964,16 +986,26 @@ mod native {
         /// must not vanish on release. Only words heard within this window
         /// (`duration`) count: after an utterance boundary the rest belongs to
         /// the next phrase. A final reading that shares no word with the
-        /// preview (decoded again in the language actually spoken) wins.
+        /// preview wins only when it reads about as much as the preview did
+        /// (decoded again in the language actually spoken); a much shorter one
+        /// is whisper stopping early or reading noise ("Thank you."), and the
+        /// words the user saw are typed instead.
         fn with_shown_tail(&self, mut words: Vec<Word>, duration: usize) -> Vec<Word> {
             let shown: Vec<Word> = self.shown().iter().filter(|word| word.start < duration).cloned().collect();
             if shown.is_empty() { return words; }
-            let pending = &words[self.entered(&words)..];
+            let entered = self.entered(&words);
+            let pending = &words[entered..];
             // The prefix of the shown words the final reading covers, word
             // for word: what follows it was shown and is missing from it.
             let covered = if pending.is_empty() { 0 } else {
                 let (covered, matched) = alignment(&shown, pending, false);
-                if matched == 0 { return words; }
+                if matched == 0 {
+                    let characters = |list: &[Word]| list.iter().map(|word| word.text.chars().count()).sum::<usize>();
+                    if characters(pending) * 5 >= characters(&shown) * 3 { return words; }
+                    words.truncate(entered);
+                    words.extend(shown);
+                    return words;
+                }
                 covered
             };
             words.extend_from_slice(&shown[covered..]);
@@ -1201,6 +1233,12 @@ mod native {
         let typed_until = window.confirmed.last().map_or(0, |word| word.end);
         let pause_ended = boundary.is_none() && !finalizing && !speech.speech_after(typed_until)
             && duration.saturating_sub(typed_until) >= UNSPOKEN_UTTERANCE_END;
+        // Where the speech in this window ends. The last spoken word waits for
+        // a word after it before it is typed live; once the speaker paused,
+        // none is coming, and under steady noise (a fan, a room) the level
+        // boundary never ends the utterance, so it would wait for Stop while
+        // the window grows over the noise and its reading drifts.
+        let spoken_until = speech.speech_end(typed_until);
         let commit_all = boundary.is_some() || finalizing || pause_ended || audio.len() >= 400_000;
         // Very short utterances still need a full decoder input frame.
         if audio.len() < 16_000 {
@@ -1336,6 +1374,7 @@ mod native {
         drop_unspoken(&mut words, &speech);
         if commit_all { window.withdraw_unspoken_preview(&speech); }
         let decoded_any = !words.is_empty();
+        window.spoken_until = Some(spoken_until);
         #[cfg(test)]
         let mut transcript = Transcript { raw_words, ..window.update(words, duration, commit_all) };
         #[cfg(not(test))]
@@ -1836,6 +1875,50 @@ mod native {
         }
 
         #[test]
+        fn the_last_spoken_word_is_typed_live_once_the_speaker_paused() {
+            // "eklediği oluyor" ends at 32 000; steady room noise follows, so no
+            // level boundary comes. Two passes 1.25 s apart agree on both words.
+            let pass = |window: &mut TranscriptWindow, duration: usize, spoken_until: Option<usize>| {
+                window.spoken_until = spoken_until;
+                window.update(words("şeyler de eklediği oluyor"), duration, false)
+            };
+            let mut window = TranscriptWindow::default();
+            pass(&mut window, 40_000, Some(32_000));
+            assert_eq!(pass(&mut window, 60_000, Some(32_000)).committed, "şeyler de eklediği oluyor");
+            // Still speaking (no pause after it): the last word waits for the next one.
+            let mut window = TranscriptWindow::default();
+            pass(&mut window, 40_000, Some(40_000));
+            assert_eq!(pass(&mut window, 60_000, Some(60_000)).committed, "şeyler de eklediği");
+            // A pause too short to end the word, or none known: it waits as well.
+            let mut window = TranscriptWindow::default();
+            pass(&mut window, 40_000, Some(32_000));
+            assert_eq!(pass(&mut window, 41_000, Some(32_000)).committed, "şeyler de eklediği");
+            let mut window = TranscriptWindow::default();
+            pass(&mut window, 40_000, None);
+            assert_eq!(pass(&mut window, 60_000, None).committed, "şeyler de eklediği");
+            // The decoder timed the last word into the quiet, up to the window's
+            // end (seen under room noise): it ends where the speech did.
+            let stretched = |end: usize| timed_words(&[("eklediği", 16_000, 32_000), ("oluyor", 32_000, end)]);
+            let mut window = TranscriptWindow::default();
+            window.spoken_until = Some(40_000);
+            window.update(stretched(50_000), 50_000, false);
+            window.spoken_until = Some(40_000);
+            assert_eq!(window.update(stretched(60_000), 60_000, false).committed, "eklediği oluyor");
+            // Words read from the quiet after the pause are never typed live.
+            let made_up = |end: usize| timed_words(&[("eklediği", 16_000, 32_000), ("oluyor", 32_000, 40_000), ("Bu", 44_000, 48_000), ("bir", 48_000, end)]);
+            let mut window = TranscriptWindow::default();
+            window.spoken_until = Some(40_000);
+            window.update(made_up(50_000), 70_000, false);
+            window.spoken_until = Some(40_000);
+            assert_eq!(window.update(made_up(52_000), 80_000, false).committed, "eklediği oluyor");
+            // A last word the two hypotheses disagree on is never typed.
+            let mut window = TranscriptWindow::default();
+            pass(&mut window, 40_000, Some(32_000));
+            window.spoken_until = Some(32_000);
+            assert_eq!(window.update(words("şeyler de eklediği olur"), 60_000, false).committed, "şeyler de eklediği");
+        }
+
+        #[test]
         fn words_the_preview_showed_survive_a_final_reading_that_drops_them() {
             // Logged: 7 words pending in the last preview, of which the final
             // pass typed the 2 its two last hypotheses agreed on.
@@ -1861,6 +1944,15 @@ mod native {
             let mut window = TranscriptWindow::default();
             window.update(words("What you need to do"), 40_000, false);
             assert_eq!(window.update(words("Ne yapman gerekiyorsa"), 40_000, true).committed, "Ne yapman gerekiyorsa");
+            // A much shorter disjoint reading is whisper stopping early or
+            // reading noise, not the speech: the shown words are typed.
+            // Logged before: 8 words pending in the last preview, of which the final pass typed 1.
+            let mut window = TranscriptWindow::default();
+            window.update(words("yazdığı şeyleri silip saçma şeyler de eklediği oluyor"), 96_000, false);
+            assert_eq!(window.update(words("Altyazı"), 96_000, true).committed, "yazdığı şeyleri silip saçma şeyler de eklediği oluyor");
+            let mut window = TranscriptWindow::default();
+            window.update(words("yazdığı şeyleri silip saçma şeyler de eklediği oluyor"), 96_000, false);
+            assert_eq!(window.update(words("İzlediğiniz için teşekkürler."), 96_000, true).committed, "yazdığı şeyleri silip saçma şeyler de eklediği oluyor");
             // A preview that was never shown (a translation) is never typed.
             let mut window = TranscriptWindow::default();
             window.update(words("What you need to do"), 40_000, false);
@@ -3555,7 +3647,13 @@ mod native {
                     let shown = passes.iter().rev().find(|(_, pass)| !pass.finalizing).map(|(_, pass)| normalized_words(&pass.preview)).unwrap_or_default();
                     let typed_words = normalized_words(&typed);
                     let tail = &typed_words[typed_words.len().saturating_sub(shown.len() + 2)..];
-                    let missing = shown.iter().filter(|word| !tail.contains(word)).count();
+                    // A shown word the final pass refined ("kaybet" read again as
+                    // "kaydet") was not lost: it is typed, a letter or two apart.
+                    let refined = |shown: &str, typed: &str| {
+                        let (shown, typed): (Vec<char>, Vec<char>) = (shown.chars().collect(), typed.chars().collect());
+                        char_distance(&shown, &typed) <= 2.min(shown.len() / 3)
+                    };
+                    let missing = shown.iter().filter(|word| !tail.iter().any(|typed| typed == *word || refined(word, typed))).count();
                     eprintln!("RELEASE {} {speech_db} dB: shown {shown:?} typed {typed:?}", if missing == 0 { "ok  " } else { "LOST" });
                     if missing > 0 { lost.push(format!("{speech_db} dB {typed:?} lost {missing} of {shown:?}")); }
                 }
@@ -3823,6 +3921,18 @@ impl SpeechMask {
             }
         }
         heard >= VOICED_FRAMES || loud >= LOUD_FRAMES
+    }
+
+    /// Where the speech in the window ends (in samples): after its last
+    /// voiced frame, or at `from` when nothing from there on is voiced.
+    /// The newest frames the voice model has not analyzed yet (it runs a
+    /// little behind the microphone) do not extend it once the model has
+    /// analyzed the window: judged by the level instead, steady noise (a
+    /// fan, a room) would always count as speech there.
+    fn speech_end(&self, from: usize) -> usize {
+        let analyzed = self.heard.iter().rposition(Option::is_some).map_or(self.loud.len(), |frame| frame + 1);
+        (from / Self::FRAME..analyzed).rev().find(|frame| self.voiced(*frame))
+            .map_or(from, |frame| ((frame + 1) * Self::FRAME).max(from))
     }
 
     /// The frames of a word's audio (`start..end` in samples), clamped to
@@ -4235,6 +4345,21 @@ mod language_choice_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn speech_ends_at_the_last_voiced_frame_the_voice_model_analyzed() {
+        // Steady room noise is loud everywhere; the voice model heard speech in
+        // the first 5 frames, quiet in the next 50, and has not analyzed the
+        // newest 5 yet (it runs behind the microphone).
+        let audio = vec![0.05f32; 60 * SpeechMask::FRAME];
+        let voice: Vec<Option<f32>> = [vec![Some(0.9); 5], vec![Some(0.05); 50], vec![None; 5]].concat();
+        let mask = SpeechMask::new(&audio, &voice);
+        assert_eq!(mask.speech_end(0), 5 * SpeechMask::FRAME, "the unanalyzed loud tail is not speech");
+        assert_eq!(mask.speech_end(20 * SpeechMask::FRAME), 20 * SpeechMask::FRAME, "nothing voiced after `from`");
+        // Without the voice model the level decides everywhere, as before.
+        assert_eq!(SpeechMask::new(&audio, &[]).speech_end(0), 60 * SpeechMask::FRAME);
+    }
+
     fn tone(rate: u32, frequency: f64, phase: f64, length: usize) -> Vec<f32> {
         (0..length)
             .map(|i| {

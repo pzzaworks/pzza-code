@@ -70,11 +70,14 @@ export interface LocalTile {
   choice?: SessionAgentChoice;
 }
 
-type ActivityRow = Pick<SessionActivity, "session" | "window" | "active" | "command" | "effectiveProvider">;
+type ActivityRow = Pick<SessionActivity, "session" | "window" | "active" | "command" | "effectiveProvider" | "launch">;
 
 /**
  * Which agents to start again after the restart, from the catalog. Detected
- * agents (activity rows) resume, in the mode their tile recorded when it is
+ * agents (activity rows) resume the way they were started: in the mode and
+ * with the account folder their process was started with (a shell function
+ * such as `CLAUDE_CONFIG_DIR=~/.claude-work claude --dangerously-skip-permissions`
+ * resumes as exactly that), else in the mode their tile recorded when it is
  * the same agent. Without activity (null), agents recorded for tiles resume
  * only where their program is running. Agents whose "continue" could pick up
  * a conversation from another folder (or that cannot continue at all) are
@@ -89,9 +92,14 @@ export function agentsToResume(rows: readonly ActivityRow[] | null, tiles: reado
   }
   return rows.flatMap(row => {
     const agent = rowAgent(row);
-    if (!agent) return [];
+    // Its account folder cannot be typed back: resuming would open the
+    // default account's conversation instead, so it stays at the shell.
+    if (!agent || row.launch?.accountUnusable) return [];
     const tile = tiles.find(item => item.session === row.session && (item.window === undefined ? row.active : item.window === row.window));
-    const command = sessionAgentResumeCommand(agent, tile?.choice);
+    const recorded = tile?.choice?.id === agent ? tile.choice.mode : undefined;
+    const mode = row.launch?.mode ?? recorded;
+    const account = row.launch?.account ?? undefined;
+    const command = sessionAgentResumeCommand(agent, mode !== undefined || account !== undefined ? { id: agent, mode: mode ?? "", account } : undefined);
     return command ? [{ session: row.session, window: row.window, command, onlyIfBusy: false }] : [];
   });
 }
@@ -231,8 +239,9 @@ async function detectLocalAgents(): Promise<AgentResume[] | null> {
   const rows = await fetchSessionActivity("").catch(() => null);
   if (!rows) return null;
   noteDetectedAgents(Object.fromEntries(rows.flatMap(row => {
-    const agent = row.active ? rowAgent(row) : undefined;
-    return agent ? [[row.session, agent]] : [];
+    // An agent whose account folder cannot be typed back is not relaunched.
+    const agent = row.active && !row.launch?.accountUnusable ? rowAgent(row) : undefined;
+    return agent ? [[row.session, { id: agent, mode: row.launch?.mode ?? null, account: row.launch?.account ?? null }]] : [];
   })));
   return agentsToResume(rows, localTiles());
 }

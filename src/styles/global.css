@@ -203,6 +203,12 @@ button {
   .topbar-tools.open {
     display: flex;
   }
+  /* A tool's dropdown opens below the card, not on its edge: past the button
+     (100%), the card's bottom padding and border, then the usual 4px gap the
+     top bar leaves under its buttons. */
+  .topbar-tools .menu-wrap > .menu {
+    top: calc(100% + 8px + 1px + 4px);
+  }
   /* The glass sits on a layer behind the tools rather than on the card: a
      backdrop-filter on the card would make it the backdrop root of the tool
      dropdowns that open inside it, and they would blur only the card. */
