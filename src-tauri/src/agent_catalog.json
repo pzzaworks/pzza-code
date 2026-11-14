@@ -340,210 +340,258 @@
       "programs": [
         "claude"
       ],
-      "versionProgram": true
+      "versionProgram": true,
+      "account": {
+        "env": "CLAUDE_CONFIG_DIR",
+        "folder": ".claude"
+      }
     },
     {
       "command": "claude -c --permission-mode acceptEdits",
       "programs": [
         "claude"
       ],
-      "versionProgram": true
+      "versionProgram": true,
+      "account": {
+        "env": "CLAUDE_CONFIG_DIR",
+        "folder": ".claude"
+      }
     },
     {
       "command": "claude -c --permission-mode plan",
       "programs": [
         "claude"
       ],
-      "versionProgram": true
+      "versionProgram": true,
+      "account": {
+        "env": "CLAUDE_CONFIG_DIR",
+        "folder": ".claude"
+      }
     },
     {
       "command": "claude -c --permission-mode auto",
       "programs": [
         "claude"
       ],
-      "versionProgram": true
+      "versionProgram": true,
+      "account": {
+        "env": "CLAUDE_CONFIG_DIR",
+        "folder": ".claude"
+      }
     },
     {
       "command": "claude -c --permission-mode dontAsk",
       "programs": [
         "claude"
       ],
-      "versionProgram": true
+      "versionProgram": true,
+      "account": {
+        "env": "CLAUDE_CONFIG_DIR",
+        "folder": ".claude"
+      }
     },
     {
       "command": "claude -c --dangerously-skip-permissions",
       "programs": [
         "claude"
       ],
-      "versionProgram": true
+      "versionProgram": true,
+      "account": {
+        "env": "CLAUDE_CONFIG_DIR",
+        "folder": ".claude"
+      }
     },
     {
       "command": "codex resume --last --sandbox read-only --ask-for-approval on-request",
       "programs": [
         "codex"
       ],
-      "versionProgram": false
+      "versionProgram": false,
+      "account": null
     },
     {
       "command": "codex resume --last --sandbox workspace-write --ask-for-approval on-request",
       "programs": [
         "codex"
       ],
-      "versionProgram": false
+      "versionProgram": false,
+      "account": null
     },
     {
       "command": "codex resume --last --approve-for-me",
       "programs": [
         "codex"
       ],
-      "versionProgram": false
+      "versionProgram": false,
+      "account": null
     },
     {
       "command": "codex resume --last --dangerously-bypass-approvals-and-sandbox",
       "programs": [
         "codex"
       ],
-      "versionProgram": false
+      "versionProgram": false,
+      "account": null
     },
     {
       "command": "env 'OPENCODE_CONFIG_CONTENT={\"permission\":{\"edit\":\"ask\",\"bash\":\"ask\",\"webfetch\":\"ask\"},\"agent\":{\"build\":{\"permission\":{\"edit\":\"ask\",\"bash\":\"ask\",\"webfetch\":\"ask\"}}}}' opencode -c --agent build",
       "programs": [
         "opencode"
       ],
-      "versionProgram": false
+      "versionProgram": false,
+      "account": null
     },
     {
       "command": "opencode -c --agent plan",
       "programs": [
         "opencode"
       ],
-      "versionProgram": false
+      "versionProgram": false,
+      "account": null
     },
     {
       "command": "opencode -c --auto",
       "programs": [
         "opencode"
       ],
-      "versionProgram": false
+      "versionProgram": false,
+      "account": null
     },
     {
       "command": "gemini --resume latest --approval-mode default",
       "programs": [
         "gemini"
       ],
-      "versionProgram": false
+      "versionProgram": false,
+      "account": null
     },
     {
       "command": "gemini --resume latest --approval-mode auto_edit",
       "programs": [
         "gemini"
       ],
-      "versionProgram": false
+      "versionProgram": false,
+      "account": null
     },
     {
       "command": "gemini --resume latest --approval-mode plan",
       "programs": [
         "gemini"
       ],
-      "versionProgram": false
+      "versionProgram": false,
+      "account": null
     },
     {
       "command": "gemini --resume latest --approval-mode yolo",
       "programs": [
         "gemini"
       ],
-      "versionProgram": false
+      "versionProgram": false,
+      "account": null
     },
     {
       "command": "pi --continue --tools read,grep,find,ls",
       "programs": [
         "pi"
       ],
-      "versionProgram": false
+      "versionProgram": false,
+      "account": null
     },
     {
       "command": "pi --continue",
       "programs": [
         "pi"
       ],
-      "versionProgram": false
+      "versionProgram": false,
+      "account": null
     },
     {
       "command": "agy -c",
       "programs": [
         "agy"
       ],
-      "versionProgram": false
+      "versionProgram": false,
+      "account": null
     },
     {
       "command": "agy -c --mode accept-edits",
       "programs": [
         "agy"
       ],
-      "versionProgram": false
+      "versionProgram": false,
+      "account": null
     },
     {
       "command": "agy -c --mode plan",
       "programs": [
         "agy"
       ],
-      "versionProgram": false
+      "versionProgram": false,
+      "account": null
     },
     {
       "command": "agy -c --dangerously-skip-permissions",
       "programs": [
         "agy"
       ],
-      "versionProgram": false
+      "versionProgram": false,
+      "account": null
     },
     {
       "command": "qwen --continue --approval-mode default",
       "programs": [
         "qwen"
       ],
-      "versionProgram": false
+      "versionProgram": false,
+      "account": null
     },
     {
       "command": "qwen --continue --approval-mode plan",
       "programs": [
         "qwen"
       ],
-      "versionProgram": false
+      "versionProgram": false,
+      "account": null
     },
     {
       "command": "qwen --continue --approval-mode auto-edit",
       "programs": [
         "qwen"
       ],
-      "versionProgram": false
+      "versionProgram": false,
+      "account": null
     },
     {
       "command": "qwen --continue --approval-mode auto",
       "programs": [
         "qwen"
       ],
-      "versionProgram": false
+      "versionProgram": false,
+      "account": null
     },
     {
       "command": "qwen --continue --approval-mode yolo",
       "programs": [
         "qwen"
       ],
-      "versionProgram": false
+      "versionProgram": false,
+      "account": null
     },
     {
       "command": "crush --continue",
       "programs": [
         "crush"
       ],
-      "versionProgram": false
+      "versionProgram": false,
+      "account": null
     },
     {
       "command": "crush --continue -y",
       "programs": [
         "crush"
       ],
-      "versionProgram": false
+      "versionProgram": false,
+      "account": null
     },
     {
       "command": "env 'KILO_CONFIG_CONTENT={\"permission\":{\"edit\":\"ask\",\"bash\":\"ask\",\"webfetch\":\"ask\"},\"agent\":{\"code\":{\"permission\":{\"edit\":\"ask\",\"bash\":\"ask\",\"webfetch\":\"ask\"}}}}' kilo --continue",
@@ -551,7 +599,8 @@
         "kilo",
         ".kilo"
       ],
-      "versionProgram": false
+      "versionProgram": false,
+      "account": null
     },
     {
       "command": "kilo --continue --auto",
@@ -559,49 +608,56 @@
         "kilo",
         ".kilo"
       ],
-      "versionProgram": false
+      "versionProgram": false,
+      "account": null
     },
     {
       "command": "grok -c",
       "programs": [
         "grok"
       ],
-      "versionProgram": false
+      "versionProgram": false,
+      "account": null
     },
     {
       "command": "grok -c --always-approve",
       "programs": [
         "grok"
       ],
-      "versionProgram": false
+      "versionProgram": false,
+      "account": null
     },
     {
       "command": "droid --resume --last",
       "programs": [
         "droid"
       ],
-      "versionProgram": false
+      "versionProgram": false,
+      "account": null
     },
     {
       "command": "droid --resume --last --auto low",
       "programs": [
         "droid"
       ],
-      "versionProgram": false
+      "versionProgram": false,
+      "account": null
     },
     {
       "command": "droid --resume --last --auto medium",
       "programs": [
         "droid"
       ],
-      "versionProgram": false
+      "versionProgram": false,
+      "account": null
     },
     {
       "command": "droid --resume --last --auto high",
       "programs": [
         "droid"
       ],
-      "versionProgram": false
+      "versionProgram": false,
+      "account": null
     },
     {
       "command": "kiro-cli chat --resume",
@@ -609,7 +665,8 @@
         "kiro-cli",
         "kiro"
       ],
-      "versionProgram": false
+      "versionProgram": false,
+      "account": null
     },
     {
       "command": "kiro-cli chat --resume --trust-all-tools",
@@ -617,91 +674,104 @@
         "kiro-cli",
         "kiro"
       ],
-      "versionProgram": false
+      "versionProgram": false,
+      "account": null
     },
     {
       "command": "kimi --continue",
       "programs": [
         "kimi"
       ],
-      "versionProgram": false
+      "versionProgram": false,
+      "account": null
     },
     {
       "command": "kimi --continue --plan",
       "programs": [
         "kimi"
       ],
-      "versionProgram": false
+      "versionProgram": false,
+      "account": null
     },
     {
       "command": "kimi --continue --yolo",
       "programs": [
         "kimi"
       ],
-      "versionProgram": false
+      "versionProgram": false,
+      "account": null
     },
     {
       "command": "kimi --continue --auto",
       "programs": [
         "kimi"
       ],
-      "versionProgram": false
+      "versionProgram": false,
+      "account": null
     },
     {
       "command": "devin --continue --permission-mode normal",
       "programs": [
         "devin"
       ],
-      "versionProgram": false
+      "versionProgram": false,
+      "account": null
     },
     {
       "command": "devin --continue --permission-mode accept-edits",
       "programs": [
         "devin"
       ],
-      "versionProgram": false
+      "versionProgram": false,
+      "account": null
     },
     {
       "command": "devin --continue --permission-mode smart",
       "programs": [
         "devin"
       ],
-      "versionProgram": false
+      "versionProgram": false,
+      "account": null
     },
     {
       "command": "devin --continue --permission-mode dangerous",
       "programs": [
         "devin"
       ],
-      "versionProgram": false
+      "versionProgram": false,
+      "account": null
     },
     {
       "command": "vibe --continue --agent ask",
       "programs": [
         "vibe-rs"
       ],
-      "versionProgram": false
+      "versionProgram": false,
+      "account": null
     },
     {
       "command": "vibe --continue",
       "programs": [
         "vibe-rs"
       ],
-      "versionProgram": false
+      "versionProgram": false,
+      "account": null
     },
     {
       "command": "vibe --continue --agent smart-approve",
       "programs": [
         "vibe-rs"
       ],
-      "versionProgram": false
+      "versionProgram": false,
+      "account": null
     },
     {
       "command": "vibe --continue --auto-approve",
       "programs": [
         "vibe-rs"
       ],
-      "versionProgram": false
+      "versionProgram": false,
+      "account": null
     },
     {
       "command": "aider --restore-chat-history --chat-mode ask",
@@ -711,7 +781,8 @@
         "python3",
         "Python"
       ],
-      "versionProgram": false
+      "versionProgram": false,
+      "account": null
     },
     {
       "command": "aider --restore-chat-history",
@@ -721,7 +792,8 @@
         "python3",
         "Python"
       ],
-      "versionProgram": false
+      "versionProgram": false,
+      "account": null
     },
     {
       "command": "aider --restore-chat-history --architect --no-auto-accept-architect",
@@ -731,7 +803,8 @@
         "python3",
         "Python"
       ],
-      "versionProgram": false
+      "versionProgram": false,
+      "account": null
     },
     {
       "command": "aider --restore-chat-history --yes-always",
@@ -741,21 +814,24 @@
         "python3",
         "Python"
       ],
-      "versionProgram": false
+      "versionProgram": false,
+      "account": null
     },
     {
       "command": "acli rovodev run --restore",
       "programs": [
         "atlassian_cli_rovodev"
       ],
-      "versionProgram": false
+      "versionProgram": false,
+      "account": null
     },
     {
       "command": "acli rovodev run --restore --yolo",
       "programs": [
         "atlassian_cli_rovodev"
       ],
-      "versionProgram": false
+      "versionProgram": false,
+      "account": null
     }
   ]
 }

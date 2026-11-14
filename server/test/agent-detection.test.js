@@ -146,6 +146,31 @@ test("detected sessions report the catalog id of the deepest foreground agent", 
   assert.equal(detectSessionActivity([pane()], [row(), row({ pid: 20, ppid: 10, pgid: 20, ...native("goose", "up") })])[0].command, "zsh");
 });
 
+test("detected agents report how they were started: catalog mode and account folder only", () => {
+  // `pz` as a shell function: CLAUDE_CONFIG_DIR="$HOME/.claude-pz" claude --dangerously-skip-permissions
+  const exact = ["claude", "--dangerously-skip-permissions"];
+  const claude = (overrides) => [row(), row({ pid: 20, ppid: 10, pgid: 20, ...native(...exact), exactArgs: exact, ...overrides })];
+  const launch = (overrides) => detectSessionActivity([pane()], claude(overrides))[0].launch;
+  assert.deepEqual(launch({ accountDirectory: "/Users/me/.claude-pz", account: "/Users/me/.claude-pz" }), { mode: "bypass", account: "/Users/me/.claude-pz" });
+  // A folder that cannot be passed back is reported, so nothing restarts the agent on the default account.
+  assert.deepEqual(launch({ accountDirectory: "/Users/me/my folder/.claude-x", account: "" }), { mode: "bypass", account: null, accountUnusable: true });
+  // The default folder named explicitly is the default account.
+  assert.deepEqual(launch({ accountDirectory: "/Users/me/.claude", account: "/Users/me/.claude" }), { mode: "bypass", account: null });
+  assert.deepEqual(launch({ exactArgs: ["claude", "--permission-mode", "plan", "--model", "opus"] }), { mode: "plan", account: null });
+  // Only exact arguments name a mode: a prompt quoting a flag, ps output split on spaces, or anything after "--" do not.
+  assert.equal(launch({ exactArgs: ["claude", "why is --dangerously-skip-permissions risky"] }), undefined);
+  assert.equal(launch({ exactArgs: ["claude", "--", "--dangerously-skip-permissions"] }), undefined);
+  assert.equal(launch({ exactArgs: undefined, args: ["claude", "why", "is", "--dangerously-skip-permissions", "risky"] }), undefined);
+  assert.equal(launch({ exactArgs: ["claude"] }), undefined, "nothing known, nothing reported");
+  assert.equal("launch" in detectSessionActivity([pane()], [row()])[0], false, "a shell has no launch");
+  // A remote device's row brings its launch; only catalog values survive.
+  const remote = (value) => detectSessionActivity([pane({ command: "claude", launch: value })], [])[0].launch;
+  assert.deepEqual(remote({ mode: "bypass", account: "/home/me/.claude-work" }), { mode: "bypass", account: "/home/me/.claude-work" });
+  assert.deepEqual(remote({ mode: null, account: null, accountUnusable: true }), { mode: null, account: null, accountUnusable: true });
+  assert.equal(remote({ mode: "rm -rf", account: "/home/me/.claude-work; id" }), undefined);
+  assert.equal(remote("bad"), undefined);
+});
+
 test("without a process snapshot, unambiguous pane commands name the agent and ambiguous ones do not", () => {
   const label = (command) => detectSessionActivity([pane({ command })], [])[0].command;
   assert.equal(label("kiro-cli"), "kiro");

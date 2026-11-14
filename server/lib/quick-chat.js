@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { SSH_TOKEN, shQuote, deviceEnv } from "./shell.js";
 import { tmuxCommand } from "./tmux-client.js";
-import { SESSION_AGENT_IDS, agentBinaryPathRules, sessionAgent, sessionAgentLaunch } from "./session-agents.js";
+import { SESSION_AGENT_IDS, agentBinaryPathRules, sessionAgent, sessionAgentLaunch, validAgentAccount } from "./session-agents.js";
 
 export const QUICK_CHAT_SESSION = "pzza-quick-chat";
 
@@ -11,14 +11,16 @@ const isQuickChatAgent = (agent) => SESSION_AGENT_IDS.includes(agent);
 const OWNER_CASES = SESSION_AGENT_IDS.map(id => `PZZA_QUICK_CHAT_AGENT=${id}:PZZA_QUICK_CHAT_LAUNCHER=${id}`).join("|");
 const LEGACY_OWNER_CASES = SESSION_AGENT_IDS.map(id => `PZZA_QUICK_CHAT_AGENT=${id}:`).join("|");
 
-export function quickChatCommand(agent, host = "") {
+export function quickChatCommand(agent, host = "", account = undefined) {
   if (!isQuickChatAgent(agent)) throw new Error("Choose a supported agent.");
   // A fixed name and atomic tmux creation prevent duplicate sessions, even
   // across concurrent clients. The session environment identifies our session.
   // Every profile launches its CLI directly, in the agent's safe default mode.
   const tmux = tmuxCommand(host);
   const definition = sessionAgent(agent);
-  const { env, argv } = sessionAgentLaunch({ id: agent, mode: definition.defaultMode });
+  // The account folder (CLAUDE_CONFIG_DIR) the agent runs with on this device,
+  // so Quick Chat opens the same account as the sessions started there.
+  const { env, argv } = sessionAgentLaunch({ id: agent, mode: definition.defaultMode, ...(account !== undefined ? { account } : {}) });
   const [binary, ...args] = argv;
   const folders = [...new Set([...definition.installDirs, ".local/bin"])];
   const candidates = folders.map(folder => `"$HOME"/${shQuote(`${folder}/${binary}`)}`).join(" ");
@@ -88,10 +90,12 @@ export function quickChatAttachmentGuard(agent, identity, tmux = "tmux") {
 function runQuickChat(body, operation, run) {
   const closing = operation === "close";
   const verifying = operation === "verify";
+  const opening = operation === "open";
   if (!body || typeof body !== "object" || Array.isArray(body) ||
-      Object.keys(body).some(key => !["host", ...(!closing ? ["agent"] : []), ...(verifying ? ["identity"] : [])].includes(key)) ||
+      Object.keys(body).some(key => !["host", ...(!closing ? ["agent"] : []), ...(verifying ? ["identity"] : []), ...(opening ? ["account"] : [])].includes(key)) ||
       typeof body.host !== "string" || (body.host && !SSH_TOKEN.test(body.host)) ||
       (!closing && !isQuickChatAgent(body.agent)) ||
+      (opening && body.account !== undefined && !validAgentAccount(sessionAgent(body.agent), body.account)) ||
       (verifying && (typeof body.identity !== "string" || !/^\$[0-9]+:[0-9]+:[0-9]+$/.test(body.identity)))) {
     return Promise.reject(Object.assign(new Error("Choose a valid device and agent."), { status: 400 }));
   }
@@ -103,7 +107,7 @@ launcher=$(${tmux} show-environment -t '=pzza-quick-chat' PZZA_QUICK_CHAT_LAUNCH
 case "$owner:$launcher" in
   ${OWNER_CASES}|${LEGACY_OWNER_CASES}) ${tmux} kill-session -t '=pzza-quick-chat' ;;
   *) exit 44 ;;
-esac` : verifying ? quickChatAttachmentGuard(body.agent, body.identity, tmux) : quickChatCommand(body.agent, body.host);
+esac` : verifying ? quickChatAttachmentGuard(body.agent, body.identity, tmux) : quickChatCommand(body.agent, body.host, body.account);
   // Explicit empty host always means this device, including receiver mode.
   const args = body.host ? ["-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5",
     "-o", "StrictHostKeyChecking=yes", "-o", "ForwardAgent=no", "-o", "ClearAllForwardings=yes",
@@ -118,7 +122,9 @@ esac` : verifying ? quickChatAttachmentGuard(body.agent, body.identity, tmux) : 
           44: "A session named pzza-quick-chat already exists but is not the expected managed Quick Chat session.",
           45: "This Quick Chat conversation ended or was replaced. It cannot be reattached.",
         }[error.code] ?? "Could not reach this device or open Quick Chat. Retry or choose another device. Check SSH access and the trusted host key for remote devices.";
-        reject(Object.assign(new Error(message), { status: 503 }));
+        // 410: the conversation is gone for good (a restarted terminal server, an
+        // agent that exited), so the app starts a new one instead of retrying.
+        reject(Object.assign(new Error(message), { status: verifying && error.code === 45 ? 410 : 503 }));
         return;
       }
       if (closing) { resolve({ closed: true }); return; }

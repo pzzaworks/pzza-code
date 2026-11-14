@@ -79,7 +79,11 @@ export function reuseActivityRows(previous: SessionActivity[] | null, next: Sess
   const byKey = new Map(previous.map((row) => [key(row), row]));
   const sameRow = (left: SessionActivity, right: SessionActivity) => {
     const keys = Object.keys(right) as (keyof SessionActivity)[];
-    return Object.keys(left).length === keys.length && keys.every((name) => Object.is(left[name], right[name]));
+    // `launch` is a fresh object on every poll: compare its values instead.
+    const same = (name: keyof SessionActivity) => name === "launch"
+      ? left.launch?.mode === right.launch?.mode && left.launch?.account === right.launch?.account && left.launch?.accountUnusable === right.launch?.accountUnusable
+      : Object.is(left[name], right[name]);
+    return Object.keys(left).length === keys.length && keys.every(same);
   };
   let changed = previous.length !== next.length;
   const rows = next.map((row, index) => {

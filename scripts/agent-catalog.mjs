@@ -16,7 +16,7 @@ export function nativeAgentCatalog() {
       const { exclude, require } = agentBinaryPathRules(agent);
       return { id: agent.id, binaries: [...agent.binaries], installDirs: [...agent.installDirs], excludePaths: exclude, requirePaths: require };
     }),
-    resume: sessionAgentResumeAllowlist().map(({ command, programs, versionProgram }) => ({ command, programs, versionProgram })),
+    resume: sessionAgentResumeAllowlist().map(({ command, programs, versionProgram, account }) => ({ command, programs, versionProgram, account })),
   };
   return `${JSON.stringify(catalog, null, 2)}\n`;
 }

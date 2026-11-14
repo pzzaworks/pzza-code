@@ -84,6 +84,28 @@ test("failed verification backs off with bounded jitter, never attaches, and pau
   assert.equal(time.timers.size, 0);
 });
 
+test("a conversation its device reports gone ends at once instead of retrying", async () => {
+  const time = clock();
+  const statuses = [];
+  let verifies = 0;
+  let detached = 0;
+  const recovery = createAttachmentRecovery({
+    ...time, random: () => 0.5, status: state => statuses.push(state), detach: () => { detached++; },
+    verify: async () => { verifies++; throw Object.assign(new Error("This Quick Chat conversation ended or was replaced."), { status: 410 }); },
+    attach: async () => assert.fail("a gone session must not be attached"),
+  });
+  recovery.start();
+  await settle();
+  assert.equal(verifies, 1);
+  assert.equal(statuses.at(-1).phase, "ended");
+  assert.match(statuses.at(-1).message, /ended or was replaced/);
+  assert.equal(time.timers.size, 0, "nothing is retried");
+  assert.ok(detached >= 1);
+  recovery.failed("late transport close");
+  assert.equal(statuses.at(-1).phase, "ended", "a late failure does not restart retries");
+  assert.equal(time.timers.size, 0);
+});
+
 test("late verification is cancelled on reconfigure/shutdown, with no attachment or input replay", async () => {
   const time = clock();
   let resolve;

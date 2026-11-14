@@ -8,7 +8,7 @@ import path from "node:path";
 import { createDeviceSession } from "../lib/session-create.js";
 import { shQuote } from "../lib/shell.js";
 import { SESSION_NAME_MAX_LENGTH } from "../lib/session-name.js";
-import { SESSION_AGENTS, agentCanAutoResume, sessionAgentCommand, sessionAgentResumeCommand } from "../lib/session-agents.js";
+import { SESSION_AGENTS, agentCanAutoResume, agentModeRules, matchAgentMode, sessionAgent, sessionAgentCommand, sessionAgentResumeAllowlist, sessionAgentResumeCommand, validAgentAccount } from "../lib/session-agents.js";
 import { validateAppCommand } from "../lib/app-control-schema.js";
 const exec = promisify(execFile);
 
@@ -173,6 +173,38 @@ test("restarted terminals resume every folder-scoped catalog agent in its record
   assert.equal(sessionAgentResumeCommand("claude"), "claude -c --permission-mode manual");
   assert.equal(sessionAgentResumeCommand("codex", { id: "codex", mode: "readOnly" }), "codex resume --last --sandbox read-only --ask-for-approval on-request");
   assert.throws(() => sessionAgentResumeCommand("bash"));
+});
+
+test("resumed agents keep the account folder and mode their process was started with", () => {
+  const claude = sessionAgent("claude");
+  // `pz` as a shell function: CLAUDE_CONFIG_DIR="$HOME/.claude-pz" claude --dangerously-skip-permissions
+  assert.equal(sessionAgentResumeCommand("claude", { id: "claude", mode: "bypass", account: "/Users/dev/.claude-pz" }),
+    "env CLAUDE_CONFIG_DIR=/Users/dev/.claude-pz claude -c --dangerously-skip-permissions");
+  assert.equal(sessionAgentResumeCommand("claude", { id: "claude", mode: "", account: "/Users/dev/.claude" }),
+    "env CLAUDE_CONFIG_DIR=/Users/dev/.claude claude -c --permission-mode manual");
+  // An account the agent cannot be started with is never typed.
+  for (const account of ["/Users/dev/other", "relative/.claude-x", "/Users/dev/.claude-", "/Users/dev/../x/.claude-y", "/Users/dev/.claude-$(id)", "/Users/my dev/.claude-x", "/.claude-x", `/${"a".repeat(160)}/.claude-x`]) {
+    assert.equal(validAgentAccount(claude, account), false, account);
+    assert.equal(sessionAgentResumeCommand("claude", { id: "claude", mode: "bypass", account }), "claude -c --dangerously-skip-permissions", account);
+    assert.throws(() => sessionAgentCommand({ id: "claude", mode: "default", account }), /account folder/);
+  }
+  // Agents without accounts never take one.
+  assert.equal(validAgentAccount(sessionAgent("codex"), "/Users/dev/.claude-pz"), false);
+  assert.equal(sessionAgentResumeCommand("codex", { id: "codex", mode: "readOnly", account: "/Users/dev/.claude-pz" }), "codex resume --last --sandbox read-only --ask-for-approval on-request");
+  assert.ok(sessionAgentResumeAllowlist().filter(entry => entry.agent === "claude").every(entry => entry.account?.env === "CLAUDE_CONFIG_DIR"));
+});
+
+test("an agent's mode is read back from the flags its process was started with", () => {
+  const claude = agentModeRules().claude;
+  assert.equal(matchAgentMode(["claude", "--dangerously-skip-permissions"], claude), "bypass");
+  assert.equal(matchAgentMode(["claude", "-c", "--permission-mode", "plan"], claude), "plan");
+  assert.equal(matchAgentMode(["claude", "--permission-mode=acceptEdits"], claude), "acceptEdits");
+  assert.equal(matchAgentMode(["node", "/x/cli.js", "--permission-mode", "auto"], claude), "auto");
+  assert.equal(matchAgentMode(["claude"], claude), null, "plain claude runs its own default");
+  assert.equal(matchAgentMode(["claude", "--permission-mode"], claude), null);
+  assert.equal(matchAgentMode(["claude", "plan", "--permission-mode"], claude), null, "flags count only in order");
+  assert.equal(matchAgentMode(null, claude), null);
+  assert.equal(matchAgentMode(["codex", "--sandbox", "read-only", "--ask-for-approval", "on-request"], agentModeRules().codex), "readOnly");
 });
 
 test("worktree sessions create a sibling worktree on a new branch and start there", { timeout: 20000 }, async () => {

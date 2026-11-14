@@ -1,8 +1,10 @@
 import { tmuxArgs } from "./tmux-client.js";
-import { SESSION_AGENTS, SESSION_AGENT_IDS, agentForProgram, agentProcessRules, matchAgentProcess } from "./session-agents.js";
+import { SESSION_AGENTS, SESSION_AGENT_IDS, agentForProgram, agentModeRules, agentProcessRules, matchAgentMode, matchAgentProcess, validAgentAccount } from "./session-agents.js";
 
 // Plain data, so the probe script below can carry the same values to a device.
 const AGENT_PROCESS_RULES = agentProcessRules();
+const AGENT_MODE_RULES = agentModeRules();
+const AGENT_ACCOUNTS = Object.fromEntries(SESSION_AGENTS.filter((agent) => agent.account).map((agent) => [agent.id, { ...agent.account }]));
 const AGENT_IDS = [...SESSION_AGENT_IDS];
 // Pane command names (tmux pane_current_command) that identify an agent.
 const PROGRAM_AGENTS = Object.fromEntries(SESSION_AGENTS.flatMap((agent) =>
@@ -159,6 +161,25 @@ export function scriptInterpreter(value) {
   return /^(node|nodejs|bun|deno|python[0-9.]*|Python)$/.test(String(value || "").split("/").pop());
 }
 
+// How a detected agent was started, so it can be started again the same way
+// (a refresh resuming it, Quick Chat opening it): the catalog mode its
+// arguments name and the account folder it runs with. Only values the catalog
+// accepts are kept; null when neither is known. Never the raw command line.
+// `accountSet`: the process chose a config folder (CLAUDE_CONFIG_DIR was set).
+// The default folder itself counts as no choice; any other folder the catalog
+// does not accept (outside the home folder, a symlink out of it, a name with
+// spaces) is reported as `accountUnusable`, so nothing restarts the agent
+// with the default account, which holds other logins and conversations.
+export function agentLaunch(agent, mode, account, accountSet) {
+  const modeKnown = typeof mode === "string" && (AGENT_MODE_RULES[agent] || []).some((rule) => rule.id === mode);
+  const rule = Object.prototype.hasOwnProperty.call(AGENT_ACCOUNTS, agent) ? AGENT_ACCOUNTS[agent] : null;
+  const valid = rule !== null && validAgentAccount({ account: rule }, account);
+  const chosen = valid && !account.endsWith(`/${rule.folder}`);
+  const unusable = rule !== null && accountSet === true && !valid;
+  if (!modeKnown && !chosen && !unusable) return null;
+  return { mode: modeKnown ? mode : null, account: chosen ? account : null, ...(unusable ? { accountUnusable: true } : {}) };
+}
+
 function activityMetadata(row) {
   const normalized = normalizeEffectiveModel(row.effectiveModel, row.effectiveProvider);
   if (!normalized || row.effectiveProvider !== normalized.provider || !["reported", "configured"].includes(row.effectiveModelEvidence)) return null;
@@ -200,13 +221,20 @@ export function detectSessionActivity(panes, processes) {
       const depth = ancestry(process, pane.pid);
       if (depth < 0) continue;
       const command = processAgentCommand(process);
-      if (command && (!best || depth > best.depth)) best = { command, metadata: processMetadata(process), depth };
+      if (command && (!best || depth > best.depth)) {
+        // Only exact arguments name a mode: ps output split on spaces cannot
+        // tell a flag from the same words inside a prompt.
+        const mode = matchAgentMode(process.exactArgs, AGENT_MODE_RULES[command] || []);
+        best = { command, metadata: processMetadata(process), launch: agentLaunch(command, mode, process.account, Boolean(process.accountDirectory)), depth };
+      }
     }
     // Once a process snapshot exists, never infer an agent or preserve stale
     // model evidence from a pane title/current-command label.
     const fallback = label(pane.command);
     const fallbackAgent = AGENT_IDS.includes(fallback);
     const metadata = best?.metadata || (!root && fallbackAgent ? activityMetadata(pane) : null);
+    // A remote device's row (no process snapshot here) brings its own launch.
+    const launch = best ? best.launch : !root && fallbackAgent ? agentLaunch(fallback, pane.launch?.mode, pane.launch?.account, pane.launch?.accountUnusable === true) : null;
     return {
       session: pane.session,
       window: pane.window,
@@ -218,6 +246,7 @@ export function detectSessionActivity(panes, processes) {
       effectiveModel: metadata?.effectiveModel ?? null,
       effectiveProvider: metadata?.effectiveProvider ?? null,
       effectiveModelEvidence: metadata?.effectiveModelEvidence ?? null,
+      ...(launch ? { launch } : {}),
     };
   });
 }
@@ -310,7 +339,9 @@ def process_data(pid):
     if not declared and environment_model:
         declared = True
         selected, provider = model(environment_model)
-    return {"pid": pid, "modelDeclared": declared, "effectiveModel": selected, "effectiveProvider": provider, "accountDirectory": account_directory}
+    # The exact arguments (ps joins them with spaces) tell the mode flags
+    # from the same words inside a prompt.
+    return {"pid": pid, "modelDeclared": declared, "effectiveModel": selected, "effectiveProvider": provider, "accountDirectory": account_directory, "argv": [argument[:512] for argument in argv[:128]]}
 
 result = []
 for raw_pid in sys.argv[1].split(",")[:64]:
@@ -326,6 +357,7 @@ function applyProcessSelectors(process, selectors) {
   process.selectorsAvailable = true;
   process.modelDeclared = selectors.modelDeclared;
   process.accountDirectory = selectors.accountDirectory;
+  if (Array.isArray(selectors.argv)) process.exactArgs = selectors.argv;
   if (selectors.metadata) Object.assign(process, selectors.metadata);
 }
 
@@ -348,6 +380,7 @@ async function macProcessSelectors(execute, pids) {
         modelDeclared: row.modelDeclared === true,
         metadata,
         accountDirectory: typeof row.accountDirectory === "string" ? row.accountDirectory : "",
+        argv: Array.isArray(row.argv) && row.argv.every((argument) => typeof argument === "string") ? row.argv : null,
       }]];
     }));
   } catch {
@@ -465,13 +498,10 @@ export async function probeSessionSnapshot(tmuxOptions, cache) {
           }
         }
         if (processAgentCommand(process)) {
-          const argument = foregroundModelSelection(argv);
-          if (argument.declared) {
-            applyProcessSelectors(process, { modelDeclared: true, metadata: argument.metadata, accountDirectory: "" });
-          } else {
-            const environment = await fs.readFile(`/proc/${process.pid}/environ`, "utf8");
-            applyProcessSelectors(process, processModelSelectors(argv, environment));
-          }
+          // Read even when --model is given: the account folder is needed to
+          // start the agent again the same way.
+          const environment = await fs.readFile(`/proc/${process.pid}/environ`, "utf8");
+          applyProcessSelectors(process, { ...processModelSelectors(argv, environment), argv: process.args });
         }
       } catch { /* A process may exit or deny a selector read during the snapshot. */ }
     } else {
@@ -525,7 +555,11 @@ export async function probeSessionSnapshot(tmuxOptions, cache) {
     for (const key of [...cache.keys()]) if (!current.has(key)) cache.delete(key);
   }
   await Promise.all(candidates.map(async (process) => {
-    if (!process.selectorsAvailable || process.modelDeclared || processMetadata(process) || processAgentCommand(process) !== "claude") return;
+    if (!process.selectorsAvailable || processAgentCommand(process) !== "claude") return;
+    // The account folder the process chose (CLAUDE_CONFIG_DIR), only when it
+    // is a config folder in the home folder; none means the default one.
+    if (process.accountDirectory) process.account = await accountDirectory(process.accountDirectory, fs, os, path);
+    if (process.modelDeclared || processMetadata(process)) return;
     const metadata = await configuredModelSelection({}, process.accountDirectory, fs, os, path);
     if (metadata) Object.assign(process, metadata);
   }));
@@ -536,4 +570,4 @@ export async function probeSessionActivity(tmuxOptions = tmuxArgs([]), cache) {
   return (await probeSessionSnapshot(tmuxOptions, cache)).rows;
 }
 
-export const ACTIVITY_PROBE_SCRIPT = `const AGENT_PROCESS_RULES = ${JSON.stringify(AGENT_PROCESS_RULES)};\nconst AGENT_IDS = ${JSON.stringify(AGENT_IDS)};\nconst PROGRAM_AGENTS = ${JSON.stringify(PROGRAM_AGENTS)};\nconst KNOWN_PROGRAMS = ${JSON.stringify(KNOWN_PROGRAMS)};\nconst matchAgentProcess = ${matchAgentProcess.toString()};\nconst scriptInterpreter = ${scriptInterpreter.toString()};\nconst normalizeEffectiveModel = ${normalizeEffectiveModel.toString()};\nconst modelSelection = ${modelSelection.toString()};\nconst foregroundModelSelection = ${foregroundModelSelection.toString()};\nconst environmentValue = ${environmentValue.toString()};\nconst processModelSelectors = ${processModelSelectors.toString()};\nconst settingsModelSelection = ${settingsModelSelection.toString()};\nconst settingsFileSelection = ${settingsFileSelection.toString()};\nconst accountDirectory = ${accountDirectory.toString()};\nconst configuredModelSelection = ${configuredModelSelection.toString()};\nconst processMetadata = ${processMetadata.toString()};\nconst processAgentCommand = ${processAgentCommand.toString()};\nconst activityMetadata = ${activityMetadata.toString()};\nconst detectSessionActivity = ${detectSessionActivity.toString()};\nconst interpreterEntrypoint = ${interpreterEntrypoint.toString()};\nconst MAC_PROCESS_SELECTORS_SCRIPT = ${JSON.stringify(MAC_PROCESS_SELECTORS_SCRIPT)};\nconst applyProcessSelectors = ${applyProcessSelectors.toString()};\nconst macProcessSelectors = ${macProcessSelectors.toString()};\nconst parseProcessRows = ${parseProcessRows.toString()};\nconst processSnapshotComplete = ${processSnapshotComplete.toString()};\nconst probeSessionSnapshot = ${probeSessionSnapshot.toString()};\n(${probeSessionActivity.toString()})([]).then((rows) => process.stdout.write(JSON.stringify(rows))).catch(() => process.stdout.write("[]"));`;
+export const ACTIVITY_PROBE_SCRIPT = `const AGENT_PROCESS_RULES = ${JSON.stringify(AGENT_PROCESS_RULES)};\nconst AGENT_IDS = ${JSON.stringify(AGENT_IDS)};\nconst AGENT_MODE_RULES = ${JSON.stringify(AGENT_MODE_RULES)};\nconst AGENT_ACCOUNTS = ${JSON.stringify(AGENT_ACCOUNTS)};\nconst matchAgentMode = ${matchAgentMode.toString()};\nconst validAgentAccount = ${validAgentAccount.toString()};\nconst agentLaunch = ${agentLaunch.toString()};\nconst PROGRAM_AGENTS = ${JSON.stringify(PROGRAM_AGENTS)};\nconst KNOWN_PROGRAMS = ${JSON.stringify(KNOWN_PROGRAMS)};\nconst matchAgentProcess = ${matchAgentProcess.toString()};\nconst scriptInterpreter = ${scriptInterpreter.toString()};\nconst normalizeEffectiveModel = ${normalizeEffectiveModel.toString()};\nconst modelSelection = ${modelSelection.toString()};\nconst foregroundModelSelection = ${foregroundModelSelection.toString()};\nconst environmentValue = ${environmentValue.toString()};\nconst processModelSelectors = ${processModelSelectors.toString()};\nconst settingsModelSelection = ${settingsModelSelection.toString()};\nconst settingsFileSelection = ${settingsFileSelection.toString()};\nconst accountDirectory = ${accountDirectory.toString()};\nconst configuredModelSelection = ${configuredModelSelection.toString()};\nconst processMetadata = ${processMetadata.toString()};\nconst processAgentCommand = ${processAgentCommand.toString()};\nconst activityMetadata = ${activityMetadata.toString()};\nconst detectSessionActivity = ${detectSessionActivity.toString()};\nconst interpreterEntrypoint = ${interpreterEntrypoint.toString()};\nconst MAC_PROCESS_SELECTORS_SCRIPT = ${JSON.stringify(MAC_PROCESS_SELECTORS_SCRIPT)};\nconst applyProcessSelectors = ${applyProcessSelectors.toString()};\nconst macProcessSelectors = ${macProcessSelectors.toString()};\nconst parseProcessRows = ${parseProcessRows.toString()};\nconst processSnapshotComplete = ${processSnapshotComplete.toString()};\nconst probeSessionSnapshot = ${probeSessionSnapshot.toString()};\n(${probeSessionActivity.toString()})([]).then((rows) => process.stdout.write(JSON.stringify(rows))).catch(() => process.stdout.write("[]"));`;
