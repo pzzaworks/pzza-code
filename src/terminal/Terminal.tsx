@@ -24,7 +24,7 @@ import { registerSearchTarget } from "./terminalSearch";
 import { sessionDisplayName, type TileStatus } from "../sessionMeta";
 import { registerContextMenu, clipboardPaste, readClipboardData } from "../ui/ContextMenu";
 import { registerDictationTarget, useDictation } from "../state/dictation";
-import { createDictationComposition } from "./dictationComposition";
+import { createDictationComposition, separatedFromCaret } from "./dictationComposition";
 import { notify } from "../state/notifications";
 import { createTerminalSignals } from "./notificationSignals";
 import { agentSignalled } from "./agentFinished";
@@ -1099,7 +1099,7 @@ function TerminalView({ tileId, name, host, cmd, args, cwd, window: win, active,
               if (!current() || tauriId === null || !attachmentReady) return false;
               const previousWrite = lastWrite;
               composition.beginConfirmedWrite();
-              term.paste(text);
+              term.paste(separatedFromCaret(term.buffer.active, text));
               if (lastWrite === previousWrite) return false;
               await lastWrite;
               return true;

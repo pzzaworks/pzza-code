@@ -346,6 +346,29 @@ export function observePermissionStatuses(next: Statuses): void {
 }
 
 /** One status read shortly after launch, for grants made while the app was closed or that needed a relaunch. */
+/**
+ * After an update the terminals keep running on the previous version (an
+ * update never stops them). macOS then lets none of the app's permissions
+ * reach them, and asks for none: Full Disk Access, Automation and the rest
+ * look granted in System Settings but fail in every terminal. Says so once
+ * at launch, with the way out.
+ */
+export function checkTerminalsUpdated(delayMs = 3000): () => void {
+  if (!LOCAL_SESSIONS_KEPT) return () => {};
+  const timer = window.setTimeout(() => {
+    void invoke<boolean>("local_tmux_outdated").then(outdated => {
+      if (!outdated) return;
+      notify({
+        category: "app",
+        title: "Terminals still run the previous version",
+        body: "PzzaCode was updated while your terminals kept running, so they don't get its permissions yet: Full Disk Access, Automation and Screen Recording fail in them, even though System Settings shows them allowed. Refresh sessions in Settings > Setup moves them to this version; agents continue their conversations.",
+        dedupeKey: "terminals-outdated",
+      });
+    }, () => { /* No terminal service: nothing runs on an old version. */ });
+  }, delayMs);
+  return () => window.clearTimeout(timer);
+}
+
 export function checkPermissionsAtLaunch(delayMs = 3000): () => void {
   if (!PERMISSIONS_SUPPORTED) return () => {};
   const timer = window.setTimeout(() => {

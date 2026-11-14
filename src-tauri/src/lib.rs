@@ -506,6 +506,7 @@ pub fn run() {
             session_refresh::local_tmux_refresh_sessions,
             restore_local_sessions,
             session_refresh::local_tmux_record_sessions,
+            session_refresh::local_tmux_outdated,
             setup::setup_status,
             setup::setup_install,
             forward::forward_scan,

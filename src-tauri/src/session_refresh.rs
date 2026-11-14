@@ -791,6 +791,12 @@ fn server_snapshot(tmux: Tmux) -> Result<Option<(String, Vec<SavedSession>)>, St
         // The server did not even report itself: none is running.
         return Ok(None);
     };
+    // A server without sessions (a refresh's new one, before anything is
+    // restored) lists none, and tmux then refuses the windows and panes of
+    // "all" sessions ("no current target"): it has none of either.
+    if sections.get(1).is_some_and(|listing| listing.trim().is_empty()) {
+        return Ok(Some((identity.to_string(), Vec::new())));
+    }
     if let Some(reason) = failed {
         return Err(reason);
     }
@@ -814,6 +820,10 @@ pub fn snapshot(tmux: Tmux) -> Result<Vec<SavedSession>, String> {
         }
         Err(error) => return Err(error),
     };
+    // No sessions: tmux refuses the listings of all windows and panes then.
+    if sessions.trim().is_empty() {
+        return Ok(Vec::new());
+    }
     let windows = read(tmux, &["list-windows", "-a", "-F", WINDOWS_FORMAT])?;
     let panes = read(tmux, &["list-panes", "-a", "-F", PANES_FORMAT])?;
     Ok(plan_snapshot(&sessions, &windows, &panes))
@@ -2078,6 +2088,16 @@ pub async fn local_tmux_record_sessions(app: tauri::AppHandle, agents: Option<Ve
         .map_err(|error| error.to_string())?
 }
 
+/// Whether the local terminals still run on the app version that was
+/// installed before this one (see local_tmux::helper_outdated): the app's
+/// privacy grants reach them again only after Refresh sessions.
+#[tauri::command]
+pub async fn local_tmux_outdated() -> Result<bool, String> {
+    tauri::async_runtime::spawn_blocking(crate::local_tmux::helper_outdated)
+        .await
+        .map_err(|error| error.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2348,6 +2368,28 @@ mod tests {
             let _ = self.client().arg("kill-server").output();
             let _ = fs::remove_dir_all(&self.directory);
         }
+    }
+
+    // tmux 3.8 answers "no current target" to listings of all windows or
+    // panes on a server without sessions; a refresh's new server is one until
+    // its sessions are restored, and the refresh failed on it.
+    #[test]
+    fn a_server_without_sessions_lists_none_instead_of_failing() {
+        let server = Server::new();
+        let client = || server.client();
+        let status = Command::new("tmux")
+            .args(["-f", "/dev/null", "-S"])
+            .arg(&server.socket)
+            .args(["start-server", ";", "set-option", "-g", "exit-empty", "off"])
+            .env_remove("TMUX")
+            .status()
+            .unwrap();
+        assert!(status.success());
+        assert!(run(&client, &strings(&["list-panes", "-a"])).is_err_and(|error| error.contains("no current target")), "the tmux behavior this guards against");
+        let snapshot_now = server_snapshot(&client).unwrap().expect("the server reports itself");
+        assert!(server_name(&snapshot_now.0));
+        assert_eq!(snapshot_now.1, Vec::new());
+        assert_eq!(snapshot(&client), Ok(Vec::new()));
     }
 
     #[test]
