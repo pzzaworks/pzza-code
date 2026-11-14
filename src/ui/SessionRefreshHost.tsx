@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 import { Loader2, X } from "lucide-react";
-import { checkPermissionsAtLaunch, dismissSessionRefreshNotice, localTileOnCanvas, useSessionRefresh } from "../state/sessionRefresh";
+import { checkPermissionsAtLaunch, checkTerminalsUpdated, dismissSessionRefreshNotice, localTileOnCanvas, useSessionRefresh } from "../state/sessionRefresh";
 import { useStore } from "../state/store";
 import "./SessionRefreshHost.css";
 
@@ -10,7 +10,8 @@ const OK_NOTICE_MS = 6000;
 /**
  * The non-blocking notice for local session refreshes and restores, wherever
  * they were started. It also reads permissions once after launch, so a grant
- * that needed a relaunch still refreshes the terminals.
+ * that needed a relaunch still refreshes the terminals, and says when the
+ * terminals still run the version installed before an update.
  */
 export function SessionRefreshHost() {
   const running = useSessionRefresh(state => state.running);
@@ -22,6 +23,7 @@ export function SessionRefreshHost() {
   // of them is in view. Failures always are.
   const tileInView = useStore(localTileOnCanvas);
   useEffect(() => checkPermissionsAtLaunch(), []);
+  useEffect(() => checkTerminalsUpdated(), []);
   useEffect(() => {
     if (notice?.tone !== "ok") return;
     const timer = window.setTimeout(dismissSessionRefreshNotice, OK_NOTICE_MS);

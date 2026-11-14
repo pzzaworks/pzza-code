@@ -70,19 +70,32 @@ fn cpu_session(path: &Path) -> Result<ort::session::Session, String> {
     builder.commit_from_file(path).map_err(|error| error.to_string())
 }
 
+/// Windows (32 ms each, so half a second) without speech after which the
+/// model starts afresh. Its recurrent state follows the level of the speech
+/// it heard: after loud speech, a quieter phrase (a softer voice, a step back
+/// from the microphone) read as silence and was never typed, while the same
+/// phrase from a fresh state was speech. The reference implementation resets
+/// it for every recording; a dictation resets it at each pause.
+const RESET_AFTER_QUIET: usize = 16;
+/// A window below this probability counts as quiet for the reset.
+const QUIET_PROBABILITY: f32 = 0.15;
+
 pub(crate) struct Vad {
     session: ort::session::Session,
     state: Vec<f32>,
     context: Vec<f32>,
     window: Vec<f32>,
     probability: f32,
+    // Consecutive quiet windows since speech; the state resets once on reaching
+    // RESET_AFTER_QUIET and stays fresh through the rest of the pause.
+    quiet: usize,
 }
 
 impl Vad {
     pub(crate) fn load(path: &Path) -> Result<Self, String> {
         let failed = |error: String| format!("Voice activity detection could not start: {error}");
         let session = cpu_session(path).map_err(failed)?;
-        Ok(Self { session, state: vec![0.0; 2 * 128], context: vec![0.0; CONTEXT], window: Vec::with_capacity(WINDOW), probability: 0.0 })
+        Ok(Self { session, state: vec![0.0; 2 * 128], context: vec![0.0; CONTEXT], window: Vec::with_capacity(WINDOW), probability: 0.0, quiet: 0 })
     }
 
     /// Feeds 16 kHz audio and returns the speech probability of the latest
@@ -117,6 +130,10 @@ impl Vad {
         drop(outputs);
         self.probability = probability;
         self.state = state;
+        self.quiet = if probability < QUIET_PROBABILITY { self.quiet + 1 } else { 0 };
+        if self.quiet == RESET_AFTER_QUIET {
+            self.state.iter_mut().for_each(|value| *value = 0.0);
+        }
         Ok(())
     }
 }
@@ -146,5 +163,30 @@ mod tests {
         let speech: Vec<f32> = bytes[data + 8..].chunks_exact(4).map(|s| f32::from_le_bytes([s[0], s[1], s[2], s[3]]) * 0.2).collect();
         let peak = speech.chunks(320).map(|chunk| vad.push(chunk).unwrap()).fold(0.0f32, f32::max);
         assert!(peak > 0.8, "speech probability peaked at {peak}");
+    }
+
+    // A phrase spoken 40 dB softer after a pause (a step back from the
+    // microphone) is still speech: before the reset at pauses, the state left
+    // by the loud phrase made every frame of the soft one read as silence.
+    #[test]
+    #[ignore = "needs ONNX Runtime and the Silero model"]
+    fn a_soft_phrase_after_a_loud_one_is_speech() {
+        let model = PathBuf::from(std::env::var("PZZA_VAD_MODEL").expect("PZZA_VAD_MODEL"));
+        let path = std::env::temp_dir().join(format!("pzza-vad-soft-{}.wav", std::process::id()));
+        let status = std::process::Command::new("/usr/bin/say").args(["-v", "Samantha (English (US))", "--data-format=LEF32@16000", "-o"]).arg(&path).arg("Then open a pull request and tell me what failed.").status().unwrap();
+        assert!(status.success());
+        let bytes = std::fs::read(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+        let data = bytes.windows(4).position(|window| window == b"data").unwrap();
+        let speech: Vec<f32> = bytes[data + 8..].chunks_exact(4).map(|s| f32::from_le_bytes([s[0], s[1], s[2], s[3]])).collect();
+        let peak = speech.iter().fold(0.0f32, |peak, sample| peak.max(sample.abs()));
+        let loud: Vec<f32> = speech.iter().map(|sample| sample / peak * 0.5).collect();
+        let soft: Vec<f32> = loud.iter().map(|sample| sample * 0.01).collect();
+        let mut vad = Vad::load(&model).unwrap();
+        let voiced = |vad: &mut Vad, audio: &[f32]| audio.chunks(320).map(|chunk| vad.push(chunk).unwrap()).filter(|p| *p >= 0.3).count() as f32 / audio.len().div_ceil(320) as f32;
+        assert!(voiced(&mut vad, &loud) > 0.4, "the loud phrase is speech");
+        vad.push(&vec![0.0; 16_000 * 6 / 10]).unwrap();
+        let share = voiced(&mut vad, &soft);
+        assert!(share > 0.4, "only {:.0}% of the soft phrase read as speech", share * 100.0);
     }
 }

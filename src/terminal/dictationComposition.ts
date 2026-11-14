@@ -86,6 +86,32 @@ export function layoutComposition(text: string, first: number, rest: number, lin
   return out.slice(0, Math.max(1, lines));
 }
 
+// Pending words are drawn dimmer than typed text, as system dictation does:
+// drawn like typed text, a preview the next reading revised looked as if
+// words already typed into the terminal were being deleted.
+const PENDING_ALPHA = 0.55;
+
+/** The terminal foreground (`#rgb`, `#rrggbb` or `rgb()`) at the pending words' opacity. */
+export function pendingColor(foreground: string): string {
+  const hex = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(foreground.trim())?.[1];
+  const channels = hex
+    ? (hex.length === 3 ? Array.from(hex).map((digit) => digit + digit) : hex.match(/../g) ?? []).map((pair) => parseInt(pair, 16))
+    : /^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i.exec(foreground.trim())?.slice(1, 4).map(Number);
+  if (!channels || channels.length !== 3 || channels.some((value) => !(value >= 0 && value <= 255))) return foreground;
+  return `rgba(${channels.join(", ")}, ${PENDING_ALPHA})`;
+}
+
+/**
+ * Dictated words as they go in at the caret: after a word (anything but
+ * whitespace right before the caret) they start with a space, as system
+ * dictation does, instead of running into it ("ve" + "üst" read "veüst").
+ */
+export function separatedFromCaret(buffer: IBuffer, text: string): string {
+  if (!text || /^\s/.test(text) || buffer.cursorX === 0) return text;
+  const before = buffer.getLine(buffer.baseY + buffer.cursorY)?.getCell(buffer.cursorX - 1)?.getChars() ?? "";
+  return before !== "" && !/\s/.test(before) ? ` ${text}` : text;
+}
+
 /** Activity shown after the pending words: speech is being heard, or the final pass runs. */
 export type DictationIndicator = "listening" | "finishing";
 // Three one-cell dots, so they lay out like any other text at the caret.
@@ -148,7 +174,7 @@ export function createDictationComposition(term: Terminal) {
   };
   const render = () => {
     frame = 0;
-    const words = awaitingEcho ? held : text;
+    const words = separatedFromCaret(term.buffer.active, awaitingEcho ? held : text);
     const dots = indicator ? INDICATOR_DOTS : "";
     const shown = words && dots ? `${words} ${dots}` : words || dots;
     if (disposed || !shown || suspended) { hide(); return; }
@@ -195,6 +221,7 @@ export function createDictationComposition(term: Terminal) {
       color: term.options.theme?.foreground ?? "#ffffff",
     });
     const background = term.options.theme?.background ?? "transparent";
+    const pending = pendingColor(term.options.theme?.foreground ?? "#ffffff");
     layer.setAttribute("data-indicator", indicator ?? "");
     const parts = splitIndicator(lines, Array.from(dots).length);
     lines.forEach((_, index) => {
@@ -207,6 +234,9 @@ export function createDictationComposition(term: Terminal) {
       const content = element.children[0] as HTMLSpanElement;
       content.textContent = parts[index].text;
       content.style.backgroundColor = background;
+      // Words written to the terminal and waiting for its echo are typed:
+      // full color. Words still being recognized are dimmed.
+      content.style.color = awaitingEcho ? "" : pending;
       // Each line shows only as many dots as it holds; the rest stay hidden.
       const indicatorDots = element.children[1] as HTMLSpanElement;
       const { first, count } = parts[index];

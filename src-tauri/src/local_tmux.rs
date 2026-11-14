@@ -347,6 +347,48 @@ pub fn ensure_running() {
     }
 }
 
+/// Whether the running terminal helper predates this app's executable: the
+/// app was updated while its terminals kept running (the helper outlives the
+/// app on purpose, so an update never stops them). The helper then still runs
+/// the old version's code, which no longer matches the signature on disk, so
+/// macOS lets none of the app's privacy grants (Full Disk Access, Automation,
+/// Screen Recording) reach the terminals, and asks for none, until the
+/// helper restarts (Refresh sessions).
+pub fn helper_outdated() -> bool {
+    let Ok(executable) = std::env::current_exe() else { return false };
+    let target = format!("gui/{}/{LABEL}", unsafe { libc::geteuid() });
+    let Ok(printed) = bounded_output(Command::new("/bin/launchctl").args(["print", &target])) else { return false };
+    if !printed.status.success() {
+        return false;
+    }
+    let job = loaded_job(&String::from_utf8_lossy(&printed.stdout));
+    // Another app copy's helper, or none running, is not this update's concern.
+    let (true, Some(program), Some(pid)) = (job.running, job.program.as_deref(), job.pid) else { return false };
+    if Path::new(program) != executable {
+        return false;
+    }
+    let modified = fs::metadata(&executable).and_then(|metadata| metadata.modified()).ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok()).map(|time| time.as_secs());
+    match (process_started(pid), modified) {
+        (Some(started), Some(modified)) => started_before_update(started, modified),
+        _ => false,
+    }
+}
+
+/// A helper started before the executable it runs was replaced runs old code.
+fn started_before_update(started: u64, modified: u64) -> bool {
+    started < modified
+}
+
+/// When a process started, in seconds since the epoch.
+fn process_started(pid: u32) -> Option<u64> {
+    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+    let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+    // SAFETY: `info` is a writable proc_bsdinfo of exactly `size` bytes.
+    let read = unsafe { libc::proc_pidinfo(pid as libc::c_int, libc::PROC_PIDTBSDINFO, 0, (&mut info as *mut libc::proc_bsdinfo).cast(), size) };
+    (read == size).then_some(info.pbi_start_tvsec)
+}
+
 /// Whether the app has let go of its terminals (it is quitting).
 pub fn stopping() -> bool {
     STOPPED.load(Ordering::SeqCst)
@@ -395,6 +437,8 @@ pub fn restart() -> io::Result<()> {
 struct LoadedJob {
     program: Option<String>,
     running: bool,
+    // The running helper's process.
+    pid: Option<u32>,
 }
 
 /// What to do with the service job before starting its helper.
@@ -405,10 +449,10 @@ enum JobAction {
     Reregister,
 }
 
-/// The job's own `program` and `state` lines from `launchctl print`; nested
-/// blocks (arguments, environment, endpoints) are skipped.
+/// The job's own `program`, `state` and `pid` lines from `launchctl print`;
+/// nested blocks (arguments, environment, endpoints) are skipped.
 fn loaded_job(print: &str) -> LoadedJob {
-    let mut job = LoadedJob { program: None, running: false };
+    let mut job = LoadedJob { program: None, running: false, pid: None };
     let mut depth = 0usize;
     for line in print.lines() {
         let text = line.trim();
@@ -423,6 +467,8 @@ fn loaded_job(print: &str) -> LoadedJob {
                 }
             } else if let Some(state) = text.strip_prefix("state = ") {
                 job.running = state == "running";
+            } else if let Some(pid) = text.strip_prefix("pid = ") {
+                job.pid = pid.parse().ok().filter(|pid| *pid > 0);
             }
         }
         if text.ends_with('{') {
@@ -917,15 +963,30 @@ mod tests {
         assert!(!job.running, "a nested block's state is not the job's");
         let running = loaded_job(&PRINTED_JOB.replace("state = not running", "state = running"));
         assert!(running.running);
-        assert_eq!(loaded_job(""), LoadedJob { program: None, running: false });
+        assert_eq!(loaded_job(""), LoadedJob { program: None, running: false, pid: None });
         assert_eq!(loaded_job("gui/501/x = {\n\tstate = running\n}\n").program, None);
+        assert_eq!(loaded_job(&PRINTED_JOB.replace("\tstate = not running", "\tstate = running\n\tpid = 16257")).pid, Some(16257));
+        assert_eq!(loaded_job(PRINTED_JOB).pid, None);
+        assert_eq!(loaded_job("gui/501/x = {\n\tpid = 0\n}\n").pid, None);
+    }
+
+    #[test]
+    fn a_helper_started_before_the_app_was_replaced_runs_old_code() {
+        // Started 00:11, the app updated 01:57: its grants no longer reach the terminals.
+        assert!(started_before_update(1_794_700_302, 1_794_706_654));
+        assert!(!started_before_update(1_794_706_700, 1_794_706_654));
+        assert!(!started_before_update(1_794_706_654, 1_794_706_654));
+        // This process's own start time reads back, and is not in the future.
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+        assert!(process_started(std::process::id()).is_some_and(|started| started > 0 && started <= now));
+        assert_eq!(process_started(u32::MAX), None);
     }
 
     #[test]
     fn a_stale_job_is_registered_again_only_without_a_server() {
         let current = Path::new("/Applications/PzzaCode.app/Contents/MacOS/pzzacode");
         let stale = loaded_job(PRINTED_JOB);
-        let same = LoadedJob { program: Some(current.to_string_lossy().into_owned()), running: false };
+        let same = LoadedJob { program: Some(current.to_string_lossy().into_owned()), running: false, pid: None };
         // A live server keeps whatever job owns it.
         assert_eq!(job_action(true, Some(&stale), current), JobAction::Keep);
         assert_eq!(job_action(true, None, current), JobAction::Keep);
@@ -937,7 +998,7 @@ mod tests {
         let running = LoadedJob { running: true, ..stale.clone() };
         assert_eq!(job_action(false, Some(&running), current), JobAction::Keep);
         // An unreadable program is left alone.
-        let unknown = LoadedJob { program: None, running: false };
+        let unknown = LoadedJob { program: None, running: false, pid: None };
         assert_eq!(job_action(false, Some(&unknown), current), JobAction::Keep);
     }
 

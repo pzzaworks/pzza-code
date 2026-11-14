@@ -295,22 +295,13 @@ mod native {
     // live words may be typed in it and it hints the following decodes.
     const SETTLED_SHARE: f32 = 0.8;
 
-    // New audio (16 kHz samples) between two hypotheses that makes their
-    // agreement enough to type a word without a third.
-    const INDEPENDENT_AUDIO: usize = 16_000;
-
     fn decoder_threads() -> i32 {
         std::thread::available_parallelism().map(|n| n.get().min(8) as i32).unwrap_or(4)
     }
 
     fn audio_context(samples: usize) -> i32 {
-        // Each encoder frame covers 20 ms, with two seconds of padding. Mixed
-        // speech uses the full context to avoid losing short language switches.
+        // Each encoder frame covers 20 ms, with two seconds of padding.
         (samples.div_ceil(320).saturating_add(100).div_ceil(128) * 128).clamp(768, 1500) as i32
-    }
-
-    fn decode_context(samples: usize, multilingual: bool) -> i32 {
-        if multilingual { 1500 } else { audio_context(samples) }
     }
 
     #[cfg(test)]
@@ -825,362 +816,15 @@ mod native {
         end: usize,
     }
 
-    #[derive(Default)]
-    struct TranscriptWindow {
-        earlier: Vec<Word>,
-        previous: Vec<Word>,
-        // Audio length the previous hypothesis was decoded from.
-        previous_duration: usize,
-        confirmed: Vec<Word>,
-        detected_language: Option<String>,
-        // The latest unsure decision on this utterance, its next decode guess.
-        tentative_language: Option<String>,
-        // Holds live words while the utterance's language is uncertain.
-        language_pending: bool,
-        // Consecutive language checks that agreed with their decode language.
-        agreeing_checks: u8,
-        language_checked_at: usize,
-        language_hint_until: usize,
-        english_since: Option<usize>,
-        multilingual: bool,
-        language_changed: bool,
-        language_transition: bool,
-        missing_prefix: bool,
-        boundary_suffix: Vec<Word>,
-        // The previous hypothesis was decoded in a language its audio was not
-        // spoken in, so its preview was withheld (never shown to the user).
-        previous_withheld: bool,
-        // Where the speech of the next hypothesis's window ends (set for each
-        // pass, read once by update): its last word may be typed live after
-        // a pause instead of waiting for a word after it.
-        spoken_until: Option<usize>,
-    }
-
-    /// Quiet after the last spoken word (16 kHz samples) that lets it be typed
-    /// live, once two hypotheses agree on it, without a word after it.
-    const SPEECH_OVER: usize = 9_600;
-
-    impl TranscriptWindow {
-        fn update(&mut self, words: Vec<Word>, duration: usize, complete: bool) -> Transcript {
-            let words = if complete { self.with_shown_tail(words, duration) } else { words };
-            let language_changed = mem::take(&mut self.language_changed);
-            let language_transition = mem::take(&mut self.language_transition);
-            let omitted_prefix = language_changed && !self.confirmed.is_empty()
-                && !words.is_empty() && aligned_prefix(&words, &self.confirmed) == 0;
-            self.missing_prefix |= omitted_prefix;
-            // Recovery belongs to the boundary's old hypotheses. On subsequent
-            // passes those hypotheses already describe the new language and
-            // must go through normal word confirmation instead.
-            let carried = if omitted_prefix && self.boundary_suffix.is_empty() {
-                self.finish_missing_prefix(&words, duration)
-            } else { String::new() };
-            // Enter agreed recovery first so only the still-uncertain remainder
-            // can hold later words at this boundary.
-            if language_transition && !complete {
-                self.remember_boundary_suffix(&words, duration);
-            }
-            if self.missing_prefix && aligned_prefix(&words, &self.confirmed) > 0 {
-                self.missing_prefix = false;
-            }
-            let entered = self.entered(&words);
-            let pending = &words[entered..];
-            if self.boundary_suffix_is_restored(pending) {
-                self.boundary_suffix.clear();
-            }
-            let previous = &self.previous[self.entered(&self.previous)..];
-            let earlier = &self.earlier[self.entered(&self.earlier)..];
-            // A word is typed once consecutive hypotheses agree on it. Two
-            // suffice when they were decoded from clearly different audio (a
-            // busy machine decodes seldom); passes close together need a
-            // third, so a word is not typed on what is nearly the same evidence.
-            let independent = duration.saturating_sub(self.previous_duration) >= INDEPENDENT_AUDIO;
-            // The speaker paused after the words: the last one is complete.
-            // The decoder often times a last word into the quiet after it,
-            // up to the window's end, so it ends where the speech did.
-            let spoken_until = self.spoken_until.take();
-            let speech_over = spoken_until.filter(|end| duration.saturating_sub(*end) >= SPEECH_OVER);
-            let count = if complete { pending.len() } else if !self.boundary_suffix.is_empty() || self.language_pending { 0 } else {
-                pending.iter().enumerate().take_while(|(index, word)| {
-                    // Only a word spoken before the pause is cut back to it: one
-                    // that starts in the quiet was made up from it (drop_unspoken
-                    // keeps words near the newest, unanalyzed audio) and waits.
-                    let end = match speech_over {
-                        Some(spoken) if word.start < spoken => word.end.min(spoken),
-                        Some(_) => usize::MAX,
-                        None => word.end,
-                    };
-                    let speech_over = speech_over.is_some();
-                    // Keep the newest half-second and incomplete last word open.
-                    end.saturating_add(8_000) <= duration
-                        && (previous.len() > index + 1 || (speech_over && previous.len() == index + 1 && pending.len() == index + 1))
-                        && same_word(&previous[*index].text, &word.text)
-                        && (independent || earlier.get(*index).is_none_or(|old| same_word(&old.text, &word.text)))
-                }).count()
-            };
-            let transcript = Transcript {
-                preview: word_text(pending),
-                committed: [carried, word_text(&pending[..count])].into_iter()
-                    .filter(|text| !text.is_empty()).collect::<Vec<_>>().join(" "),
-                consumed: 0,
-                #[cfg(test)]
-                raw_words: String::new(),
-            };
-            // Rebase already entered audio onto this hypothesis. A correction to
-            // an old word must not prevent unrelated later words from being typed.
-            if count > 0 {
-                self.confirm(&words, entered, count);
-                self.missing_prefix = false;
-            }
-            if !words.is_empty() {
-                self.earlier = mem::replace(&mut self.previous, words);
-                self.previous_duration = duration;
-            }
-            transcript
-        }
-
-        fn confirm(&mut self, words: &[Word], entered: usize, count: usize) {
-            if entered < self.confirmed.len() {
-                // A language-specific hypothesis may temporarily omit words
-                // already typed. Keep those anchors in case a later decode
-                // restores them with different timestamps.
-                self.confirmed.extend_from_slice(&words[entered..entered + count]);
-            } else {
-                self.confirmed = words[..entered + count].to_vec();
-            }
-        }
-
-        fn entered(&self, words: &[Word]) -> usize {
-            let aligned = aligned_prefix(words, &self.confirmed);
-            if aligned > 0 || self.missing_prefix { return aligned; }
-            // A decode can retime the retained audio by more than a word. When
-            // the entered words still read in order, follow them: the timing
-            // frontier below would treat retimed new words as already typed.
-            let (lexical, matched) = alignment(words, &self.confirmed, false);
-            if matched >= self.confirmed.len().min(2) && lexical > 0 { return lexical; }
-            // Without a language change, a wholly revised hypothesis still
-            // represents the same audio. Preserve the already entered frontier.
-            self.confirmed.last().map(|last| words.iter()
-                .take_while(|word| word.end <= last.end).count()).unwrap_or(0)
-        }
-
-        /// The untyped words the last preview showed the user.
-        fn shown(&self) -> &[Word] {
-            if self.previous_withheld { return &[]; }
-            &self.previous[self.entered(&self.previous)..]
-        }
-
-        /// Before an utterance is typed whole, the previewed words its reading
-        /// may fall back on (with_shown_tail) pass the same test as the
-        /// reading's own words, now that the voice model heard all their audio.
-        fn withdraw_unspoken_preview(&mut self, speech: &super::SpeechMask) {
-            let entered = self.entered(&self.previous);
-            let mut shown = self.previous.split_off(entered);
-            drop_unspoken(&mut shown, speech);
-            self.previous.extend(shown);
-        }
-
-        /// The hypothesis that ends an utterance, extended by the previewed
-        /// words it lacks at its end. A final decode may refine the words the
-        /// preview showed, but whisper sometimes stops early or returns nothing
-        /// for audio it read fine a moment before; words the user already saw
-        /// must not vanish on release. Only words heard within this window
-        /// (`duration`) count: after an utterance boundary the rest belongs to
-        /// the next phrase. A final reading that shares no word with the
-        /// preview wins only when it reads about as much as the preview did
-        /// (decoded again in the language actually spoken); a much shorter one
-        /// is whisper stopping early or reading noise ("Thank you."), and the
-        /// words the user saw are typed instead.
-        fn with_shown_tail(&self, mut words: Vec<Word>, duration: usize) -> Vec<Word> {
-            let shown: Vec<Word> = self.shown().iter().filter(|word| word.start < duration).cloned().collect();
-            if shown.is_empty() { return words; }
-            let entered = self.entered(&words);
-            let pending = &words[entered..];
-            // The prefix of the shown words the final reading covers, word
-            // for word: what follows it was shown and is missing from it.
-            let covered = if pending.is_empty() { 0 } else {
-                let (covered, matched) = alignment(&shown, pending, false);
-                if matched == 0 {
-                    let characters = |list: &[Word]| list.iter().map(|word| word.text.chars().count()).sum::<usize>();
-                    if characters(pending) * 5 >= characters(&shown) * 3 { return words; }
-                    words.truncate(entered);
-                    words.extend(shown);
-                    return words;
-                }
-                covered
-            };
-            words.extend_from_slice(&shown[covered..]);
-            words
-        }
-
-        fn remember_boundary_suffix(&mut self, words: &[Word], duration: usize) {
-            if !self.boundary_suffix.is_empty() { return; }
-            let previous = &self.previous[self.entered(&self.previous)..];
-            let current = &words[self.entered(words)..];
-            let Some(anchor) = current.first() else { return; };
-            let position = previous.iter().position(|word| same_timed_word(word, anchor)).or_else(|| {
-                if self.missing_prefix {
-                    previous.iter().position(|word| same_word(&word.text, &anchor.text))
-                } else { None }
-            });
-            let Some(position) = position else { return; };
-            if position == 0 || previous[position - 1].end.saturating_add(8_000) > duration { return; }
-            // A detector transition deleted one or more settled, still-unentered
-            // words immediately before an acoustic anchor. Later output cannot
-            // insert them ahead of newly typed words, so wait for recovery.
-            self.boundary_suffix = previous[..position].to_vec();
-        }
-
-        fn boundary_suffix_is_restored(&self, pending: &[Word]) -> bool {
-            !self.boundary_suffix.is_empty()
-                && pending.len() >= self.boundary_suffix.len()
-                && self.boundary_suffix.iter().zip(pending)
-                    .all(|(expected, word)| same_word(&expected.text, &word.text))
-        }
-
-        fn finish_missing_prefix(&mut self, words: &[Word], duration: usize) -> String {
-            if !self.missing_prefix || words.is_empty() || self.confirmed.is_empty() || aligned_prefix(words, &self.confirmed) > 0 {
-                return String::new();
-            }
-            // A language change can omit the entire old-language prefix. Finish
-            // only its still-pending words that both earlier decodes agreed on.
-            let entered = aligned_prefix(&self.previous, &self.confirmed);
-            let previous = &self.previous[entered..];
-            let earlier = &self.earlier[aligned_prefix(&self.earlier, &self.confirmed)..];
-            let count = previous.iter().zip(earlier).take_while(|(word, old)| {
-                same_word(&word.text, &old.text) && word.end.saturating_add(8_000) <= duration
-            }).count();
-            let text = word_text(&previous[..count]);
-            if count > 0 {
-                let words = self.previous[..entered + count].to_vec();
-                self.confirm(&words, entered, count);
-            }
-            text
-        }
-
-        fn trim(&mut self, samples: usize) {
-            self.previous_duration = self.previous_duration.saturating_sub(samples);
-            self.language_checked_at = self.language_checked_at.saturating_sub(samples);
-            self.language_hint_until = self.language_hint_until.saturating_sub(samples);
-            self.english_since = self.english_since.map(|start| start.saturating_sub(samples));
-            if self.language_hint_until == 0 {
-                self.detected_language = None;
-                self.multilingual = false;
-            }
-            for words in [&mut self.earlier, &mut self.previous, &mut self.confirmed, &mut self.boundary_suffix] {
-                words.retain(|word| word.end > samples);
-                for word in words {
-                    word.start = word.start.saturating_sub(samples);
-                    word.end = word.end.saturating_sub(samples);
-                }
-            }
-        }
-
-        // Records this pass's language check against the language its words
-        // were decoded in. Live words wait until two checks in a row find that
-        // language settled in the utterance's own audio; any later check that
-        // disagrees or is unsure holds them again (and checks every pass), so a
-        // guess or an early misdetection never types a translation.
-        fn record_language_check(&mut self, choice: &super::LanguageChoice, decode_language: &str) {
-            self.tentative_language = Some(choice.language.clone());
-            let agrees = choice.language == decode_language && choice.share >= SETTLED_SHARE;
-            self.agreeing_checks = if agrees { self.agreeing_checks.saturating_add(1) } else { 0 };
-            self.language_pending = self.agreeing_checks < 2;
-        }
-
-        fn observe_language(&mut self, language: String, duration: usize) {
-            self.multilingual |= self.detected_language.as_ref().is_some_and(|current| *current != language);
-            let sustained_english = if language == "en" {
-                duration.saturating_sub(*self.english_since.get_or_insert(duration)) >= 16_000
-            } else {
-                self.english_since = None;
-                false
-            };
-            // An English hint can omit foreign phrases from mixed speech. Keep
-            // the other language's hint while that speech remains in the buffer;
-            // brief English interjections still transcribe under that hint. Switch
-            // back when English persists, rather than pinning a foreign language.
-            if language != "en" || sustained_english || self.detected_language.as_deref().is_none_or(|current| current == "en") {
-                let transition = self.detected_language.as_ref().is_some_and(|current| current != &language);
-                self.language_changed |= self.detected_language.as_ref() != Some(&language);
-                self.language_transition |= transition;
-                self.detected_language = Some(language);
-                self.language_hint_until = duration;
-            }
-            self.language_checked_at = duration;
-        }
-    }
-
     fn word_text(words: &[Word]) -> String {
         words.iter().map(|word| word.text.as_str()).collect::<Vec<_>>().join(" ")
-    }
-
-    fn aligned_prefix(words: &[Word], confirmed: &[Word]) -> usize {
-        alignment(words, confirmed, true).0
-    }
-
-    // The prefix of `words` that covers `confirmed`, and how many words matched.
-    // `timed` requires matching words to share their audio (see aligned_prefix).
-    fn alignment(words: &[Word], confirmed: &[Word], timed: bool) -> (usize, usize) {
-        let Some(last) = confirmed.last() else { return (0, 0); };
-        // Align the retained overlap, allowing insertions, deletions and revisions
-        // in old speech. Time breaks ties so repeated words remain distinct.
-        let mut costs: Vec<usize> = (0..=words.len()).collect();
-        let mut matches = vec![0; words.len() + 1];
-        for (index, old) in confirmed.iter().enumerate() {
-            let mut diagonal = costs[0];
-            let mut diagonal_matches = matches[0];
-            costs[0] = index + 1;
-            for (position, word) in words.iter().enumerate() {
-                let above = costs[position + 1];
-                let above_matches = matches[position + 1];
-                let overlaps = word.start < old.end && word.end > old.start;
-                // After two words establish the overlap, trust that lexical
-                // alignment: cutting retained audio can retime the entire phrase.
-                let nearby = word.start < old.end.saturating_add(1_600)
-                    && word.end.saturating_add(1_600) > old.start;
-                let equal = (!timed || overlaps || (nearby && diagonal_matches > 0) || diagonal_matches >= 2)
-                    && same_word(&old.text, &word.text);
-                let substitution = if equal { 0 } else if overlaps || !timed { 1 } else { 2 };
-                let best = [
-                    (diagonal + substitution, diagonal_matches + usize::from(equal)),
-                    (above + 1, above_matches),
-                    (costs[position] + 1, matches[position]),
-                ].into_iter().min_by_key(|(cost, matched)| (*cost, std::cmp::Reverse(*matched))).unwrap();
-                costs[position + 1] = best.0;
-                matches[position + 1] = best.1;
-                diagonal = above;
-                diagonal_matches = above_matches;
-            }
-        }
-        let index = (0..=words.len()).filter(|index| *index == 0 || matches[*index] > 0).min_by_key(|index| {
-            let end = index.checked_sub(1).map(|i| words[i].end).unwrap_or(0);
-            (costs[*index], std::cmp::Reverse(matches[*index]), end.abs_diff(last.end))
-        }).unwrap_or(0);
-        (index, matches[index])
-    }
-
-    fn utterance_boundary(audio: &[f32]) -> Option<usize> {
-        let mut voiced = 0;
-        let mut quiet = 0;
-        for (index, frame) in audio.chunks_exact(320).enumerate() {
-            if frame.iter().map(|value| value * value).sum::<f32>() / 320.0 > 0.000025 {
-                voiced += 1;
-                quiet = 0;
-            } else {
-                quiet += 1;
-                // Look inside the buffer too: another phrase may have started
-                // while the engine was decoding the previous one.
-                if voiced >= 10 && quiet >= 20 { return Some((index + 1) * 320); }
-            }
-        }
-        None
     }
 
     fn transcribe(
         app: &AppHandle,
         capture: &Arc<Capture>,
         language: &str,
-        window: &mut TranscriptWindow,
+        window: &mut PhraseWindow,
         finalizing: bool,
     ) -> Result<Transcript, String> {
         let rate = *capture.rate.lock().map_err(|_| "Audio lock failed")?;
@@ -1195,133 +839,134 @@ mod native {
         let mut context = state.context.lock().map_err(|_| "Speech model lock failed")?;
         let engine = context.as_mut().ok_or("Speech model is not loaded")?;
         emit_processing(app, capture, true);
-        let result = transcribe_samples(engine, capture, language, window, &samples, &voice, rate, finalizing);
+        let result = transcribe_phrase(engine, capture, language, window, &samples, &voice, rate, finalizing);
         emit_processing(app, capture, false);
         result
     }
 
-    fn transcribe_samples(
+    // ---- Live dictation as phrases ----
+    //
+    // Speech is cut into phrases at the pauses the voice model hears. Only
+    // the phrase being spoken is decoded for the preview; once it ends, its
+    // own audio decides its language, it is decoded once more in that
+    // language (with the fallback decode) and typed, and it never changes
+    // again. Decoding a whole multi-phrase window in one language turned a
+    // phrase in the other language into a translation, and re-reading the
+    // whole window every quarter second rewrote words already shown.
+
+    /// Quiet (16 kHz samples) the voice model hears after speech that ends a phrase.
+    const PHRASE_GAP: usize = 3_200;
+    /// Speech a phrase needs before a pause can end it, so a click is not a phrase.
+    const PHRASE_MIN_SPEECH: usize = 3_200;
+    /// A phrase with less speech than this ends only at a pause of PHRASE_SHORT_GAP.
+    const PHRASE_SHORT: usize = 16_000;
+    const PHRASE_SHORT_GAP: usize = 9_600;
+    /// Audio kept after a phrase's last voiced frame: the end of its last word.
+    const PHRASE_TAIL: usize = 1_600;
+    /// Silence read before a phrase, and quiet kept before the next word.
+    const PHRASE_LEAD: usize = 4_800;
+    /// A phrase spoken this long without a pause types the words two decodes
+    /// agreed on, leaving the last second open.
+    const PHRASE_LONG: usize = 240_000;
+    /// Beyond this, the start of a phrase is typed whatever the decodes agree on:
+    /// the window would otherwise outgrow what the decoder reads.
+    const PHRASE_MAX: usize = 400_000;
+
+    #[derive(Default)]
+    struct PhraseWindow {
+        // The language the current phrase is decoded in: its own audio's
+        // settled language, else the last phrase's.
+        language: Option<String>,
+        // The preview the user saw for the current phrase.
+        shown: Vec<Word>,
+    }
+
+    /// Where the first phrase in the window ends: the end of its speech and
+    /// where the audio that is kept for the next phrase starts (16 kHz
+    /// samples). Frames the voice model has not analyzed yet end nothing;
+    /// without the model at all, the level decides.
+    fn phrase_end(speech: &super::SpeechMask) -> Option<(usize, usize)> {
+        let frame = super::SpeechMask::FRAME;
+        let modeled = speech.heard.iter().any(Option::is_some);
+        let (mut spoken, mut quiet, mut last_voiced) = (0, 0, None);
+        for index in 0..speech.loud.len() {
+            let voiced = match speech.heard[index] {
+                Some(voiced) => voiced,
+                None if modeled => return None,
+                None => speech.loud[index],
+            };
+            if voiced {
+                spoken += 1;
+                quiet = 0;
+                last_voiced = Some(index);
+            } else if spoken * frame >= PHRASE_MIN_SPEECH {
+                quiet += 1;
+                // A short phrase ("Okay,") waits for a longer pause: alone, the
+                // decoder tends to add a word to it ("Okay, then...").
+                let gap = if spoken * frame < PHRASE_SHORT { PHRASE_SHORT_GAP } else { PHRASE_GAP };
+                if quiet * frame >= gap {
+                    let end = (last_voiced? + 1) * frame;
+                    return Some((end + PHRASE_TAIL, end + quiet * frame / 2));
+                }
+            }
+        }
+        None
+    }
+
+    /// Decodes a phrase's audio in its language. Automatic: in the phrase's
+    /// language so far (else the last spoken one), then the detector reads
+    /// the same encoder pass; a phrase being typed is decoded again when its
+    /// audio was spoken in another language. Returns the words and whether
+    /// they are in the language spoken (a preview in the wrong one is a
+    /// translation and is not shown).
+    fn decode_phrase(
         engine: &mut Engine,
         capture: &Arc<Capture>,
         language: &str,
-        window: &mut TranscriptWindow,
-        samples: &[f32],
-        // The voice model's speech probability per 20 ms frame of `samples`
-        // (Capture::window_voice); missing or None frames fall back to the level.
-        voice: &[Option<f32>],
-        rate: u32,
-        finalizing: bool,
-    ) -> Result<Transcript, String> {
-        let mut audio = super::resample(samples, rate);
-        super::normalize_level(&mut audio);
-        let boundary = utterance_boundary(&audio);
-        let utterance_samples = boundary.map(|end| end * rate as usize / 16_000).unwrap_or(samples.len());
-        if let Some(end) = boundary { audio.truncate(end); }
-        let speech = super::SpeechMask::new(&audio, voice);
-        if let Some(consumed) = unspoken_audio(window, &speech, audio.len(), boundary.map(|_| utterance_samples), samples.len(), rate, finalizing) {
-            return Ok(Transcript {
-                preview: String::new(),
-                committed: String::new(),
-                consumed,
-                #[cfg(test)]
-                raw_words: String::new(),
-            });
-        }
-        let duration = audio.len();
-        // The pause that ends an utterance, reached with previewed words still
-        // untyped (unspoken_audio decodes then): type them now, as at a boundary.
-        let typed_until = window.confirmed.last().map_or(0, |word| word.end);
-        let pause_ended = boundary.is_none() && !finalizing && !speech.speech_after(typed_until)
-            && duration.saturating_sub(typed_until) >= UNSPOKEN_UTTERANCE_END;
-        // Where the speech in this window ends. The last spoken word waits for
-        // a word after it before it is typed live; once the speaker paused,
-        // none is coming, and under steady noise (a fan, a room) the level
-        // boundary never ends the utterance, so it would wait for Stop while
-        // the window grows over the noise and its reading drifts.
-        let spoken_until = speech.speech_end(typed_until);
-        let commit_all = boundary.is_some() || finalizing || pause_ended || audio.len() >= 400_000;
-        // Very short utterances still need a full decoder input frame.
-        if audio.len() < 16_000 {
-            audio.resize(16_000, 0.0);
-        }
-        #[cfg(test)]
-        let mut detect_ms: Option<f64> = None;
-        #[cfg(test)]
-        let mut heard: Option<(String, f32)> = None;
+        window: &mut PhraseWindow,
+        audio: &[f32],
+        duration: usize,
+        // Where the phrase's speech starts (16 kHz samples), for words read in the lead.
+        speech_start: usize,
+        typing: bool,
+    ) -> Result<Option<(Vec<Word>, bool)>, String> {
         let automatic = language == "auto";
-        // A confident hint for this utterance wins. Until one exists, decode in
-        // this utterance's latest decision, else the user's likely language;
-        // the pass's own audio then confirms or corrects that guess.
-        let mut decode_language = if automatic {
-            match window.detected_language.as_deref().or(window.tentative_language.as_deref()) {
-                Some(language) => language.to_owned(),
-                None => first_guess(engine, capture),
-            }
+        let decode_language = if automatic {
+            window.language.clone().unwrap_or_else(|| first_guess(engine, capture))
         } else { language.to_owned() };
-        let multilingual = window.multilingual;
-        let context = decode_context(audio.len(), multilingual);
+        // The decoder skips a first word that starts right at the beginning of
+        // its input, so the phrase is read after a moment of silence.
+        let audio = [vec![0.0; PHRASE_LEAD], audio.to_vec()].concat();
+        let read = |engine: &Engine| -> Result<Vec<Word>, String> {
+            Ok(after_lead(decoded_words(&engine.decoder, duration + PHRASE_LEAD)?, speech_start))
+        };
         #[cfg(test)]
         let decoding = Instant::now();
-        engine.recognize(&audio, &decode_language, capture, context, finalizing)?;
+        engine.recognize(&audio, &decode_language, capture, audio_context(audio.len()), typing)?;
+        if capture.cancel.load(Ordering::Acquire) { return Ok(None); }
+        let mut words = read(engine)?;
+        let mut spoken = true;
         #[cfg(test)]
-        let mut decode_ms = decoding.elapsed().as_secs_f64() * 1_000.0;
-        if capture.cancel.load(Ordering::Acquire) {
-            return Ok(Transcript {
-                preview: String::new(), consumed: samples.len(), committed: String::new(),
+        let (mut heard, mut redecoded) = (None, false);
+        if automatic {
+            if let Some(choice) = heard_language(engine, capture) {
                 #[cfg(test)]
-                raw_words: String::new(),
-            });
-        }
-        let mut words = decoded_words(&engine.decoder, duration)?;
-        #[cfg(test)]
-        let mut redecoded = false;
-        // Check every pass until the utterance has a confident language, every
-        // pass that types a whole utterance, and periodically otherwise. The
-        // detector reads this pass's own encoder output.
-        let decision = if automatic && (commit_all || window.detected_language.is_none() || window.language_pending
-            || duration.saturating_sub(window.language_checked_at) >= 24_000) {
-            #[cfg(test)]
-            let detecting = Instant::now();
-            let decision = heard_language(engine, capture);
-            window.language_checked_at = duration;
-            #[cfg(test)]
-            {
-                detect_ms = Some(detecting.elapsed().as_secs_f64() * 1_000.0);
-                heard = decision.as_ref().map(|choice| (choice.language.clone(), choice.share));
-            }
-            decision
-        } else { None };
-        // Whether this pass's words were decoded in a language other than the
-        // one its audio was spoken in: such text is a translation.
-        let mut mismatch = false;
-        if let Some(choice) = &decision {
-            mismatch = choice.language != decode_language;
-            // A whole utterance is typed at once: decode it again in the spoken
-            // language first, unless it already mixes languages under a hint,
-            // which keeps its own switching rules. Live passes are not decoded
-            // twice; their words are held and the next pass uses the decision.
-            if mismatch && commit_all && !multilingual {
-                #[cfg(test)]
-                let decoding = Instant::now();
-                engine.recognize(&audio, &choice.language, capture, context, finalizing)?;
-                #[cfg(test)]
-                { decode_ms += decoding.elapsed().as_secs_f64() * 1_000.0; }
-                if capture.cancel.load(Ordering::Acquire) {
-                    return Ok(Transcript {
-                        preview: String::new(), consumed: samples.len(), committed: String::new(),
+                { heard = Some((choice.language.clone(), choice.share)); }
+                if choice.language != decode_language {
+                    if typing {
+                        engine.recognize(&audio, &choice.language, capture, audio_context(audio.len()), true)?;
+                        if capture.cancel.load(Ordering::Acquire) { return Ok(None); }
+                        words = read(engine)?;
                         #[cfg(test)]
-                        raw_words: String::new(),
-                    });
+                        { redecoded = true; }
+                    } else {
+                        spoken = false;
+                    }
                 }
-                words = decoded_words(&engine.decoder, duration)?;
-                decode_language = choice.language.clone();
-                #[cfg(test)]
-                { redecoded = true; }
-                mismatch = false;
-            }
-            if choice.confident {
-                engine.spoken_language = Some(choice.language.clone());
-                if commit_all {
+                // A settled language decodes the rest of the phrase.
+                if choice.share >= SETTLED_SHARE || typing { window.language = Some(choice.language.clone()); }
+                if choice.confident && typing {
+                    engine.spoken_language = Some(choice.language.clone());
                     if let Ok(mut heard) = capture.heard.lock() {
                         match heard.iter_mut().find(|(language, _)| *language == choice.language) {
                             Some((_, samples)) => *samples += duration,
@@ -1330,148 +975,155 @@ mod native {
                     }
                 }
             }
-            window.record_language_check(choice, &decode_language);
-        }
-        window.language_pending = automatic && window.agreeing_checks < 2;
-        // A hypothesis that skipped speech would type its end and lose what
-        // came before. Typed audio is the usual cause (a window starting in a
-        // cut word), so drop it, keeping the last typed word for alignment.
-        let restart = window.confirmed.last().map(|word| word.start / 320 * 320).filter(|cut| *cut > 0 && *cut + 16_000 <= duration);
-        if let Some(cut) = restart.filter(|_| skipped_speech(&words)) {
-            if !commit_all {
-                // Live: keep the last good preview and decode from the cut next time.
-                let preview = word_text(&window.previous[window.entered(&window.previous)..]);
-                window.trim(cut);
-                return Ok(Transcript {
-                    preview, committed: String::new(), consumed: cut * rate as usize / 16_000,
-                    #[cfg(test)]
-                    raw_words: word_text(&words),
-                });
-            }
-            // Typing the whole utterance: decode its untyped part on its own.
-            let mut tail = audio[cut..duration].to_vec();
-            tail.resize(tail.len().max(16_000), 0.0);
-            engine.recognize(&tail, &decode_language, capture, decode_context(tail.len(), multilingual), finalizing)?;
-            if capture.cancel.load(Ordering::Acquire) {
-                return Ok(Transcript {
-                    preview: String::new(), consumed: samples.len(), committed: String::new(),
-                    #[cfg(test)]
-                    raw_words: String::new(),
-                });
-            }
-            let mut retimed = decoded_words(&engine.decoder, duration - cut)?;
-            for word in &mut retimed {
-                word.start += cut;
-                word.end += cut;
-            }
-            let characters = |list: &[Word]| list.iter().map(|word| word.text.chars().count()).sum::<usize>();
-            if !skipped_speech(&retimed) || characters(&retimed) > characters(&words) {
-                words = retimed;
-            }
-        }
-        #[cfg(test)]
-        let raw_words = word_text(&words);
-        drop_unspoken(&mut words, &speech);
-        if commit_all { window.withdraw_unspoken_preview(&speech); }
-        let decoded_any = !words.is_empty();
-        window.spoken_until = Some(spoken_until);
-        #[cfg(test)]
-        let mut transcript = Transcript { raw_words, ..window.update(words, duration, commit_all) };
-        #[cfg(not(test))]
-        let mut transcript = window.update(words, duration, commit_all);
-        // Never preview a translation either, nor fall back on it later.
-        if mismatch { transcript.preview.clear(); }
-        if decoded_any { window.previous_withheld = mismatch; }
-        // A settled language hints the next decodes of this utterance.
-        if let Some(choice) = decision.filter(|choice| choice.share >= SETTLED_SHARE && !commit_all) {
-            window.observe_language(choice.language, duration);
         }
         #[cfg(test)]
         if let Ok(mut stats) = capture.stats.lock() {
             stats.push(PassStats {
-                audio_samples: audio.len(), audio_ctx: decode_context(audio.len(), multilingual), detect_ms,
-                decode_ms, multilingual, finalizing, language: decode_language,
-                committed: transcript.committed.clone(), heard, redecoded,
-                preview: transcript.preview.clone(),
+                audio_samples: duration, audio_ctx: audio_context(audio.len()), detect_ms: None,
+                decode_ms: decoding.elapsed().as_secs_f64() * 1_000.0, multilingual: false, finalizing: typing,
+                language: if redecoded { heard.as_ref().map_or(decode_language, |(language, _)| language.clone()) } else { decode_language },
+                committed: if typing { word_text(&words) } else { String::new() },
+                heard, redecoded, preview: if typing { String::new() } else { word_text(&words) },
             });
         }
-        if commit_all {
-            // After a pause, keep a little preroll as unspoken_audio does, so a
-            // word beginning right there is not cut.
-            transcript.consumed = if pause_ended { samples.len().saturating_sub(rate as usize / 5) } else { utterance_samples };
-            *window = TranscriptWindow::default();
-        } else if let Some(last) = window.confirmed.last() {
-            if last.end >= 96_000 {
-                // Retain at least four seconds of confirmed acoustic context. Any
-                // partial word at the cut is already entered and aligned out.
-                let cut = window.confirmed.iter().rev()
-                    .find(|word| word.start + 64_000 <= last.end)
-                    .map(|word| word.start / 320 * 320).unwrap_or(0);
-                transcript.consumed = cut * rate as usize / 16_000;
-                window.trim(cut);
+        Ok(Some((words, spoken)))
+    }
+
+    /// Words read from a phrase decoded after PHRASE_LEAD of silence, timed
+    /// on the phrase again. The decoder often times the first words from the
+    /// very start of its input, inside that silence: they are the phrase's
+    /// first spoken words and are placed where its speech starts
+    /// (`speech_start`; left in the silence, the voice model's check dropped
+    /// them), unless together they are a phrase the decoder makes up from
+    /// silence ("Altyazı").
+    fn after_lead(mut words: Vec<Word>, speech_start: usize) -> Vec<Word> {
+        let lead = words.iter().take_while(|word| word.end <= PHRASE_LEAD).count();
+        if lead > 0 && super::silence_phrase(words[..lead].iter().map(|word| word.text.as_str())) {
+            words.drain(..lead);
+        }
+        for word in &mut words {
+            if word.end <= PHRASE_LEAD {
+                word.start = speech_start;
+                word.end = speech_start + 1;
+            } else {
+                word.start = word.start.saturating_sub(PHRASE_LEAD);
+                word.end -= PHRASE_LEAD;
             }
         }
-        Ok(transcript)
+        words
     }
 
-    /// Whether a hypothesis skipped speech: whisper sometimes recognizes only
-    /// the end of a long window and stretches those few words over all of it.
-    /// A word other than the last that lasts over two seconds at under four
-    /// characters a second is such a stretch; a long unspaced sentence in
-    /// Chinese or Japanese reads faster than that.
-    fn skipped_speech(words: &[Word]) -> bool {
-        words.iter().rev().skip(1).any(|word| {
-            let seconds = word.end.saturating_sub(word.start) as f32 / 16_000.0;
-            seconds > 2.0 && (word.text.chars().count() as f32) < seconds * 4.0
-        })
+    /// How far around the decoder's word boundary a break is looked for.
+    const WORD_BREAK_SLACK: usize = 3_200;
+
+    /// The middle of the longest break between `from` and `to` (16 kHz
+    /// samples) in which the voice model heard no speech (the level, without
+    /// the model): at least two frames, so a cut there splits no word.
+    fn quiet_point(speech: &super::SpeechMask, from: usize, to: usize) -> Option<usize> {
+        let frame = super::SpeechMask::FRAME;
+        let last = speech.loud.len();
+        let (mut best, mut run): (Option<(usize, usize)>, Option<usize>) = (None, None);
+        for index in from / frame..(to / frame).min(last) {
+            if speech.voiced(index) {
+                run = None;
+                continue;
+            }
+            let start = *run.get_or_insert(index);
+            if best.is_none_or(|(first, end)| index + 1 - start > end - first) { best = Some((start, index + 1)); }
+        }
+        best.filter(|(start, end)| end - start >= 2).map(|(start, end)| (start + end) / 2 * frame)
     }
 
-    /// A pause after the last typed word (16 kHz samples) in which nothing is
-    /// speech ends the utterance: its audio is let go, a little preroll kept.
-    const UNSPOKEN_UTTERANCE_END: usize = 16_000;
+    fn characters(words: &[Word]) -> usize {
+        words.iter().map(|word| word.text.chars().count()).sum()
+    }
 
-    /// The decoder invents text from silence and noise ("Thank you.",
-    /// "Altyazı M.K."), so a window is decoded only while something after
-    /// the last typed word is speech: before anything is typed, the whole
-    /// window; after that, the pause that follows the typed words, the final
-    /// pass's leftover included; and always while the preview shows words
-    /// not typed yet. Returns None to decode, else the captured
-    /// samples to let go without decoding (0 to wait for more audio).
-    /// `duration` is the window's 16 kHz length, cut at `boundary` (the
-    /// captured samples up to an utterance boundary) when there is one, and
-    /// `captured` its length in captured samples.
-    fn unspoken_audio(
-        window: &mut TranscriptWindow,
-        speech: &super::SpeechMask,
-        duration: usize,
-        boundary: Option<usize>,
-        captured: usize,
+    fn transcribe_phrase(
+        engine: &mut Engine,
+        capture: &Arc<Capture>,
+        language: &str,
+        window: &mut PhraseWindow,
+        samples: &[f32],
+        voice: &[Option<f32>],
         rate: u32,
         finalizing: bool,
-    ) -> Option<usize> {
-        let typed_until = window.confirmed.last().map_or(0, |word| word.end);
-        // Words the preview showed are never let go unheard: the decode that
-        // follows types them (at the utterance's end) or confirms them, even
-        // when the voice model missed their audio or a typed word's timing
-        // ran over it.
-        if speech.speech_after(typed_until) || !window.shown().is_empty() {
-            return None;
-        }
-        let consumed = if let Some(boundary) = boundary {
-            // Audio after the boundary may already hold the next phrase.
-            boundary
-        } else if finalizing {
-            captured
-        } else if window.confirmed.is_empty() || duration.saturating_sub(typed_until) >= UNSPOKEN_UTTERANCE_END {
-            // Keep a little preroll so a word beginning at this boundary is not lost.
-            captured.saturating_sub(rate as usize / 5)
-        } else {
-            // A short pause after typed words: wait, keeping their context.
-            0
+    ) -> Result<Transcript, String> {
+        let mut audio = super::resample(samples, rate);
+        super::normalize_level(&mut audio);
+        let speech = super::SpeechMask::new(&audio, voice);
+        let captured = |position: usize| (position * rate as usize / 16_000).min(samples.len());
+        let transcript = |preview: String, committed: String, consumed: usize| Transcript {
+            preview, committed, consumed,
+            #[cfg(test)]
+            raw_words: String::new(),
         };
-        // Whatever is let go was typed or unspoken: the utterance is over.
-        if consumed > 0 { *window = TranscriptWindow::default(); }
-        Some(consumed)
+        // Nothing spoken: let the quiet go, keeping a little before the next
+        // word (the final pass lets all of it go). Words already shown for
+        // this phrase are typed: the user saw them.
+        if !speech.speech_after(0) {
+            let shown = word_text(&mem::take(&mut window.shown));
+            let keep = if finalizing { 0 } else { PHRASE_LEAD };
+            return Ok(transcript(String::new(), shown, captured(audio.len().saturating_sub(keep))));
+        }
+        let speech_start = (0..speech.loud.len()).find(|frame| speech.voiced(*frame)).map_or(0, |frame| frame * super::SpeechMask::FRAME);
+        let end = phrase_end(&speech).or(finalizing.then_some((audio.len(), audio.len())));
+        if let Some((speech_end, next)) = end {
+            // The phrase ended: type it in the language it was spoken in.
+            let duration = speech_end.min(audio.len());
+            let mut phrase = audio[..duration].to_vec();
+            phrase.resize(phrase.len().max(16_000), 0.0);
+            let Some((mut words, _)) = decode_phrase(engine, capture, language, window, &phrase, duration, speech_start, true)? else {
+                return Ok(transcript(String::new(), String::new(), samples.len()));
+            };
+            drop_unspoken(&mut words, &speech);
+            // The typing decode sometimes stops early or reads only noise
+            // ("Altyazı"): the shown words win over a much shorter reading.
+            let shown = mem::take(&mut window.shown);
+            if characters(&words) * 5 < characters(&shown) * 3 { words = shown; }
+            window.language = None;
+            return Ok(transcript(String::new(), word_text(&words), captured(next.max(1))));
+        }
+        // Still speaking: preview the phrase so far.
+        let duration = audio.len();
+        let mut phrase = audio.clone();
+        phrase.resize(phrase.len().max(16_000), 0.0);
+        let long = duration >= PHRASE_LONG;
+        let Some((mut words, spoken)) = decode_phrase(engine, capture, language, window, &phrase, duration, speech_start, long)? else {
+            return Ok(transcript(String::new(), String::new(), samples.len()));
+        };
+        drop_unspoken(&mut words, &speech);
+        if long {
+            // No pause for a long time: type what this reading and the shown
+            // one agree on, up to a second before the newest audio, and cut in
+            // a break the voice model heard between two words. Word times are
+            // too rough to cut on: a cut inside "hiç" typed it twice.
+            let forced = duration >= PHRASE_MAX;
+            let agreed = words.iter().enumerate().take_while(|(index, word)| {
+                word.end + 16_000 <= duration
+                    && (forced || window.shown.get(*index).is_some_and(|shown| same_word(&shown.text, &word.text)))
+            }).count();
+            let split = (1..=agreed).rev().find_map(|count| {
+                let after = words[count - 1].end;
+                let before = words.get(count).map_or(duration, |next| next.start);
+                quiet_point(&speech, after.saturating_sub(WORD_BREAK_SLACK), before + WORD_BREAK_SLACK).map(|cut| (count, cut))
+            }).or_else(|| {
+                // At the decoder's limit, without any break: cut at the word's end.
+                (forced && agreed > 0).then(|| (agreed, words[agreed - 1].end))
+            });
+            if let Some((count, cut)) = split {
+                let mut rest = words.split_off(count);
+                for word in &mut rest {
+                    word.start = word.start.saturating_sub(cut);
+                    word.end = word.end.saturating_sub(cut);
+                }
+                window.shown = rest;
+                return Ok(transcript(word_text(&window.shown), word_text(&words), captured(cut)));
+            }
+        }
+        // A reading in another language than the one spoken is a translation:
+        // keep showing the last preview until the next pass decodes it right.
+        if spoken { window.shown = words; }
+        Ok(transcript(word_text(&window.shown), String::new(), 0))
     }
 
     /// Drops words the decoder made up from audio without speech: every word
@@ -1545,12 +1197,6 @@ mod native {
         normalize(left) == normalize(right)
     }
 
-    fn same_timed_word(left: &Word, right: &Word) -> bool {
-        same_word(&left.text, &right.text)
-            && left.start < right.end.saturating_add(1_600)
-            && left.end.saturating_add(1_600) > right.start
-    }
-
     #[cfg(test)]
     mod streaming_tests {
         use super::*;
@@ -1570,24 +1216,6 @@ mod native {
             assert_eq!(text(words("çok çok iyi oldu")), "çok çok iyi oldu");
             assert_eq!(text(words("Testleri çalıştır, sonra push et.")), "Testleri çalıştır, sonra push et.");
         }
-
-        #[test]
-        fn pauses_split_buffered_phrases_without_cutting_short_word_gaps() {
-            let speech = vec![0.02; 8_000];
-            let mut audio = speech.clone();
-            audio.extend(vec![0.0; 6_400]);
-            audio.extend(&speech);
-            assert_eq!(utterance_boundary(&audio), Some(14_400));
-            let mut short_gap = speech.clone();
-            short_gap.extend(vec![0.0; 3_200]);
-            short_gap.extend(&speech);
-            assert_eq!(utterance_boundary(&short_gap), None);
-            assert_eq!(utterance_boundary(&vec![0.0; 32_000]), None);
-            let mut leading_silence = vec![0.0; 16_000];
-            leading_silence.extend(&speech);
-            assert_eq!(utterance_boundary(&leading_silence), None);
-        }
-
         #[test]
         fn decoder_cancellation_reads_only_the_live_atomic_flag() {
             let capture = capture();
@@ -1616,486 +1244,6 @@ mod native {
             }).collect()
         }
 
-        fn record_committed(committed: &mut Vec<String>, transcript: Transcript) {
-            if !transcript.committed.is_empty() { committed.push(transcript.committed); }
-        }
-
-        fn assert_agreed_boundary_suffix_survives_finalization(restore: bool) {
-            let base = timed_words(&[
-                ("alpha", 0, 4_000), ("beta", 4_000, 8_000),
-                ("gamma", 8_000, 12_000), ("delta", 12_000, 16_000),
-            ]);
-            let mut earlier = base.clone();
-            earlier.extend(timed_words(&[("connector", 16_000, 20_000)]));
-            let mut previous = earlier.clone();
-            previous.extend(timed_words(&[("payload", 20_000, 28_000)]));
-            let revised = timed_words(&[
-                ("payload", 20_000, 28_000), ("tail", 28_000, 36_000),
-            ]);
-            let final_words = if restore {
-                let mut restored = previous.clone();
-                restored.extend(timed_words(&[("tail", 28_000, 36_000)]));
-                restored
-            } else { revised.clone() };
-            let mut window = TranscriptWindow::default();
-            let mut committed = Vec::new();
-
-            window.observe_language("en".into(), 24_000);
-            record_committed(&mut committed, window.update(base, 24_000, false));
-            record_committed(&mut committed, window.update(earlier, 32_000, false));
-            record_committed(&mut committed, window.update(previous, 40_000, false));
-            // The connector agrees across two passes but was the older pass's
-            // last word, so ordinary streaming has not entered it yet.
-            assert_eq!(committed.join(" "), "alpha beta gamma delta");
-            window.observe_language("tr".into(), 48_000);
-            let transition = window.update(revised.clone(), 48_000, false);
-            let recovered = transition.committed.clone();
-            record_committed(&mut committed, transition);
-            record_committed(&mut committed, window.update(revised, 56_000, false));
-            record_committed(&mut committed, window.update(final_words, 64_000, true));
-            assert_eq!(committed.join(" "), "alpha beta gamma delta connector payload tail");
-            assert_eq!(recovered, "connector", "Agreed recovery belongs to the transition");
-        }
-
-        #[test]
-        fn language_boundary_keeps_agreed_suffix_when_final_decode_omits_it() {
-            assert_agreed_boundary_suffix_survives_finalization(false);
-        }
-
-        #[test]
-        fn language_boundary_restoration_does_not_repeat_recovered_suffix() {
-            assert_agreed_boundary_suffix_survives_finalization(true);
-        }
-
-        #[test]
-        fn language_boundary_holds_a_deleted_uncommitted_suffix_until_it_recovers() {
-            let base = timed_words(&[
-                ("alpha", 0, 4_000), ("beta", 4_000, 8_000),
-                ("gamma", 8_000, 12_000), ("delta", 12_000, 16_000),
-            ]);
-            let previous = timed_words(&[
-                ("alpha", 0, 4_000), ("beta", 4_000, 8_000),
-                ("gamma", 8_000, 12_000), ("delta", 12_000, 16_000),
-                ("connector", 16_000, 20_000), ("payload", 20_000, 28_000),
-                ("tail", 28_000, 36_000),
-            ]);
-            let retained_prefix = timed_words(&[
-                ("alpha", 0, 4_000), ("beta", 4_000, 8_000),
-                ("gamma", 8_000, 12_000), ("delta", 12_000, 16_000),
-                ("payload", 20_000, 28_000), ("tail", 28_000, 36_000),
-                ("followup", 36_000, 44_000),
-            ]);
-            let omitted_prefix = timed_words(&[
-                ("payload", 20_000, 28_000), ("tail", 28_000, 36_000),
-                ("followup", 36_000, 44_000),
-            ]);
-            let restored = timed_words(&[
-                ("alpha", 0, 4_000), ("beta", 4_000, 8_000),
-                ("gamma", 8_000, 12_000), ("delta", 12_000, 16_000),
-                ("connector", 16_000, 20_000), ("payload", 20_000, 28_000),
-                ("tail", 28_000, 36_000), ("followup", 36_000, 44_000),
-            ]);
-
-            for revised in [retained_prefix, omitted_prefix] {
-                let mut window = TranscriptWindow::default();
-                let mut committed = Vec::new();
-                window.observe_language("old".into(), 24_000);
-                record_committed(&mut committed, window.update(base.clone(), 24_000, true));
-                record_committed(&mut committed, window.update(previous.clone(), 32_000, false));
-                window.observe_language("new".into(), 32_000);
-                record_committed(&mut committed, window.update(revised.clone(), 40_000, false));
-                record_committed(&mut committed, window.update(revised.clone(), 52_000, false));
-                record_committed(&mut committed, window.update(revised, 60_000, false));
-                assert_eq!(committed.join(" "), "alpha beta gamma delta");
-                record_committed(&mut committed, window.update(restored.clone(), 64_000, true));
-                assert_eq!(committed.join(" "), "alpha beta gamma delta connector payload tail followup");
-            }
-        }
-
-        #[test]
-        fn boundary_transition_keeps_stable_suffixes_streaming() {
-            let base = timed_words(&[
-                ("alpha", 0, 4_000), ("beta", 4_000, 8_000),
-                ("gamma", 8_000, 12_000), ("delta", 12_000, 16_000),
-            ]);
-            let stable = timed_words(&[
-                ("alpha", 0, 4_000), ("beta", 4_000, 8_000),
-                ("gamma", 8_000, 12_000), ("delta", 12_000, 16_000),
-                ("payload", 20_000, 28_000), ("tail", 28_000, 36_000),
-            ]);
-            let extended = timed_words(&[
-                ("alpha", 0, 4_000), ("beta", 4_000, 8_000),
-                ("gamma", 8_000, 12_000), ("delta", 12_000, 16_000),
-                ("payload", 20_000, 28_000), ("tail", 28_000, 36_000),
-                ("followup", 36_000, 44_000),
-            ]);
-            let mut window = TranscriptWindow::default();
-            let mut committed = Vec::new();
-
-            window.observe_language("old".into(), 24_000);
-            record_committed(&mut committed, window.update(base, 24_000, true));
-            record_committed(&mut committed, window.update(stable, 32_000, false));
-            window.observe_language("new".into(), 32_000);
-            record_committed(&mut committed, window.update(extended.clone(), 40_000, false));
-            assert!(window.boundary_suffix.is_empty());
-            record_committed(&mut committed, window.update(extended, 52_000, false));
-            assert_eq!(committed.join(" "), "alpha beta gamma delta payload tail");
-        }
-
-        #[test]
-        fn live_words_wait_until_the_utterance_language_is_certain() {
-            // Turkish right after English, first decoded in English: those
-            // hypotheses agree with each other but must never be typed.
-            let mut window = TranscriptWindow::default();
-            window.language_pending = true;
-            window.update(words("What you need to do"), 64_000, false);
-            assert_eq!(window.update(words("What you need to do"), 72_000, false).committed, "");
-            assert_eq!(window.update(words("What you need to do"), 72_000, false).committed, "");
-            // The pass's own audio names Turkish and is decoded again in it.
-            window.language_pending = false;
-            window.observe_language("tr".into(), 72_000);
-            assert_eq!(window.update(words("Ne yapman gerekiyorsa yapman"), 80_000, false).committed, "");
-            assert_eq!(window.update(words("Ne yapman gerekiyorsa yapman lazım"), 88_000, false).committed, "");
-            assert_eq!(window.update(words("Ne yapman gerekiyorsa yapman lazım"), 96_000, false).committed, "Ne yapman gerekiyorsa yapman");
-            assert_eq!(window.update(words("Ne yapman gerekiyorsa yapman lazım"), 96_000, true).committed, "lazım");
-        }
-
-        fn check(language: &str, share: f32) -> super::super::LanguageChoice {
-            super::super::LanguageChoice { language: language.into(), share, confident: share >= 0.5 }
-        }
-
-        #[test]
-        fn turkish_after_english_types_nothing_until_its_own_audio_settles_it() {
-            let mut window = TranscriptWindow::default();
-            // Decoded in English, the language last heard, while this audio is
-            // Turkish: the words are a translation and must stay untyped.
-            window.record_language_check(&check("tr", 0.62), "en");
-            assert!(window.language_pending);
-            window.update(words("What you need to do"), 56_000, false);
-            assert_eq!(window.update(words("What you need to do"), 64_000, false).committed, "");
-            // One agreeing check is not enough; an early detection can be wrong.
-            window.record_language_check(&check("tr", 0.95), "tr");
-            assert!(window.language_pending);
-            window.record_language_check(&check("tr", 0.98), "tr");
-            assert!(!window.language_pending);
-        }
-
-        #[test]
-        fn a_later_check_that_disagrees_or_is_unsure_holds_live_words_again() {
-            let mut window = TranscriptWindow::default();
-            for _ in 0..2 { window.record_language_check(&check("en", 0.89), "en"); }
-            assert!(!window.language_pending);
-            // Another language dominates, so the decision fell back to one of my
-            // languages with almost no weight: not a settled English.
-            window.record_language_check(&check("en", 0.01), "en");
-            assert!(window.language_pending);
-            window.record_language_check(&check("uk", 0.99), "en");
-            assert!(window.language_pending);
-            assert_eq!(window.tentative_language.as_deref(), Some("uk"));
-        }
-
-        #[test]
-        fn a_pending_language_still_types_the_whole_utterance_at_its_end() {
-            let mut window = TranscriptWindow::default();
-            window.language_pending = true;
-            window.update(words("Kaydet"), 16_000, false);
-            assert_eq!(window.update(words("Kaydet"), 24_000, true).committed, "Kaydet");
-        }
-
-        #[test]
-        fn a_retimed_final_decode_never_drops_words_that_were_not_typed() {
-            // The final decode moved the retained words a second earlier, so
-            // no word shares its audio with the typed ones. Only the words not
-            // yet typed follow, never fewer.
-            let mut window = TranscriptWindow {
-                confirmed: timed_words(&[("kullanıcı", 32_000, 44_000), ("ayarlarını", 44_000, 56_000), ("kaydeden", 56_000, 64_000)]),
-                ..Default::default()
-            };
-            let retimed = timed_words(&[("kullanıcı", 8_000, 16_000), ("ayarlarını", 16_000, 24_000), ("kaydeden", 24_000, 30_000),
-                ("fonksiyonu", 30_000, 40_000), ("yeniden", 40_000, 48_000), ("yazacağız.", 48_000, 60_000), ("Birlikte", 60_000, 70_000)]);
-            assert_eq!(window.update(retimed, 72_000, true).committed, "fonksiyonu yeniden yazacağız. Birlikte");
-        }
-
-        #[test]
-        fn stretched_words_mark_a_hypothesis_that_skipped_speech() {
-            // Seen on a busy machine: the end of an 11.7 s window spread over all of it.
-            assert!(skipped_speech(&timed_words(&[("Sonuçları", 0, 62_880), ("birlikte", 62_880, 108_800), ("kontrol", 108_800, 149_120), ("edelim.", 149_120, 183_680)])));
-            // A long last word is trailing silence, and long unspaced sentences read fast.
-            assert!(!skipped_speech(&timed_words(&[("Önce", 0, 6_400), ("düzelteceğiz,", 6_400, 37_000), ("sonra", 37_000, 42_000), ("bittik.", 42_000, 90_000)])));
-            assert!(!skipped_speech(&timed_words(&[("設定を開いてファイルを保存してください。", 0, 48_000), ("明日", 48_000, 56_000)])));
-        }
-
-        #[test]
-        fn hypotheses_from_clearly_different_audio_type_words_sooner() {
-            for (duration, typed) in [(56_000, ""), (72_000, "three four")] {
-                let mut window = TranscriptWindow::default();
-                window.update(words("one two tree four"), 40_000, false);
-                assert_eq!(window.update(words("one two three four five"), 48_000, false).committed, "one two");
-                // Half a second later the revised word still needs a third
-                // agreeing pass; a second and a half later two passes suffice.
-                assert_eq!(window.update(words("one two three four five six"), duration, false).committed, typed);
-            }
-        }
-
-        #[test]
-        fn old_word_revisions_do_not_block_new_input() {
-            let mut window = TranscriptWindow::default();
-            window.update(words("Please write the sentence"), 48_000, false);
-            assert_eq!(window.update(words("Please write the sentence here"), 56_000, false).committed, "Please write the");
-            assert_eq!(window.update(words("Please write this sentence here now"), 64_000, false).committed, "sentence");
-            assert_eq!(window.update(words("Please write this sentence here now"), 64_000, true).committed, "here now");
-        }
-
-        #[test]
-        fn alignment_handles_insertions_deletions_and_repeated_words() {
-            let expanded = words("Please carefully write this sentence");
-            let confirmed = vec![expanded[0].clone(), expanded[2].clone(), expanded[3].clone()];
-            assert_eq!(aligned_prefix(&expanded, &confirmed), 4);
-            let shortened = vec![expanded[0].clone(), expanded[2].clone(), expanded[3].clone(), expanded[4].clone()];
-            assert_eq!(aligned_prefix(&shortened, &expanded[..4]), 3);
-            assert_eq!(aligned_prefix(&words("go go go next"), &words("go go")), 2);
-            assert_eq!(aligned_prefix(&words("Use foo-bar next"), &words("Use foobar")), 2);
-            assert_eq!(aligned_prefix(&words("Türkçe bitti now keep speaking"), &words("Türkçe bitti")), 2);
-        }
-
-        #[test]
-        fn incomplete_hypotheses_do_not_forget_entered_words() {
-            for revision in ["", "one two"] {
-                let mut window = TranscriptWindow::default();
-                assert_eq!(window.update(words("one two three"), 40_000, true).committed, "one two three");
-                assert_eq!(window.update(words(revision), 48_000, false).committed, "");
-                assert_eq!(window.update(words("one two three four"), 56_000, true).committed, "four");
-            }
-            // A final reading that comes back empty falls back on the words
-            // the preview showed, typed once.
-            let mut window = TranscriptWindow::default();
-            window.update(words("keep listening"), 24_000, false);
-            assert_eq!(window.update(Vec::new(), 32_000, true).committed, "keep listening");
-            assert_eq!(window.update(Vec::new(), 32_000, true).committed, "");
-        }
-
-        #[test]
-        fn the_last_spoken_word_is_typed_live_once_the_speaker_paused() {
-            // "eklediği oluyor" ends at 32 000; steady room noise follows, so no
-            // level boundary comes. Two passes 1.25 s apart agree on both words.
-            let pass = |window: &mut TranscriptWindow, duration: usize, spoken_until: Option<usize>| {
-                window.spoken_until = spoken_until;
-                window.update(words("şeyler de eklediği oluyor"), duration, false)
-            };
-            let mut window = TranscriptWindow::default();
-            pass(&mut window, 40_000, Some(32_000));
-            assert_eq!(pass(&mut window, 60_000, Some(32_000)).committed, "şeyler de eklediği oluyor");
-            // Still speaking (no pause after it): the last word waits for the next one.
-            let mut window = TranscriptWindow::default();
-            pass(&mut window, 40_000, Some(40_000));
-            assert_eq!(pass(&mut window, 60_000, Some(60_000)).committed, "şeyler de eklediği");
-            // A pause too short to end the word, or none known: it waits as well.
-            let mut window = TranscriptWindow::default();
-            pass(&mut window, 40_000, Some(32_000));
-            assert_eq!(pass(&mut window, 41_000, Some(32_000)).committed, "şeyler de eklediği");
-            let mut window = TranscriptWindow::default();
-            pass(&mut window, 40_000, None);
-            assert_eq!(pass(&mut window, 60_000, None).committed, "şeyler de eklediği");
-            // The decoder timed the last word into the quiet, up to the window's
-            // end (seen under room noise): it ends where the speech did.
-            let stretched = |end: usize| timed_words(&[("eklediği", 16_000, 32_000), ("oluyor", 32_000, end)]);
-            let mut window = TranscriptWindow::default();
-            window.spoken_until = Some(40_000);
-            window.update(stretched(50_000), 50_000, false);
-            window.spoken_until = Some(40_000);
-            assert_eq!(window.update(stretched(60_000), 60_000, false).committed, "eklediği oluyor");
-            // Words read from the quiet after the pause are never typed live.
-            let made_up = |end: usize| timed_words(&[("eklediği", 16_000, 32_000), ("oluyor", 32_000, 40_000), ("Bu", 44_000, 48_000), ("bir", 48_000, end)]);
-            let mut window = TranscriptWindow::default();
-            window.spoken_until = Some(40_000);
-            window.update(made_up(50_000), 70_000, false);
-            window.spoken_until = Some(40_000);
-            assert_eq!(window.update(made_up(52_000), 80_000, false).committed, "eklediği oluyor");
-            // A last word the two hypotheses disagree on is never typed.
-            let mut window = TranscriptWindow::default();
-            pass(&mut window, 40_000, Some(32_000));
-            window.spoken_until = Some(32_000);
-            assert_eq!(window.update(words("şeyler de eklediği olur"), 60_000, false).committed, "şeyler de eklediği");
-        }
-
-        #[test]
-        fn words_the_preview_showed_survive_a_final_reading_that_drops_them() {
-            // Logged: 7 words pending in the last preview, of which the final
-            // pass typed the 2 its two last hypotheses agreed on.
-            let shown = || {
-                let mut window = TranscriptWindow::default();
-                window.update(words("one two"), 24_000, false);
-                let transcript = window.update(words("one two three four five six seven"), 64_000, false);
-                assert_eq!((transcript.committed.as_str(), transcript.preview.as_str()), ("one", "one two three four five six seven"));
-                window
-            };
-            assert_eq!(shown().update(Vec::new(), 64_000, true).committed, "two three four five six seven");
-            // A reading that stops early keeps its own words and adds the rest.
-            assert_eq!(shown().update(words("one two three"), 64_000, true).committed, "two three four five six seven");
-            // It may still revise a shown word; nothing is typed twice.
-            assert_eq!(shown().update(words("one two three for five six seven"), 64_000, true).committed, "two three for five six seven");
-            assert_eq!(shown().update(words("one two three four five six seven eight"), 72_000, true).committed, "two three four five six seven eight");
-        }
-
-        #[test]
-        fn a_final_reading_in_another_language_or_a_withheld_preview_is_not_mixed_in() {
-            // Decoded again in the language actually spoken: it shares no word
-            // with the translated preview, and replaces it.
-            let mut window = TranscriptWindow::default();
-            window.update(words("What you need to do"), 40_000, false);
-            assert_eq!(window.update(words("Ne yapman gerekiyorsa"), 40_000, true).committed, "Ne yapman gerekiyorsa");
-            // A much shorter disjoint reading is whisper stopping early or
-            // reading noise, not the speech: the shown words are typed.
-            // Logged before: 8 words pending in the last preview, of which the final pass typed 1.
-            let mut window = TranscriptWindow::default();
-            window.update(words("yazdığı şeyleri silip saçma şeyler de eklediği oluyor"), 96_000, false);
-            assert_eq!(window.update(words("Altyazı"), 96_000, true).committed, "yazdığı şeyleri silip saçma şeyler de eklediği oluyor");
-            let mut window = TranscriptWindow::default();
-            window.update(words("yazdığı şeyleri silip saçma şeyler de eklediği oluyor"), 96_000, false);
-            assert_eq!(window.update(words("İzlediğiniz için teşekkürler."), 96_000, true).committed, "yazdığı şeyleri silip saçma şeyler de eklediği oluyor");
-            // A preview that was never shown (a translation) is never typed.
-            let mut window = TranscriptWindow::default();
-            window.update(words("What you need to do"), 40_000, false);
-            window.previous_withheld = true;
-            assert_eq!(window.update(Vec::new(), 40_000, true).committed, "");
-            // At an utterance boundary, shown words heard after it belong to the next phrase.
-            let mut window = TranscriptWindow::default();
-            window.update(words("open the file now"), 32_000, false);
-            assert_eq!(window.update(Vec::new(), 24_000, true).committed, "open the file");
-        }
-
-        #[test]
-        fn previewed_words_are_never_let_go_unheard() {
-            // "open settings" typed, "and save" shown, and the voice model
-            // missed the soft "and save" (or the typed word's timing ran over it).
-            let typed = timed_words(&[("open", 8_000, 16_000), ("settings", 16_000, 32_000)]);
-            let mut previous = typed.clone();
-            previous.extend(timed_words(&[("and", 33_000, 38_000), ("save", 38_000, 44_000)]));
-            let window = || TranscriptWindow { confirmed: typed.clone(), previous: previous.clone(), ..Default::default() };
-            let audio = [loud(2.0), loud(0.8), quiet(0.6)].concat();
-            let missed = mask(&audio, &[heard(2.0, 0.95), heard(1.4, 0.03)]);
-            // Before, the final pass let this audio go and the shown words with it.
-            for finalizing in [true, false] {
-                let mut window = window();
-                assert_eq!(unspoken_audio(&mut window, &missed, audio.len(), None, audio.len(), 16_000, finalizing), None);
-                assert_eq!(window.shown().len(), 2);
-                // The decode that follows types them even if it reads nothing.
-                window.withdraw_unspoken_preview(&missed);
-                assert_eq!(window.update(Vec::new(), audio.len(), true).committed, "and save");
-            }
-            // Once nothing is shown, the pause is let go as before.
-            let mut window = TranscriptWindow { confirmed: typed.clone(), previous: typed.clone(), ..Default::default() };
-            assert_eq!(unspoken_audio(&mut window, &missed, audio.len(), None, audio.len(), 16_000, true), Some(audio.len()));
-        }
-
-        #[test]
-        fn previewed_words_made_up_from_silence_are_withdrawn_before_typing() {
-            // One second of speech, three of silence the voice model heard as
-            // such; the live preview (judged by the level before the model
-            // caught up) showed the decoder's "Thank you." and "Adobe" there.
-            let audio = [loud(1.0), quiet(3.0)].concat();
-            let speech = mask(&audio, &[heard(1.0, 0.9), heard(3.0, 0.02)]);
-            let typed = timed_words(&[("Open", 3_200, 8_000)]);
-            let mut previous = typed.clone();
-            previous.extend(timed_words(&[("settings.", 9_600, 16_000), ("Thank", 20_000, 23_000), ("you.", 23_000, 26_000), ("Adobe", 40_000, 44_000)]));
-            let mut window = TranscriptWindow { confirmed: typed, previous, ..Default::default() };
-            window.withdraw_unspoken_preview(&speech);
-            assert_eq!(window.update(Vec::new(), audio.len(), true).committed, "settings.");
-        }
-
-        #[test]
-        fn whole_revisions_do_not_repeat_already_entered_audio() {
-            let mut window = TranscriptWindow::default();
-            window.update(words("hello"), 16_000, true);
-            assert_eq!(window.update(words("merhaba next"), 32_000, true).committed, "next");
-        }
-
-        #[test]
-        fn language_changes_preserve_agreed_pending_words_from_omitted_prefixes() {
-            let mut window = TranscriptWindow::default();
-            window.observe_language("en".into(), 16_000);
-            window.update(words("If the network request fails"), 48_000, false);
-            assert_eq!(window.update(words("If the network request fails I may stay"), 72_000, false).committed, "If the network request");
-            window.observe_language("tr".into(), 72_000);
-            assert_eq!(window.update(words("Aynı isteği tekrar gönder"), 80_000, false).committed, "fails");
-            assert_eq!(window.update(words("Aynı isteği tekrar gönder"), 88_000, false).committed, "");
-            assert_eq!(window.update(words("Aynı isteği tekrar gönder"), 96_000, false).committed, "Aynı isteği tekrar");
-            assert_eq!(window.update(words("Aynı isteği tekrar gönder"), 96_000, false).committed, "");
-            assert_eq!(window.update(words("Aynı isteği tekrar gönder"), 96_000, true).committed, "gönder");
-            assert!(!window.missing_prefix);
-            assert_eq!(window.update(words("Entirely revised old phrase next"), 104_000, true).committed, "next");
-        }
-
-        #[test]
-        fn language_hints_follow_recent_speech_and_expire_with_its_audio() {
-            let mut window = TranscriptWindow::default();
-            window.observe_language("en".into(), 24_000);
-            assert!(!window.multilingual);
-            window.observe_language("tr".into(), 48_000);
-            assert!(window.multilingual);
-            window.observe_language("en".into(), 72_000);
-            assert_eq!(window.detected_language.as_deref(), Some("tr"));
-            window.observe_language("de".into(), 96_000);
-            assert_eq!(window.detected_language.as_deref(), Some("de"));
-            window.trim(96_000);
-            assert_eq!(window.detected_language, None);
-            window.observe_language("en".into(), 24_000);
-            assert_eq!(window.detected_language.as_deref(), Some("en"));
-        }
-
-        #[test]
-        fn restored_language_prefixes_do_not_repeat_previously_entered_words() {
-            let mut window = TranscriptWindow::default();
-            window.observe_language("en".into(), 40_000);
-            assert_eq!(window.update(words("Please open the function and"), 40_000, true).committed, "Please open the function and");
-            window.observe_language("tr".into(), 48_000);
-            assert_eq!(window.update(words("Hata"), 48_000, true).committed, "Hata");
-            assert_eq!(window.update(words("Hata kontrolünü"), 56_000, true).committed, "kontrolünü");
-            assert_eq!(window.update(words("Please open the function and Hata kontrolünü ekle sonra"), 80_000, true).committed, "ekle sonra");
-        }
-
-        #[test]
-        fn later_speech_is_not_mistaken_for_missing_overlap() {
-            let confirmed = vec![Word { text: "go".into(), start: 0, end: 8_000 }];
-            let later = vec![Word { text: "go".into(), start: 24_000, end: 32_000 }];
-            assert_eq!(aligned_prefix(&later, &confirmed), 0);
-            let confirmed = vec![Word { text: "hello".into(), start: 0, end: 32_000 }];
-            let later = vec![Word { text: "continue".into(), start: 32_000, end: 36_000 }];
-            assert_eq!(aligned_prefix(&later, &confirmed), 0);
-        }
-
-        #[test]
-        fn retimed_overlap_does_not_repeat_words_after_an_audio_cut() {
-            let confirmed = words("into the terminal as I");
-            let mut revised = words("into the terminal as I speak");
-            for word in &mut revised[2..] {
-                word.start += 16_000;
-                word.end += 16_000;
-            }
-            assert_eq!(aligned_prefix(&revised, &confirmed), 5);
-        }
-
-        #[test]
-        fn recent_revisions_and_incomplete_words_wait_for_confirmation() {
-            let mut window = TranscriptWindow::default();
-            assert_eq!(window.update(words("Please write this"), 40_000, false).committed, "");
-            assert_eq!(window.update(words("Please write the sentence"), 48_000, false).committed, "Please write");
-            assert_eq!(window.update(words("Please write the sentence here"), 56_000, false).committed, "");
-            assert_eq!(window.update(words("Please write this sentence here"), 56_000, false).committed, "");
-            assert_eq!(window.update(words("Please write this sentence here now"), 56_000, false).committed, "");
-            assert_eq!(window.update(words("Please write this sentence here now"), 56_000, false).committed, "this sentence here");
-        }
-
-        #[test]
-        fn retained_audio_overlap_does_not_repeat_entered_words() {
-            let mut window = TranscriptWindow::default();
-            window.update(words("one two three four five six seven eight"), 80_000, false);
-            assert_eq!(window.update(words("one two three four five six seven eight nine"), 88_000, false).committed, "one two three four five six seven");
-            window.trim(32_000);
-            assert_eq!(window.update(words("five six seven eight nine ten"), 64_000, false).committed, "eight");
-            assert_eq!(window.update(words("five six seven eight nine ten"), 64_000, true).committed, "nine ten");
-        }
-
         // 16 kHz audio over the level gate, digital silence, and the voice
         // model's verdict on `seconds` of audio.
         fn loud(seconds: f32) -> Vec<f32> {
@@ -2114,61 +1262,59 @@ mod native {
             super::super::SpeechMask::new(audio, &voice.concat())
         }
 
-        const PREROLL: usize = 16_000 / 5;
-
         #[test]
-        fn windows_without_speech_are_let_go_without_decoding() {
-            let skip = |window: &mut TranscriptWindow, audio: &[f32], speech: &super::super::SpeechMask, finalizing: bool| {
-                unspoken_audio(window, speech, audio.len(), None, audio.len(), 16_000, finalizing)
-            };
-            let mut window = TranscriptWindow::default();
-            // Silence, live and at the final pass.
-            let silence = quiet(2.0);
-            let silent = mask(&silence, &[heard(2.0, 0.02)]);
-            assert_eq!(skip(&mut window, &silence, &silent, false), Some(silence.len() - PREROLL));
-            assert_eq!(skip(&mut window, &silence, &silent, true), Some(silence.len()));
-            // Low noise over the level gate that the voice model calls noise;
-            // without the model the level decides, as it always did.
-            let noise: Vec<f32> = (0..32_000).map(|index| (((index * 7919) % 1000) as f32 / 1000.0 - 0.5) * 0.04).collect();
-            assert_eq!(skip(&mut window, &noise, &mask(&noise, &[heard(2.0, 0.1)]), false), Some(noise.len() - PREROLL));
-            assert_eq!(skip(&mut window, &noise, &mask(&noise, &[]), false), None);
-            // A 0.3 s tone burst in silence is decoded, by the level and by the model.
-            let burst = [quiet(0.5), loud(0.3), quiet(0.5)].concat();
-            assert_eq!(skip(&mut window, &burst, &mask(&burst, &[]), false), None);
-            assert_eq!(skip(&mut window, &burst, &mask(&burst, &[heard(0.5, 0.02), heard(0.3, 0.9), heard(0.5, 0.05)]), false), None);
-            // A boundary lets go of its utterance only, never the next phrase after it.
-            assert_eq!(unspoken_audio(&mut window, &silent, silence.len(), Some(12_800), 40_000, 16_000, false), Some(12_800));
+        fn a_pause_the_voice_model_hears_ends_a_phrase() {
+            // 1 s of speech, then a pause: the phrase ends once 0.2 s of it is heard.
+            let audio = [loud(1.0), quiet(1.0)].concat();
+            let ended = phrase_end(&mask(&audio, &[heard(1.0, 0.9), heard(1.0, 0.05)])).unwrap();
+            assert_eq!(ended, (16_000 + PHRASE_TAIL, 16_000 + PHRASE_GAP / 2));
+            // A pause shorter than PHRASE_GAP (a breath inside a sentence) does not.
+            let breath = [loud(1.0), quiet(0.1), loud(1.0)].concat();
+            assert_eq!(phrase_end(&mask(&breath, &[heard(1.0, 0.9), heard(0.1, 0.05), heard(1.0, 0.9)])), None);
+            // A short phrase ("Okay,") is not ended by a comma's pause, only by a longer one.
+            let okay = [loud(0.5), quiet(0.3), loud(1.0)].concat();
+            assert_eq!(phrase_end(&mask(&okay, &[heard(0.5, 0.9), heard(0.3, 0.05), heard(1.0, 0.9)])), None);
+            let alone = [loud(0.5), quiet(1.0)].concat();
+            assert_eq!(phrase_end(&mask(&alone, &[heard(0.5, 0.9), heard(1.0, 0.05)])), Some((8_000 + PHRASE_TAIL, 8_000 + PHRASE_SHORT_GAP / 2)));
+            // A click before the pause is not a phrase.
+            let click = [loud(0.1), quiet(1.0)].concat();
+            assert_eq!(phrase_end(&mask(&click, &[heard(0.1, 0.9), heard(1.0, 0.05)])), None);
+            // Audio the voice model has not analyzed yet ends nothing, even quiet:
+            // it may hold the next word.
+            assert_eq!(phrase_end(&mask(&audio, &[heard(1.0, 0.9), vec![None; 50]])), None);
+            // Without the voice model the level decides.
+            assert!(phrase_end(&mask(&audio, &[])).is_some());
         }
 
         #[test]
-        fn the_pause_after_typed_words_and_the_final_leftover_type_nothing() {
-            let typed = timed_words(&[("open", 8_000, 16_000), ("settings", 16_000, 32_000)]);
-            let typed_window = || TranscriptWindow { confirmed: typed.clone(), previous: typed.clone(), ..Default::default() };
-            // A short pause after typed words: nothing decoded or let go, their context kept.
-            let pause = [loud(2.0), quiet(0.6)].concat();
-            let pause_heard = mask(&pause, &[heard(2.0, 0.95), heard(0.6, 0.03)]);
-            let mut window = typed_window();
-            assert_eq!(unspoken_audio(&mut window, &pause_heard, pause.len(), None, pause.len(), 16_000, false), Some(0));
-            assert_eq!(window.confirmed.len(), 2);
-            // The same pause in the final pass's leftover: let go, nothing typed.
-            assert_eq!(unspoken_audio(&mut window, &pause_heard, pause.len(), None, pause.len(), 16_000, true), Some(pause.len()));
-            assert!(window.confirmed.is_empty() && window.previous.is_empty());
-            // A longer pause ends the utterance, live.
-            let long = [loud(2.0), quiet(1.2)].concat();
-            let mut window = typed_window();
-            assert_eq!(unspoken_audio(&mut window, &mask(&long, &[heard(2.0, 0.95), heard(1.2, 0.03)]), long.len(), None, long.len(), 16_000, false),
-                Some(long.len() - PREROLL));
-            assert!(window.confirmed.is_empty());
-            // Speech after the typed words is decoded, including the newest
-            // audio the voice model has not analyzed yet.
-            let next = [loud(2.0), quiet(0.6), loud(0.3)].concat();
-            let mut window = typed_window();
-            assert_eq!(unspoken_audio(&mut window, &mask(&next, &[heard(2.0, 0.95), heard(0.6, 0.03)]), next.len(), None, next.len(), 16_000, true), None);
-            assert_eq!(unspoken_audio(&mut window, &mask(&next, &[heard(2.0, 0.95), heard(0.6, 0.03), heard(0.3, 0.8)]), next.len(), None, next.len(), 16_000, false), None);
-            // Low noise after the typed words is not speech to the model.
-            let noisy: Vec<f32> = loud(2.0).into_iter().chain((0..24_000).map(|index| (((index * 7919) % 1000) as f32 / 1000.0 - 0.5) * 0.04)).collect();
-            let mut window = typed_window();
-            assert_eq!(unspoken_audio(&mut window, &mask(&noisy, &[heard(2.0, 0.95), heard(1.5, 0.12)]), noisy.len(), None, noisy.len(), 16_000, true), Some(noisy.len()));
+        fn a_long_phrase_is_cut_in_a_break_the_voice_model_heard() {
+            // Speech, a 60 ms break, speech: the cut lands in the break's middle.
+            let audio = [loud(1.0), quiet(0.06), loud(1.0)].concat();
+            let speech = mask(&audio, &[heard(1.0, 0.9), heard(0.06, 0.05), heard(1.0, 0.9)]);
+            assert_eq!(quiet_point(&speech, 14_000, 19_000), Some(16_320));
+            // A single quiet frame inside a word is no break.
+            let word = [loud(1.0), quiet(0.02), loud(1.0)].concat();
+            assert_eq!(quiet_point(&mask(&word, &[heard(1.0, 0.9), heard(0.02, 0.05), heard(1.0, 0.9)]), 14_000, 19_000), None);
+            // Nothing quiet near the word boundary.
+            assert_eq!(quiet_point(&speech, 4_000, 9_000), None);
+        }
+
+        #[test]
+        fn words_read_in_the_lead_silence_are_the_phrases_first_words() {
+            // Decoded after PHRASE_LEAD of silence: "Bu ve" timed into it, then the rest.
+            let decoded = timed_words(&[("Bu", 0, 2_000), ("ve", 2_000, PHRASE_LEAD), ("Refresh", PHRASE_LEAD + 8_000, PHRASE_LEAD + 14_000)]);
+            let words = after_lead(decoded, 8_000);
+            assert_eq!(word_text(&words), "Bu ve Refresh");
+            assert!(words[..2].iter().all(|word| word.start == 8_000), "placed where the speech starts");
+            assert_eq!((words[2].start, words[2].end), (8_000, 14_000));
+            // The voice model's check keeps them: they sit at the speech.
+            let audio = [quiet(0.5), loud(1.0)].concat();
+            let mut kept = words.clone();
+            drop_unspoken(&mut kept, &mask(&audio, &[heard(0.5, 0.05), heard(1.0, 0.9)]));
+            assert_eq!(word_text(&kept), "Bu ve Refresh");
+            // What the decoder makes up from silence is dropped there instead.
+            let made_up = timed_words(&[("Altyazı", 0, 2_000), ("M.K.", 2_000, PHRASE_LEAD), ("Testleri", PHRASE_LEAD + 1_000, PHRASE_LEAD + 9_000)]);
+            assert_eq!(word_text(&after_lead(made_up, 1_000)), "Testleri");
         }
 
         #[test]
@@ -2236,7 +1382,7 @@ mod native {
             let capture = capture();
             *capture.rate.lock().unwrap() = rate;
             let language = "auto";
-            let mut window = TranscriptWindow::default();
+            let mut window = PhraseWindow::default();
             let mut committed = String::new();
             let mut offset = 0;
             let mut live_updates = 0;
@@ -2258,7 +1404,7 @@ mod native {
                 capture.samples.lock().unwrap().extend_from_slice(&samples[offset..end]);
                 offset = end;
                 let audio = capture.samples.lock().unwrap().clone();
-                let transcript = transcribe_samples(&mut engine, &capture, language, &mut window, &audio, &[], rate, false).unwrap();
+                let transcript = transcribe_phrase(&mut engine, &capture, language, &mut window, &audio, &[], rate, false).unwrap();
                 if !transcript.committed.is_empty() && offset < samples.len() {
                     live_updates += 1;
                 }
@@ -2270,7 +1416,7 @@ mod native {
             }
             while !capture.samples.lock().unwrap().is_empty() {
                 let audio = capture.samples.lock().unwrap().clone();
-                let transcript = transcribe_samples(&mut engine, &capture, language, &mut window, &audio, &[], rate, true).unwrap();
+                let transcript = transcribe_phrase(&mut engine, &capture, language, &mut window, &audio, &[], rate, true).unwrap();
                 assert!(transcript.consumed > 0, "Finalization must consume the remaining audio");
                 apply(&capture, &transcript, &mut committed).unwrap();
                 events.push(serde_json::json!({ "seconds": started.elapsed().as_secs_f64(),
@@ -2348,7 +1494,7 @@ mod native {
         fn replay(engine: &mut Engine, samples: &[f32], language: &str) -> (Vec<ReplayEvent>, String, Vec<PassStats>) {
             let rate = 16_000;
             let capture = capture();
-            let mut window = TranscriptWindow::default();
+            let mut window = PhraseWindow::default();
             let mut committed = String::new();
             let mut events = Vec::new();
             let mut offset = 0;
@@ -2359,7 +1505,7 @@ mod native {
                     capture.samples.lock().unwrap().extend_from_slice(&samples[offset..available]);
                     offset = available;
                     let audio: Vec<f32> = capture.samples.lock().unwrap().iter().take(rate * 27).copied().collect();
-                    let transcript = transcribe_samples(engine, &capture, language, &mut window, &audio, &[], rate as u32, false).unwrap();
+                    let transcript = transcribe_phrase(engine, &capture, language, &mut window, &audio, &[], rate as u32, false).unwrap();
                     let preview = format!("{} {}", committed, transcript.preview);
                     apply(&capture, &transcript, &mut committed).unwrap();
                     events.push(ReplayEvent { seconds: started.elapsed().as_secs_f64(),
@@ -2370,7 +1516,7 @@ mod native {
             }
             while !capture.samples.lock().unwrap().is_empty() {
                 let audio: Vec<f32> = capture.samples.lock().unwrap().iter().take(rate * 27).copied().collect();
-                let transcript = transcribe_samples(engine, &capture, language, &mut window, &audio, &[], rate as u32, true).unwrap();
+                let transcript = transcribe_phrase(engine, &capture, language, &mut window, &audio, &[], rate as u32, true).unwrap();
                 apply(&capture, &transcript, &mut committed).unwrap();
                 events.push(ReplayEvent { seconds: started.elapsed().as_secs_f64(),
                     committed_words: normalized_words(&committed).len(), preview: normalized_words(&committed), finalizing: true });
@@ -2523,7 +1669,7 @@ mod native {
             }
             let mut processed_samples = 0;
             let mut committed = String::new();
-            let mut window = TranscriptWindow::default();
+            let mut window = PhraseWindow::default();
             // Words shown as pending in the last preview, for the stop diagnostic.
             let mut pending_words = 0;
             while !capture.closed.load(Ordering::Acquire) {
@@ -3273,12 +2419,12 @@ mod native {
         // text, each decode pass with the absolute sample its audio starts at,
         // and the time from the end of the audio to the final text.
         fn dictate(engine: &mut Engine, capture: &Arc<Capture>, samples: &[f32]) -> (String, Vec<(usize, PassStats)>, f64) {
-            let mut window = TranscriptWindow::default();
+            let mut window = PhraseWindow::default();
             let mut committed = String::new();
             let mut passes = Vec::new();
             let (mut offset, mut consumed) = (0, 0);
             let voice = voice_probabilities(samples);
-            let mut pass = |engine: &mut Engine, window: &mut TranscriptWindow, committed: &mut String, consumed: &mut usize, finalizing: bool, offset: usize| {
+            let mut pass = |engine: &mut Engine, window: &mut PhraseWindow, committed: &mut String, consumed: &mut usize, finalizing: bool, offset: usize| {
                 // The capture thread analyzes the audio a little behind the
                 // microphone, and all of it before the final pass.
                 if let Some(voice) = &voice {
@@ -3288,7 +2434,7 @@ mod native {
                 let audio: Vec<f32> = capture.samples.lock().unwrap().iter().take(RATE * 27).copied().collect();
                 let heard = capture.window_voice(*consumed, audio.len(), RATE as u32);
                 let before = capture.stats.lock().unwrap().len();
-                let transcript = transcribe_samples(engine, capture, "auto", window, &audio, &heard, RATE as u32, finalizing).unwrap();
+                let transcript = transcribe_phrase(engine, capture, "auto", window, &audio, &heard, RATE as u32, finalizing).unwrap();
                 if let Some(stats) = capture.stats.lock().unwrap().get(before).cloned() { passes.push((*consumed, stats)); }
                 *consumed += transcript.consumed;
                 apply(capture, &transcript, committed).unwrap();
@@ -3923,18 +3069,6 @@ impl SpeechMask {
         heard >= VOICED_FRAMES || loud >= LOUD_FRAMES
     }
 
-    /// Where the speech in the window ends (in samples): after its last
-    /// voiced frame, or at `from` when nothing from there on is voiced.
-    /// The newest frames the voice model has not analyzed yet (it runs a
-    /// little behind the microphone) do not extend it once the model has
-    /// analyzed the window: judged by the level instead, steady noise (a
-    /// fan, a room) would always count as speech there.
-    fn speech_end(&self, from: usize) -> usize {
-        let analyzed = self.heard.iter().rposition(Option::is_some).map_or(self.loud.len(), |frame| frame + 1);
-        (from / Self::FRAME..analyzed).rev().find(|frame| self.voiced(*frame))
-            .map_or(from, |frame| ((frame + 1) * Self::FRAME).max(from))
-    }
-
     /// The frames of a word's audio (`start..end` in samples), clamped to
     /// the window: a word timed into the padding after it maps to its end.
     fn frames(&self, start: usize, end: usize) -> Option<std::ops::RangeInclusive<usize>> {
@@ -4345,20 +3479,6 @@ mod language_choice_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn speech_ends_at_the_last_voiced_frame_the_voice_model_analyzed() {
-        // Steady room noise is loud everywhere; the voice model heard speech in
-        // the first 5 frames, quiet in the next 50, and has not analyzed the
-        // newest 5 yet (it runs behind the microphone).
-        let audio = vec![0.05f32; 60 * SpeechMask::FRAME];
-        let voice: Vec<Option<f32>> = [vec![Some(0.9); 5], vec![Some(0.05); 50], vec![None; 5]].concat();
-        let mask = SpeechMask::new(&audio, &voice);
-        assert_eq!(mask.speech_end(0), 5 * SpeechMask::FRAME, "the unanalyzed loud tail is not speech");
-        assert_eq!(mask.speech_end(20 * SpeechMask::FRAME), 20 * SpeechMask::FRAME, "nothing voiced after `from`");
-        // Without the voice model the level decides everywhere, as before.
-        assert_eq!(SpeechMask::new(&audio, &[]).speech_end(0), 60 * SpeechMask::FRAME);
-    }
 
     fn tone(rate: u32, frequency: f64, phase: f64, length: usize) -> Vec<f32> {
         (0..length)
