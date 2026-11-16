@@ -6,8 +6,8 @@
 
 export const TOP_BAR_ITEMS = [
   { id: "top:tasks", label: "Tasks" },
-  { id: "top:quick-chat", label: "Quick Chat" },
   { id: "top:agent-sessions", label: "Agent sessions" },
+  { id: "top:quick-chat", label: "Quick Chat" },
   // Sync and Remote desktop appear only once a remote device is set up.
   { id: "top:sync", label: "Sync projects", needsRemote: true },
   { id: "top:remote", label: "Remote desktop", needsRemote: true },

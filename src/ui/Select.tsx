@@ -1,4 +1,4 @@
-import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { Check, ChevronDown, Search } from "lucide-react";
 import { rankOptions } from "./selectSearch";
@@ -36,6 +36,8 @@ interface Props {
 
 // Room kept between an open list and the window edge.
 const EDGE = 8;
+// Space between the trigger and its open list.
+const GAP = 5;
 const SEARCH_THRESHOLD = 8;
 // A searchable list is never narrower than this, so the field stays usable.
 const SEARCH_MIN_WIDTH = 220;
@@ -97,6 +99,10 @@ export function Select({ value, options, onChange, placeholder, disabled = false
   const searchRef = useRef<HTMLInputElement>(null);
   const opening = useRef(false);
   const [rect, setRect] = useState<DOMRect | null>(null);
+  // Which side of the trigger the open list sits on, and the height it has there.
+  const [drop, setDrop] = useState<{ up: boolean; room: number } | null>(null);
+  // The open list's own height, before the room limit.
+  const natural = useRef(0);
   const baseId = useId();
   const listId = `${baseId}-list`;
   const optionId = (key: number) => `${baseId}-option-${key}`;
@@ -124,6 +130,8 @@ export function Select({ value, options, onChange, placeholder, disabled = false
   };
   const openMenu = () => {
     onOpen?.();
+    setDrop(null);
+    natural.current = 0;
     setQuery("");
     setKeys(false);
     setSize(null);
@@ -133,13 +141,22 @@ export function Select({ value, options, onChange, placeholder, disabled = false
   };
 
   // Keeps the open list inside the window: a list wider than the room right
-  // of its trigger moves left (or right, when anchored at the end).
+  // of its trigger moves left (or right, when anchored at the end), and one
+  // that would run past the bottom opens above its trigger when there is more
+  // room there. Either way it is never taller than the room it opens into.
   useLayoutEffect(() => {
     const menu = menuRef.current;
     if (!open || !rect || !menu) return;
     const box = menu.getBoundingClientRect();
     if (box.right > window.innerWidth - EDGE) { menu.style.left = `${Math.max(EDGE, window.innerWidth - EDGE - box.width)}px`; menu.style.right = "auto"; }
     else if (box.left < EDGE) { menu.style.left = `${EDGE}px`; menu.style.right = "auto"; }
+    // Measured once per opening, before any room limit applies.
+    if (!natural.current) natural.current = box.height;
+    const below = Math.max(0, window.innerHeight - EDGE - rect.bottom - GAP);
+    const above = Math.max(0, rect.top - GAP - EDGE);
+    const up = natural.current > below && above > below;
+    const room = up ? above : below;
+    setDrop((prev) => (prev && prev.up === up && prev.room === room ? prev : { up, room }));
   }, [open, rect]);
   useLayoutEffect(() => { if (disabled) setOpen(false); }, [disabled]);
 
@@ -210,12 +227,13 @@ export function Select({ value, options, onChange, placeholder, disabled = false
   const empty = view.rows.length === 0;
   const menuStyle = {
     ...(align === "end" ? { right: window.innerWidth - (rect?.right ?? 0) } : { left: rect?.left ?? 0 }),
-    top: (rect?.bottom ?? 0) + 5,
+    ...(drop?.up ? { bottom: window.innerHeight - (rect?.top ?? 0) + GAP } : { top: (rect?.bottom ?? 0) + GAP }),
+    ...(drop ? { "--cselect-room": `${drop.room}px` } : {}),
     minWidth: withSearch ? Math.max(rect?.width ?? 0, SEARCH_MIN_WIDTH) : rect?.width,
     width: size ? size.width : "max-content",
     ...(size ? { height: size.height } : {}),
     maxWidth: `calc(100vw - ${2 * EDGE}px)`,
-  };
+  } as CSSProperties;
 
   const renderRow = ({ option, index, key }: Row) => (
     <div
