@@ -3139,7 +3139,7 @@ dependencies = [
 
 [[package]]
 name = "pzzacode"
-version = "0.2.78"
+version = "0.2.79"
 dependencies = [
  "block2",
  "coreaudio-rs",
