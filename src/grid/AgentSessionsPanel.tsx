@@ -391,7 +391,7 @@ export function AgentSessionsPanel({ tileId, onClose }: { tileId: string | null;
   const deviceLabel = multiDevice ? `on ${plural(sources.length, "device")}` : `on ${sources[0]?.name ?? "this device"}`;
   const filtered = Boolean(search || agent || filters.time !== "all" || scope !== "everywhere");
 
-  return <Modal open onClose={onClose} title="Agent sessions" icon={MessagesSquare} size="xl" className="as-modal" pending={busy !== null} initialFocusRef={searchRef}>
+  return <Modal open onClose={onClose} title="Agent sessions" icon={MessagesSquare} size="xl" className="as-modal" pending={busy} initialFocusRef={searchRef}>
     <div className="as" onKeyDown={onKeyDown}>
       <div className="as-bar">
         <label className="as-search">
