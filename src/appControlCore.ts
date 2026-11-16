@@ -80,6 +80,10 @@ export async function confirmAppControlAction(action: string, args: Readonly<Rec
     // The same question as the Delete button in Settings > Prompts.
     const prompt = usePrompts.getState().prompts.find(item => item.id === args.promptId);
     if (prompt) options = { title: "Delete this prompt?", message: `“${prompt.name}” is removed from the command palette and the broadcast bar.`, confirmLabel: "Delete prompt", danger: true };
+  } else if (action === "resume_agent_session" && typeof args.tileId === "string") {
+    // Typing into an open tile runs a command there; a new tile needs no question.
+    const tile = state.tiles.filter(isSessionTile).find(item => item.id === args.tileId);
+    if (tile) options = { title: "Resume a conversation in this tile?", message: `Types the ${sessionAgent(args.agent)?.label ?? "agent"} resume command for conversation ${String(args.sessionId)} into ${state.tileTitles[tile.id] ?? tile.name} and runs it there.`, confirmLabel: "Resume here" };
   } else if (action === "clear_notifications" && useNotifications.getState().items.length) {
     options = { title: "Clear notification history?", message: "Permanently remove all notification history on this device? This cannot be undone.", confirmLabel: "Clear history", danger: true };
   } else if (action === "configure_appearance" && args.osc52Clipboard === true && !state.osc52Clipboard) {

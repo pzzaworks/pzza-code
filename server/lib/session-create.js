@@ -164,7 +164,10 @@ export async function createDeviceSession(body, run = execFile, approvals = {}) 
   try { name = normalizeSessionName(body.name); } catch (error) { return invalid(error.message); }
   let agentCommand;
   if (body.agent !== undefined) {
+    // A `session` id is checked against the agent's id shape by the catalog.
     try { agentCommand = sessionAgentCommand(body.agent); } catch (error) { return invalid(error.message); }
+    // A reopened conversation belongs to the folder it ran in, never a new worktree.
+    if (body.agent.session !== undefined && body.worktree) return invalid("Reopen a conversation in its own folder, not in a new worktree.");
   }
   if (body.host !== undefined && (typeof body.host !== "string" || (body.host && !SSH_TOKEN.test(body.host)))) return invalid("Invalid session device.");
   if (body.cwd !== undefined && (typeof body.cwd !== "string" || body.cwd.length > 4096 || /[\x00-\x1f\x7f]/.test(body.cwd) || (body.cwd && !body.cwd.startsWith("/") && body.cwd !== "~" && !body.cwd.startsWith("~/")))) return invalid("Choose an absolute or home-relative working directory.");

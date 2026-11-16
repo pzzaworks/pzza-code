@@ -4,11 +4,14 @@ import { DEVICE_APP_COMMANDS } from "./app-control-device-schema.js";
 import { EDITOR_APP_COMMANDS } from "./app-control-editor-schema.js";
 import { RUNTIME_APP_COMMANDS } from "./app-control-runtime-schema.js";
 import { SESSION_NAME_SCHEMA } from "./session-name.js";
+import { THEME_APP_COMMANDS, THEME_ID_PATTERN } from "./app-control-theme-schema.js";
+import { AGENT_SESSIONS_APP_COMMANDS } from "./app-control-agent-sessions-schema.js";
+import { checkSchema } from "./schema-check.js";
 
 // Shared bounded schemas drive server validation, frontend validation and tools.
 const command = (description, properties = {}, required = []) => ({ description, type: "object", properties, required, additionalProperties: false });
 export const APP_COMMANDS = {
-  ...TERMINAL_APP_COMMANDS, ...RUNTIME_APP_COMMANDS, ...DEVICE_APP_COMMANDS, ...EDITOR_APP_COMMANDS, ...INTEGRATION_APP_COMMANDS,
+  ...TERMINAL_APP_COMMANDS, ...RUNTIME_APP_COMMANDS, ...DEVICE_APP_COMMANDS, ...EDITOR_APP_COMMANDS, ...INTEGRATION_APP_COMMANDS, ...THEME_APP_COMMANDS, ...AGENT_SESSIONS_APP_COMMANDS,
   get_state: command("Read the selected app window state, available actions and non-secret preferences.", {}, []),
   open_session: command("Open or reveal a session or tmux window on a selected device. Omitted host means local; use create_session first when the session does not exist.", {
     host: {"type":"string","maxLength":128,"pattern":"^(?:[A-Za-z0-9._][A-Za-z0-9._@-]{0,127})?$"},
@@ -83,8 +86,8 @@ export const APP_COMMANDS = {
     columns: {"type":"number","minimum":0.5,"maximum":8,"multipleOf":0.5},
     rows: {"type":"number","minimum":0.5,"maximum":8,"multipleOf":0.5},
   }, ["tileId","columns","rows"]),
-  configure_appearance: command("Persist app/terminal appearance and clipboard preferences, and the gap between tiles (spacing in pixels; 0 joins them).", {
-    theme: {"type":"string","enum":["dark","light"]},
+  configure_appearance: command("Persist the theme (an ID from list_themes), app/terminal appearance and clipboard preferences, and the gap between tiles (spacing in pixels; 0 joins them).", {
+    theme: {"type":"string","minLength":1,"maxLength":64,"pattern":THEME_ID_PATTERN,"description":"A theme ID from list_themes."},
     fontSize: {"type":"integer","minimum":9,"maximum":20},
     cursorBlink: {"type":"boolean"},
     osc52Clipboard: {"type":"boolean"},
@@ -115,27 +118,6 @@ export const APP_COMMANDS = {
 
 export function validateAppCommand(action, args) {
   if (typeof action !== "string" || !Object.hasOwn(APP_COMMANDS, action)) throw new Error("Unknown app control action.");
-  const stableValue = value => Array.isArray(value) ? value.map(stableValue)
-    : value && typeof value === "object" ? Object.fromEntries(Object.keys(value).sort().map(key => [key, stableValue(value[key])])) : value;
-  const check = (schema, value, field) => {
-    if (schema.type === "object") {
-      if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${field} must be an object.`);
-      if (Object.keys(value).some(key => !Object.hasOwn(schema.properties, key))) throw new Error(`Unknown ${field} argument.`);
-      if (schema.minProperties && Object.keys(value).length < schema.minProperties) throw new Error(`${field} must include a setting.`);
-      for (const key of schema.required ?? []) if (!Object.hasOwn(value, key)) throw new Error(`${key} is required.`);
-      for (const [key, item] of Object.entries(value)) check(schema.properties[key], item, key);
-    } else if (schema.type === "array") {
-      if (!Array.isArray(value) || value.length > schema.maxItems || value.length < (schema.minItems ?? 0)) throw new Error(`Invalid ${field}.`);
-      for (const item of value) check(schema.items, item, field);
-      if (schema.uniqueItems && new Set(value.map(item => JSON.stringify(stableValue(item)))).size !== value.length) throw new Error(`${field} must contain unique items.`);
-    } else if (schema.type === "number") {
-      if (typeof value !== "number" || !Number.isFinite(value) || value < schema.minimum || value > schema.maximum || (schema.multipleOf && !Number.isInteger(value / schema.multipleOf))) throw new Error(`Invalid ${field}.`);
-    } else if (schema.type === "string") {
-      if (typeof value !== "string" || (schema.minLength && value.trim().length < schema.minLength) || value.length > (schema.maxLength ?? Infinity) || (schema.pattern && !new RegExp(schema.pattern).test(value)) || (schema.enum && !schema.enum.includes(value))) throw new Error(`Invalid ${field}.`);
-    } else if (schema.type === "integer") {
-      if (!Number.isInteger(value) || value < schema.minimum || value > schema.maximum) throw new Error(`Invalid ${field}.`);
-    } else if (schema.type === "boolean" && typeof value !== "boolean") throw new Error(`Invalid ${field}.`);
-  };
-  check(APP_COMMANDS[action], args, "command");
+  checkSchema(APP_COMMANDS[action], args, "command");
   return { ...args };
 }

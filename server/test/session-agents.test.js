@@ -329,3 +329,56 @@ test("binary lookups tell agents from same-named tools with plain path fragments
   const native = JSON.parse(nativeAgentCatalog()).agents.find(agent => agent.id === "forgecode");
   assert.deepEqual(native.excludePaths, [{ text: "/.foundry/", end: false }]);
 });
+
+test("a past conversation reopens by its id only in the agent's own id shape", async () => {
+  const { sessionAgentResumeIdCommand, validAgentSessionId } = await import("../lib/session-agents.js");
+  const uuid = "0b1c2d3e-4f50-4a61-8b72-9c8d7e6f5a41";
+  const expected = {
+    claude: [uuid, "default", `claude --resume ${uuid} --permission-mode manual`],
+    codex: [uuid, "readOnly", `codex resume ${uuid} --sandbox read-only --ask-for-approval on-request`],
+    opencode: ["ses_0123456789abCDEFGHIJKLMNop", "plan", "opencode --session ses_0123456789abCDEFGHIJKLMNop --agent plan"],
+    gemini: [uuid, null, `gemini --resume ${uuid}`],
+    pi: [uuid, "readOnly", `pi --session ${uuid} --tools read,grep,find,ls`],
+    cline: ["1794700000000_ab12c", "ask", "cline --id 1794700000000_ab12c --auto-approve false"],
+    goose: ["20261114_12", "approve", "env GOOSE_MODE=approve goose session --resume --session-id 20261114_12"],
+    qwen: [uuid, null, `qwen --resume ${uuid}`],
+    crush: [uuid, null, `crush --session ${uuid}`],
+    kilo: ["ses_0123456789abCDEF", null, "kilo --session ses_0123456789abCDEF"],
+    kiro: [uuid, null, `kiro-cli chat --resume-id ${uuid}`],
+    forgecode: [uuid, "muse", `forge --conversation-id ${uuid} --agent muse`],
+  };
+  const withById = SESSION_AGENTS.filter(agent => agent.resume.byId);
+  assert.deepEqual(withById.map(agent => agent.id).sort(), Object.keys(expected).sort());
+  for (const agent of withById) {
+    const [session, modeId, command] = expected[agent.id];
+    assert.ok(agent.resume.byId.args.includes(RESUME_SESSION), agent.id);
+    const mode = modeId ?? agent.defaultMode;
+    const line = sessionAgentCommand({ id: agent.id, mode, session });
+    if (modeId) assert.equal(line, command);
+    else assert.ok(line.includes(command.split(" ").slice(1).join(" ")), `${agent.id}: ${line}`);
+    assert.equal(validAgentSessionId(agent, session), true);
+    // Ids that could inject, read as a flag, or are the wrong shape are refused.
+    for (const bad of ["$(id)", `${session}; rm -rf ~`, "-x", `-${session}`, `${session}\n`, `${session} --help`, "", "a".repeat(200), session.slice(0, -1) + "!"]) {
+      assert.throws(() => sessionAgentCommand({ id: agent.id, mode, session: bad }), /conversation id/, `${agent.id} ${JSON.stringify(bad)}`);
+    }
+    assert.throws(() => sessionAgentCommand({ id: agent.id, mode, session: 42 }), /conversation id/);
+    assert.throws(() => sessionAgentCommand({ id: agent.id, mode, session, resume: true }), /without continuing/);
+  }
+  assert.throws(() => sessionAgentCommand({ id: "claude", mode: "default", session: uuid, prompt: "fix it" }), /without continuing/);
+  assert.throws(() => sessionAgentCommand({ id: "droid", mode: sessionAgent("droid").defaultMode, session: uuid }), /cannot reopen/);
+  assert.throws(() => sessionAgentCommand({ id: "claude", mode: "default", session: "20261114_12" }), /conversation id/);
+  // Accounts still apply; the folder is changed into first, quoted.
+  assert.equal(sessionAgentCommand({ id: "claude", mode: "plan", session: uuid, account: "/Users/dev/.claude-work" }),
+    `env CLAUDE_CONFIG_DIR=/Users/dev/.claude-work claude --resume ${uuid} --permission-mode plan`);
+  assert.equal(sessionAgentResumeIdCommand({ id: "claude", mode: "default", session: uuid }, "/Users/dev/my app's"),
+    `cd '/Users/dev/my app'\\''s' && claude --resume ${uuid} --permission-mode manual`);
+  assert.equal(sessionAgentResumeIdCommand({ id: "codex", mode: "readOnly", session: uuid }), `codex resume ${uuid} --sandbox read-only --ask-for-approval on-request`);
+  for (const cwd of ["relative", "/a/../b", "/a\nb", "/a\\'b", "/x".repeat(3000), 5]) {
+    assert.throws(() => sessionAgentResumeIdCommand({ id: "claude", mode: "default", session: uuid }, cwd), /absolute folder/, JSON.stringify(cwd));
+  }
+  assert.throws(() => sessionAgentResumeIdCommand({ id: "claude", mode: "default" }), /conversation to reopen/);
+  assert.throws(() => sessionAgentResumeIdCommand({ id: "claude", mode: "default", session: uuid, prompt: "x" }), /supported agent/);
+  // The by-id form never reaches the native restore allowlist.
+  assert.equal(readFileSync(NATIVE_CATALOG_PATH, "utf8"), nativeAgentCatalog(), "run node scripts/agent-catalog.mjs");
+  assert.ok(!sessionAgentResumeAllowlist().some(entry => /--resume [0-9a-f]{8}-|--session /.test(entry.command)));
+});

@@ -4,10 +4,12 @@ import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { registerTerminalLinks } from "./links";
+import { joinedSelection } from "./wrappedCopy";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import "@xterm/xterm/css/xterm.css";
 import { sessionTileById, useStore } from "../state/store";
-import { themeById, terminalPalette } from "../theme/themes";
+import { terminalMinimumContrast, terminalPalette } from "../theme/themes";
+import { useActiveTheme } from "../theme/useActiveTheme";
 import { killPty, resizePty, spawnPty, writePty } from "./ptyBridge";
 import { openWsPty, type WsPtyHandle } from "./wsPty";
 import { runBrowserPreview } from "./browserPreview";
@@ -220,7 +222,10 @@ function TerminalView({ tileId, name, host, cmd, args, cwd, window: win, active,
   const flushOutputRef = useRef<(() => void) | null>(null);
   const activeRef = useRef(active);
   const compositionRef = useRef<ReturnType<typeof createDictationComposition> | null>(null);
-  const themeId = useStore((s) => s.themeId);
+  const theme = useActiveTheme();
+  // The mount effect reads the theme at the time it opens the terminal.
+  const themeRef = useRef(theme);
+  themeRef.current = theme;
   const semiTransparent = useStore((s) => s.semiTransparent);
   const grayscale = useStore((s) => s.grayscale);
   const surfaceOpacity = useStore((s) => s.transparencyOptions.surfaceOpacity);
@@ -241,7 +246,7 @@ function TerminalView({ tileId, name, host, cmd, args, cwd, window: win, active,
         allowProposedApi: true,
         // Keep the renderer mounted when appearance toggles at runtime.
         allowTransparency: true,
-        minimumContrastRatio: themeById(useStore.getState().themeId).appearance === "light" ? 4.5 : 1,
+        minimumContrastRatio: terminalMinimumContrast(themeRef.current),
         macOptionClickForcesSelection: true,
         cursorBlink: useStore.getState().cursorBlink,
         // Nerd Fonts first so yazi/btop/lazydocker glyphs render (fall back to a
@@ -253,7 +258,7 @@ function TerminalView({ tileId, name, host, cmd, args, cwd, window: win, active,
         // tmux keeps the real history on the remote side; a deep local buffer
         // only multiplies memory per tile (each line is a typed-array row).
         scrollback: 3000,
-        theme: terminalPalette(useStore.getState().themeId, useStore.getState().semiTransparent, useStore.getState().grayscale),
+        theme: terminalPalette(themeRef.current, useStore.getState().semiTransparent, useStore.getState().grayscale),
         // OSC 8 hyperlinks (agents print these) follow the same rule as plain URLs.
         linkHandler: { activate: openTerminalLink },
       });
@@ -265,11 +270,13 @@ function TerminalView({ tileId, name, host, cmd, args, cwd, window: win, active,
       });
       // A double-clicked URL that wraps onto later rows would copy with the
       // line breaks and indents between its rows; while that exact selection
-      // stands, copies use the joined URL instead.
+      // stands, copies use the joined URL instead. Any other selection copies
+      // with the rows a program wrapped joined back into their lines.
       let selectedLink: { raw: string; text: string } | undefined;
       const selectionText = () => {
         const raw = term.getSelection();
-        return selectedLink && raw === selectedLink.raw ? selectedLink.text : raw;
+        if (selectedLink && raw === selectedLink.raw) return selectedLink.text;
+        return raw ? joinedSelection(term) ?? raw : raw;
       };
       const copySelection = () => {
         const selected = selectionText();
@@ -1200,11 +1207,12 @@ function TerminalView({ tileId, name, host, cmd, args, cwd, window: win, active,
         const signal = pasteController.signal;
         if (!connected()) throw new Error("Connect this terminal before dropping files.");
         const native = "native" in drop ? drop.native : undefined;
+        // On this Mac the paths are pasted as they are, folders included.
         if (native && HAS_TAURI && !host) {
-          validateDroppedFiles(native.files);
-          await insert(shellQuotePaths(native.files.map(file => file.path)), false, epoch);
+          await insert(shellQuotePaths(native.paths), false, epoch);
           return;
         }
+        if (native?.error) throw new Error(native.error);
         const files = "files" in drop ? drop.files : await readNativeDrop(drop.native, signal);
         validateDroppedFiles(files);
         signal.throwIfAborted();
@@ -1489,16 +1497,22 @@ function TerminalView({ tileId, name, host, cmd, args, cwd, window: win, active,
     if (retryToken > 0) retryRef.current?.();
   }, [retryToken]);
 
+  // Keyed by value, so switching between themes with the same terminal colors
+  // does not reset every terminal's glyph atlas.
+  const palette = terminalPalette(theme, semiTransparent, grayscale);
+  const paletteKey = JSON.stringify(palette);
+  const cellOpacity = semiTransparent ? surfaceOpacity / 100 : 1;
+  const minimumContrast = terminalMinimumContrast(theme);
   useEffect(() => {
     const term = termRef.current;
     if (term) {
-      term.element?.style.setProperty("--pzza-cell-background-opacity", String(semiTransparent ? surfaceOpacity / 100 : 1));
+      term.element?.style.setProperty("--pzza-cell-background-opacity", String(cellOpacity));
       // Theme assignment invalidates the WebGL background model as well as
       // glyph colors, so an opacity change repaints existing cells immediately.
-      term.options.minimumContrastRatio = themeById(themeId).appearance === "light" ? 4.5 : 1;
-      term.options.theme = terminalPalette(themeId, semiTransparent, grayscale);
+      term.options.minimumContrastRatio = minimumContrast;
+      term.options.theme = palette;
     }
-  }, [themeId, semiTransparent, grayscale, surfaceOpacity]);
+  }, [paletteKey, cellOpacity, minimumContrast]);
 
   // Track active state for the wheel guard, and focus the terminal when it
   // becomes active (so keyboard tile shortcuts land input in the right pane).
@@ -1551,7 +1565,7 @@ function TerminalView({ tileId, name, host, cmd, args, cwd, window: win, active,
   // tint when the palette value is unexpected.
   let veilTint: string | undefined;
   try {
-    const base = terminalPalette(themeId, semiTransparent, grayscale).background.replace("#", "").slice(0, 6);
+    const base = palette.background.replace("#", "").slice(0, 6);
     veilTint = /^[0-9a-fA-F]{6}$/.test(base) ? `#${base}8c` : undefined;
   } catch { veilTint = undefined; }
 

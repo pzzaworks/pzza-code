@@ -5,6 +5,8 @@ import { confirmAppControlAction, initCoreAppControlHandlers } from "./appContro
 import { initDeviceAppControlHandlers } from "./appControlDevice";
 import { initEditorAppControlHandlers } from "./appControlEditor";
 import { initWorkflowAppControlHandlers } from "./appControlWorkflow";
+import { initThemeAppControlHandlers } from "./appControlThemes";
+import { initAgentSessionsAppControlHandlers } from "./appControlAgentSessions";
 import { useStore } from "./state/store";
 import { executeAppControlRuntime, readAppControlRuntime, runAppControlExecution, finishAppControlReport, discardAppControlReport, runConfirmedAppCommand } from "./appControlRuntime";
 import { ensureWorkspaceIcon, hasIcon } from "./workspaceIcons";
@@ -49,7 +51,7 @@ function pause(delay: number, signal: AbortSignal): Promise<void> {
 
 export function useAppControl(): void {
   useEffect(() => {
-    const cleanups = [initCoreAppControlHandlers(), initTerminalAppControlHandlers(), initDeviceAppControlHandlers(), initEditorAppControlHandlers(), initIntegrationAppControlHandlers(), initWorkflowAppControlHandlers()];
+    const cleanups = [initCoreAppControlHandlers(), initTerminalAppControlHandlers(), initDeviceAppControlHandlers(), initEditorAppControlHandlers(), initIntegrationAppControlHandlers(), initWorkflowAppControlHandlers(), initThemeAppControlHandlers(), initAgentSessionsAppControlHandlers()];
     return () => cleanups.forEach(cleanup => cleanup());
   }, []);
   const [enabled, setEnabled] = useState(storedEnabled);

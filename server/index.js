@@ -45,6 +45,7 @@ import { worktreeLandRouter } from "./lib/worktree-land.js";
 import { tasksRouter } from "./lib/tasks.js";
 import { SPEND_FRESH_MS, computeSpend } from "./lib/spend.js";
 import { sessionCostRouter } from "./lib/session-cost.js";
+import { agentSessionsRouter } from "./lib/agent-sessions.js";
 import { deviceInfo } from "./lib/device-info.js";
 import { deviceOs, doctor, sshHosts } from "./lib/system.js";
 import { mcpConfigs, mcpInstall } from "./lib/mcp.js";
@@ -118,6 +119,8 @@ async function handleRequest(req, res) {
   if (await worktreeLandRouter(req, res, url, json)) return;
   if (await tasksRouter(req, res, url, json)) return;
   if (await sessionCostRouter(req, res, url, json)) return;
+  // Past agent conversations, of this device or (with ?host=) another one.
+  if (await agentSessionsRouter(req, res, url, json)) return;
   if (await quickChatRouter(req, res, url, json)) return;
 
   if (url.pathname === "/capabilities") {

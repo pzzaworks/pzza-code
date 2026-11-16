@@ -19,8 +19,9 @@ export const RUNTIME_APP_COMMANDS = {
     name: SESSION_NAME_SCHEMA, deviceId: string(128), workspaceId: string(128),
     cwd: { type: "string", minLength: 1, maxLength: 4096, pattern: "^/[^\\u0000-\\u001f\\u007f]*$" },
     account: { type: "object", properties: { provider: enumeration("claude", "codex"), dir: { type: "string", minLength: 1, maxLength: 4096, pattern: "^/[^\\u0000-\\u001f\\u007f]*$" } }, required: ["provider", "dir"], additionalProperties: false },
-    // The agent server accepts only modes from its fixed catalog for the chosen agent.
-    agent: { type: "object", properties: { id: enumeration(...SESSION_AGENTS.map(agent => agent.id)), mode: enumeration(...new Set(SESSION_AGENTS.flatMap(agent => agent.modes.map(mode => mode.id)))) }, required: ["id", "mode"], additionalProperties: false },
+    // The agent server accepts only modes from its fixed catalog for the chosen
+    // agent, and a `session` id only in the shape that agent gives its conversations.
+    agent: { type: "object", properties: { id: enumeration(...SESSION_AGENTS.map(agent => agent.id)), mode: enumeration(...new Set(SESSION_AGENTS.flatMap(agent => agent.modes.map(mode => mode.id)))), session: string(128) }, required: ["id", "mode"], additionalProperties: false },
   }, ["name", "deviceId"]),
   get_window: command("Read native window state and platform availability."),
   configure_window: command("Set native window visibility, minimization, maximization or fullscreen state.", { visible: boolean, minimized: boolean, maximized: boolean, fullscreen: boolean }),

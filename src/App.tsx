@@ -8,6 +8,7 @@ import {
   Menu,
 } from "lucide-react";
 import { QuickChat } from "./panels/QuickChat";
+import { AgentSessionsButton } from "./grid/AgentSessions";
 import { NotificationsTool, countLabel } from "./panels/Notifications";
 import { ContextMenu } from "./ui/ContextMenu";
 import { ThemeProvider } from "./theme/ThemeProvider";
@@ -531,6 +532,7 @@ export default function App() {
               <div className={`topbar-tools ${toolsOpen ? "open" : ""}`}>
                 {barShown("top:tasks") ? <ErrorBoundary label="Tasks"><TasksButton /></ErrorBoundary> : null}
                 {barShown("top:quick-chat") ? <ErrorBoundary label="Quick Chat"><QuickChat onOpenSettings={() => openSettings("quick-chat")} /></ErrorBoundary> : null}
+                {barShown("top:agent-sessions") ? <AgentSessionsButton onOpen={() => setToolsOpen(false)} /> : null}
                 {(hasRemote || syncing) && barShown("top:sync") ? <div className="toolbar-action-status">
                   <IconButton icon={FolderSync} title={syncing ? "Sync in progress" : "Sync projects"} onClick={() => {
                     setToolsOpen(false);

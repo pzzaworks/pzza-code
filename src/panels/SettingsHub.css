@@ -71,25 +71,6 @@
    row or note after it would otherwise keep the gap meant for below a title. */
 .settings-hub-content .general-settings > .set-section > .set-title:first-child + * { margin-top: 0; }
 .settings-hub-content .general-settings > .set-section > .set-title:first-child + :is(.settings-row, .set-row) { padding-top: 0; }
-.appearance-choice { padding-bottom: 16px; margin-bottom: 2px; border-bottom: 1px solid var(--divider); }
-.settings-hub-content .appearance-modes { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; padding: 0; border: 0; background: none; }
-.appearance-option { display: flex; flex-direction: column; gap: 8px; padding: 7px; border: 1px solid var(--hairline); border-radius: var(--r-sm); background: transparent; color: var(--muted); cursor: pointer; text-align: left; transition: border-color 140ms; }
-.appearance-option.selected, .appearance-option:hover { border-color: var(--muted); color: var(--text); }
-.appearance-preview { display: flex; height: 65px; border-radius: var(--r-xs); overflow: hidden; background: #121519; border: 1px solid #34383f; }
-.appearance-preview-nav { width: 29%; display: flex; flex-direction: column; gap: 5px; padding: 11px 7px; background: #1c1f24; }
-.appearance-preview-nav i { height: 4px; width: 80%; border-radius: 2px; background: #454b54; }
-.appearance-preview-nav i:first-child { width: 100%; background: #767d89; }
-.appearance-preview-body { display: flex; flex: 1; flex-direction: column; gap: 9px; padding: 12px; }
-.appearance-preview-body i { width: 85%; height: 3px; background: #484e57; border-radius: 2px; }
-.appearance-preview-body i:first-child { width: 58%; background: #b7beca; }
-.appearance-option.light .appearance-preview { background: #ffffff; border-color: #d7dce4; }
-.appearance-option.light .appearance-preview-nav { background: #f0f2f5; }
-.appearance-option.light .appearance-preview-nav i { background: #c7ccd5; }
-.appearance-option.light .appearance-preview-nav i:first-child { background: #9ca4b2; }
-.appearance-option.light .appearance-preview-body i { background: #d1d6df; }
-.appearance-option.light .appearance-preview-body i:first-child { background: #606b7d; }
-.appearance-option-label { display: flex; align-items: center; gap: 6px; padding: 0 2px 1px; font-size: var(--fs-sm); }
-.appearance-option-label > svg:last-child:not(:first-child) { margin-left: auto; }
 .terminal-type-preview { padding: 20px 18px 16px; margin-bottom: 4px; background: var(--bg); border: 1px solid var(--hairline); border-radius: var(--r-sm); font-family: ui-monospace, monospace; overflow: hidden; }
 .terminal-type-preview small { display: block; margin-top: 12px; font-size: var(--fs-xs); line-height: 1.5; color: var(--muted); }
 .terminal-preview-cursor { display: inline-block; width: .58em; height: 1em; margin-left: 6px; vertical-align: -.12em; background: var(--text); }
@@ -99,7 +80,7 @@
 .settings-hub-content .stepper button { width: 28px; font-size: var(--fs-xl); }
 .settings-hub-content .stepper-val { min-width: 48px; font-size: var(--fs-sm); }
 .settings-hub-content .dictation-language-setting .cselect { width: 210px; }
-.settings-hub-content .dictation-licenses pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 180px; overflow: auto; }
+.settings-hub-content :is(.dictation-licenses, .about-licenses) pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 180px; overflow: auto; }
 
 /* Activity has one filter bar and a quiet, readable history list. */
 .notification-filterbar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
@@ -258,12 +239,11 @@
   .settings-hub-nav { width: 142px; min-width: 0; padding-inline: 6px; }
   .settings-hub-link { gap: 7px; padding-inline: 6px; font-size: var(--fs-sm); }
   .settings-hub-sublink { padding-left: 29px; font-size: var(--fs-sm); }
-  .appearance-preview { height: 48px; }
   .settings-hub-content .about-links { grid-template-columns: 1fr; }
 }
 @media (prefers-reduced-motion: reduce) {
   .settings-hub-backdrop, .modal.settings-hub, .terminal-preview-cursor.blink { animation: none; }
-  .settings-hub-link, .settings-hub-sublink, .settings-nav-chevron, .settings-hub-content .switch-knob, .appearance-option, .settings-hub-content .notification-row { transition: none; }
+  .settings-hub-link, .settings-hub-sublink, .settings-nav-chevron, .settings-hub-content .switch-knob, .settings-hub-content .notification-row { transition: none; }
 }
 
 .settings-hub-content .dictation-language-setting { display: flex; flex-direction: row; align-items: center; justify-content: space-between; text-align: left; gap: 18px; padding: 13px 0; }
@@ -300,7 +280,6 @@
 :root[data-appearance="light"] .settings-hub-content .switch-on .switch-knob { background: #ffffff; }
 :root[data-appearance="light"] .settings-hub-nav { background: var(--bg); }
 :root[data-appearance="light"] .settings-hub-content .btn-on { background: var(--selected); color: var(--selected-text); }
-:root[data-appearance="light"] .appearance-option.selected { border-color: color-mix(in srgb, var(--selected-edge) 45%, transparent); color: var(--text); }
 @container (max-width: 430px) {
   .settings-hub-content .dictation-language-setting > .cselect { flex-basis: 180px; }
 }
@@ -374,3 +353,10 @@
   --tour-card: var(--surface);
   --tour-well: color-mix(in srgb, var(--surface-alt) 45%, var(--surface));
 }
+
+/* Settings > Appearance: the theme list. Each option shows the theme's
+   background with three of its colors; the list renders at the document root. */
+.settings-hub-content .cselect.theme-select { width: 240px; }
+.theme-swatch { position: relative; flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 18px; padding-bottom: 3px; overflow: hidden; border: 1px solid; border-radius: var(--r-xs); font-size: 10px; font-weight: 600; line-height: 1; letter-spacing: 0.01em; }
+.theme-swatch-strip { position: absolute; left: 0; right: 0; bottom: 0; display: flex; height: 3px; }
+.theme-swatch-strip i { flex: 1; }

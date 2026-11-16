@@ -153,7 +153,7 @@ pub fn system_languages() -> Vec<String> {
 /// The app bundle an executable runs from: the `.app` folder holding
 /// `Contents/MacOS/<executable>`. None when it does not run from a bundle
 /// (a development build).
-fn app_bundle(executable: &std::path::Path) -> Option<&std::path::Path> {
+pub(crate) fn app_bundle(executable: &std::path::Path) -> Option<&std::path::Path> {
     let macos = executable.parent()?;
     let contents = macos.parent()?;
     let bundle = contents.parent()?;

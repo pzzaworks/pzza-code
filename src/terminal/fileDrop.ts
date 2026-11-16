@@ -7,6 +7,8 @@ export const DROP_LIMITS = { count: 8, file: 16 * 1024 * 1024, total: 32 * 1024 
 export interface NativeDrop {
   id: string;
   files: { name: string; path: string; size: number }[];
+  /** Every dropped path, folders included; empty when any is unusable. */
+  paths: string[];
   x: number;
   y: number;
   error?: string | null;
@@ -115,11 +117,12 @@ export function installTerminalDrops(): () => void {
       const drop = event.payload;
       if (disposed) { void releaseNativeDrop(drop).catch(() => {}); return; }
       const accept = targetAt(drop.x, drop.y);
-      if (!accept || drop.error) {
+      // A drop that missed every terminal opens its files and folders instead
+      // (see folderDrop.ts). A terminal on this Mac only pastes the paths, so
+      // it still takes a drop whose files could not be granted (a folder, a
+      // large file); the grant error matters only to other devices.
+      if (!accept || (drop.error && !drop.paths.length)) {
         void releaseNativeDrop(drop).catch(() => {});
-        // Off-terminal drops are not file drops: a folder dropped on the
-        // canvas starts a session instead (see folderDrop.ts), so only a drop
-        // that targeted a terminal reports its error.
         if (accept && drop.error) report(drop.error);
         return;
       }

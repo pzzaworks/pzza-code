@@ -2,13 +2,13 @@ import { useEffect, useLayoutEffect } from "react";
 import { useStore } from "../state/store";
 import { HAS_TAURI } from "../tauriEnv";
 import { setNativeTransparency } from "../nativeAppearance";
-import { themeById } from "./themes";
-import { chromeToCssVars, deriveChrome, grayscale, grayscaleChrome, textVisibilityVars } from "./types";
+import { useActiveTheme } from "./useActiveTheme";
+import { chromeToCssVars, grayscale, grayscaleChrome, textVisibilityVars } from "./types";
 
 const SETUP_BLUR_RADIUS = 40;
 
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
-  const themeId = useStore((s) => s.themeId);
+  const theme = useActiveTheme();
   const transparent = useStore((s) => s.semiTransparent);
   const gray = useStore((s) => s.grayscale);
   const options = useStore((s) => s.transparencyOptions);
@@ -65,9 +65,8 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
   }, [transparent, nativeBlurRadius]);
 
   useLayoutEffect(() => {
-    const theme = themeById(themeId);
     const root = document.documentElement;
-    const derived = deriveChrome(theme.terminal, theme.appearance);
+    const derived = theme.chrome;
     const chrome = gray ? grayscaleChrome(derived) : derived;
     const terminalBackground = gray ? grayscale(theme.terminal.background) : theme.terminal.background;
     const visibility = transparent ? options.textVisibility : 0;
@@ -90,7 +89,7 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
     root.dataset.grayscale = gray ? "on" : "off";
     root.dataset.textVisibility = visibility > 0 ? "on" : "off";
     root.dataset.native = String(HAS_TAURI);
-  }, [themeId, transparent, gray, options]);
+  }, [theme, transparent, gray, options]);
 
   // One spacing for the window edge, the canvas and between tiles; at 0 the
   // tiles join edge to edge (data-space="0" switches to shared borders).

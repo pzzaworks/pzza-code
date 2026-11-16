@@ -1,9 +1,8 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
-import { githubDark, githubLight } from "@uiw/codemirror-theme-github";
 import { GitCommitHorizontal, LoaderCircle } from "lucide-react";
 import { CodeDiffView, type GitDiffState, type DiffAsk } from "../grid/CodeChanges";
 import { useStore } from "../state/store";
-import { themeById } from "../theme/themes";
+import { useEditorTheme } from "../theme/editorTheme";
 import { sendPromptToTile } from "../terminal/broadcast";
 import type { GitChangeStatus } from "../serverApi";
 import { fetchTaskDiff, type TaskFile } from "./taskApi";
@@ -41,8 +40,7 @@ export function TaskChanges({ task, candidate, live, initialPath }: { task: Task
   // A new commit or edit reads the open file again.
   const revision = `${stats?.head ?? ""}:${stats?.added ?? 0}:${stats?.removed ?? 0}:${stats?.uncommitted ?? 0}`;
   const diff = useTaskDiff(task, candidate, file, revision);
-  const themeId = useStore((state) => state.themeId);
-  const editorTheme = themeById(themeId).appearance === "light" ? githubLight : githubDark;
+  const editorTheme = useEditorTheme();
   const tileOpen = useStore((state) => state.tiles.some((tile) => tile.id === candidate.tileId));
   const ask: DiffAsk = { tileId: candidate.tileId, available: tileOpen && live.agentRunning !== false, send: (line) => sendPromptToTile(candidate.tileId, line) };
   const rows = useRef(new Map<string, HTMLButtonElement>());

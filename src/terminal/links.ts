@@ -19,13 +19,11 @@ const PATH_PATTERN = /(?<![\w:/.~@-])~?\/[A-Za-z0-9._@%+=,~-][A-Za-z0-9._@%+=,~/
 const PATH_START = /^["'`(\[]?~?\/[A-Za-z0-9._@%+=,~-]/;
 // TUIs wrap at their own width, which can sit a couple of cells inside the
 // terminal edge (padding, scrollbar gutters).
-const EDGE_SLACK = 2;
+export const EDGE_SLACK = 2;
 // Hanging indent an agent puts before continuation rows.
 const MAX_INDENT = 8;
 // Bound how far a single lookup walks so hovering stays cheap.
 const MAX_ROWS = 16;
-// How far inside the terminal edge a TUI may wrap its own text (its margins).
-const MAX_RIGHT_MARGIN = 12;
 
 /** A buffer cell, 0-based. */
 export interface TerminalCell { x: number; y: number }
@@ -40,9 +38,9 @@ export interface TerminalLink {
   cells: TerminalCell[];
 }
 
-interface Row { text: string; cells: TerminalCell[]; wrapped: boolean }
+export interface Row { text: string; cells: TerminalCell[]; wrapped: boolean }
 
-function readRow(term: Terminal, y: number): Row | undefined {
+export function readRow(term: Terminal, y: number): Row | undefined {
   const line = term.buffer.active.getLine(y);
   if (!line) return;
   const cells: TerminalCell[] = [];
@@ -60,38 +58,66 @@ function readRow(term: Terminal, y: number): Row | undefined {
   return { text, cells, wrapped: line.isWrapped };
 }
 
-function lastNonSpace(text: string): number {
+export function lastNonSpace(text: string): number {
   for (let i = text.length - 1; i >= 0; i--) if (text[i] !== " ") return i;
   return -1;
 }
 
-// The column text wraps at around row `y`: the terminal's last column, or a
-// TUI's own narrower width (agents keep a right margin). That width is read
-// from the text: a row cut mid-token ends exactly there, so it is the furthest
-// any nearby row reaches. `shared` says whether more than one row reaches it,
-// which tells a real wrap width from one long line that merely ends there.
-interface WrapEdge { column: number; shared: boolean }
-function wrapEdge(term: Terminal, y: number): WrapEdge {
-  const edge = term.cols - 1;
+export const indentOf = (text: string): number => text.length - text.trimStart().length;
+
+export type RowReader = (y: number) => Row | undefined;
+
+/** Reads each buffer row once per lookup: a hover or a copy reads the same rows many times. */
+export function cachedRows(term: Terminal): RowReader {
+  const rows = new Map<number, Row | undefined>();
+  return (y) => {
+    if (!rows.has(y)) rows.set(y, readRow(term, y));
+    return rows.get(y);
+  };
+}
+
+// Continuation rows of a wrapped list item sit under the item's text, past its
+// marker ("- ", "* ", "1. "), so up to this many cells right of its first row.
+export const MAX_HANGING_INDENT = 4;
+// Rows drawn only with box characters (an agent's input frame, rules) span
+// the whole terminal and say nothing about the width text wraps at.
+export const FRAME_ROW = /^[\s─-▟]*$/;
+
+// The column text wraps at around row `y`: a TUI's own width (agents keep a
+// right margin), read from nearby rows of the same block: the same indent, or
+// up to a hanging indent less (the first row of a wrapped list item), never
+// deeper (other output, such as a diff, often runs to the terminal edge). It
+// is their widest end, and counts as a real wrap width (`shared`) only when at
+// least two rows reach it: wrapped text keeps running into its width, while a
+// list or a log has one longest line. Rows xterm wrapped itself end at the
+// terminal edge whatever the program's width, and frame rows span the
+// terminal, so neither is read.
+export interface WrapEdge { column: number; shared: boolean }
+export function blockWrapEdge(read: RowReader, cols: number, y: number, indent: number): WrapEdge {
   const ends: number[] = [];
-  for (let row = Math.max(0, y - MAX_ROWS); row <= y + MAX_ROWS; row++) {
-    const current = readRow(term, row);
-    if (!current) { if (row > y) break; continue; }
+  let below = read(Math.max(0, y - MAX_ROWS));
+  for (let row = Math.max(0, y - MAX_ROWS); row <= y + MAX_ROWS && below; row++) {
+    const current = below;
+    below = read(row + 1);
     const last = lastNonSpace(current.text);
-    if (last >= 0) ends.push(current.cells[last].x);
+    const rowIndent = indentOf(current.text);
+    if (last < 0 || rowIndent > indent || rowIndent < indent - MAX_HANGING_INDENT || FRAME_ROW.test(current.text) || current.wrapped || below?.wrapped) continue;
+    ends.push(current.cells[last].x);
   }
-  const widest = Math.max(-1, ...ends);
-  if (widest < edge - MAX_RIGHT_MARGIN) return { column: edge, shared: true };
-  return { column: widest, shared: ends.filter(end => end >= widest - EDGE_SLACK).length > 1 };
+  if (!ends.length) return { column: cols - 1, shared: false };
+  const widest = Math.max(...ends);
+  return { column: widest, shared: ends.filter((end) => end >= widest - EDGE_SLACK).length > 1 };
 }
 
 // Geometry only: the upper row's content touches the wrap edge with a URL
 // character and the lower row resumes with URL characters. Returns how many
 // leading cells of the lower row to drop, or undefined when the rows do not join.
-function continuation(term: Terminal, upper: Row, lower: Row, wrap: WrapEdge): number | undefined {
+function continuation(term: Terminal, read: RowReader, upper: Row, lower: Row): number | undefined {
   if (lower.wrapped) return 0;
   const last = lastNonSpace(upper.text);
-  if (last < 0 || !URL_CHAR.test(upper.text[last]) || upper.cells[last].x < wrap.column - EDGE_SLACK) return;
+  if (last < 0 || !URL_CHAR.test(upper.text[last])) return;
+  const wrap = blockWrapEdge(read, term.cols, upper.cells[last].y, indentOf(upper.text));
+  if (upper.cells[last].x < wrap.column - EDGE_SLACK) return;
   // Short of the terminal edge, the wrap width must be real: other rows reach
   // it too, or this row is a single token too long to fit, so it was cut.
   const atTerminalEdge = upper.cells[last].x >= term.cols - 1 - EDGE_SLACK;
@@ -117,25 +143,25 @@ function trailingToken(text: string): string {
 
 /** URLs and file paths on buffer row `y` (0-based), each joined across the rows it spans. */
 export function terminalLinksAt(term: Terminal, y: number): TerminalLink[] {
-  const here = readRow(term, y);
+  const read = cachedRows(term);
+  const here = read(y);
   if (!here) return [];
   // Walk up while rows could be one URL, then build segments downward, only
   // joining a hard break when the text before it really ends inside a URL.
-  const wrap = wrapEdge(term, y);
   let first = y;
   let lower = here;
   while (first > 0 && y - first < MAX_ROWS) {
-    const upper = readRow(term, first - 1);
-    if (!upper || continuation(term, upper, lower, wrap) === undefined) break;
+    const upper = read(first - 1);
+    if (!upper || continuation(term, read, upper, lower) === undefined) break;
     first--;
     lower = upper;
   }
   let segment: Row | undefined;
   let previous: Row | undefined;
   for (let row = first; row <= y + MAX_ROWS; row++) {
-    const current = row === y ? here : readRow(term, row);
+    const current = row === y ? here : read(row);
     if (!current) break;
-    const indent = segment && previous ? continuation(term, previous, current, wrap) : undefined;
+    const indent = segment && previous ? continuation(term, read, previous, current) : undefined;
     const joins = segment !== undefined && indent !== undefined &&
       (current.wrapped || URL_START.test(trailingToken(segment.text)) || PATH_START.test(trailingToken(segment.text)));
     if (segment && joins && indent !== undefined) {

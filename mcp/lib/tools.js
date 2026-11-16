@@ -6,6 +6,7 @@ import { GIT_TOOLS } from "./git-tools.js";
 
 import { APP_TOOLS } from "./app-tools.js";
 import { SESSION_NAME_SCHEMA } from "../../server/lib/session-name.js";
+import { SESSION_AGENT_IDS } from "../../server/lib/session-agents.js";
 
 // Ending a session kills everything running in it, so, like terminating a
 // tile, it is asked in the app first: the request goes to an app window as
@@ -168,6 +169,26 @@ const TOOLS = [
     description: "Spend per agent from local session data (today / yesterday / trailing window): estimated from token rates, or the cost the agent recorded.",
     inputSchema: { type: "object", properties: {} },
     run: () => get("/spend"),
+  },
+  {
+    name: "list_agent_sessions",
+    description: "List past coding-agent conversations (Claude Code, Codex and the other catalog agents) from the device's local session data, newest first, with per-agent counts. Each row has the agent, conversation id, folder, a redacted one-line title, times and how it can be reopened (by id, only as the folder's newest, or not at all). host empty = this device; otherwise an ssh alias of an added device.",
+    annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
+    inputSchema: { type: "object", properties: {
+      agent: { type: "string", enum: [...SESSION_AGENT_IDS], description: "Only this agent's conversations" },
+      cwd: { type: "string", maxLength: 4096, pattern: "^/[^\\u0000-\\u001f\\u007f]*$", description: "Absolute folder the conversations ran in" },
+      under: { type: "boolean", description: "With cwd: also folders under it" },
+      since: { type: "integer", minimum: 0, maximum: 999999999999999, description: "Epoch milliseconds: only conversations active since then" },
+      q: { type: "string", maxLength: 200, pattern: "^[^\\u0000-\\u001f\\u007f]*$", description: "Matched against title, folder, branch and id prefix" },
+      limit: { type: "integer", minimum: 1, maximum: 300 },
+      offset: { type: "integer", minimum: 0, maximum: 100000 },
+      fresh: { type: "boolean", description: "Rescan instead of serving cached results" },
+      host: { type: "string", maxLength: 128, pattern: "^(?:[A-Za-z0-9._][A-Za-z0-9._@-]*)?$" },
+    }, additionalProperties: false },
+    run: (a) => get(`/agent-sessions${qs({
+      agent: a.agent, cwd: a.cwd, under: a.under ? 1 : undefined, since: a.since, q: a.q,
+      limit: a.limit, offset: a.offset, fresh: a.fresh ? 1 : undefined, host: a.host,
+    })}`),
   },
   {
     name: "mcp_config",

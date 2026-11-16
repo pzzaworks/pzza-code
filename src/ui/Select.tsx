@@ -1,4 +1,4 @@
-import { useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { Check, ChevronDown, Search } from "lucide-react";
 import { rankOptions } from "./selectSearch";
@@ -29,6 +29,9 @@ interface Props {
   title?: string;
   // A search field at the top of the list; on by default past SEARCH_THRESHOLD options.
   searchable?: boolean;
+  // Told the highlighted option while the list is open, and null once it closes,
+  // so a choice can be shown before it is made.
+  onPreview?: (value: string | null) => void;
 }
 
 // Room kept between an open list and the window edge.
@@ -79,7 +82,7 @@ function reveal(list: HTMLElement, item: HTMLElement, center: boolean) {
 // Custom select (never a native <select>). The list renders in a portal at the
 // document root, so it is never clipped by a scrolling panel and always stacks
 // above everything.
-export function Select({ value, options, onChange, placeholder, disabled = false, ariaLabel, onOpen, align = "start", className = "", title, searchable }: Props) {
+export function Select({ value, options, onChange, placeholder, disabled = false, ariaLabel, onOpen, align = "start", className = "", title, searchable, onPreview }: Props) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
@@ -105,6 +108,11 @@ export function Select({ value, options, onChange, placeholder, disabled = false
   // Remeasured only when the options themselves change, not on every new array.
   const optionsKey = options.map((o) => `${o.value}\u0000${o.label}\u0000${o.sub ?? ""}\u0000${o.group ?? ""}`).join("\u0001");
   const selectedIndex = (rows: Row[]) => Math.max(0, rows.findIndex((row) => row.option.value === value));
+  const highlighted = open ? activeRow?.option.value ?? null : null;
+  const previewRef = useRef(onPreview);
+  previewRef.current = onPreview;
+  useEffect(() => { previewRef.current?.(highlighted); }, [highlighted]);
+  useEffect(() => () => previewRef.current?.(null), []);
 
   const close = (refocus: boolean) => {
     setOpen(false);
