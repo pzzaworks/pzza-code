@@ -1,4 +1,5 @@
 export interface AppArgumentSchema {
+  description?: string;
   type: string;
   enum?: string[];
   minimum?: number;

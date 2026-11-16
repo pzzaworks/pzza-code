@@ -9,11 +9,40 @@ use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Mutex};
+use std::sync::{mpsc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-const LABEL: &str = "com.pzzacode.tmux";
 const BUNDLE_ID: &str = "com.pzzacode.app";
+
+/// Which copy of the app owns a terminal service. The service is the process
+/// macOS holds responsible for everything run in the terminals, so its
+/// privacy grants (Full Disk Access, Microphone, Automation, ...) are checked
+/// against its signature. Every app bundle (the release, or a local build
+/// signed with the same Developer ID) carries the same signature and shares
+/// the one service. `tauri dev` runs a bare, ad-hoc signed binary: had it
+/// taken over that service, every grant would be re-asked and stored for its
+/// signature, and the release app would lose them. It runs its own service,
+/// under its own launchd label and socket.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Namespace {
+    label: &'static str,
+    socket_directory: &'static str,
+}
+
+const APP: Namespace = Namespace { label: "com.pzzacode.tmux", socket_directory: "pzzacode-tmux" };
+const DEVELOPMENT: Namespace = Namespace { label: "com.pzzacode.dev.tmux", socket_directory: "pzzacode-dev-tmux" };
+
+fn namespace_for(executable: &Path) -> Namespace {
+    if crate::sys::app_bundle(executable).is_some() { APP } else { DEVELOPMENT }
+}
+
+fn namespace() -> Namespace {
+    static NAMESPACE: OnceLock<Namespace> = OnceLock::new();
+    // An executable path that cannot be read keeps the app's service, so an
+    // installed app never loses its terminals.
+    *NAMESPACE.get_or_init(|| std::env::current_exe().map_or(APP, |exe| namespace_for(&exe)))
+}
+
 const SERVER_ARGUMENT: &str = "--local-tmux-server";
 // What a bounded command may print per stream; the rest is read and dropped.
 const OUTPUT_LIMIT: u64 = 64 * 1024 * 1024;
@@ -60,7 +89,7 @@ impl Retry {
 pub fn socket_path() -> PathBuf {
     // Keep the Unix socket comfortably below macOS's 104-byte limit, even
     // with a long home directory. The directory is private to this user.
-    PathBuf::from(format!("/private/tmp/pzzacode-tmux-{}", unsafe {
+    PathBuf::from(format!("/private/tmp/{}-{}", namespace().socket_directory, unsafe {
         libc::geteuid()
     }))
     .join("server.sock")
@@ -105,7 +134,7 @@ fn service_plist(executable: &Path, path: &str) -> io::Result<String> {
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
 <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
 <plist version=\"1.0\"><dict>\n\
-<key>Label</key><string>{LABEL}</string>\n\
+<key>Label</key><string>{label}</string>\n\
 <key>ProgramArguments</key><array><string>{}</string><string>{SERVER_ARGUMENT}</string></array>\n\
 <key>AssociatedBundleIdentifiers</key><array><string>{BUNDLE_ID}</string></array>\n\
 <key>EnvironmentVariables</key><dict><key>PATH</key><string>{}</string><key>LANG</key><string>en_US.UTF-8</string></dict>\n\
@@ -117,6 +146,7 @@ fn service_plist(executable: &Path, path: &str) -> io::Result<String> {
 </dict></plist>\n",
         xml(executable),
         xml(path),
+        label = namespace().label,
     ))
 }
 
@@ -356,7 +386,7 @@ pub fn ensure_running() {
 /// helper restarts (Refresh sessions).
 pub fn helper_outdated() -> bool {
     let Ok(executable) = std::env::current_exe() else { return false };
-    let target = format!("gui/{}/{LABEL}", unsafe { libc::geteuid() });
+    let target = format!("gui/{}/{}", unsafe { libc::geteuid() }, namespace().label);
     let Ok(printed) = bounded_output(Command::new("/bin/launchctl").args(["print", &target])) else { return false };
     if !printed.status.success() {
         return false;
@@ -503,7 +533,7 @@ fn start_locked(timeout: Duration) -> io::Result<()> {
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "Home directory unavailable"))?;
     let directory = PathBuf::from(home).join("Library/LaunchAgents");
     fs::create_dir_all(&directory)?;
-    let plist = directory.join(format!("{LABEL}.plist"));
+    let plist = directory.join(format!("{}.plist", namespace().label));
     // The service outlives this process, so it gets the login shell's PATH
     // only once the shell reported it; until then it keeps the one it has.
     let path = service_path(
@@ -514,7 +544,7 @@ fn start_locked(timeout: Duration) -> io::Result<()> {
     write_service(&plist, &service_plist(&std::env::current_exe()?, &path)?)?;
     let executable = std::env::current_exe()?;
     let domain = format!("gui/{}", unsafe { libc::geteuid() });
-    let target = format!("{domain}/{LABEL}");
+    let target = format!("{domain}/{}", namespace().label);
     let loaded = bounded_output(Command::new("/bin/launchctl").args(["print", &target]))?;
     if !loaded.status.success() {
         let result = bounded_output(
@@ -734,7 +764,7 @@ fn server_lock(directory: &Path) -> io::Result<File> {
 }
 
 fn run_server() -> io::Result<i32> {
-    run_service_at(&socket_path(), LABEL, Command::new("tmux"))
+    run_service_at(&socket_path(), namespace().label, Command::new("tmux"))
 }
 
 fn run_service_at(socket: &Path, label: &str, command: Command) -> io::Result<i32> {
@@ -870,6 +900,21 @@ pub fn headless_exit_code() -> Option<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn app_bundles_share_the_terminal_service_and_tauri_dev_gets_its_own() {
+        // The release app and a Developer ID signed local build.
+        assert_eq!(namespace_for(Path::new("/Applications/PzzaCode.app/Contents/MacOS/pzzacode")), APP);
+        assert_eq!(namespace_for(Path::new("/Users/dev/project/src-tauri/target/release/bundle/macos/PzzaCode.app/Contents/MacOS/pzzacode")), APP);
+        // `tauri dev` runs the bare, ad-hoc signed binary from target/debug.
+        assert_eq!(namespace_for(Path::new("/Users/dev/project/src-tauri/target/debug/pzzacode")), DEVELOPMENT);
+        // A folder that only looks like a bundle is not one.
+        assert_eq!(namespace_for(Path::new("/Users/dev/Contents/MacOS/pzzacode")), DEVELOPMENT);
+        // The two services never share a launchd job or a socket.
+        assert_ne!(APP.label, DEVELOPMENT.label);
+        assert_ne!(APP.socket_directory, DEVELOPMENT.socket_directory);
+    }
+
     use std::os::unix::fs::{symlink, PermissionsExt};
 
     fn directory() -> PathBuf {
@@ -1304,7 +1349,7 @@ mod tests {
         assert!(name.starts_with("pzza-launchd-test-"));
         let label = format!("com.pzzacode.tmux.lifecycle.{name}");
         let socket = directory.join("server.sock");
-        assert_ne!(label, LABEL);
+        assert_ne!(label, namespace().label);
         assert_ne!(socket, socket_path());
         private_directory(&directory).unwrap();
         if child_directory.is_some() {

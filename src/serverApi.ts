@@ -8,6 +8,7 @@ import { HAS_TAURI } from "./tauriEnv";
 import { createAgentConnection } from "./agentConnection";
 import { validSessionCreatedAt, validWindowId, type LocatedWindow } from "./windowIdentity";
 import { sessionAgent, type SessionAgentChoice, type SessionAgentId } from "../server/lib/session-agents.js";
+import type { AgentSessionRow, AgentSessionsQuery, AgentSessionsResponse } from "../server/lib/agent-sessions.js";
 
 function serverPort(): number {
   try {
@@ -1465,4 +1466,72 @@ export async function fetchGitCiFailures(host: string, path: string): Promise<Gi
     throw new Error("Could not fetch the failing CI logs");
   }
   return { branch: value.branch, sha: value.sha, path: value.path, checks: value.checks.filter((name): name is string => typeof name === "string") };
+}
+
+// Past coding-agent conversations on a device (GET /agent-sessions), newest
+// first after the device's own filtering and paging. Another device's list is
+// read through this agent (`host`). A failed request throws with the HTTP
+// status as the error's cause (404: a device agent too old to list them).
+export async function fetchAgentSessions(host: string, query: AgentSessionsQuery, signal?: AbortSignal): Promise<AgentSessionsResponse> {
+  const params = new URLSearchParams();
+  if (query.agent) params.set("agent", query.agent);
+  if (query.cwd) params.set("cwd", query.cwd);
+  if (query.cwd && query.under) params.set("under", "1");
+  if (query.since !== undefined) params.set("since", String(Math.max(0, Math.floor(query.since))));
+  if (query.q) params.set("q", query.q);
+  if (query.limit !== undefined) params.set("limit", String(query.limit));
+  if (query.offset) params.set("offset", String(query.offset));
+  if (query.fresh) params.set("fresh", "1");
+  if (host) params.set("host", host);
+  // The caller's signal or a timeout, whichever comes first (a cold scan of another device can take a while).
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  signal?.addEventListener("abort", abort, { once: true });
+  if (signal?.aborted) controller.abort();
+  const timer = setTimeout(abort, host ? 20000 : 12000);
+  let response: Response;
+  let value: unknown;
+  try {
+    response = await agentFetch(`${SERVER_HTTP}/agent-sessions?${params}`, { signal: controller.signal });
+    value = await response.json().catch(() => null);
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener("abort", abort);
+  }
+  if (!response.ok) {
+    const message = value && typeof value === "object" && "error" in value && typeof value.error === "string" ? value.error : `Agent sessions are unavailable (${response.status}).`;
+    throw new Error(message, { cause: response.status });
+  }
+  if (!value || typeof value !== "object" || !("sessions" in value) || !Array.isArray(value.sessions)) throw new Error("Invalid agent sessions response.");
+  const text = (item: unknown, max: number) => (typeof item === "string" ? item.replace(/[\u0000-\u001f\u007f]+/g, " ").slice(0, max) : "");
+  const count = (item: unknown) => (typeof item === "number" && Number.isFinite(item) && item >= 0 ? item : undefined);
+  const sessions: AgentSessionRow[] = [];
+  for (const entry of value.sessions as unknown[]) {
+    if (!entry || typeof entry !== "object") continue;
+    const row = entry as Record<string, unknown>;
+    const agent = sessionAgent(row.agent);
+    const id = text(row.id, 256);
+    const resume = row.resume === "id" || row.resume === "last" ? row.resume : "none";
+    const lastAt = count(row.lastAt);
+    if (!agent || !id || lastAt === undefined) continue;
+    const cwd = text(row.cwd, 4096);
+    sessions.push({
+      agent: agent.id, id, cwd: cwd.startsWith("/") ? cwd : "", title: text(row.title, 200).trim(),
+      startedAt: count(row.startedAt) ?? lastAt, lastAt, resume,
+      ...(text(row.branch, 256) ? { branch: text(row.branch, 256) } : {}),
+      ...(count(row.messages) !== undefined ? { messages: count(row.messages) } : {}),
+      ...(count(row.bytes) !== undefined ? { bytes: count(row.bytes) } : {}),
+      ...(text(row.account, 160) ? { account: text(row.account, 160) } : {}),
+    });
+  }
+  const agents: Record<string, number> = {};
+  if ("agents" in value && value.agents && typeof value.agents === "object" && !Array.isArray(value.agents)) {
+    for (const [id, total] of Object.entries(value.agents)) {
+      const known = sessionAgent(id);
+      const amount = count(total);
+      if (known && amount) agents[known.id] = amount;
+    }
+  }
+  const total = "total" in value ? count(value.total) : undefined;
+  return { sessions, total: total ?? sessions.length, agents, partial: "partial" in value && value.partial === true };
 }

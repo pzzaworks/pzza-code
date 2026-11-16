@@ -1,5 +1,4 @@
 import { useEffect, useId, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent } from "react";
-import { githubDark, githubLight } from "@uiw/codemirror-theme-github";
 import { BookmarkPlus, FileMinus2, FilePen, FilePlus2, History, Info, Loader2, RotateCcw, ShieldCheck, TriangleAlert, Undo2, type LucideIcon } from "lucide-react";
 import {
   agentLabel, agentLooksBusy, captureManualCheckpoint, CheckpointRestoreError, fetchCheckpointDiff, fetchCheckpointFiles, previewCheckpoint, restoreCheckpoint,
@@ -8,7 +7,7 @@ import {
 import type { GitChangedFile } from "../serverApi";
 import { sessionIcon } from "../sessionMeta";
 import { sessionTileById, useStore } from "../state/store";
-import { themeById } from "../theme/themes";
+import { useEditorTheme } from "../theme/editorTheme";
 import { Modal } from "../ui/Modal";
 import { CodeDiffView, type GitDiffState } from "./CodeChanges";
 import { useCheckpointList } from "./Checkpoints";
@@ -231,8 +230,7 @@ function Detail({ host, path, checkpoint, previous, revision, busy, onRestore, o
   const file = list.find((entry) => entry.path === selected) ?? list[0] ?? null;
   useEffect(() => { setSelected(null); }, [checkpoint.id, against]);
   const diff = useDiff(host, path, files.status === "ready" ? files.data : undefined, file);
-  const themeId = useStore((state) => state.themeId);
-  const editorTheme = themeById(themeId).appearance === "light" ? githubLight : githubDark;
+  const editorTheme = useEditorTheme();
   const headingId = useId();
   const gap = betweenTurns(checkpoint, previous);
   const note = against === "now" ? "Compared with the files as they are now"

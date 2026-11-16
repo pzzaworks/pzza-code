@@ -1,5 +1,6 @@
 import type { Tile, TileCodeLayout, TransparencyOptions, useStore } from "./state/store";
 import { wsKeyOf } from "./workspaces";
+import { findTheme } from "./theme/themes";
 import { APP_COMMANDS, validateAppCommand } from "../server/lib/app-control-schema.js";
 
 export type AppControlStore = Pick<ReturnType<typeof useStore.getState>,
@@ -125,7 +126,10 @@ export function executeAppControl(action: string, args: Record<string, unknown>,
     case "reorder_tile": { const source = requireTile(args.tileId); const target = requireTile(args.targetId); state.reorderTile(source.id, target.id); return appControlSnapshot(context); }
     case "set_tile_span": state.setTileSpan(requireTile(args.tileId).id, args.columns as number, args.rows as number); return appControlSnapshot(context);
     case "configure_appearance": {
-      if (args.theme !== undefined) state.setTheme(args.theme as string);
+      if (args.theme !== undefined) {
+        if (!findTheme(args.theme as string)) throw new Error("Unknown theme. Read list_themes for theme IDs.");
+        state.setTheme(args.theme as string);
+      }
       if (args.fontSize !== undefined) state.setFontSize(args.fontSize as number);
       if (args.cursorBlink !== undefined) state.setCursorBlink(args.cursorBlink as boolean);
       if (args.osc52Clipboard !== undefined) state.setOsc52Clipboard(args.osc52Clipboard as boolean);

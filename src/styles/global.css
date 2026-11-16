@@ -1601,7 +1601,8 @@ html.is-resizing-y, html.is-resizing-y * { cursor: row-resize !important; user-s
 }
 .code-diff-review-delete.btn-sm { width: 24px; padding: 0; justify-content: center; }
 .code-diff-review-error { color: var(--danger-foreground, var(--danger)); }
-.code-diff .cm-editor .cm-content .cm-line.code-diff-commented { box-shadow: inset 3px 0 0 var(--warning); }
+/* A commented line takes a warning tint, layered over its added or removed color. */
+.code-diff .cm-editor .cm-content .cm-line.code-diff-commented { background-image: linear-gradient(color-mix(in srgb, var(--warning) 16%, transparent), color-mix(in srgb, var(--warning) 16%, transparent)); }
 .code-diff-split .cm-mergeView { min-height: 100%; }
 .code-diff-split .cm-mergeViewEditor + .cm-mergeViewEditor { border-left: 1px solid var(--divider); }
 .code-diff .cm-editor .cm-content .cm-line,
@@ -1960,7 +1961,7 @@ html.is-resizing-y, html.is-resizing-y * { cursor: row-resize !important; user-s
   border: 1px solid var(--hairline);
 }
 html.is-resizing-xy, html.is-resizing-xy * { cursor: nwse-resize !important; user-select: none; }
-/* Footer Git branch; the dirty dot is a badge on the icon's top-right corner. */
+/* Footer Git branch; with uncommitted changes the icon is an amber button. */
 .tile-strip-git {
   display: inline-flex;
   align-items: center;
@@ -1968,28 +1969,13 @@ html.is-resizing-xy, html.is-resizing-xy * { cursor: nwse-resize !important; use
   flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;
-  /* The branch name clips sideways; 2px above and below keep the dirty dot
-     on the icon's corner (and its outline) from being cut. */
-  padding-block: 2px;
-  margin-block: -2px;
   /* Room for the review button's hover background, which reaches 3px left. */
   margin-left: -3px;
   padding-left: 3px;
 }
 .tile-strip-git-icon {
-  position: relative;
   display: inline-flex;
   flex: 0 0 auto;
-}
-.tile-strip-dirty {
-  position: absolute;
-  top: -1px;
-  right: -2px;
-  width: 4px;
-  height: 4px;
-  border-radius: 50%;
-  background: var(--warning);
-  box-shadow: 0 0 0 1px var(--surface);
 }
 .tile-strip-branch {
   min-width: 0;
@@ -2011,7 +1997,7 @@ html.is-resizing-xy, html.is-resizing-xy * { cursor: nwse-resize !important; use
   font: inherit;
   cursor: pointer;
 }
-.tile-strip-review { align-items: center; height: 16px; margin: 0 -3px 0 -3px; }
+.tile-strip-review { align-items: center; height: 16px; margin: 0 -3px 0 -3px; color: var(--warning); }
 .tile-strip-branch-btn {
   display: inline-flex;
   align-items: center;
@@ -4355,6 +4341,12 @@ button.update-button-ready:hover { background: color-mix(in srgb, var(--accent) 
   font-size: var(--fs-md);
   font-weight: 550;
 }
+/* In dialogs every text button is one height, whichever size the markup asks
+   for, and never squeezed shorter by a column that runs out of room. */
+.modal :is(.btn, .btn-sm) {
+  height: 30px;
+  flex-shrink: 0;
+}
 
 /* Segmented control */
 .seg {
@@ -5834,8 +5826,6 @@ html[data-transparency="on"] .tile-code { background: transparent; }
 .about-page h3 { font-size: var(--fs-xl); margin-top: 30px; }
 .about-page p { color: var(--muted); font-size: var(--fs-md); line-height: 1.8; }
 .about-links { display: flex; justify-content: center; gap: 10px; flex-wrap: wrap; margin-top: 24px; }
-.appearance-modes { display: inline-flex; gap: 4px; padding: 4px; border: 1px solid var(--hairline); border-radius: var(--r-md); background: var(--surface-alt); }
-.appearance-modes .btn { width: auto; min-width: 96px; justify-content: center; }
 :root[data-appearance="light"] {
   --surface-highlight: 0 0 transparent;
   --surface-shadow: 0 1px 2px rgb(31 35 40 / 6%), 0 10px 28px -6px rgb(31 35 40 / 16%);
@@ -5920,7 +5910,6 @@ input[type="checkbox"]:disabled { opacity: .45; cursor: not-allowed; }
 :root[data-appearance="light"] :is(.icon-btn, .dismiss-btn) { color: var(--muted); }
 :root[data-appearance="light"] :is(.icon-btn, .dismiss-btn):hover { color: var(--text); }
 :root[data-appearance="light"] .dropdown-label-btn { background: var(--surface); border-radius: var(--r-sm); }
-:root[data-appearance="light"] .appearance-modes .btn:not(.btn-on) { border-color: transparent; background: transparent; }
 
 :root[data-appearance="light"] :is(.field-input, input.input, textarea.input, .cselect, .fp-search):hover { border-color: color-mix(in srgb, var(--control-border) 45%, var(--border)); }
 :root[data-appearance="light"] :is(.field-input, input.input, textarea.input, .cselect, .fp-search):focus-visible { border-color: var(--focus-ring); outline: 2px solid var(--focus-ring); outline-offset: 2px; }

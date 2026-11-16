@@ -226,9 +226,8 @@ const TileHeadDemo = ({ title = "api", shortcut = 1, selected = false, actions =
 type StripGit = "plain" | "status" | "failing" | "shared" | "worktree";
 const StripGitDemo = ({ git }: { git: StripGit }) => (
   <span className="tile-strip-git">
-    <span className="tile-strip-git-icon">
+    <span className={`tile-strip-git-icon${git === "plain" || git === "status" ? " tile-strip-review" : ""}`}>
       <GitBranch size={11} aria-hidden="true" />
-      {git === "plain" || git === "status" ? <span className="tile-strip-dirty" /> : null}
     </span>
     <span className="tile-strip-branch-btn">
       <code className="tile-strip-branch">{git === "worktree" ? "pzza/fix-login" : "main"}</code>
@@ -1235,7 +1234,7 @@ export const HELP_PAGES: Record<HelpTopic, HelpPage> = {
       </>
     ),
     tips: [
-      <>Drop a folder from Finder onto the canvas, not a terminal, to open this form for it.</>,
+      <>Drop a folder from Finder anywhere but a terminal to open this form for it.</>,
       <><b>Open a terminal</b> below the form attaches tmux windows that are not on the grid yet.</>,
     ],
   },
@@ -1285,7 +1284,7 @@ export const HELP_PAGES: Record<HelpTopic, HelpPage> = {
     ),
     body: (
       <>
-        <Row ui={<IB icon={SettingsIcon} />} name="General">Appearance (theme, grayscale, spacing, transparency), Terminal, Saved prompts{IS_MAC ? " and Dictation" : ""}.</Row>
+        <Row ui={<IB icon={SettingsIcon} />} name="General">Appearance (theme, grayscale, spacing, transparency), Menu buttons, Terminal, Saved prompts{IS_MAC ? " and Dictation" : ""}.</Row>
         <Row ui={<IB icon={Bell} />} name="Notifications">Activity history and alert preferences.</Row>
         <Row ui={<IB icon={Wrench} />} name="Setup">Permissions, tools and this device's health.</Row>
         <Row ui={<IB icon={MessageSquare} />} name="Quick Chat">The agent and device it uses.</Row>
@@ -1512,7 +1511,7 @@ export const HELP_PAGES: Record<HelpTopic, HelpPage> = {
       <>
         <Row ui={<span className="doc-strip-ui"><span className="tile-strip-ab"><ArrowUp size={10} />2</span> <span className="tile-strip-ab"><ArrowDown size={10} />1</span></span>} name="Push and pull">Commits to push (↑) and to pull (↓).</Row>
         <Row ui={<span className="doc-strip-ui tile-strip-pr"><GitPullRequest size={10} />42</span>} name="Pull request">With <Code>gh</Code> signed in on the device: the branch's PR and whether checks pass, fail or run.</Row>
-        <Row ui={<span className="tile-strip-git-icon doc-strip-ui"><GitBranch size={11} /><span className="tile-strip-dirty" /></span>} name="Dot">Uncommitted changes; click it to review them.</Row>
+        <Row ui={<span className="tile-strip-git-icon tile-strip-review doc-strip-ui"><GitBranch size={11} /></span>} name="Amber branch icon">Uncommitted changes; click it to review them.</Row>
       </>
     ),
     tips: [<>Click the branch to open its pull request, or the branch page on GitHub, GitLab or Bitbucket.</>],
@@ -1592,7 +1591,7 @@ export const HELP_PAGES: Record<HelpTopic, HelpPage> = {
     demo: <ChangesDemo />,
     body: (
       <Steps>
-        <Step>Click the dot on the footer branch, or <b>Show changes</b> in the palette.</Step>
+        <Step>Click the amber branch icon in the footer, or <b>Show changes</b> in the palette.</Step>
         <Step><b>Changes</b> lists files: M modified, A added, U untracked, D deleted, R renamed, ! conflicted.</Step>
         <Step>Pick one for its diff: <b>Unified</b> or <b>Split</b>, unchanged stretches folded. <b>Edit file</b> opens it.</Step>
       </Steps>
@@ -1684,7 +1683,7 @@ export const HELP_PAGES: Record<HelpTopic, HelpPage> = {
   },
   drop: {
     label: "Drop files",
-    blurb: "Drag files from Finder onto a terminal to hand them to the agent, even when the session runs on another machine.",
+    blurb: "Drag files or folders from Finder onto a terminal to paste their paths, or anywhere else to open them.",
     icon: FileUp,
     demo: (
       <TileDemo>
@@ -1694,11 +1693,11 @@ export const HELP_PAGES: Record<HelpTopic, HelpPage> = {
     body: (
       <>
         <Steps>
-          <Step>Drag one or more files onto the terminal you want.</Step>
-          <Step>They are copied to a private temporary folder on the session's device.</Step>
+          <Step>Drag one or more files or folders onto the terminal you want.</Step>
+          <Step>On this Mac their paths are used as they are; for a session on another device, files are copied to a private temporary folder there.</Step>
           <Step>Their quoted paths are typed in, without Enter, ready for the agent to read.</Step>
         </Steps>
-        <P>Up to 8 files at once, 16 MB each and 32 MB in total. A folder is refused in a terminal; dropped on the empty canvas, it starts a new session there instead.</P>
+        <P>Copies to another device take up to 8 files at once, 16 MB each and 32 MB in total, and no folders. Dropped anywhere but a terminal, files open in the editor and folders open as folder tiles; a single folder opens the new-session form for it.</P>
       </>
     ),
     tips: [<>If a drop fails, PzzaCode says why and removes its temporary copy.</>],

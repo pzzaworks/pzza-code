@@ -3,6 +3,7 @@ import { ExternalLink } from "lucide-react";
 import { HAS_TAURI } from "../tauriEnv";
 import { UpdatesSection } from "./SettingsMenu";
 import { openUrl } from "../forward";
+import themeLicenses from "../theme/theme-licenses.txt?raw";
 
 export function About() {
   const [error, setError] = useState<string | null>(null);
@@ -24,6 +25,9 @@ export function About() {
       void openUrl(url).catch(() => setError("Could not open the link in your browser."));
     }}><span>{label}</span><ExternalLink size={14} /></a>)}</div>
     {error ? <p role="alert">{error}</p> : null}
+    </section>
+    <section className="settings-section">
+    <details className="settings-disclosure about-licenses"><summary>Theme licenses</summary><pre>{themeLicenses}</pre></details>
     </section>
   </div>;
 }

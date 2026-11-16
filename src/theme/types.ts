@@ -6,6 +6,8 @@ export interface TerminalPalette {
   cursor: string;
   cursorAccent: string;
   selectionBackground: string;
+  // Text color inside a selection; unset keeps selected text in its own colors.
+  selectionForeground?: string;
   black: string;
   red: string;
   green: string;
@@ -56,11 +58,13 @@ export interface ChromePalette {
   danger: string;
 }
 
+export type ThemeAppearance = "dark" | "light";
 export interface Theme {
   id: string;
   name: string;
-  appearance: "dark" | "light";
+  appearance: ThemeAppearance;
   terminal: TerminalPalette;
+  chrome: ChromePalette;
 }
 
 // ---- color helpers ----
@@ -130,37 +134,78 @@ export function contrastRatio(foreground: string, background: string): number {
   return (Math.max(...values) + 0.05) / (Math.min(...values) + 0.05);
 }
 
+// Text on an accent fill: white when it reads, else the darkest of the
+// theme's own background and black.
+function onAccent(accent: string, background: string): string {
+  if (contrastRatio("#ffffff", accent) >= 4.5) return "#ffffff";
+  return contrastRatio(background, accent) >= 4.5 ? background : "#000000";
+}
+
+// PzzaCode Light's interface: panels sit a notch below white with a cool
+// tint; only fields come close to it.
+export const PZZACODE_LIGHT_CHROME: ChromePalette = {
+  bg: "#f2f4f6",
+  surface: "#f9fafb",
+  surfaceAlt: "#eaedf0",
+  border: "#d1d9e0",
+  controlBorder: "#78828e",
+  divider: translucent("#1f2328", 7),
+  hairline: translucent("#1f2328", 10),
+  hairlineStrong: translucent("#1f2328", 16),
+  input: "#fbfcfd",
+  hover: "#e4e8ec",
+  selected: "#c4d9f5",
+  selectedText: "#0550ae",
+  selectedEdge: "#3a87dd",
+  track: "#bfc8d2",
+  focusRing: "#0969da",
+  inactiveOverlay: "rgb(31 35 40 / 0%)",
+  focusOverlay: "rgb(89 99 110 / 20%)",
+  text: "#1f2328",
+  muted: "#545e69",
+  accent: "#0969da",
+  accentText: "#ffffff",
+  success: "#1a6334",
+  warning: "#785000",
+  danger: "#b4232d",
+};
+
 // Light surfaces, text and control boundaries have distinct semantic roles.
-export function deriveChrome(t: TerminalPalette, appearance: Theme["appearance"]): ChromePalette {
-  if (appearance === "light") return {
-    // Panels sit a notch below white with a cool tint; only fields come close to it.
-    bg: "#f2f4f6",
-    surface: "#f9fafb",
-    surfaceAlt: "#eaedf0",
-    border: "#d1d9e0",
-    controlBorder: "#78828e",
-    divider: translucent("#1f2328", 7),
-    hairline: translucent("#1f2328", 10),
-    hairlineStrong: translucent("#1f2328", 16),
-    input: "#fbfcfd",
-    hover: "#e4e8ec",
-    selected: "#c4d9f5",
-    selectedText: "#0550ae",
-    selectedEdge: "#3a87dd",
-    track: "#bfc8d2",
-    focusRing: "#0969da",
-    inactiveOverlay: "rgb(31 35 40 / 0%)",
-    focusOverlay: "rgb(89 99 110 / 20%)",
-    text: "#1f2328",
-    muted: "#545e69",
-    accent: "#0969da",
-    accentText: "#ffffff",
-    success: "#1a6334",
-    warning: "#785000",
-    danger: "#b4232d",
-  };
+// Interface colors for a theme, derived from its terminal palette.
+export function deriveChrome(t: TerminalPalette, appearance: ThemeAppearance): ChromePalette {
   const bg = t.background;
   const fg = t.foreground;
+  if (appearance === "light") {
+    // Panels a notch darker than the terminal, fields close to it; lines and
+    // control edges keep the same contrast steps as PzzaCode Light.
+    const tint = t.blue;
+    return {
+      bg: mix(bg, fg, 0.06),
+      surface: mix(bg, fg, 0.025),
+      surfaceAlt: mix(bg, fg, 0.1),
+      border: mix(bg, fg, 0.18),
+      controlBorder: mix(bg, fg, 0.56),
+      divider: translucent(fg, 7),
+      hairline: translucent(fg, 10),
+      hairlineStrong: translucent(fg, 16),
+      input: mix(bg, fg, 0.01),
+      hover: mix(bg, fg, 0.12),
+      selected: mix(bg, tint, 0.24),
+      selectedText: mix(tint, fg, 0.3),
+      selectedEdge: mix(bg, tint, 0.75),
+      track: mix(bg, fg, 0.24),
+      focusRing: tint,
+      inactiveOverlay: "rgb(31 35 40 / 0%)",
+      focusOverlay: "rgb(89 99 110 / 20%)",
+      text: fg,
+      muted: mix(fg, bg, 0.3),
+      accent: tint,
+      accentText: onAccent(tint, bg),
+      success: t.green,
+      warning: t.yellow,
+      danger: t.red,
+    };
+  }
   return {
     bg,
     surface: mix(bg, fg, 0.045),
@@ -190,6 +235,24 @@ export function deriveChrome(t: TerminalPalette, appearance: Theme["appearance"]
     success: t.green,
     warning: t.yellow,
     danger: t.red,
+  };
+}
+
+// High contrast: the dark interface with its usual lines and edges, stronger
+// secondary text, and the theme's own hue on focus, selection and filled
+// buttons (with black text on them).
+export function highContrastChrome(t: TerminalPalette, hue: string): ChromePalette {
+  const bg = t.background;
+  const fg = t.foreground;
+  return {
+    ...deriveChrome(t, "dark"),
+    selected: mix(bg, hue, 0.28),
+    selectedText: fg,
+    selectedEdge: mix(bg, hue, 0.6),
+    focusRing: hue,
+    muted: mix(fg, bg, 0.14),
+    accent: hue,
+    accentText: onAccent(hue, bg),
   };
 }
 

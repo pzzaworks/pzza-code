@@ -163,3 +163,44 @@ test("workflow and appearance commands validate their arguments", () => {
   // Both type into a terminal and press Enter, like terminal_submit.
   for (const action of ["send_saved_prompt", "send_failing_checks", "delete_workspace_snapshot", "delete_saved_prompt"]) assert.equal(annotation(action).destructiveHint, true, action);
 });
+
+test("theme commands take a theme ID and a name filter, and only read", () => {
+  assert.deepEqual(validateCommand("list_themes", {}), {});
+  assert.equal(validateCommand("list_themes", { query: "solarized light", appearance: "light" }).query, "solarized light");
+  assert.equal(validateCommand("configure_appearance", { theme: "catppuccin-mocha" }).theme, "catppuccin-mocha");
+  for (const [action, args] of [
+    ["list_themes", { appearance: "sepia" }], ["list_themes", { query: "" }], ["list_themes", { query: "x".repeat(61) }], ["list_themes", { source: "custom" }],
+  ]) assert.throws(() => validateCommand(action, args), undefined, `${action} ${JSON.stringify(args)}`);
+  for (const id of ["Dark", "../x", "-x", "x".repeat(65)]) assert.throws(() => validateCommand("configure_appearance", { theme: id }), undefined, id);
+  // Themes are colors that ship with the app: nothing creates, imports or deletes one.
+  for (const action of ["save_theme", "import_theme", "export_theme", "delete_theme"]) assert.equal(TOOLS.some(item => item.name === `app_${action}`), false, action);
+  const annotation = TOOLS.find(item => item.name === "app_list_themes").annotations;
+  assert.equal(annotation.readOnlyHint, true);
+});
+
+test("agent session commands bound their arguments and annotate their effects", () => {
+  const id = "0b5a7c1e-2f4d-4c8e-9a61-3d2b7f0e5c94";
+  assert.deepEqual(validateCommand("open_agent_sessions", {}), {});
+  assert.equal(validateCommand("open_agent_sessions", { tileId: "api" }).tileId, "api");
+  assert.deepEqual(validateCommand("list_agent_sessions", { agent: "claude", cwd: "/Users/dev/project", under: true, query: "login bug", sinceDays: 7, limit: 100 }).limit, 100);
+  assert.deepEqual(validateCommand("list_agent_sessions", {}), {});
+  const resume = { deviceId: "this-mac", agent: "codex", sessionId: id, cwd: "/Users/dev/project" };
+  assert.equal(validateCommand("resume_agent_session", resume).sessionId, id);
+  assert.equal(validateCommand("resume_agent_session", { ...resume, tileId: "api", mode: "default" }).tileId, "api");
+  for (const [action, args] of [
+    ["list_agent_sessions", { limit: 101 }], ["list_agent_sessions", { limit: 0 }], ["list_agent_sessions", { agent: "notepad" }],
+    ["list_agent_sessions", { cwd: "relative/path" }], ["list_agent_sessions", { query: "two\nlines" }], ["list_agent_sessions", { sinceDays: 1.5 }],
+    ["list_agent_sessions", { transcript: true }], ["open_agent_sessions", { tileId: "" }],
+    ["resume_agent_session", { ...resume, sessionId: "-rf" }], ["resume_agent_session", { ...resume, sessionId: "a b" }],
+    ["resume_agent_session", { ...resume, sessionId: "id;rm -rf ~" }], ["resume_agent_session", { ...resume, sessionId: "$(id)" }],
+    ["resume_agent_session", { ...resume, cwd: "project" }], ["resume_agent_session", { ...resume, mode: "anything" }],
+    ["resume_agent_session", { deviceId: "this-mac", agent: "codex", sessionId: id }], ["resume_agent_session", { ...resume, command: "ls" }],
+  ]) assert.throws(() => validateCommand(action, args), undefined, `${action} ${JSON.stringify(args)}`);
+  const annotation = (action) => TOOLS.find(item => item.name === `app_${action}`).annotations;
+  assert.equal(annotation("list_agent_sessions").readOnlyHint, true);
+  assert.equal(annotation("list_agent_sessions").destructiveHint, false);
+  // With a tileId it types a command into that terminal and runs it.
+  assert.equal(annotation("resume_agent_session").destructiveHint, true);
+  assert.equal(annotation("open_agent_sessions").readOnlyHint, false);
+  assert.equal(annotation("open_agent_sessions").destructiveHint, false);
+});

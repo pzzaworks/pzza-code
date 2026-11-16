@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { SSH_TOKEN, shQuote } from "./shell.js";
+import { validAgentSessionsEndpoint } from "./agent-sessions-query.js";
 
 // Authentication happens inside the destination account; only the response crosses SSH.
 async function requestOnDevice() {
@@ -31,7 +32,8 @@ async function requestOnDevice() {
 }
 
 export function deviceAgentRequest(host, endpoint) {
-  const allowed = /^\/(?:usage|spend)(?:\?fresh=1)?$/.test(endpoint);
+  // Account summaries, and agent session lists in their canonical form only.
+  const allowed = /^\/(?:usage|spend)(?:\?fresh=1)?$/.test(endpoint) || validAgentSessionsEndpoint(endpoint);
   if (!SSH_TOKEN.test(host) || !allowed) return Promise.reject(new Error("Invalid device agent request"));
   const script = `(${requestOnDevice.toString()})().catch(() => { process.exitCode = 1; });`;
   const command = `if command -v node >/dev/null 2>&1; then exec node -e ${shQuote(script)}; fi; for runtime in "$HOME/.local/bin/node" /opt/homebrew/bin/node /usr/local/bin/node /usr/bin/node "$HOME"/.nvm/versions/node/*/bin/node; do if test -x "$runtime"; then exec "$runtime" -e ${shQuote(script)}; fi; done; exit 127`;

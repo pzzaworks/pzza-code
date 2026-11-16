@@ -1,0 +1,5 @@
+{"timestamp":"2026-11-12T08:00:00.000Z","type":"session_meta","payload":{"id":"7d1e2f30-4a5b-4c6d-8e7f-90a1b2c3d4e5","timestamp":"2026-11-12T08:00:00.000Z","cwd":"/Users/dev/api","originator":"codex_cli_rs","cli_version":"0.99.0","source":"cli","git":{"commit_hash":"abc123","branch":"billing-tests"}}}
+{"timestamp":"2026-11-12T08:00:01.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<environment_context>\n  <cwd>/Users/dev/api</cwd>\n</environment_context>"}]}}
+{"timestamp":"2026-11-12T08:00:02.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Write tests for the billing API"}]}}
+{"timestamp":"2026-11-12T08:00:02.000Z","type":"event_msg","payload":{"type":"user_message","message":"Write tests for the billing API","images":[]}}
+{"timestamp":"2026-11-12T08:45:00.000Z","type":"event_msg","payload":{"type":"agent_message","message":"Added 12 tests."}}

@@ -271,7 +271,7 @@
 .cp-detail-info > svg { flex: none; margin-top: 2px; }
 .cp-between { font-style: italic; }
 .cp-detail-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 4px; }
-.cp-action { height: 28px; padding: 0 12px; }
+.cp-action { height: 30px; padding: 0 12px; }
 .cp-undo-note { color: var(--muted); font-size: var(--fs-sm); }
 
 .cp-compare {

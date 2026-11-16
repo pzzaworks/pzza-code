@@ -19,6 +19,10 @@
 //   `by-id` with a `lookup`: the restore reads the id of the conversation a
 //   pane's folder last ran from the agent's own store (agent_sessions.rs) and
 //   puts it in place of RESUME_SESSION.
+//   `byId` (optional, any kind): the arguments that reopen one past
+//   conversation by its id (RESUME_SESSION marks where the id goes) and the
+//   regular expression source a whole id must match, so a listed conversation
+//   can be picked by id (`session` in sessionAgentLaunch).
 // - prompt: how a starting prompt is passed (`arg`, `flag` or `none`).
 // - detect: process rules for spotting the agent in a terminal (see
 //   matchAgentProcess); `programs` are names tmux shows as the pane command.
@@ -42,6 +46,18 @@ const AUTO = "auto";
 const BYPASS = "bypass";
 
 const mode = (id, label, description, args = [], approval = ASK, env) => ({ id, label, description, args, approval, ...(env ? { env } : {}) });
+
+/**
+ * Stands for the conversation id in the resume command of a `by-id` agent;
+ * the restore puts the id it read in its place. Plain shell characters, so it
+ * is typed (and matched) as is.
+ */
+export const RESUME_SESSION = "@SESSION@";
+
+// Conversation id shapes for `resume.byId.id` (regular expression sources,
+// matched against the whole id).
+const UUID_ID = "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}";
+const byId = (args, id) => ({ args: [...args, RESUME_SESSION], id });
 
 // OpenCode and Kilo append an agent's own permission rules after the global
 // ones and the last matching rule wins, so a user's `agent.<name>.permission`
@@ -71,7 +87,9 @@ export const SESSION_AGENTS = [
     // A config folder other than ~/.claude (a second account) is chosen with
     // CLAUDE_CONFIG_DIR, so a resumed or Quick Chat session keeps using it.
     account: { env: "CLAUDE_CONFIG_DIR", folder: ".claude" },
-    resume: { kind: "continue-last", scope: "directory", args: ["-c"] },
+    // `--resume <session id>` (claude --help); conversations are stored per
+    // folder, so it is run in the folder the conversation ran in.
+    resume: { kind: "continue-last", scope: "directory", args: ["-c"], byId: byId(["--resume"], UUID_ID) },
     prompt: { style: "arg" },
     install: [
       { method: "curl", command: "curl -fsSL https://claude.ai/install.sh | bash" },
@@ -103,7 +121,9 @@ export const SESSION_AGENTS = [
       mode("auto", "Auto review", "Approvals reviewed automatically", ["--approve-for-me"], AUTO),
       mode("bypass", "Bypass", "No approvals and no sandbox", ["--dangerously-bypass-approvals-and-sandbox"], BYPASS),
     ],
-    resume: { kind: "continue-last", scope: "directory", args: ["resume", "--last"] },
+    // `codex resume <id>` (openai/codex codex-rs/cli/src/main.rs); it asks when
+    // run in another folder than the conversation's, so it is run there.
+    resume: { kind: "continue-last", scope: "directory", args: ["resume", "--last"], byId: byId(["resume"], UUID_ID) },
     prompt: { style: "arg" },
     install: [
       { method: "brew", command: "brew install --cask codex" },
@@ -131,7 +151,9 @@ export const SESSION_AGENTS = [
       mode("plan", "Plan", "Planning agent, no edits", ["--agent", "plan"], RESTRICTED),
       mode("auto", "Auto", "Approves permissions that are not denied", ["--auto"], BYPASS),
     ],
-    resume: { kind: "continue-last", scope: "directory", args: ["-c"] },
+    // `--session <id>` (anomalyco/opencode packages/cli/src/commands/commands.ts;
+    // id shape from packages/schema/src/session-id.ts).
+    resume: { kind: "continue-last", scope: "directory", args: ["-c"], byId: byId(["--session"], "ses_[0-9a-f]{12}[0-9A-Za-z]{14}") },
     prompt: { style: "flag", flag: "--prompt" },
     install: [
       { method: "curl", command: "curl -fsSL https://opencode.ai/install | bash" },
@@ -158,7 +180,9 @@ export const SESSION_AGENTS = [
       mode("plan", "Plan", "Reads and plans only", ["--approval-mode", "plan"], RESTRICTED),
       mode("yolo", "YOLO", "Approves every action", ["--approval-mode", "yolo"], BYPASS),
     ],
-    resume: { kind: "continue-last", scope: "directory", args: ["--resume", "latest"] },
+    // `--resume <id>` looks only in the current folder's chats (gemini-cli
+    // packages/cli/src/utils/sessionUtils.ts).
+    resume: { kind: "continue-last", scope: "directory", args: ["--resume", "latest"], byId: byId(["--resume"], UUID_ID) },
     prompt: { style: "flag", flag: "-i" },
     install: [
       { method: "npm", command: "npm install -g @google/gemini-cli" },
@@ -245,7 +269,9 @@ export const SESSION_AGENTS = [
       mode("readOnly", "Read only", "Read and search tools only", ["--tools", "read,grep,find,ls"], RESTRICTED),
       mode("default", "Full access", "Every tool, never asks", [], BYPASS),
     ],
-    resume: { kind: "continue-last", scope: "directory", args: ["--continue"] },
+    // `--session <id>` (badlogic/pi-mono packages/coding-agent/src/cli/args.ts);
+    // a conversation of another folder is offered as a fork, so it is run there.
+    resume: { kind: "continue-last", scope: "directory", args: ["--continue"], byId: byId(["--session"], UUID_ID) },
     prompt: { style: "arg", separator: "--" },
     install: [
       { method: "curl", command: "curl -fsSL https://pi.dev/install.sh | sh" },
@@ -274,7 +300,7 @@ export const SESSION_AGENTS = [
     ],
     // `--id <session>`; the session that ran in a folder is read from Cline's
     // own session store (agent_sessions.rs).
-    resume: { kind: "by-id", scope: "global", args: ["--id"], lookup: "cline" },
+    resume: { kind: "by-id", scope: "global", args: ["--id"], lookup: "cline", byId: byId(["--id"], "[0-9]{13}_[0-9a-z]{5}") },
     // A bare prompt runs headless and exits; -i keeps the session open.
     prompt: { style: "flag", flag: "-i" },
     install: [{ method: "npm", command: "npm install -g cline" }],
@@ -304,7 +330,7 @@ export const SESSION_AGENTS = [
     // A bare `goose session --resume` takes the newest session from any
     // folder, so the session that ran in a folder is read from goose's own
     // session store and resumed by id (agent_sessions.rs).
-    resume: { kind: "by-id", scope: "global", args: ["--resume", "--session-id"], lookup: "goose" },
+    resume: { kind: "by-id", scope: "global", args: ["--resume", "--session-id"], lookup: "goose", byId: byId(["--resume", "--session-id"], "[0-9]{8}_[0-9]{1,15}") },
     prompt: { style: "flag", flag: "-t", baseArgs: ["run", "-s"] },
     install: [
       { method: "brew", command: "brew install block-goose-cli" },
@@ -356,7 +382,9 @@ export const SESSION_AGENTS = [
       mode("auto", "Auto", "Approves safe actions automatically", ["--approval-mode", "auto"], AUTO),
       mode("yolo", "YOLO", "Approves every action", ["--approval-mode", "yolo"], BYPASS),
     ],
-    resume: { kind: "continue-last", scope: "directory", args: ["--continue"] },
+    // `--resume <id>` looks in the current folder's chats (QwenLM/qwen-code
+    // packages/core/src/services/sessionService.ts).
+    resume: { kind: "continue-last", scope: "directory", args: ["--continue"], byId: byId(["--resume"], "[0-9a-fA-F-]{32,36}") },
     prompt: { style: "flag", flag: "-i" },
     install: [
       { method: "npm", command: "npm install -g @qwen-code/qwen-code@latest" },
@@ -381,7 +409,9 @@ export const SESSION_AGENTS = [
       mode("default", "Ask", "Asks before tools unless your permissions allow them"),
       mode("yolo", "YOLO", "Approves every action", ["-y"], BYPASS),
     ],
-    resume: { kind: "continue-last", scope: "directory", args: ["--continue"] },
+    // `--session <id>` reads the project's own .crush database
+    // (charmbracelet/crush internal/cmd/root.go).
+    resume: { kind: "continue-last", scope: "directory", args: ["--continue"], byId: byId(["--session"], UUID_ID) },
     prompt: { style: "none" },
     install: [
       { method: "brew", command: "brew install charmbracelet/tap/crush" },
@@ -406,7 +436,9 @@ export const SESSION_AGENTS = [
       mode("default", "Ask", "Code agent; asks before edits, commands and web fetches", [], ASK, { KILO_CONFIG_CONTENT: KILO_ASK }),
       mode("auto", "Auto", "Approves permissions that are not denied", ["--auto"], BYPASS),
     ],
-    resume: { kind: "continue-last", scope: "directory", args: ["--continue"] },
+    // `--session <id>` (Kilo-Org/kilocode packages/opencode/src/cli/cmd/tui.ts);
+    // ids start with "ses_" (packages/core/src/id/id.ts).
+    resume: { kind: "continue-last", scope: "directory", args: ["--continue"], byId: byId(["--session"], "ses_[0-9A-Za-z]{8,64}") },
     prompt: { style: "flag", flag: "--prompt" },
     install: [{ method: "npm", command: "npm install -g @kilocode/cli" }],
     detect: {
@@ -515,7 +547,8 @@ export const SESSION_AGENTS = [
       mode("default", "Ask", "Asks before tools your permissions do not allow"),
       mode("trustAll", "Trust all tools", "Runs every tool without asking", ["--trust-all-tools"], BYPASS),
     ],
-    resume: { kind: "continue-last", scope: "directory", args: ["--resume"] },
+    // `kiro-cli chat --resume-id <id>`, ids are UUIDs (kiro.dev/docs/reference/cli-commands).
+    resume: { kind: "continue-last", scope: "directory", args: ["--resume"], byId: byId(["--resume-id"], UUID_ID) },
     prompt: { style: "none" },
     install: [
       { method: "curl", command: "curl -fsSL https://cli.kiro.dev/install | bash" },
@@ -774,7 +807,7 @@ export const SESSION_AGENTS = [
     ],
     // The newest conversation of a folder is the first one
     // `forge conversation list --porcelain` lists there (agent_sessions.rs).
-    resume: { kind: "by-id", scope: "global", args: ["--conversation-id"], lookup: "forge" },
+    resume: { kind: "by-id", scope: "global", args: ["--conversation-id"], lookup: "forge", byId: byId(["--conversation-id"], UUID_ID) },
     prompt: { style: "none" },
     install: [
       { method: "curl", command: "curl -fsSL https://forgecode.dev/cli | sh" },
@@ -866,13 +899,6 @@ export function agentCanAutoResume(agent) {
     || (agent?.resume.kind === "by-id" && typeof agent.resume.lookup === "string");
 }
 
-/**
- * Stands for the conversation id in the resume command of a `by-id` agent;
- * the restore puts the id it read in its place. Plain shell characters, so it
- * is typed (and matched) as is.
- */
-export const RESUME_SESSION = "@SESSION@";
-
 /** Whether the agent accepts a starting prompt on its command line. */
 export function agentTakesPrompt(agent) {
   return agent?.prompt.style !== "none";
@@ -899,10 +925,11 @@ export function validSessionPrompt(value) {
  * The launch for a catalog choice as environment entries and argv, before shell
  * quoting. Throws for anything outside the catalog. `restore` (never part of
  * a request) lets a resume-by-id agent continue too: only the restore reads
- * the id that takes RESUME_SESSION's place.
+ * the id that takes RESUME_SESSION's place. `session` reopens one past
+ * conversation by its id, for an agent with `resume.byId`.
  */
 export function sessionAgentLaunch(value, restore = false) {
-  if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).some(key => !["id", "mode", "resume", "prompt", "account"].includes(key))) {
+  if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).some(key => !["id", "mode", "resume", "prompt", "account", "session"].includes(key))) {
     throw new Error("Choose a supported agent.");
   }
   const agent = sessionAgent(value.id);
@@ -910,6 +937,14 @@ export function sessionAgentLaunch(value, restore = false) {
   if (!agent || !selected) throw new Error("Choose a supported agent and mode.");
   if (value.account !== undefined && !validAgentAccount(agent, value.account)) throw new Error(`Choose a valid ${agent.label} account folder.`);
   if (value.resume !== undefined && typeof value.resume !== "boolean") throw new Error("Choose whether to continue the last conversation.");
+  if (value.session !== undefined) {
+    if (!agent.resume.byId) throw new Error(`${agent.label} cannot reopen a conversation by its id.`);
+    if (value.resume || value.prompt !== undefined) throw new Error("Reopen a conversation by its id without continuing the last one or a starting prompt.");
+    if (!validAgentSessionId(agent, value.session)) throw new Error(`Choose a valid ${agent.label} conversation id.`);
+    const { env } = sessionAgentLaunch({ id: agent.id, mode: selected.id, ...(value.account !== undefined ? { account: value.account } : {}) });
+    const args = agent.resume.byId.args.map(item => (item === RESUME_SESSION ? value.session : item));
+    return { env, argv: [agent.command, ...agent.baseArgs, ...args, ...selected.args] };
+  }
   if (value.resume && !agentCanContinue(agent) && !(restore && agent.resume.lookup)) throw new Error(`${agent.label} cannot continue its last conversation from the command line.`);
   if (value.prompt !== undefined) {
     if (!agentTakesPrompt(agent)) throw new Error(`${agent.label} does not take a starting prompt.`);
@@ -927,6 +962,43 @@ export function sessionAgentLaunch(value, restore = false) {
     argv: [agent.command, ...base, ...(value.resume ? agent.resume.args : agent.freshArgs),
       ...(value.resume && agent.resume.kind === "by-id" ? [RESUME_SESSION] : []), ...selected.args, ...prompt],
   };
+}
+
+export const AGENT_SESSION_ID_MAX_LENGTH = 128;
+
+/**
+ * Whether `value` is a conversation id the agent can be reopened with: the
+ * whole id matches its `resume.byId.id` shape, and, whatever that shape says,
+ * it is plain id characters that never start with "-" (never read as a flag)
+ * and need no shell quoting.
+ */
+export function validAgentSessionId(agent, value) {
+  const shape = agent?.resume.byId?.id;
+  if (typeof shape !== "string" || typeof value !== "string" || value.length > AGENT_SESSION_ID_MAX_LENGTH) return false;
+  return /^[A-Za-z0-9][A-Za-z0-9_.:-]*$/.test(value) && new RegExp(`^(?:${shape})$`).test(value);
+}
+
+export const AGENT_CWD_MAX_LENGTH = 4096;
+
+/**
+ * The shell line that reopens one past conversation by its id in a terminal:
+ * `choice` is { id, mode, session, account? } (checked as sessionAgentLaunch
+ * does), and `cwd`, when given, is changed into first, since some agents keep
+ * their conversations per folder. Throws for anything it cannot type safely.
+ */
+export function sessionAgentResumeIdCommand(choice, cwd) {
+  if (!choice || typeof choice !== "object" || Array.isArray(choice) || Object.keys(choice).some(key => !["id", "mode", "session", "account"].includes(key))) {
+    throw new Error("Choose a supported agent.");
+  }
+  if (choice.session === undefined) throw new Error("Choose the conversation to reopen.");
+  const command = sessionAgentCommand(choice);
+  if (cwd === undefined) return command;
+  // Backslashes are refused for fish, as in sessionPromptError.
+  if (typeof cwd !== "string" || !cwd.startsWith("/") || cwd.length > AGENT_CWD_MAX_LENGTH || /[\u0000-\u001f\u007f-\u009f\u2028\u2029\\]/.test(cwd)
+    || cwd.split("/").some(part => part === "." || part === "..")) {
+    throw new Error("Choose an absolute folder for the conversation.");
+  }
+  return `cd ${shellWord(cwd)} && ${command}`;
 }
 
 export const AGENT_ACCOUNT_MAX_LENGTH = 160;

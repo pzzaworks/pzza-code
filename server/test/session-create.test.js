@@ -245,3 +245,32 @@ test("remote worktrees pass the folder and slug as quoted positional arguments",
   assert.ok(calls[0].startsWith("'sh' '-c' '"));
   assert.ok(calls[0].endsWith("'pzza-worktree' '/srv/app '\\''x'\\''' 'api'"));
 });
+
+test("a new session can reopen a past conversation by id, checked against the agent's id shape", async () => {
+  const id = "0b1c2d3e-4f50-4a61-8b72-9c8d7e6f5a41";
+  assert.equal(validateAppCommand("create_session", { name: "resume", deviceId: "this-mac", agent: { id: "claude", mode: "default", session: id } }).agent.session, id);
+  assert.throws(() => validateAppCommand("create_session", { name: "resume", deviceId: "this-mac", agent: { id: "claude", mode: "default", session: "a\nb" } }));
+  assert.throws(() => validateAppCommand("create_session", { name: "resume", deviceId: "this-mac", agent: { id: "claude", mode: "default", session: "x".repeat(129) } }));
+  let called = false;
+  const refuse = () => { called = true; throw new Error("Unexpected process"); };
+  for (const agent of [{ id: "claude", mode: "default", session: "$(id)" }, { id: "claude", mode: "default", session: "-x" }, { id: "droid", mode: sessionAgent("droid").defaultMode, session: id },
+    { id: "claude", mode: "default", session: id, prompt: "fix it" }]) {
+    await assert.rejects(createDeviceSession({ name: "resume", cwd: "/tmp", agent }, refuse), { status: 400 });
+  }
+  await assert.rejects(createDeviceSession({ name: "resume", cwd: "/tmp", worktree: true, agent: { id: "claude", mode: "default", session: id } }, refuse), /own folder/);
+  assert.equal(called, false);
+  const prior = process.env.PZZA_TMUX_SOCKET;
+  process.env.PZZA_TMUX_SOCKET = "/tmp/local-session-service";
+  try {
+    const calls = [];
+    const run = (command, args, options, callback) => {
+      calls.push({ command, args });
+      if (calls.length === 1) return { stdin: { on() {}, end() { callback(null, JSON.stringify({ ok: true })); } } };
+      callback(null, "");
+      return { stdin: null };
+    };
+    const created = await createDeviceSession({ name: "resume", cwd: "/tmp", agent: { id: "claude", mode: "plan", session: id } }, run);
+    assert.equal(created.agentStarted, true);
+    assert.ok(calls[1].args.includes(`claude --resume ${id} --permission-mode plan`));
+  } finally { if (prior === undefined) delete process.env.PZZA_TMUX_SOCKET; else process.env.PZZA_TMUX_SOCKET = prior; }
+});

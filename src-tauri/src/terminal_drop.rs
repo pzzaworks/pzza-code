@@ -35,6 +35,10 @@ pub(crate) struct DropState(Mutex<HashMap<String, Grant>>);
 struct DropNotice {
     id: String,
     files: Vec<DroppedFile>,
+    // Every dropped path, files and folders alike, for terminals on this Mac:
+    // they only paste the paths, so they need no read grant (and no size or
+    // file-type limit). Empty when any path is unusable.
+    paths: Vec<String>,
     x: f64,
     y: f64,
     error: Option<String>,
@@ -42,6 +46,25 @@ struct DropNotice {
 
 fn clean_name(value: &str) -> bool {
     !value.is_empty() && !value.chars().any(|c| c.is_control())
+}
+
+const MAX_PATHS: usize = 64;
+
+// The dropped paths as text, all or nothing: absolute, valid Unicode, free of
+// control characters and at most 4096 bytes each.
+fn dropped_paths(paths: &[PathBuf]) -> Vec<String> {
+    if paths.len() > MAX_PATHS {
+        return Vec::new();
+    }
+    paths
+        .iter()
+        .map(|path| {
+            path.to_str()
+                .filter(|text| text.starts_with('/') && text.len() <= 4096 && clean_name(text))
+                .map(str::to_owned)
+        })
+        .collect::<Option<Vec<_>>>()
+        .unwrap_or_default()
 }
 
 // Walk with directory descriptors so swapping an ancestor for a symlink cannot
@@ -80,7 +103,7 @@ fn open_regular(path: &Path) -> Result<File, String> {
         .is_file()
     {
         return Err(
-            "Drop regular files only. Directories and special files are not supported.".into(),
+            "Only regular files can be sent to a terminal on another device, not folders.".into(),
         );
     }
     Ok(file)
@@ -269,6 +292,7 @@ pub fn init<R: Runtime>() -> tauri::plugin::TauriPlugin<R> {
             let mut notice = DropNotice {
                 id: String::new(),
                 files: Vec::new(),
+                paths: dropped_paths(paths),
                 x: position.x as f64 / scale,
                 y: position.y as f64 / scale,
                 error: None,
@@ -313,6 +337,18 @@ pub fn init<R: Runtime>() -> tauri::plugin::TauriPlugin<R> {
 mod tests {
     use super::*;
     use std::fs;
+    #[test]
+    fn dropped_paths_keep_folders_and_reject_unusable_paths() {
+        let folder = PathBuf::from("/tmp/some folder");
+        let file = PathBuf::from("/tmp/a ' quoted.txt");
+        assert_eq!(
+            dropped_paths(&[folder.clone(), file.clone()]),
+            vec!["/tmp/some folder".to_string(), "/tmp/a ' quoted.txt".to_string()]
+        );
+        assert!(dropped_paths(&[folder.clone(), PathBuf::from("relative")]).is_empty());
+        assert!(dropped_paths(&[PathBuf::from("/tmp/line\nbreak")]).is_empty());
+        assert!(dropped_paths(&vec![folder; MAX_PATHS + 1]).is_empty());
+    }
     #[test]
     fn only_actual_regular_drop_handles_can_be_read_once() {
         let root = std::env::temp_dir().canonicalize().unwrap().join(format!(

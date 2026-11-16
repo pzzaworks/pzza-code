@@ -24,6 +24,15 @@ export interface SessionAgentResume {
   args: readonly string[];
   /** by-id: where the restore reads the id a folder last ran (agent_sessions.rs). */
   lookup?: "cline" | "goose" | "forge";
+  /** How one past conversation is reopened by its id, whatever the kind. */
+  byId?: SessionAgentResumeById;
+}
+
+export interface SessionAgentResumeById {
+  /** Arguments after the base arguments; RESUME_SESSION marks where the id goes. */
+  args: readonly string[];
+  /** Regular expression source the whole id must match. */
+  id: string;
 }
 
 export interface SessionAgentPrompt {
@@ -116,6 +125,15 @@ export interface SessionAgentChoice {
   prompt?: string;
   /** The account folder the agent runs with (see validAgentAccount). */
   account?: string;
+  /** A past conversation to reopen by its id (agents with resume.byId only). */
+  session?: string;
+}
+
+export interface SessionAgentResumeIdChoice {
+  id: SessionAgentId;
+  mode: string;
+  session: string;
+  account?: string;
 }
 
 export interface SessionAgentLaunch {
@@ -185,6 +203,10 @@ export function validSessionPrompt(value: unknown): boolean;
 export function sessionAgentLaunch(value: unknown, restore?: boolean): SessionAgentLaunch;
 export function sessionAgentCommand(value: unknown, restore?: boolean): string;
 export function sessionAgentResumeCommand(id: unknown, recorded?: Pick<SessionAgentChoice, "id" | "mode" | "account">): string | null;
+export const AGENT_SESSION_ID_MAX_LENGTH: number;
+export function validAgentSessionId(agent: SessionAgentDefinition | undefined, value: unknown): value is string;
+export const AGENT_CWD_MAX_LENGTH: number;
+export function sessionAgentResumeIdCommand(choice: SessionAgentResumeIdChoice, cwd?: string): string;
 export const AGENT_ACCOUNT_MAX_LENGTH: number;
 export function validAgentAccount(agent: SessionAgentDefinition | undefined, value: unknown): value is string;
 export function matchAgentMode(args: readonly unknown[] | null | undefined, modes: readonly AgentModeRule[]): string | null;

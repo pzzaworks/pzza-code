@@ -1,11 +1,10 @@
 import { AsyncButton } from "../ui/AsyncButton";
-import { themeById } from "../theme/themes";
+import { useEditorTheme } from "../theme/editorTheme";
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import CodeMirror from "@uiw/react-codemirror";
 import { Decoration, EditorView, keymap, type DecorationSet } from "@codemirror/view";
 import { StateEffect, StateField } from "@codemirror/state";
 import { highlightSelectionMatches, openSearchPanel, searchKeymap } from "@codemirror/search";
-import { githubDark, githubLight } from "@uiw/codemirror-theme-github";
 import { useEditorLanguage } from "./editorLanguageLoader";
 import { Eye, FolderOpen, Loader2, PanelLeft, Pencil, Save, X } from "lucide-react";
 import { marked } from "marked";
@@ -280,7 +279,7 @@ export function TileCodePanel({ tileId }: { tileId: string }) {
 
   const [content, setContent] = useState("");
   const [loaded, setLoaded] = useState(false);
-  const themeId = useStore(state => state.themeId);
+  const editorTheme = useEditorTheme();
   const imageRef = useRef<HTMLImageElement>(null);
   const [copyStatus, setCopyStatus] = useState<string | null>(null);
   const [copyingImage, setCopyingImage] = useState(false);
@@ -750,7 +749,6 @@ export function TileCodePanel({ tileId }: { tileId: string }) {
   useEffect(() => { setDiffTarget(null); }, [root, host]);
   const changesReveal = useStore((s) => s.changesReveal[tileId] ?? 0);
   useEffect(() => { if (sideView === "changes") setTreeOpen(true); }, [sideView, changesReveal]);
-  const editorTheme = themeById(themeId).appearance === "light" ? githubLight : githubDark;
   const showChange = (file: GitChangedFile, repoRoot: string) => void navigate(() => {
     if (snapshot.current.path) closeTileFile(tileId);
     setDiffTarget({ file, root: repoRoot });

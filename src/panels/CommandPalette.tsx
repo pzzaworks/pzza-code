@@ -25,7 +25,7 @@ import { AUTO_COLUMNS } from "../grid/autoLayout";
 import { deviceForHost, deviceHost, deviceNameFor } from "../devices";
 import { sessionDisplayName, sessionIcon, type IconType } from "../sessionMeta";
 import { compactPath } from "../grid/compactPath";
-import { BUILTIN_THEMES } from "../theme/themes";
+import { PZZACODE_THEMES, themeById } from "../theme/themes";
 import { SPACING_RANGE } from "../state/store";
 import { HAS_TAURI } from "../tauriEnv";
 import { altBadge, COMMAND_PALETTE_SHORTCUT, ctrlBadge, IS_MAC, NEW_SESSION_SHORTCUT, NEW_WORKSPACE_SHORTCUT } from "../shortcuts";
@@ -245,8 +245,11 @@ function usePaletteItems(open: boolean): PaletteItem[] {
     action("auto-arrange", LayoutDashboard, "Auto arrange tiles", command("auto_arrange", { workspaceId: activeWorkspaceId }),
       { detail: columns === AUTO_COLUMNS ? "Fits the window · columns are auto" : "Fits the window, even rows", keywords: "layout grid reset sizes fit tidy balance columns" });
     for (const n of [2, 3, 4]) action(`columns-${n}`, COLUMN_ICONS[n], `Grid: ${n} columns`, command("set_columns", { columns: n }), { detail: n === columns ? "Current" : undefined, keywords: "layout width" });
-    for (const theme of BUILTIN_THEMES) action(`theme-${theme.id}`, theme.appearance === "light" ? Sun : Moon, `Theme: ${theme.name}`, command("configure_appearance", { theme: theme.id }),
+    for (const theme of PZZACODE_THEMES) action(`theme-${theme.id}`, theme.appearance === "light" ? Sun : Moon, `Theme: ${theme.name}`, command("configure_appearance", { theme: theme.id }),
       { detail: theme.id === themeId ? "Current" : undefined, keywords: "appearance color mode" });
+    // Every other theme is one search away in the theme list in Settings.
+    action("themes", Palette, "Browse themes", command("open_settings", { section: "general", page: "appearance" }),
+      { detail: `Current: ${themeById(themeId).name}`, keywords: "appearance color scheme dark light dracula nord solarized gruvbox catppuccin" });
     action("transparency", Sparkles, semiTransparent ? "Turn off transparency" : "Turn on transparency", command("configure_appearance", { semiTransparent: !semiTransparent }), { keywords: "appearance glass translucent window" });
     action("grayscale", Contrast, grayscale ? "Turn off grayscale" : "Turn on grayscale", command("configure_appearance", { grayscale: !grayscale }), { keywords: "appearance monochrome color" });
     action("spacing-joined", SquareDashed, "Spacing: join tiles", () => useStore.getState().setSpacing(SPACING_RANGE.joined), { detail: spacing === SPACING_RANGE.joined ? "Current" : undefined, keywords: "gap layout none" });

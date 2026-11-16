@@ -111,3 +111,28 @@ test("shared remote caching still marks quota samples stale after a failed refre
   assert.equal(account.usage.stale, true);
   assert.equal(account.usage.five_hour.utilization, 25);
 });
+
+test("agent session lists are asked only in their canonical form and never forward a host", async t => {
+  const requests = [];
+  const transport = t.mock.method(childProcess, "execFile", (command, args, _options, callback) => {
+    assert.equal(command, "ssh");
+    assert.equal(args.at(-2), "trusted-device");
+    return { stdin: { on() {}, end(input) { requests.push(JSON.parse(input)); callback(null, JSON.stringify({ sessions: [], total: 0, agents: {}, partial: false })); } } };
+  });
+  syncBuiltinESMExports();
+  try {
+    for (const endpoint of ["/agent-sessions", "/agent-sessions?agent=claude&cwd=%2Fsrv%2Fapp&under=1&since=5&q=fix+it&limit=20&offset=40&fresh=1"]) {
+      assert.deepEqual(await deviceAgentRequest("trusted-device", endpoint), { sessions: [], total: 0, agents: {}, partial: false });
+      assert.deepEqual(requests.at(-1), { endpoint });
+    }
+    for (const endpoint of ["/agent-sessions?host=other", "/agent-sessions?agent=claude&host=other", "/agent-sessions?limit=20&agent=claude", "/agent-sessions?agent=vim",
+      "/agent-sessions?cwd=relative", "/agent-sessions?q=a%0Ab", "/agent-sessions/../file/read", "/agent-sessions?token=x", "/agent-sessions?limit=999"]) {
+      await assert.rejects(deviceAgentRequest("trusted-device", endpoint), /Invalid device agent request/, endpoint);
+    }
+    await assert.rejects(deviceAgentRequest("-oProxyCommand=x", "/agent-sessions"), /Invalid device agent request/);
+    assert.equal(requests.length, 2);
+  } finally {
+    transport.mock.restore();
+    syncBuiltinESMExports();
+  }
+});

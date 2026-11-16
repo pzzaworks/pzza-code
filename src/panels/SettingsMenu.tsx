@@ -1,5 +1,5 @@
 import { AsyncButton } from "../ui/AsyncButton";
-import { Bell, Clock, Command, Copy, Download, EthernetPort, EyeOff, FileCode, Folder, FolderInput, FolderSync, Gauge, GitBranch, GitFork, HardDrive, ListTodo, Loader2, Maximize2, MessageSquare, Mic, Monitor, RefreshCw, RotateCw, SquareTerminal, type LucideIcon } from "lucide-react";
+import { Bell, Clock, Command, Copy, Download, EthernetPort, EyeOff, FileCode, Folder, FolderInput, FolderSync, Gauge, GitBranch, GitFork, HardDrive, ListTodo, Loader2, Maximize2, MessageSquare, MessagesSquare, Mic, Monitor, RefreshCw, RotateCw, SquareTerminal, type LucideIcon } from "lucide-react";
 import { DEFAULT_TRANSPARENCY_OPTIONS, SPACING_RANGE, useStore } from "../state/store";
 import { useUpdates } from "../state/updates";
 import { HAS_TAURI } from "../tauriEnv";
@@ -9,7 +9,7 @@ import { Segmented } from "../ui/Segmented";
 import type { TriggerMode } from "../state/keyTrigger";
 import { setPushToTalk, setPushToTalkMode, usePushToTalk } from "../state/pushToTalk";
 import dictationLicenses from "../dictation-licenses.txt?raw";
-import { ThemeSettings } from "./ThemeSettings";
+import { ThemeSelect } from "./ThemeSettings";
 import { PromptSettings } from "./PromptSettings";
 import { DictationLanguageSelect, SpeechLanguagesSelect } from "../ui/DictationLanguageSelect";
 import type { GeneralSection } from "./settingsSections";
@@ -182,7 +182,9 @@ function AppearanceSection() {
   const spacing = useStore((state) => state.spacing);
   const setSpacing = useStore((state) => state.setSpacing);
   return <Section title="Appearance">
-    <div className="appearance-choice"><ThemeSettings /></div>
+    <Row label="Theme" hint="Move through the list to see each theme on the whole app">
+      <ThemeSelect />
+    </Row>
     <Row label="Grayscale mode" hint="Neutral gray interface; status and terminal colors stay">
       <button className={`switch ${gray ? "switch-on" : ""}`} type="button"
         role="switch" aria-label="Grayscale mode" aria-checked={gray}
@@ -200,24 +202,24 @@ function AppearanceSection() {
         <span className="switch-knob" />
       </button>
     </Row>
-    {/* The mode's main controls stay in view; the fine-tuning folds under More. */}
+    {/* The switch stays in view; every level folds under it. */}
     {enabled ? <>
-      <Row label="Text visibility" hint="Raises text contrast over the background; 100% is maximum. Filled controls keep contrast-safe text.">
-        <Slider label="Text visibility" min={0} max={100} value={options.textVisibility} valueText={`${options.textVisibility}% visibility boost`}
-          onChange={(value) => setOptions({ textVisibility: value })} />
-      </Row>
-      <Row label="App background opacity" hint="How solid the window background is">
-        <Slider label="App background opacity" min={5} max={95} value={options.opacity} onChange={(value) => setOptions({ opacity: value })} />
-      </Row>
-      <Row label="Desktop background blur" hint="Native blur behind the app window">
-        <button type="button" className={`switch ${options.desktopBlur ? "switch-on" : ""}`} role="switch"
-          aria-label="Desktop background blur" aria-checked={options.desktopBlur} onClick={() => setOptions({ desktopBlur: !options.desktopBlur })}>
-          <span className="switch-knob" />
-        </button>
-      </Row>
       <details className="settings-disclosure transparency-details">
-        <summary>More transparency controls</summary>
+        <summary>Transparency controls</summary>
         <div className="settings-disclosure-body">
+        <Row label="Text visibility" hint="Raises text contrast over the background; 100% is maximum. Filled controls keep contrast-safe text.">
+          <Slider label="Text visibility" min={0} max={100} value={options.textVisibility} valueText={`${options.textVisibility}% visibility boost`}
+            onChange={(value) => setOptions({ textVisibility: value })} />
+        </Row>
+        <Row label="App background opacity" hint="How solid the window background is">
+          <Slider label="App background opacity" min={5} max={95} value={options.opacity} onChange={(value) => setOptions({ opacity: value })} />
+        </Row>
+        <Row label="Desktop background blur" hint="Native blur behind the app window">
+          <button type="button" className={`switch ${options.desktopBlur ? "switch-on" : ""}`} role="switch"
+            aria-label="Desktop background blur" aria-checked={options.desktopBlur} onClick={() => setOptions({ desktopBlur: !options.desktopBlur })}>
+            <span className="switch-knob" />
+          </button>
+        </Row>
         <Row label="Panel background opacity" hint="Text stays opaque">
           <Slider label="Panel background opacity" min={5} max={100} value={options.surfaceOpacity} onChange={(value) => setOptions({ surfaceOpacity: value })} />
         </Row>
@@ -294,7 +296,7 @@ function TerminalSection() {
 
 // The icon each menu bar tool or session bar item shows (see barItems).
 const BAR_ITEM_ICONS: Record<Exclude<BarItemId, typeof STATUS_BAR_ID>, LucideIcon> = {
-  "top:tasks": ListTodo, "top:quick-chat": MessageSquare, "top:sync": FolderSync, "top:remote": Monitor,
+  "top:tasks": ListTodo, "top:quick-chat": MessageSquare, "top:agent-sessions": MessagesSquare, "top:sync": FolderSync, "top:remote": Monitor,
   "top:ports": EthernetPort, "top:usage": Gauge, "top:notifications": Bell,
   "header:device": HardDrive, "header:shortcut": Command, "header:mic": Mic, "header:code": FileCode,
   "header:move": FolderInput, "header:duplicate": Copy, "header:fullscreen": Maximize2, "header:hide": EyeOff,

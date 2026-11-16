@@ -12,7 +12,9 @@ import {
   FileText,
   Folder,
   FolderInput,
+  FolderOpen,
   FolderPlus,
+  ClipboardPaste,
   ArrowDown,
   ArrowUp,
   CircleCheck,
@@ -74,9 +76,10 @@ import { setLayoutPreview } from "./layoutPreview";
 import { compactPath } from "./compactPath";
 import { BroadcastBar, useBroadcastPresence } from "./BroadcastBar";
 import { CheckpointsChip, TileCheckpoints } from "./Checkpoints";
+import { AgentSessionsHost } from "./AgentSessions";
 import { moveAgentToWorktree } from "../sessionActions";
 import { landWorktree, useWorktreeInfo, useWorktreeTaskTitle, type LandKind, type LandResult } from "../worktreeLand";
-import { installFolderDrops, useFolderDrag } from "../terminal/folderDrop";
+import { installPathDrops, usePathDrag } from "../terminal/folderDrop";
 
 // Header buttons in display order. A terminal tile has every one but
 // "terminal"; a file tile has "terminal" (Open terminal here), move,
@@ -167,8 +170,9 @@ const CHECKS: Record<"passing" | "failing" | "pending", { icon: LucideIcon; labe
 // The footer's Git item: the branch with commits to push (↑) and pull (↓),
 // its pull request and checks when gh knows them, and a warning when another
 // tile's agent works on the same branch of the same checkout (a click on it
-// offers to start this tile's agent in its own worktree). The dirty dot
-// opens the changed files in the tile's editor; the branch opens its pull
+// offers to start this tile's agent in its own worktree). With uncommitted
+// changes the branch icon turns amber and opens the changed files in the
+// tile's editor; the branch opens its pull
 // request, or the branch page, in the browser. Failing checks get a button
 // that sends their logs to the tile's agent (disabled without one).
 function FooterGit({ git, remote, shared, onReview, onIsolate, isolating, onSendChecks, sendingChecks }: {
@@ -185,7 +189,7 @@ function FooterGit({ git, remote, shared, onReview, onIsolate, isolating, onSend
   return <span className="tile-strip-git">
     {git.dirty
       ? <button type="button" className="tile-strip-git-icon tile-strip-review" title="Uncommitted changes · click to review them" aria-label="Review uncommitted changes" onMouseDown={stop} onClick={onReview}>
-        <GitBranch size={11} aria-hidden="true" /><span className="tile-strip-dirty" />
+        <GitBranch size={11} aria-hidden="true" />
       </button>
       : <span className="tile-strip-git-icon"><GitBranch size={11} aria-hidden="true" /></span>}
     <button type="button" className="tile-strip-branch-btn" title={title} disabled={!target} onMouseDown={stop} onClick={() => { if (target) openWebPage(target); }}>
@@ -779,8 +783,8 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
   }, []);
 
   // Folder drops from Finder open the new-session form for that folder.
-  useEffect(() => installFolderDrops(), []);
-  const folderDrag = useFolderDrag();
+  useEffect(() => installPathDrops(), []);
+  const pathDrag = usePathDrag();
 
   // Shift+click headers to select tiles for broadcast; Esc or a click on the
   // empty canvas clears the selection.
@@ -1355,6 +1359,7 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
         <p role="alert">{duplicateError}</p>
         <div className="modal-actions"><button className="btn" onClick={() => setDuplicateError(null)}>Dismiss</button></div>
       </Modal>
+      <AgentSessionsHost />
       <div
         ref={gridRef}
         className={`grid ${effFull ? "grid-full" : ""} ${sizedRows ? "grid-sized" : ""} ${broadcast.shown ? "grid-with-broadcast" : ""}`}
@@ -1374,13 +1379,13 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
           agentTiles={agentTileIds()} onSelectAgents={selectAgents} onRemove={toggleSelected} onClear={clearSelection}
         />
       ) : null}
-      {folderDrag.folder ? (
+      {pathDrag.label && pathDrag.target !== "none" ? (
         // Fixed to the canvas's visible box so a scrolled canvas is still fully covered.
-        <div className={`canvas-drop-overlay ${folderDrag.over ? "canvas-drop-overlay-on" : ""}`} aria-hidden="true" style={canvasBox()}>
+        <div className={`canvas-drop-overlay ${pathDrag.target === "open" ? "canvas-drop-overlay-on" : ""}`} aria-hidden="true" style={canvasBox()}>
           <div className="canvas-drop-label">
-            <FolderPlus size={18} />
-            <span>{folderDrag.over ? "Drop to start a session in" : "Drop on the canvas to start a session in"}</span>
-            <code>{folderDrag.folder.split("/").pop() || folderDrag.folder}</code>
+            {pathDrag.target === "terminal" ? <ClipboardPaste size={18} /> : pathDrag.session ? <FolderPlus size={18} /> : <FolderOpen size={18} />}
+            <span>{pathDrag.target === "terminal" ? "Drop to paste the path of" : pathDrag.session ? "Drop to start a session in" : "Drop to open"}</span>
+            <code>{pathDrag.label}</code>
           </div>
         </div>
       ) : null}

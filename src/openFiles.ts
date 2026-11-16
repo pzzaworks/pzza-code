@@ -166,7 +166,7 @@ const failure = (error: unknown, fallback: string) => error instanceof Error ? e
 // Files and folders opened together open one after another, in the order they came.
 let opening: Promise<unknown> = Promise.resolve();
 
-function openFiles(paths: unknown): void {
+export function openFiles(paths: unknown): void {
   if (!Array.isArray(paths)) return;
   for (const path of paths) {
     const file = openedFile(path);
@@ -182,7 +182,7 @@ function openFiles(paths: unknown): void {
   }
 }
 
-function openFolders(paths: unknown): void {
+export function openFolders(paths: unknown): void {
   if (!Array.isArray(paths)) return;
   for (const path of paths) {
     const folder = validFilePath(path);
