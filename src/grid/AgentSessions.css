@@ -418,13 +418,13 @@
 .as-empty p { max-width: 420px; margin: 0; color: var(--muted); line-height: 1.5; }
 .as-empty-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-top: 6px; }
 
-/* ---------- Footer: the selected conversation's actions ---------- */
+/* ---------- Footer: keyboard shortcuts, or the reason a conversation cannot resume ---------- */
 .as-foot {
   display: flex;
   align-items: center;
   gap: 12px;
-  min-height: 50px;
-  padding: 9px 12px 9px 18px;
+  min-height: 40px;
+  padding: 9px 18px;
   border-top: 1px solid var(--divider);
 }
 .as-foot-info { flex: 1; min-width: 0; color: var(--muted); font-size: var(--fs-sm); }
@@ -435,20 +435,12 @@
 .as-banner { animation: as-in 0.16s cubic-bezier(0.2, 0.8, 0.2, 1) both; }
 .as-banner.is-ok { color: var(--text); }
 .as-banner.is-error { color: var(--danger-foreground, var(--danger)); }
-.as-foot-actions { display: flex; flex: 0 0 auto; align-items: center; gap: 8px; }
-.as-foot-actions .cselect.as-mode { width: auto; min-width: 120px; max-width: 200px; height: 30px; }
-.as-action { height: 30px; }
-.as-action.is-blocked { opacity: 0.45; cursor: default; }
-.as-action.is-blocked:hover { border-color: var(--hairline-strong); background: transparent; }
 
 /* ---------- Narrow windows ---------- */
 @container agent-sessions (max-width: 720px) {
   .as-bar, .as-agents { padding-left: 12px; padding-right: 12px; }
   .as-group-path { display: none; }
-  .as-foot { flex-wrap: wrap; padding-left: 12px; }
-  .as-foot-info { flex-basis: 100%; }
-  .as-foot-actions { flex: 1 1 auto; justify-content: flex-end; }
-  .as-keys { display: none; }
+  .as-foot { padding-left: 12px; padding-right: 12px; }
 }
 @container agent-sessions (max-width: 520px) {
   .as-seg > button { padding: 0 8px; }

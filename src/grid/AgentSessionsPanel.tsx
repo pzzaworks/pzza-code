@@ -1,6 +1,6 @@
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
 import {
-  ChevronDown, Copy, CornerDownLeft, Folder, GitBranch, Hash, Info, Loader2, MessagesSquare, Plus, RefreshCw, Search, TriangleAlert, UserRound,
+  ChevronDown, Copy, Folder, GitBranch, Hash, Info, Loader2, MessagesSquare, Plus, RefreshCw, Search, TriangleAlert, UserRound,
 } from "lucide-react";
 import { fetchAgentSessions, fetchWorktreeInfo } from "../serverApi";
 import { deviceForHost, deviceHost, deviceNameFor } from "../devices";
@@ -8,20 +8,16 @@ import { useStore } from "../state/store";
 import { useSessionCreation } from "../sessionActions";
 import {
   agentLabelOf, agentSessionCommand, agentSessionsErrorKind, agentSessionsTile, loadAgentSessionsFilters, newTileBlocker, rememberedAgentMode,
-  resumeBlocker, resumeHereBlocker, resumeInNewTile, resumeInTile, saveAgentSessionsFilters, timeFilterSince,
+  resumeBlocker, resumeInNewTile, saveAgentSessionsFilters, timeFilterSince,
   type AgentSessionsErrorKind, type AgentSessionsFilters, type AgentSessionsScope, type AgentSessionsTime, type AgentSessionsView,
 } from "../state/agentSessions";
 import { AgentIcon } from "../icons/AgentIcon";
 import { iconColor } from "../sessionMeta";
-import { useSessionActivity } from "../ui/LiveSessionIcon";
 import { Modal } from "../ui/Modal";
-import { Select } from "../ui/Select";
 import { ScrollMore } from "../ui/ScrollMore";
 import { IconButton } from "../ui/IconButton";
 import { copyToClipboard } from "../terminal/Terminal";
-import { IS_MAC } from "../shortcuts";
 import { compactPath } from "./compactPath";
-import { sessionAgent } from "../../server/lib/session-agents.js";
 import type { AgentSessionRow } from "../../server/lib/agent-sessions.js";
 
 // Past coding-agent conversations on the tile's device (or every device),
@@ -74,7 +70,6 @@ function size(bytes: number): string {
 
 const plural = (count: number, one: string, many = `${one}s`) => `${count.toLocaleString()} ${count === 1 ? one : many}`;
 const folderName = (path: string) => path.split("/").filter(Boolean).pop() ?? path;
-const MOD = IS_MAC ? "⌘" : "Ctrl+";
 
 // ------------------------------------------------------------------- lists
 
@@ -318,12 +313,10 @@ export function AgentSessionsPanel({ tileId, onClose }: { tileId: string | null;
   }, [listId, selectedIndex]);
 
   // ---- actions
-  const [modes, setModes] = useState<Record<string, string>>({});
-  const modeOf = (agentId: string) => modes[agentId] ?? rememberedAgentMode(agentId);
+  // A conversation resumes in the mode last picked for its agent.
+  const modeOf = rememberedAgentMode;
   const creating = useSessionCreation((state) => state.operation?.status === "running");
-  // Re-checks "Resume here" whenever the tile's foreground program changes.
-  useSessionActivity(origin?.tile.session ?? origin?.tile.name ?? "", origin?.tile.window, origin?.tile.host);
-  const [busy, setBusy] = useState<"new" | "here" | null>(null);
+  const [busy, setBusy] = useState(false);
   const [banner, setBanner] = useState<Banner | null>(null);
   useEffect(() => {
     if (banner?.tone !== "ok") return;
@@ -336,28 +329,25 @@ export function AgentSessionsPanel({ tileId, onClose }: { tileId: string | null;
     return {
       common: resumeBlocker(item.row, loaded),
       newTile: newTileBlocker(item.row, item.host, loaded, creating),
-      here: resumeHereBlocker(tileId, item.row, item.host, loaded),
     };
   };
 
-  const resume = async (kind: "new" | "here", item: Item | null = selected) => {
+  // A conversation always resumes in a new PzzaCode session in its own folder:
+  // the list belongs to the whole app, not to the tile it was opened from.
+  const resume = async (item: Item | null = selected) => {
     if (!item || busy) return;
-    const blocked = kind === "new" ? reasons(item).newTile : reasons(item).here;
+    const blocked = reasons(item).newTile;
     if (blocked) { setBanner({ tone: "error", text: blocked }); return; }
-    setBusy(kind);
+    setBusy(true);
     setBanner(null);
     const loaded = rowsByHost.get(item.host) ?? [];
     try {
-      if (kind === "new") {
-        await resumeInNewTile({ host: item.host, row: item.row, mode: modeOf(item.row.agent), loaded, anchorTileId: tileId });
-        onClose();
-      } else if (tileId && await resumeInTile({ tileId, host: item.host, row: item.row, mode: modeOf(item.row.agent), loaded })) {
-        onClose();
-      }
+      await resumeInNewTile({ host: item.host, row: item.row, mode: modeOf(item.row.agent), loaded, anchorTileId: tileId });
+      onClose();
     } catch (error) {
       setBanner({ tone: "error", text: error instanceof Error ? error.message : "Could not resume the conversation." });
     } finally {
-      setBusy(null);
+      setBusy(false);
     }
   };
 
@@ -388,17 +378,15 @@ export function AgentSessionsPanel({ tileId, onClose }: { tileId: string | null;
       scrollOnSelect.current = true;
       setSelectedKey(next.key);
     } else if (event.key === "Enter" && !event.shiftKey && !event.altKey && !event.nativeEvent.isComposing) {
-      // A focused button answers Enter itself; Cmd/Ctrl+Enter works from anywhere.
-      const mod = IS_MAC ? event.metaKey : event.ctrlKey;
-      if (!mod && target?.closest("button, a, [role=button]")) return;
+      // A focused button answers Enter itself.
+      if (target?.closest("button, a, [role=button]")) return;
       event.preventDefault();
-      void resume(mod ? "here" : "new");
+      void resume();
     }
   };
 
   const searchRef = useRef<HTMLInputElement>(null);
   const selectedReasons = selected ? reasons(selected) : null;
-  const selectedAgent = selected ? sessionAgent(selected.row.agent) : undefined;
   const scopeLabel = scope === "folder" && folder ? `in ${compactPath(folder)}` : scope === "repo" && repo ? `in ${compactPath(repo)} and below` : "everywhere";
   const deviceLabel = multiDevice ? `on ${plural(sources.length, "device")}` : `on ${sources[0]?.name ?? "this device"}`;
   const filtered = Boolean(search || agent || filters.time !== "all" || scope !== "everywhere");
@@ -480,7 +468,7 @@ export function AgentSessionsPanel({ tileId, onClose }: { tileId: string | null;
               device={item.host ? deviceNameFor(devices, item.host) : undefined} busy={busy}
               reasons={item === selected && selectedReasons ? selectedReasons : reasons(item)}
               onSelect={() => setSelectedKey(item.key)}
-              onResume={(kind) => { setSelectedKey(item.key); void resume(kind, item); }}
+              onResume={() => { setSelectedKey(item.key); void resume(item); }}
               onCopy={(what) => { setSelectedKey(item.key); void copy(what, item); }}
             />;
           })}
@@ -507,21 +495,9 @@ export function AgentSessionsPanel({ tileId, onClose }: { tileId: string | null;
           </span>
             : selectedReasons?.common ? <span className="as-reason"><Info size={13} aria-hidden="true" />{selectedReasons.common}</span>
               : <span className="as-keys" aria-hidden="true">
-                <kbd className="kbd">↑</kbd><kbd className="kbd">↓</kbd> select<span className="as-keys-gap" /><kbd className="kbd">↵</kbd> new PzzaCode session<span className="as-keys-gap" /><kbd className="kbd">{MOD}↵</kbd> here<span className="as-keys-gap" /><kbd className="kbd">esc</kbd> close
+                <kbd className="kbd">↑</kbd><kbd className="kbd">↓</kbd> select<span className="as-keys-gap" /><kbd className="kbd">↵</kbd> new PzzaCode session<span className="as-keys-gap" /><kbd className="kbd">esc</kbd> close
               </span>}
         </div>
-        {selected && selectedReasons ? <div className="as-foot-actions">
-          {selectedAgent && selectedAgent.modes.length > 1 && !selectedReasons.common ? <Select
-            className="as-mode" value={modeOf(selectedAgent.id)} ariaLabel={`${selectedAgent.label} mode`} align="end"
-            title={`The mode ${selectedAgent.label} starts in`}
-            options={selectedAgent.modes.map((mode) => ({ value: mode.id, label: mode.label, sub: mode.description }))}
-            onChange={(value) => setModes((current) => ({ ...current, [selectedAgent.id]: value }))}
-          /> : null}
-          <ActionButton label="Resume here" icon={CornerDownLeft} shortcut={`${MOD}↵`} reason={selectedReasons.here} busy={busy === "here"} disabled={busy !== null}
-            hint={tileId ? "Types the resume command into this tile's terminal" : ""} onClick={() => void resume("here")} />
-          <ActionButton label="Resume in new PzzaCode session" icon={Plus} shortcut="↵" accent reason={selectedReasons.newTile} busy={busy === "new"} disabled={busy !== null}
-            hint="Opens a new PzzaCode session in the conversation's folder and resumes it there" onClick={() => void resume("new")} />
-        </div> : null}
       </footer>
     </div>
   </Modal>;
@@ -542,20 +518,6 @@ function Toggle<T extends string>({ label, value, options, onChange }: { label: 
   </div>;
 }
 
-function ActionButton({ label, icon: Icon, shortcut, reason, hint, busy, disabled, accent = false, onClick }: {
-  label: string; icon: typeof Plus; shortcut: string; reason: string | null; hint: string; busy: boolean; disabled: boolean; accent?: boolean; onClick(): void;
-}) {
-  // A blocked action stays focusable with its reason as the tooltip, instead of disappearing.
-  const blocked = reason !== null;
-  return <button type="button" className={`btn btn-sm as-action${accent ? " btn-accent" : ""}${blocked ? " is-blocked" : ""}`}
-    aria-disabled={blocked || undefined} disabled={disabled} aria-busy={busy || undefined}
-    title={blocked ? `${label}\n${reason}` : `${label} (${shortcut})${hint ? `\n${hint}` : ""}`}
-    onClick={onClick}>
-    {busy ? <Loader2 size={13} className="async-spinner" aria-hidden="true" /> : <Icon size={13} aria-hidden="true" />}
-    {label}
-  </button>;
-}
-
 function GroupHead({ block, now, device }: { block: Extract<Block, { kind: "group" }>; now: number; device?: string }) {
   const latest = block.items[0]?.row.lastAt ?? 0;
   return <div className="as-group-head" aria-hidden="true">
@@ -569,9 +531,9 @@ function GroupHead({ block, now, device }: { block: Extract<Block, { kind: "grou
 }
 
 function Row({ id, item, now, selected, showFolder, device, busy, reasons, onSelect, onResume, onCopy }: {
-  id: string; item: Item; now: number; selected: boolean; showFolder: boolean; device?: string; busy: "new" | "here" | null;
-  reasons: { common: string | null; newTile: string | null; here: string | null } | null;
-  onSelect(): void; onResume(kind: "new" | "here"): void; onCopy(what: "command" | "id"): void;
+  id: string; item: Item; now: number; selected: boolean; showFolder: boolean; device?: string; busy: boolean;
+  reasons: { common: string | null; newTile: string | null } | null;
+  onSelect(): void; onResume(): void; onCopy(what: "command" | "id"): void;
 }) {
   const { row } = item;
   const title = row.title || "Untitled conversation";
@@ -591,7 +553,7 @@ function Row({ id, item, now, selected, showFolder, device, busy, reasons, onSel
     id={id} role="option" aria-selected={selected}
     aria-label={`${title}, ${label}, ${ago(row.lastAt, now)}${row.branch ? `, branch ${row.branch}` : ""}`}
     className={`as-row${selected ? " on" : ""}${unavailable ? " is-unavailable" : ""}`}
-    onMouseDown={keepFocus} onClick={onSelect} onDoubleClick={() => onResume("new")}
+    onMouseDown={keepFocus} onClick={onSelect} onDoubleClick={onResume}
   >
     <span className="as-row-agent" style={{ color: iconColor(row.agent) }} title={label}><AgentIcon id={row.agent} size={15} /></span>
     <span className="as-row-main">
@@ -602,8 +564,7 @@ function Row({ id, item, now, selected, showFolder, device, busy, reasons, onSel
     <span className="as-row-actions">
       <RowAction icon={Hash} label="Copy session ID" onClick={(event) => stop(event, () => onCopy("id"))} />
       <RowAction icon={Copy} label={row.resume === "last" ? `Copy resume command\nRun it in ${row.cwd}` : "Copy resume command"} reason={reasons?.common ?? null} onClick={(event) => stop(event, () => onCopy("command"))} />
-      <RowAction icon={CornerDownLeft} label="Resume here" text="Here" reason={reasons?.here ?? null} busy={busy === "here" && selected} onClick={(event) => stop(event, () => onResume("here"))} />
-      <RowAction icon={Plus} label="Resume in a new PzzaCode session" text="New PzzaCode session" reason={reasons?.newTile ?? null} busy={busy === "new" && selected} onClick={(event) => stop(event, () => onResume("new"))} />
+      <RowAction icon={Plus} label="Resume in a new PzzaCode session" text="New PzzaCode session" reason={reasons?.newTile ?? null} busy={busy && selected} onClick={(event) => stop(event, onResume)} />
     </span>
   </div>;
 }

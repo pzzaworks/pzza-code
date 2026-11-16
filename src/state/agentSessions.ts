@@ -21,7 +21,7 @@ import type { AgentSessionRow } from "../../server/lib/agent-sessions.js";
 
 interface AgentSessionsUi {
   open: boolean;
-  /** The tile the dialog was opened from: its device and folder scope the list, and "Resume here" types into it. */
+  /** The tile the dialog was opened from: its device and folder scope the list, and a resumed conversation opens beside it. */
   tileId: string | null;
   /** Bumped on each open, so a reopened dialog starts from its saved filters again. */
   opened: number;
