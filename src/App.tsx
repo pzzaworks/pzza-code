@@ -118,7 +118,13 @@ export default function App() {
     const children = new MutationObserver(watch);
     children.observe(canvas, { childList: true });
     watch();
-    return () => { sizes.disconnect(); children.disconnect(); };
+    // overflow-x: hidden still lets focus() and scrollIntoView move the
+    // canvas sideways while a tile glides past its edge, which left every
+    // tile shifted with an empty strip on the right. The grid always fits
+    // the width, so any horizontal offset is wrong.
+    const keepLeft = () => { if (canvas.scrollLeft !== 0) canvas.scrollLeft = 0; };
+    canvas.addEventListener("scroll", keepLeft, { passive: true });
+    return () => { sizes.disconnect(); children.disconnect(); canvas.removeEventListener("scroll", keepLeft); };
   }, []);
   const [helpRequest, setHelpRequest] = useState<HelpRequest | undefined>();
   const [settingsSection, setSettingsSection] = useState<SettingsSection>("general");

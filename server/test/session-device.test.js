@@ -138,3 +138,49 @@ test("simultaneous window attachments have distinct view names", () => {
     assert.equal(new Set(names).size, commands.length);
   } finally { Date.now = original; }
 });
+
+test("an attach under a name its session no longer has follows the renamed session and never creates the old name", { timeout: 15000 }, async t => {
+  const { renameCommand } = await import("../lib/tmux.js");
+  const run = promisify(execFile);
+  const root = await mkdtemp("/tmp/pzza-follow-attach-");
+  const socket = path.join(root, "sock");
+  const log = path.join(root, "calls");
+  const realTmux = (await run("sh", ["-c", "command -v tmux"])).stdout.trim();
+  const tmux = (...args) => run(realTmux, ["-S", socket, ...args], { timeout: 3000 });
+  t.after(async () => { await tmux("kill-server").catch(() => {}); await rm(root, { recursive: true, force: true }); });
+  // Every call is logged; the final attach (which needs a terminal) stops
+  // there, everything before it reaches the real server.
+  await writeFile(path.join(root, "tmux"), `#!/bin/sh
+printf '%s\\0' "$@" >> ${shQuote(log)}; printf '\\n' >> ${shQuote(log)}
+case " $* " in *" attach "*|*" new-session -A "*) exit 0 ;; esac
+exec ${shQuote(realTmux)} "$@"
+`, { mode: 0o700 });
+  await tmux("-f", "/dev/null", "new-session", "-d", "-s", "work", "sleep 30");
+  await tmux("new-window", "-t", "=work:", "sleep 30");
+  const id = (await tmux("display-message", "-p", "-t", "=work:", "#{session_id}")).stdout.trim();
+  await run("sh", ["-c", renameCommand("work", "api", undefined, "").replaceAll("tmux ", `${shQuote(realTmux)} -S ${shQuote(socket)} `)]);
+  const attach = async (name, window) => {
+    await writeFile(log, "");
+    const command = attachCommand({ host: null }, name, undefined, window);
+    const { stdout } = await run(command.cmd, [command.args[0], `PATH=${shQuote(root)}:$PATH; ${command.args[1]}`], {
+      timeout: 5000, cwd: root, env: { ...process.env, PZZA_TMUX_SOCKET: socket, TMUX: "" },
+    });
+    return { hint: stdout, last: (await readFile(log, "utf8")).trim().split("\n").at(-1).split("\0").slice(0, -1) };
+  };
+
+  const session = await attach("work");
+  assert.equal(session.hint, "\x1b]7337;renamed\x07", "the app is told to look the new name up");
+  assert.deepEqual(session.last.slice(3), ["-u", "attach", "-t", id, ";", "set-option", "-t", id, "status", "off"]);
+  const view = await attach("work", 1);
+  assert.equal(view.last[4], "attach");
+  assert.equal((await tmux("display-message", "-p", "-t", `=${view.last[6]}:`, "#{session_group}")).stdout.trim(), "api");
+  await tmux("kill-session", "-t", `=${view.last[6]}`);
+  await assert.rejects(tmux("has-session", "-t", "=work"), "the old name was never created again");
+
+  // The current name, and a name nothing was renamed from, attach as before.
+  for (const name of ["api", "brand new"]) {
+    const plain = await attach(name);
+    assert.equal(plain.hint, "");
+    assert.deepEqual(plain.last.slice(3, 8), ["-u", "new-session", "-A", "-s", name]);
+  }
+});

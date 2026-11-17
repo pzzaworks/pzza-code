@@ -940,7 +940,10 @@ button {
   flex: 1;
   min-width: 0;
   min-height: 0;
-  overflow: auto;
+  /* The grid always fits the width; only a tile gliding to its new place
+     (a transform) reaches past it, and that must never scroll the canvas. */
+  overflow-x: hidden;
+  overflow-y: auto;
   /* Spacing (Settings → Spacing): the same room at the edges as between tiles. */
   padding: var(--space);
 }

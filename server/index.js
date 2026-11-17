@@ -29,7 +29,8 @@ import {
   tokenOk,
 } from "./lib/http.js";
 import { listPorts, listPortDetails, terminateListener, stopPortContainer } from "./lib/ports.js";
-import { listSessions, listWindows, scanSessions, sessionActivity, paneOutputActivity, terminateSession, duplicateSession, WINDOW_ID } from "./lib/tmux.js";
+import { listSessions, listWindows, scanSessions, sessionActivity, paneOutputActivity, terminateSession, duplicateSession, renameSession, listPreviousNames, WINDOW_ID } from "./lib/tmux.js";
+import { normalizeSessionName } from "./lib/session-name.js";
 import { forwardStatus, setForwardEnabled, startForwardLoop } from "./lib/forward.js";
 import { listAccounts } from "./lib/accounts.js";
 import { USAGE_FRESH_MS, collectUsage, fixClaudeToken } from "./lib/usage.js";
@@ -199,6 +200,12 @@ async function handleRequest(req, res) {
     try { return json(res, 200, await scanSessions(host)); }
     catch { return json(res, 503, { error: "Could not scan sessions on this device" }); }
   }
+  if (url.pathname === "/sessions/previous-names" && req.method === "GET") {
+    const host = url.searchParams.has("host") ? url.searchParams.get("host") : undefined;
+    if (host && !SSH_TOKEN.test(host)) return json(res, 400, { error: "invalid host" });
+    try { return json(res, 200, await listPreviousNames(host)); }
+    catch { return json(res, 503, { error: "Could not list the sessions on this device" }); }
+  }
   if (url.pathname === "/sessions/activity" && req.method === "GET") {
     const host = url.searchParams.has("host") ? url.searchParams.get("host") : undefined;
     if (host && !SSH_TOKEN.test(host)) return json(res, 400, { error: "invalid host" });
@@ -294,6 +301,27 @@ async function handleRequest(req, res) {
     }
     try { return json(res, 200, await duplicateSession(body.name, body.window, body.host)); }
     catch { return json(res, 500, { error: "Could not duplicate the session on this device. Check that the source window is still running." }); }
+  }
+  if (url.pathname === "/sessions/rename" && req.method === "POST") {
+    const body = await readBody(req);
+    // The current name is checked loosely, like /kill: a session restored as
+    // "<name> (restored)" must still be renamable. The new name follows the
+    // same rules as a new session's name.
+    if (!body || typeof body !== "object" || Array.isArray(body) ||
+        typeof body.name !== "string" || !body.name.trim() || /[\x00-\x1f\x7f]/.test(body.name) ||
+        (body.window !== undefined && (!Number.isInteger(body.window) || body.window < 0)) ||
+        (body.windowId !== undefined && (typeof body.windowId !== "string" || !WINDOW_ID.test(body.windowId) || body.window === undefined)) ||
+        (body.host !== undefined && (typeof body.host !== "string" || (body.host && !SSH_TOKEN.test(body.host))))) {
+      return json(res, 400, { error: "Invalid session, window, or device" });
+    }
+    let newName;
+    try { newName = normalizeSessionName(body.newName); } catch (error) { return json(res, 400, { error: error.message }); }
+    try {
+      await renameSession(body.name, newName, body.window, body.host, body.windowId);
+      return json(res, 200, { ok: true, name: newName });
+    } catch (error) {
+      return json(res, error.status === 409 ? 409 : 500, { error: error.status === 409 ? error.message : "Could not rename the session on this device" });
+    }
   }
   if (url.pathname === "/forward/toggle" && req.method === "POST") {
     const body = await readBody(req);

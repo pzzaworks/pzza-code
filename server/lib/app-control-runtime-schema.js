@@ -34,7 +34,7 @@ export const RUNTIME_APP_COMMANDS = {
   set_focus_mode: command("Focus a session tile by maximizing it in its workspace, or restore the grid (same as set_fullscreen).", { tileId, enabled: boolean }, ["tileId", "enabled"]),
   set_fullscreen: command("Maximize or restore a session tile in its workspace.", { tileId, enabled: boolean }, ["tileId", "enabled"]),
   duplicate_tile: command("Duplicate an existing session using the same device and workspace.", { tileId }, ["tileId"]),
-  auto_arrange: command("Auto arrange a workspace: drop every saved tile size there and let the grid pick its columns from the tile count and window width, sharing each row evenly. The active workspace when none is given; the All workspace covers every tile.", { workspaceId: string(128) }),
+  auto_arrange: command("Auto arrange a workspace: drop every tile size saved for it and let the grid pick its columns from the tile count and window width, sharing each row evenly. Sizes are kept per workspace, so other workspaces keep theirs. The active workspace when none is given.", { workspaceId: string(128) }),
   review_tile_changes: command("Open a tile's editor on its uncommitted Git changes and return how many files changed and the first few names.", { tileId }, ["tileId"]),
   open_pull_request: command("Open the pull request of a tile's Git branch in the browser, or the branch page when it has none.", { tileId }, ["tileId"]),
   git_status: command("Read a tile's Git state without changing anything: branch (or detached), uncommitted file count and first names, commits ahead/behind its upstream, and the branch's pull request with its checks, plus a one-sentence summary.", { tileId }, ["tileId"]),

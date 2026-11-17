@@ -14,6 +14,9 @@ export type IconType = ComponentType<{
 export const SESSION_DND = "application/pzza-session";
 export const SESSION_TILE_DND = "application/pzza-tile";
 export const QUICK_CHAT_SESSION = "pzza-quick-chat";
+// Dispatched with { host } by a terminal whose attach followed a renamed
+// session (see session-follow.js): its tiles there should follow too.
+export const SESSION_FOLLOWED_EVENT = "pzza:session-followed";
 
 // Tile display name: drop a leading machine prefix like "Devbox - " so the tile
 // reads "Work Agent", not "Devbox - Work Agent". The machine is shown by
@@ -21,6 +24,22 @@ export const QUICK_CHAT_SESSION = "pzza-quick-chat";
 export function tileTitle(name: string): string {
   const i = name.indexOf(" - ");
   return i >= 0 ? name.slice(i + 3) : name;
+}
+
+// What a rename of this tile starts from: the name it is renamed to on its
+// device. A terminal tile shows its tmux session name in full (or an earlier
+// display override); a window tile only its window's name, without the
+// session's name in front.
+export function renameStartValue(
+  tile: { kind?: "file"; id: string; name: string; session?: string; window?: number },
+  titles: Readonly<Record<string, string>>,
+): string {
+  if (tile.kind === "file") return titles[tile.id] ?? tile.name;
+  if (tile.window !== undefined && tile.session) {
+    const prefix = `${tileTitle(tile.session)} · `;
+    return tile.name.startsWith(prefix) ? tile.name.slice(prefix.length) : tile.name;
+  }
+  return titles[tile.id] ?? tile.session ?? tile.name;
 }
 
 // Keep display names separate from the stable tmux target used to attach,

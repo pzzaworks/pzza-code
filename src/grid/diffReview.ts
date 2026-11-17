@@ -35,7 +35,20 @@ export const useDiffReview = create<DiffReviewState>((set) => ({
   }),
 }));
 
-export const useTileReview = (tileId: string): ReviewComment[] => useDiffReview((state) => state.comments[tileId] ?? NO_COMMENTS);
+/** Keeps the pending comments of renamed tiles under their new ids (old id → new id). */
+export function moveDiffReview(moved: Readonly<Record<string, string>>): void {
+  const current = useDiffReview.getState().comments;
+  if (!Object.keys(moved).some((from) => Object.hasOwn(current, from))) return;
+  const comments = { ...current };
+  for (const [from, to] of Object.entries(moved)) {
+    delete comments[to];
+    if (Object.hasOwn(current, from)) comments[to] = current[from];
+    delete comments[from];
+  }
+  useDiffReview.setState({ comments });
+}
+
+export const useTileReview =(tileId: string): ReviewComment[] => useDiffReview((state) => state.comments[tileId] ?? NO_COMMENTS);
 
 // Whitespace and control characters folded to single spaces, so typed text
 // can never submit early or span lines.

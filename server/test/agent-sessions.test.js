@@ -108,6 +108,8 @@ test("lists Claude, Codex and OpenCode conversations newest first with their fac
   assert.deepEqual(login, {
     agent: "claude", id: CLAUDE_LOGIN, cwd: "/Users/dev/app", title: "Fix login redirect",
     startedAt: at("2026-11-10T09:00:00Z"), lastAt: at("2026-11-10T09:20:00Z"), branch: "feature/login", bytes: login.bytes, resume: "id",
+    // The fixture's folder does not exist here, and Claude finds an id from any folder.
+    resumeIn: root,
   });
   assert.ok(login.bytes > 0);
   // Command wrappers and injected meta turns are skipped; the prompt is folded to one line.
@@ -122,7 +124,7 @@ test("lists Claude, Codex and OpenCode conversations newest first with their fac
     startedAt: at("2026-11-13T10:00:00Z"), lastAt: at("2026-11-13T11:00:00Z"), resume: "id",
   });
   // Nothing but row fields leaves the scan: no paths, no message bodies.
-  const text = JSON.stringify(result);
+  const text = JSON.stringify({ ...result, sessions: result.sessions.map(({ resumeIn, ...row }) => row) });
   assert.ok(!text.includes(root) && !text.includes("Looking at the router") && !text.includes("sidechain task") && !text.includes("subagent task"));
 });
 
@@ -394,6 +396,53 @@ test("listAgentSessions validates its query and answers from the worker", async 
   await assert.rejects(listAgentSessions({ limit: 0 }), /1 to 300/);
   const result = await listAgentSessions({ cwd: root });
   assert.deepEqual(result, { sessions: [], total: 0, agents: {}, partial: false });
+});
+
+test("a Claude conversation whose folder moved reopens where it last worked, or at home", async (t) => {
+  const root = await home(t);
+  const gone = path.join(root, "Documents", "game");
+  const moved = path.join(root, "Games", "game");
+  const kept = path.join(root, "kept");
+  await mkdir(moved, { recursive: true });
+  await mkdir(kept, { recursive: true });
+  // Started in a folder that was later moved; the shell followed it.
+  await claudeTranscript(root, "aaaaaaaa-1111-4222-8333-444444444444", gone, [
+    claudeLine("a1", "2026-11-10T09:00:00Z", gone, "move the game folder"),
+    claudeLine("a2", "2026-11-10T09:05:00Z", moved, "keep going there"),
+  ], "2026-11-10T09:05:00Z");
+  // Nothing it worked in exists any more.
+  await claudeTranscript(root, "bbbbbbbb-1111-4222-8333-444444444444", path.join(root, "deleted"), [
+    claudeLine("b1", "2026-11-10T10:00:00Z", path.join(root, "deleted"), "work in a folder that is gone"),
+  ], "2026-11-10T10:00:00Z");
+  // Its own folder still exists, even though it ended elsewhere.
+  await claudeTranscript(root, "cccccccc-1111-4222-8333-444444444444", kept, [
+    claudeLine("c1", "2026-11-10T11:00:00Z", kept, "stay here"),
+    claudeLine("c2", "2026-11-10T11:05:00Z", moved, "look over there"),
+  ], "2026-11-10T11:05:00Z");
+  const result = await createAgentSessionsScanner().list(parseAgentSessionsQuery({}));
+  const byTitle = Object.fromEntries(result.sessions.map((row) => [row.title, row]));
+  assert.equal(byTitle["move the game folder"].cwd, gone);
+  assert.equal(byTitle["move the game folder"].resumeIn, moved);
+  assert.equal(byTitle["work in a folder that is gone"].resumeIn, root);
+  assert.equal(byTitle["stay here"].resumeIn, undefined);
+  // The newest folder is only used to resume, never answered as such.
+  assert.ok(result.sessions.every((row) => !("latestCwd" in row)));
+
+  // An agent that looks an id up only in its own folder never gets one.
+  const source = { agent: "gemini", roots: () => [{ dir: "/x" }], rows: async () => [{ id: "11111111-2222-4333-8444-555555555555", cwd: gone, lastAt: 1000, prompt: "gemini work" }] };
+  const gemini = await createAgentSessionsScanner({ sources: [source] }).list(parseAgentSessionsQuery({}));
+  assert.equal(gemini.sessions[0].resume, "id");
+  assert.equal(gemini.sessions[0].resumeIn, undefined);
+});
+
+test("remote rows keep resumeIn only for an agent that finds its id from any folder", () => {
+  const row = { agent: "claude", id: "11111111-2222-4333-8444-555555555555", cwd: "/srv/old", title: "Fix it", startedAt: 1, lastAt: 2, resume: "id" };
+  const resumeIn = (fields) => checkedAgentSessionsResponse({ sessions: [{ ...row, ...fields }], total: 1, agents: { claude: 1 }, partial: false }).sessions[0].resumeIn;
+  assert.equal(resumeIn({ resumeIn: "/srv/new" }), "/srv/new");
+  for (const bad of ["relative/new", "/srv/../etc", "/srv/new\nx", 7]) assert.equal(resumeIn({ resumeIn: bad }), undefined, String(bad));
+  assert.equal(resumeIn({ resumeIn: "/srv/new", agent: "gemini" }), undefined);
+  assert.equal(resumeIn({ resumeIn: "/srv/new", resume: "last" }), undefined);
+  assert.equal(resumeIn({ resumeIn: "/srv/new", cwd: "" }), undefined);
 });
 
 test("remote rows keep only an account folder the agent could be started with", () => {

@@ -72,3 +72,36 @@ export function hasUnsavedEditors(ids?: readonly string[]): boolean {
     return file.dirty || file.saving;
   });
 }
+
+// Editors kept read-only while their tile's session is renamed on its device:
+// the tile then reopens under the new name, and an edit typed meanwhile would
+// be lost with the old editor.
+const locked = new Map<string, number>();
+const lockListeners = new Set<() => void>();
+
+/** Locks the editors of these tiles until the returned function is called. */
+export function lockEditors(ids: readonly string[]): () => void {
+  for (const id of ids) locked.set(id, (locked.get(id) ?? 0) + 1);
+  lockListeners.forEach((listener) => listener());
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    for (const id of ids) {
+      const count = (locked.get(id) ?? 1) - 1;
+      if (count > 0) locked.set(id, count);
+      else locked.delete(id);
+    }
+    lockListeners.forEach((listener) => listener());
+  };
+}
+
+export function editorLocked(id: string): boolean {
+  return locked.has(id);
+}
+
+/** Subscribes to lock changes (for useSyncExternalStore). */
+export function onEditorLocks(listener: () => void): () => void {
+  lockListeners.add(listener);
+  return () => lockListeners.delete(listener);
+}

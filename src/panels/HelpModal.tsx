@@ -1311,7 +1311,7 @@ export const HELP_PAGES: Record<HelpTopic, HelpPage> = {
           Grey idle, green waiting on you, red exited.
         </Row>
         <Row ui={<ClaudeTileIcon />} name="Type icon">What runs right now, in its own color.</Row>
-        <Row ui={<span className="tile-title">api</span>} name="Title">Click to rename; tmux keeps its own name.</Row>
+        <Row ui={<span className="tile-title">api</span>} name="Title">Click to rename. The tmux session (or window) is renamed on its device too, so the old name is free again.</Row>
         <Row ui={<GitBranch size={15} className="muted-icon" />} name="Footer">Session, branch, running program and agent mode, folder and start time.</Row>
       </>
     ),

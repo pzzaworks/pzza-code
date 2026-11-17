@@ -116,6 +116,9 @@ function checkedRow(row) {
   if (count(row.messages)) out.messages = row.messages;
   if (count(row.bytes)) out.bytes = row.bytes;
   if (validAgentAccount(sessionAgent(row.agent), row.account)) out.account = row.account;
+  // Only where an agent that finds its id from any folder lost its own folder.
+  if (plain(row.resumeIn, AGENT_SESSIONS_LIMITS.cwd) && row.resumeIn.startsWith("/") && path.posix.normalize(row.resumeIn) === row.resumeIn
+    && row.cwd && row.resume === "id" && sessionAgent(row.agent)?.resume.byId?.anyFolder) out.resumeIn = row.resumeIn;
   out.resume = row.resume;
   return out;
 }

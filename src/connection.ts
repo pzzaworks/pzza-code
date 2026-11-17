@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { HAS_TAURI } from "./tauriEnv";
 import { sessionAgent, type SessionAgentId } from "../server/lib/session-agents.js";
+import { followRenamedScript } from "../server/lib/session-follow.js";
 
 // How the app reaches the devbox. host === null means "run tmux locally" (used
 // when the app itself runs on the devbox for testing); a host string means hop
@@ -114,13 +115,20 @@ export function attachCommand(
     const view = `pzza-v-${crypto.randomUUID()}`;
     remote =
       heal +
-      `${tmux} new-session -d -t ${shQuote(session)} -s ${shQuote(view)} 2>/dev/null || exit 1; ` +
+      // A session renamed elsewhere is followed by its id (see session-follow.js).
+      followRenamedScript(tmux, session) +
+      `pzza_base=${shQuote(session)}; [ -z "$pzza_follow" ] || pzza_base=$pzza_follow; ` +
+      `${tmux} new-session -d -t "$pzza_base" -s ${shQuote(view)} 2>/dev/null || exit 1; ` +
       // Arm cleanup only after attachment; an unattached view is otherwise destroyed immediately.
       `${tmux} set-hook -t ${shQuote(view)} client-attached ${shQuote(`set-option -t ${shQuote(view)} destroy-unattached on`)}; ` +
       `${tmux} select-window -t ${shQuote(view + ":" + window)} 2>/dev/null; ` +
       `exec ${tmux} -u attach -t ${shQuote(view)}${statusOff(view)}`;
   } else {
-    remote = `${heal}exec ${tmux} -u new-session -A -s ${shQuote(session)}${cwd ? ` -c ${shQuote(cwd)}` : ""}${statusOff(`=${session}:`)}`;
+    // A session renamed elsewhere is attached by its id instead: new-session
+    // -A would create an empty one under the old name (see session-follow.js).
+    remote = `${heal}${followRenamedScript(tmux, session)}` +
+      `[ -z "$pzza_follow" ] || exec ${tmux} -u attach -t "$pzza_follow" \\; set-option -t "$pzza_follow" status off; ` +
+      `exec ${tmux} -u new-session -A -s ${shQuote(session)}${cwd ? ` -c ${shQuote(cwd)}` : ""}${statusOff(`=${session}:`)}`;
   }
   if (conn.host) {
     const verificationOptions = managedChat ? ["-o", "BatchMode=yes", "-o", "ConnectTimeout=8", "-o", "StrictHostKeyChecking=yes", "-o", "ForwardAgent=no"] : [];

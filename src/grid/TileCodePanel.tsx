@@ -1,6 +1,6 @@
 import { AsyncButton } from "../ui/AsyncButton";
 import { useEditorTheme } from "../theme/editorTheme";
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import CodeMirror from "@uiw/react-codemirror";
 import { Decoration, EditorView, keymap, type DecorationSet } from "@codemirror/view";
 import { StateEffect, StateField } from "@codemirror/state";
@@ -16,7 +16,7 @@ import { FolderTree } from "./FileTree";
 import { changedFilePath, changesCount, CodeChangesList, CodeDiffView, CodeViewSwitch, diffLineStats, useGitChanges, useGitDiff } from "./CodeChanges";
 import { FilePicker } from "../panels/FilePicker";
 import { Modal } from "../ui/Modal";
-import { beginFileMutation, fileMutationPending, notifyFileMutation, onFileMutation, registerEditorDiscard, registerEditorFile, remapFilePath } from "../editorChanges";
+import { beginFileMutation, editorLocked, fileMutationPending, notifyFileMutation, onEditorLocks, onFileMutation, registerEditorDiscard, registerEditorFile, remapFilePath } from "../editorChanges";
 import { copyImageToClipboard } from "../imageClipboard";
 import { CodeLayoutButtons } from "./CodeLayoutButtons";
 import { createEditorAppController, registerEditorAppControl } from "../appControlEditor";
@@ -286,6 +286,8 @@ export function TileCodePanel({ tileId }: { tileId: string }) {
   const [error, setError] = useState<string | null>(null);
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
+  // Read-only while the tile's session is renamed (see lockEditors).
+  const locked = useSyncExternalStore(onEditorLocks, () => editorLocked(tileId));
   const [preview, setPreview] = useState(false);
 
   const [discardOpen, setDiscardOpen] = useState(false);
@@ -983,6 +985,8 @@ export function TileCodePanel({ tileId }: { tileId: string }) {
               extensions={extensions}
               height="100%"
               style={{ height: "100%" }}
+              readOnly={locked}
+              editable={!locked}
               onCreateEditor={handleCreateEditor}
               onChange={(v) => {
                 changeContent(v, true);

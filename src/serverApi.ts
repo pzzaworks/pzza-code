@@ -9,6 +9,7 @@ import { createAgentConnection } from "./agentConnection";
 import { validSessionCreatedAt, validWindowId, type LocatedWindow } from "./windowIdentity";
 import { sessionAgent, type SessionAgentChoice, type SessionAgentId } from "../server/lib/session-agents.js";
 import type { AgentSessionRow, AgentSessionsQuery, AgentSessionsResponse } from "../server/lib/agent-sessions.js";
+import type { SessionPreviousNames } from "../server/lib/session-follow.js";
 
 function serverPort(): number {
   try {
@@ -477,6 +478,51 @@ export async function duplicateSession(name: string, window?: number, host?: str
   if (!data || typeof data !== "object" || !("name" in data) || typeof data.name !== "string" || !data.name ||
       !("cwd" in data) || typeof data.cwd !== "string" || !data.cwd) throw new Error("Invalid duplicate session response");
   return { name: data.name, cwd: data.cwd };
+}
+
+/**
+ * Every session on a device with the names it had before a rename ("" is the
+ * agent's own device), so tiles that still use an old name can follow it.
+ */
+export async function fetchPreviousNames(host: string): Promise<SessionPreviousNames[]> {
+  const res = await agentFetch(`${SERVER_HTTP}/sessions/previous-names?host=${encodeURIComponent(host)}`);
+  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `previous names ${res.status}`);
+  const value: unknown = await res.json();
+  if (!Array.isArray(value)) throw new Error("The device returned an invalid session list.");
+  return value.filter((item: unknown): item is SessionPreviousNames =>
+    !!item && typeof item === "object" && "name" in item && typeof item.name === "string" &&
+    "previous" in item && Array.isArray(item.previous) && item.previous.every((name: unknown) => typeof name === "string"));
+}
+
+/** The device refused a rename before changing anything. */
+export class SessionRenameRefused extends Error {}
+
+// Rename the tmux session itself, or one window of it when `window` is given
+// (with the stable `windowId` the tile was opened on, when known). Resolves
+// with the name the device applied (trimmed); rejects with the device's
+// message when the name is invalid or already used by another session.
+export async function renameSession(name: string, newName: string, host?: string, window?: number, windowId?: string): Promise<string> {
+  if (windowId !== undefined && !validWindowId(windowId)) throw new Error("Invalid window.");
+  const targetHost = HAS_TAURI ? host ?? "" : host;
+  const res = await agentFetch(`${SERVER_HTTP}/sessions/rename`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, newName, host: targetHost, window, ...(window !== undefined && windowId ? { windowId } : {}) }),
+  });
+  const data: unknown = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const message = data && typeof data === "object" && "error" in data && typeof data.error === "string" ? data.error : "Could not rename the session";
+    // An invalid or taken name, or a session that is gone: nothing was renamed.
+    // Any other failure may have come after tmux renamed it.
+    throw res.status === 400 || res.status === 409 ? new SessionRenameRefused(message) : new Error(message);
+  }
+  if (!data || typeof data !== "object" || !("name" in data) || typeof data.name !== "string" || !data.name) throw new Error("Invalid rename response");
+  // The native session record must not bring the old name back after a
+  // restart. Not awaited: the caller moves the tile to the new name first, so
+  // a tile reattaching meanwhile never recreates the old name.
+  if (HAS_TAURI && !targetHost && window === undefined) void recordLocalSessions();
+  globalThis.window.dispatchEvent(new CustomEvent("pzza:sessions-changed", { detail: { name, host: targetHost ?? "", window } }));
+  return data.name;
 }
 
 // Create a tmux session up front, optionally bound to a specific agent account.
@@ -1515,8 +1561,10 @@ export async function fetchAgentSessions(host: string, query: AgentSessionsQuery
     const lastAt = count(row.lastAt);
     if (!agent || !id || lastAt === undefined) continue;
     const cwd = text(row.cwd, 4096);
+    const resumeIn = text(row.resumeIn, 4096);
     sessions.push({
       agent: agent.id, id, cwd: cwd.startsWith("/") ? cwd : "", title: text(row.title, 200).trim(),
+      ...(resumeIn.startsWith("/") && cwd.startsWith("/") && resume === "id" && agent.resume.byId?.anyFolder ? { resumeIn } : {}),
       startedAt: count(row.startedAt) ?? lastAt, lastAt, resume,
       ...(text(row.branch, 256) ? { branch: text(row.branch, 256) } : {}),
       ...(count(row.messages) !== undefined ? { messages: count(row.messages) } : {}),

@@ -1,5 +1,6 @@
 import { registerAppControlHandler, registerAppControlState } from "./appControlRuntime";
 import { EDITOR_APP_COMMANDS } from "../server/lib/app-control-editor-schema.js";
+import { editorLocked } from "./editorChanges";
 
 export interface EditorBufferSnapshot {
   path?: string;
@@ -123,6 +124,8 @@ export function initEditorAppControlHandlers(): () => void {
   const cleanups = Object.keys(EDITOR_APP_COMMANDS).map(action => registerAppControlHandler(action, args => {
     const editor = editors.get(args.tileId as string);
     if (!editor) throw new Error("Open and reveal the tile editor before controlling its buffer.");
+    // An edit made while the tile is renamed would be lost when it reopens under the new name.
+    if (action === "editor_edit_buffer" && editorLocked(args.tileId as string)) throw new Error("This session is being renamed. Edit the buffer again in a moment.");
     return editor.execute(action, args);
   }));
   cleanups.push(registerAppControlState("editors", () => [...editors].map(([tileId, editor]) => ({ tileId, ...editor.state() }))));

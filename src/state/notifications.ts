@@ -165,6 +165,14 @@ export function noticePreview(text: string, max = NOTICE_PREVIEW_CHARS): string 
   const chars = Array.from(text.trim());
   return chars.length > max ? `${chars.slice(0, max - 1).join("").trimEnd()}…` : chars.join("");
 }
+/** Points the notices of renamed tiles at their new ids (old id → new id), so they still open the tile. */
+export function retargetNotifications(moved: Readonly<Record<string, string>>): void {
+  const { items } = useNotifications.getState();
+  if (!items.some((item) => item.target?.tileId && Object.hasOwn(moved, item.target.tileId))) return;
+  useNotifications.setState({
+    items: items.map((item) => (item.target?.tileId && Object.hasOwn(moved, item.target.tileId) ? { ...item, target: { ...item.target, tileId: moved[item.target.tileId] } } : item)),
+  });
+}
 /** Whether the master, category and event switches let this kind of notice into the history. */
 export function noticeAllowed(category: NotificationCategory, event?: NotificationEvent): boolean {
   const { preferences } = useNotifications.getState();

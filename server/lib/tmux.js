@@ -9,6 +9,7 @@ import { findSessionModel } from "./session-cost.js";
 import { SESSION_USAGE_AGENTS } from "./agent-usage/index.js";
 import { SESSION_AGENTS, agentForProgram } from "./session-agents.js";
 import { tmuxArgs } from "./tmux-client.js";
+import { PREVIOUS_NAMES_OPTION, parsePreviousNames, rememberPreviousNameScript } from "./session-follow.js";
 
 const sessionsCommand = (host) =>
   `${tmuxCommand(host)} list-sessions -F '#{session_name}\t#{session_windows}\t#{session_attached}\t#{pane_current_command}\t#{pane_current_path}\t#{session_created}'`;
@@ -69,6 +70,73 @@ export function terminateSession(name, window, host, windowId) {
         return reject(Object.assign(new Error("That window has already closed; nothing was terminated."), { status: 409 }));
       }
       reject(new Error("Could not close the session on this device"));
+    });
+  });
+}
+
+// Exit statuses of a rename: the new name already belongs to another session,
+// or the session (or window) to rename no longer exists.
+export const RENAME_TAKEN_EXIT = 5;
+export const RENAME_GONE_EXIT = 6;
+
+// Renames the tmux session itself (or, for a window tile, that one window), so
+// the device, the tile footer and every later attach use the new name and the
+// old one is free again. The session is resolved to its stable id first, and a
+// name another session already has is refused rather than left to tmux.
+// `newName` is validated by the caller (normalizeSessionName).
+export function renameCommand(name, newName, window, host, windowId) {
+  if (typeof name !== "string" || !name.trim() || /[\x00-\x1f\x7f]/.test(name)) throw new Error("invalid session");
+  if (typeof newName !== "string" || !newName || /[\x00-\x1f\x7f]/.test(newName)) throw new Error("invalid name");
+  if (window !== undefined && (!Number.isInteger(window) || window < 0)) throw new Error("invalid window");
+  if (windowId !== undefined && (typeof windowId !== "string" || !WINDOW_ID.test(windowId))) throw new Error("invalid window");
+  const tmux = tmuxCommand(host);
+  if (windowId !== undefined) {
+    // As in terminationCommand: the id must still be one of this session's windows.
+    return `ids=$(${tmux} list-windows -t ${shQuote("=" + name)} -F '#{window_id}') || exit ${RENAME_GONE_EXIT}
+printf '%s\\n' "$ids" | grep -Fqx ${shQuote(windowId)} || exit ${RENAME_GONE_EXIT}
+${tmux} rename-window -t ${shQuote(windowId)} -- ${shQuote(newName)}`;
+  }
+  if (window !== undefined) {
+    return `${tmux} has-session -t ${shQuote("=" + name)} 2>/dev/null || exit ${RENAME_GONE_EXIT}
+${tmux} rename-window -t ${shQuote("=" + name + ":" + window)} -- ${shQuote(newName)}`;
+  }
+  return `session_id=$(${tmux} display-message -p -t ${shQuote("=" + name + ":")} '#{session_id}' 2>/dev/null) || exit ${RENAME_GONE_EXIT}
+[ -n "$session_id" ] || exit ${RENAME_GONE_EXIT}
+! ${tmux} has-session -t ${shQuote("=" + newName)} 2>/dev/null || exit ${RENAME_TAKEN_EXIT}
+${tmux} rename-session -t "$session_id" -- ${shQuote(newName)} || exit 1
+${rememberPreviousNameScript(tmux, name, newName)}
+exit 0`;
+}
+
+// Every session on the device with the names it had before a rename (see
+// session-follow.js), for tiles that still know a session by an old name.
+export function listPreviousNames(host) {
+  if (host !== undefined && (typeof host !== "string" || (host && !SSH_TOKEN.test(host)))) return Promise.reject(new Error("invalid host"));
+  const targetHost = host === undefined ? (IS_CLIENT ? DEVBOX : "") : host;
+  const command = `${tmuxCommand(targetHost)} -u list-sessions -F '#{session_name}\t#{${PREVIOUS_NAMES_OPTION}}'`;
+  return new Promise((resolve, reject) => {
+    execFile(targetHost ? "ssh" : "sh", targetHost
+      ? ["-o", "BatchMode=yes", "-o", "ConnectTimeout=8", "-o", "StrictHostKeyChecking=accept-new", targetHost, command]
+      : ["-c", command], { timeout: 15_000, maxBuffer: 1024 * 1024, env: deviceEnv(targetHost) }, (error, output, stderr) => {
+      if (error && !/no server running|no sessions|error connecting.*No such file/.test(String(stderr || ""))) return reject(new Error("Could not list the sessions on this device"));
+      resolve(error ? [] : parsePreviousNames(output));
+    });
+  });
+}
+
+export function renameSession(name, newName, window, host, windowId) {
+  if (host !== undefined && (typeof host !== "string" || (host && !SSH_TOKEN.test(host)))) return Promise.reject(new Error("invalid host"));
+  const targetHost = host === undefined ? (IS_CLIENT ? DEVBOX : "") : host;
+  const command = renameCommand(name, newName, window, targetHost, windowId);
+  return new Promise((resolve, reject) => {
+    execFile(targetHost ? "ssh" : "sh", targetHost
+      ? ["-o", "BatchMode=yes", "-o", "ConnectTimeout=8", "-o", "StrictHostKeyChecking=accept-new", targetHost, command]
+      : ["-c", command], { timeout: 15_000, env: deviceEnv(targetHost) }, (error) => {
+      if (!error) return resolve();
+      if (error.code === RENAME_TAKEN_EXIT) return reject(Object.assign(new Error(`A session named "${newName}" already exists on this device. Choose another name.`), { status: 409 }));
+      if (error.code === RENAME_GONE_EXIT) return reject(Object.assign(new Error(window === undefined && windowId === undefined
+        ? "That session is no longer running on this device." : "That window is no longer open on this device."), { status: 409 }));
+      reject(new Error("Could not rename the session on this device"));
     });
   });
 }

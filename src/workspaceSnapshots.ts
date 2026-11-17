@@ -134,7 +134,7 @@ export function collectSnapshotSessions(input: {
     const agent = validAgent(input.agents[tile.id] ?? input.agents[host ? `${host}::${session}` : session]);
     out.push({
       deviceId: device?.id ?? "", host, session, ...(cwd ? { cwd } : {}), ...(agent ? { agent } : {}),
-      ...layoutOf(input.spans?.[tile.id], input.titles?.[tile.id], input.hidden?.includes(tile.name) ?? false, input.code?.[tile.id]),
+      ...layoutOf(input.spans?.[tile.id], input.titles?.[tile.id], input.hidden?.includes(tile.id) ?? false, input.code?.[tile.id]),
     });
     if (out.length >= MAX_SNAPSHOT_SESSIONS) break;
   }

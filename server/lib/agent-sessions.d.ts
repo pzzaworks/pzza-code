@@ -11,6 +11,12 @@ export interface AgentSessionRow {
   id: string;
   /** Absolute folder the conversation ran in; empty when unknown. */
   cwd: string;
+  /**
+   * Where it reopens when `cwd` no longer exists on the device (moved or
+   * deleted): the newest folder it worked in that still does, else home.
+   * Only for agents that find a conversation id from any folder.
+   */
+  resumeIn?: string;
   /** One line, at most 160 characters, secrets redacted: the summary or first prompt. */
   title: string;
   /** Epoch milliseconds. */
