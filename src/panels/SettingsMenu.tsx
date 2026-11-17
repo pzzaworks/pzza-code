@@ -158,7 +158,6 @@ function lidHint(status: PowerStatus | null): string {
     case "ready": return "Closing the lid locks the screen and turns it off while the Mac keeps running. Keep it out of a closed bag.";
     case "needsApproval": return "Allow PzzaCode in the background in System Settings > Login Items to finish.";
     case "notInstalled": return "macOS sleeps when the lid closes. A small helper, approved once in System Settings, lets PzzaCode keep it awake.";
-    case "unavailable": return "Available in the installed PzzaCode app.";
     case "unsupported": return "Needs macOS 13 or later.";
     default: return "Checking…";
   }

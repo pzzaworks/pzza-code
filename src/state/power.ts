@@ -16,7 +16,7 @@ export interface KeepAwake {
   onBattery: boolean;
 }
 
-export type PowerHelper = "unsupported" | "unavailable" | "notInstalled" | "needsApproval" | "ready";
+export type PowerHelper = "unsupported" | "notInstalled" | "needsApproval" | "ready";
 
 export interface PowerStatus {
   helper: PowerHelper;
