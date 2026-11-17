@@ -866,7 +866,11 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
   // fill the canvas, so a lone tile (or a lone row) never got shorter when
   // resized, and the size only showed once another tile arrived.
   const sizedRows = arrangement.sized && !effFull;
-  const rowUnits = arrangement.rows;
+  // Never fewer tracks than the tiles take: a widened tile wraps its
+  // neighbour to a new row, and a tile count that drops makes the auto rows
+  // (so each unit) taller. Measuring by the auto rows alone made the grid
+  // one or more screens tall then; this keeps it on screen.
+  const rowTrackCount = Math.max(arrangement.rows * 2, arrangement.rowTracks);
   useLayoutEffect(() => {
     const grid = gridRef.current;
     const canvas = grid?.parentElement;
@@ -878,14 +882,14 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
       const style = getComputedStyle(canvas);
       const height = canvas.clientHeight - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom);
       const gap = parseFloat(getComputedStyle(grid).rowGap) || 0;
-      const trackCount = rowUnits * 2;
+      const trackCount = rowTrackCount;
       grid.style.setProperty("--row-track", `${Math.max(0, (height - gap * (trackCount - 1)) / trackCount)}px`);
     };
     apply();
     const observer = new ResizeObserver(apply);
     observer.observe(canvas);
     return () => observer.disconnect();
-  }, [sizedRows, rowUnits]);
+  }, [sizedRows, rowTrackCount]);
   // Only tiles currently on screen take part in a broadcast.
   const selectedTiles = wsTiles.filter(isSessionTile).filter((tile) => selectedIds.includes(tile.id) && (!effFull || tile.id === effFull));
   // The composer slides away with its last chips once fewer than two tiles are selected.

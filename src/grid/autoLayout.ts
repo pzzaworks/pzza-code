@@ -23,6 +23,10 @@ export interface Arrangement {
   // Row units the auto layout fills the canvas with; a saved row span is
   // measured in these, so one unit is that tall whatever the other tiles do.
   rows: number;
+  // Row tracks the placed tiles reach down to. Saved sizes can take more
+  // than `rows` (a widened tile pushes its neighbour to a new row, a tall
+  // one outgrows a lone row); the canvas then shrinks the tracks to fit.
+  rowTracks: number;
   // Whether any tile has a saved span (the grid then sizes its rows itself).
   sized: boolean;
 }
@@ -96,11 +100,11 @@ export function arrangeTiles({ ids, saved, setting, size, maxRows }: {
     for (const perRow of rows) {
       for (const c of split(tracks, perRow)) spans.set(ids[index++], { c, r: 2 });
     }
-    return { columns, tracks, spans, rows: rows.length, sized: false };
+    return { columns, tracks, spans, rows: rows.length, rowTracks: rows.length * 2, sized: false };
   }
   const tracks = columns * 2;
-  placeMixed(ids, saved, tracks, maxRows * 2, spans);
-  return { columns, tracks, spans, rows: Math.max(1, rows.length), sized: true };
+  const rowTracks = placeMixed(ids, saved, tracks, maxRows * 2, spans);
+  return { columns, tracks, spans, rows: Math.max(1, rows.length), rowTracks, sized: true };
 }
 
 const toTracks = (span: Span, tracks: number): Span => ({
@@ -113,8 +117,9 @@ const toTracks = (span: Span, tracks: number): Span => ({
 // saved height, so an auto tile next to a 2-row tile becomes 2 rows tall
 // instead of leaving a hole. Placement is simulated against a row-span aware
 // occupancy grid so widths match the browser's placement even when tall tiles
-// occupy cells below the cursor. All units are tracks.
-function placeMixed(ids: readonly string[], saved: Readonly<Record<string, Span>>, tracks: number, maxR: number, spans: Map<string, Span>): void {
+// occupy cells below the cursor. All units are tracks. Returns the row
+// tracks the placed tiles reach down to.
+function placeMixed(ids: readonly string[], saved: Readonly<Record<string, Span>>, tracks: number, maxR: number, spans: Map<string, Span>): number {
   const columns = tracks / 2;
   const even = (ids.length <= 1 ? columns : Math.max(1, Math.floor(columns / ids.length))) * 2;
   let autoR = 2;
@@ -149,8 +154,10 @@ function placeMixed(ids: readonly string[], saved: Readonly<Record<string, Span>
   };
   let cursorR = 0;
   let cursorC = 0;
+  let bottom = 0;
   const place = (id: string, w: number, h: number, row: number, col: number) => {
     occupy(row, col, w, h);
+    bottom = Math.max(bottom, row + h);
     spans.set(id, { c: w, r: h });
     cursorR = row;
     cursorC = col + w;
@@ -175,6 +182,7 @@ function placeMixed(ids: readonly string[], saved: Readonly<Record<string, Span>
     if (index === ids.length - 1 && stretch >= w && fits(pr, pc, stretch, autoR)) place(id, stretch, autoR, pr, pc);
     else place(id, w, autoR, pr, pc);
   });
+  return bottom;
 }
 
 // The canvas content box, re-read as the window resizes. State only changes

@@ -186,3 +186,35 @@ test("a hidden remote tile restored from a snapshot is hidden by its id, not its
   useStore.getState().applyWorkspaceLayout("ws-a", { tiles: [{ id: "box::work", name: "work", hidden: false }] });
   assert.deepEqual(useStore.getState().hiddenTiles, []);
 });
+
+// The canvas layout as the app runs it.
+async function loadLayout(t) {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "pzza-layout-test-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const outfile = path.join(dir, "layout.mjs");
+  await build({ entryPoints: ["src/grid/autoLayout.ts"], outfile, bundle: true, format: "esm", platform: "node", logLevel: "silent" });
+  return import(pathToFileURL(outfile).href);
+}
+
+test("saved sizes report every row track their tiles take, so the canvas fits them on screen", async (t) => {
+  const { arrangeTiles } = await loadLayout(t);
+  const size = { width: 1380, height: 798, gap: 10 };
+  const arrange = (saved) => arrangeTiles({ ids: ["a", "b"], saved, setting: 0, size, maxRows: 4 });
+  // Side by side: one auto row, two tracks.
+  const plain = arrange({});
+  assert.equal(plain.rows, 1);
+  assert.equal(plain.rowTracks, 2);
+  // Widened: the neighbour wraps to a second row, which used to make every row a full screen tall.
+  const widened = arrange({ a: { c: 1.5, r: 1 } });
+  assert.equal(widened.rows, 1);
+  assert.equal(widened.rowTracks, 4);
+  assert.deepEqual(widened.spans.get("b"), { c: 4, r: 2 });
+  // Taller than the auto row (a size kept from when more tiles shared the canvas).
+  const tall = arrange({ a: { c: 1, r: 2 } });
+  assert.equal(tall.rowTracks, 4);
+  // Shorter than the auto row: the unit stays the auto row, so the tile really is shorter.
+  const short = arrange({ b: { c: 1, r: 0.5 } });
+  assert.equal(short.rows, 1);
+  assert.equal(short.rowTracks, 2);
+  assert.deepEqual(short.spans.get("b"), { c: 2, r: 1 });
+});
