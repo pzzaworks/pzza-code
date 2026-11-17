@@ -53,6 +53,7 @@ import { registerAppControlHandler, registerAppControlState } from "./appControl
 import { useAppControl } from "./appControl";
 import { initializeDictation } from "./state/dictation";
 import { initializePushToTalk } from "./state/pushToTalk";
+import { initializePower } from "./state/power";
 import { commandPaletteShortcut, NEW_SESSION_SHORTCUT, newItemShortcut } from "./shortcuts";
 import { CommandPalette, ONBOARDING, OnboardingTour, preloadWhenIdle, SetupScreen, TASK_SURFACES, TaskWindow, TerminalSearch } from "./lazySurfaces";
 import { useOpenedOnce, whenLoaded } from "./lazySurface";
@@ -77,6 +78,7 @@ export default function App() {
   useAppControl();
   useEffect(() => { void initializeDictation().catch(() => {}); }, []);
   useEffect(() => initializePushToTalk(), []);
+  useEffect(() => initializePower(), []);
   const loadSessions = useStore((s) => s.loadSessions);
   const seedPreview = useStore((s) => s.seedPreview);
 

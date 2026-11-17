@@ -4698,6 +4698,8 @@ button.update-button-ready:hover { background: color-mix(in srgb, var(--accent) 
 .cselect.ns-pill .cselect-value { flex: 0 1 auto; }
 .cselect.ns-pill > svg:last-child { width: 12px; height: 12px; }
 .path-field.ns-pill .path-field-value { max-width: 120px; font-size: var(--fs-sm); }
+/* Same ink as the device, mode and worktree icons beside it, not the accent. */
+.path-field.ns-pill .path-field-icon { color: var(--text); }
 .ns-pill-path { display: inline-flex; align-items: center; gap: 2px; min-width: 0; max-width: 100%; }
 .ns-pill-path .ns-clear { flex: 0 0 20px; height: 20px; }
 .cselect.ns-mode-danger { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 45%, var(--border)); }
