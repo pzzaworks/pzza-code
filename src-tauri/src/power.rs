@@ -40,8 +40,7 @@ pub struct KeepAwake {
 pub enum HelperStatus {
     /// Needs macOS 13 or later (or a platform other than macOS).
     Unsupported,
-    /// Not inside the installed, signed app (a development build).
-    Unavailable,
+    /// Not registered yet; Set up registers it.
     NotInstalled,
     /// Registered; waiting for the switch in System Settings > Login Items.
     NeedsApproval,
@@ -342,8 +341,10 @@ mod platform {
         match unsafe { service.status() } {
             SMAppServiceStatus::Enabled => HelperStatus::Ready,
             SMAppServiceStatus::RequiresApproval => HelperStatus::NeedsApproval,
-            SMAppServiceStatus::NotRegistered => HelperStatus::NotInstalled,
-            _ => HelperStatus::Unavailable,
+            // A daemon that was never registered reports NotFound, the same
+            // as one missing from the bundle; only registering tells them
+            // apart, so both offer Set up and install_helper reports which.
+            _ => HelperStatus::NotInstalled,
         }
     }
 
@@ -354,13 +355,14 @@ mod platform {
         match unsafe { service.status() } {
             SMAppServiceStatus::Enabled => Ok(()),
             SMAppServiceStatus::RequiresApproval => open_login_items(),
-            SMAppServiceStatus::NotFound => {
-                Err("The power helper is only available in the installed PzzaCode app".into())
+            status => {
+                let reason = registered.err().map(|error| error.localizedDescription().to_string());
+                Err(match (status, reason) {
+                    (SMAppServiceStatus::NotFound, None) => "The power helper is missing from this copy of PzzaCode".into(),
+                    (_, Some(reason)) => format!("macOS did not install the power helper: {reason}"),
+                    (_, None) => "macOS did not install the power helper".into(),
+                })
             }
-            _ => Err(registered
-                .err()
-                .map(|error| error.localizedDescription().to_string())
-                .unwrap_or_else(|| "macOS did not install the power helper".into())),
         }
     }
 
