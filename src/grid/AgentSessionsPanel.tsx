@@ -8,7 +8,7 @@ import { useStore } from "../state/store";
 import { useSessionCreation } from "../sessionActions";
 import {
   agentLabelOf, agentSessionCommand, agentSessionsErrorKind, agentSessionsTile, loadAgentSessionsFilters, newTileBlocker, rememberedAgentMode,
-  resumeBlocker, resumeInNewTile, saveAgentSessionsFilters, timeFilterSince,
+  resumeBlocker, resumeFolder, resumeInNewTile, saveAgentSessionsFilters, timeFilterSince,
   type AgentSessionsErrorKind, type AgentSessionsFilters, type AgentSessionsScope, type AgentSessionsTime, type AgentSessionsView,
 } from "../state/agentSessions";
 import { AgentIcon } from "../icons/AgentIcon";
@@ -356,7 +356,7 @@ export function AgentSessionsPanel({ tileId, onClose }: { tileId: string | null;
     let value = item.row.id;
     if (what === "command") {
       try {
-        value = agentSessionCommand(item.row, modeOf(item.row.agent), item.row.cwd || undefined);
+        value = agentSessionCommand(item.row, modeOf(item.row.agent), resumeFolder(item.row) || undefined);
       } catch (error) {
         setBanner({ tone: "error", text: error instanceof Error ? error.message : "This conversation cannot be resumed from a command line." });
         return;

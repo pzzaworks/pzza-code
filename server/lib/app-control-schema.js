@@ -64,7 +64,7 @@ export const APP_COMMANDS = {
     tileId: {"type":"string","minLength":1,"maxLength":512,"pattern":"^[^\\u0000-\\u001f\\u007f]+$"},
     workspaceId: {"type":"string","minLength":1,"maxLength":128,"pattern":"^[^\\u0000-\\u001f\\u007f]+$"},
   }, ["tileId","workspaceId"]),
-  rename_tile: command("Change a tile display title; this does not rename its tmux session.", {
+  rename_tile: command("Rename a tile. A terminal tile renames its tmux session on its device (a window tile renames that window), so the old name is free again; a file or folder tile changes its display title.", {
     tileId: {"type":"string","minLength":1,"maxLength":512,"pattern":"^[^\\u0000-\\u001f\\u007f]+$"},
     name: {"type":"string","minLength":1,"maxLength":256,"pattern":"^[^\\u0000-\\u001f\\u007f]+$"},
   }, ["tileId","name"]),
@@ -81,7 +81,7 @@ export const APP_COMMANDS = {
     tileId: {"type":"string","minLength":1,"maxLength":512,"pattern":"^[^\\u0000-\\u001f\\u007f]+$"},
     targetId: {"type":"string","minLength":1,"maxLength":512,"pattern":"^[^\\u0000-\\u001f\\u007f]+$"},
   }, ["tileId","targetId"]),
-  set_tile_span: command("Set a tile grid span in columns and rows; half steps (0.5) are allowed.", {
+  set_tile_span: command("Set a tile grid span in columns and rows in the active workspace (sizes are kept per workspace, so the tile keeps its size elsewhere); half steps (0.5) are allowed.", {
     tileId: {"type":"string","minLength":1,"maxLength":512,"pattern":"^[^\\u0000-\\u001f\\u007f]+$"},
     columns: {"type":"number","minimum":0.5,"maximum":8,"multipleOf":0.5},
     rows: {"type":"number","minimum":0.5,"maximum":8,"multipleOf":0.5},

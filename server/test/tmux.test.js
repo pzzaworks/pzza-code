@@ -314,6 +314,110 @@ test("termination closes grouped internal views and preserves unrelated sessions
   }
 });
 
+test("rename renames the real session or window, frees the old name and refuses a taken one", async () => {
+  const { renameCommand, RENAME_TAKEN_EXIT, RENAME_GONE_EXIT } = await import("../lib/tmux.js");
+  const socket = `pzza-rename-${process.pid}-${Date.now()}`;
+  const exec = promisify(childProcess.execFile);
+  const tmux = (...args) => exec("tmux", ["-L", socket, ...args]);
+  const rename = (name, newName, window, windowId) =>
+    exec("sh", ["-c", renameCommand(name, newName, window, "", windowId).replaceAll("tmux ", `tmux -L ${socket} `)]);
+  const exitOf = (promise) => promise.then(() => 0, (error) => error.code);
+  try {
+    await tmux("-f", "/dev/null", "new-session", "-d", "-s", "work", "sleep 120");
+    await tmux("new-window", "-t", "=work:", "sleep 120");
+    await tmux("new-session", "-d", "-t", "=work", "-s", "pzza-v-test");
+    await tmux("new-session", "-d", "-s", "other", "sleep 120");
+    const sessionId = (await tmux("display-message", "-p", "-t", "=work:", "#{session_id}")).stdout.trim();
+
+    await rename("work", "api server");
+    assert.equal((await tmux("display-message", "-p", "-t", "=api server:", "#{session_id}")).stdout.trim(), sessionId);
+    await assert.rejects(tmux("has-session", "-t", "=work"), "the old name is free");
+    // A grouped view keeps showing the renamed session's windows.
+    assert.equal((await tmux("list-windows", "-t", "=pzza-v-test", "-F", "#{window_index}")).stdout.trim(), "0\n1");
+    // The old name can be used for a new session right away.
+    await tmux("new-session", "-d", "-s", "work", "sleep 120");
+    await tmux("kill-session", "-t", "=work");
+
+    assert.equal(await exitOf(rename("api server", "other")), RENAME_TAKEN_EXIT);
+    await tmux("has-session", "-t", "=api server");
+    assert.equal(await exitOf(rename("missing", "anything")), RENAME_GONE_EXIT);
+    // A prefix never matches another session.
+    assert.equal(await exitOf(rename("api", "anything")), RENAME_GONE_EXIT);
+    await assert.rejects(tmux("has-session", "-t", "=anything"));
+
+    const windowId = (await tmux("display-message", "-p", "-t", "=api server:1", "#{window_id}")).stdout.trim();
+    await rename("api server", "logs", 1, windowId);
+    assert.equal((await tmux("display-message", "-p", "-t", windowId, "#{window_name}\t#{automatic-rename}")).stdout.trim(), "logs\t0");
+    assert.equal(await exitOf(rename("other", "nope", 0, windowId)), RENAME_GONE_EXIT, "the window id must belong to the session");
+    // A name that starts like a flag is still a name.
+    await rename("api server", "-dash", 0);
+    assert.equal((await tmux("display-message", "-p", "-t", "=api server:0", "#{window_name}")).stdout.trim(), "-dash");
+    await rename("api server", "main", 0);
+    assert.equal((await tmux("display-message", "-p", "-t", "=api server:0", "#{window_name}")).stdout.trim(), "main");
+    assert.equal(await exitOf(rename("missing", "main", 0)), RENAME_GONE_EXIT);
+
+    await rename("api server", "-flag like");
+    await tmux("has-session", "-t", "=-flag like");
+
+    for (const [name, newName, window, id] of [["work\nx", "a"], ["work", "a\nb"], ["work", "", undefined], ["work", "a", -1], ["work", "a", 1, "@1;x"]]) {
+      assert.throws(() => renameCommand(name, newName, window, "", id), /invalid/);
+    }
+  } finally {
+    await tmux("kill-server").catch(() => {});
+  }
+});
+
+test("a tile that still knows a renamed session by an old name follows it instead of creating an empty one", async () => {
+  const { renameCommand } = await import("../lib/tmux.js");
+  const { followRenamedScript, parsePreviousNames, currentSessionName, PREVIOUS_NAMES_OPTION, RENAMED_OSC } = await import("../lib/session-follow.js");
+  const socket = `pzza-follow-${process.pid}-${Date.now()}`;
+  const exec = promisify(childProcess.execFile);
+  const tmux = (...args) => exec("tmux", ["-L", socket, ...args]);
+  const local = (script) => script.replaceAll("tmux ", `tmux -L ${socket} `);
+  const rename = (name, newName) => exec("sh", ["-c", local(renameCommand(name, newName, undefined, ""))]);
+  // What an attach resolves: the id it follows (and the hint it prints), or nothing.
+  const follow = async (name) => {
+    const { stdout } = await exec("sh", ["-c", `${followRenamedScript(`tmux -L ${socket}`, name)}printf '|%s' "$pzza_follow"`]);
+    const [hint, id] = stdout.split("|");
+    return { hint, id };
+  };
+  const previous = async () => parsePreviousNames((await tmux("-u", "list-sessions", "-F", `#{session_name}\t#{${PREVIOUS_NAMES_OPTION}}`)).stdout);
+  try {
+    await tmux("-f", "/dev/null", "new-session", "-d", "-s", "work", "sleep 120");
+    await tmux("new-session", "-d", "-s", "other", "sleep 120");
+    const id = (await tmux("display-message", "-p", "-t", "=work:", "#{session_id}")).stdout.trim();
+    assert.deepEqual(await follow("work"), { hint: "", id: "" }, "a live name is attached as it is");
+
+    await rename("work", "api server");
+    await rename("api server", "it's -third");
+    assert.deepEqual(await previous(), [{ name: "it's -third", previous: ["work", "api server"] }, { name: "other", previous: [] }]);
+    for (const name of ["work", "api server"]) {
+      assert.deepEqual(await follow(name), { hint: `\x1b]${RENAMED_OSC};renamed\x07`, id }, name);
+    }
+    assert.deepEqual(await follow("never existed"), { hint: "", id: "" });
+    assert.equal(currentSessionName(await previous(), "work"), "it's -third");
+    assert.equal(currentSessionName(await previous(), "other"), "other");
+    assert.equal(currentSessionName(await previous(), "gone"), null);
+
+    // A name taken again belongs to its new session: no tile follows the old one there.
+    await tmux("new-session", "-d", "-s", "work", "sleep 120");
+    assert.deepEqual(await follow("work"), { hint: "", id: "" });
+    // Renaming another session to an old name takes it out of every list.
+    await tmux("kill-session", "-t", "=work");
+    await rename("other", "api server");
+    assert.deepEqual(await previous(), [{ name: "api server", previous: ["other"] }, { name: "it's -third", previous: ["work"] }]);
+    assert.deepEqual(await follow("api server"), { hint: "", id: "" });
+
+    // A real attach under the old name joins the renamed session, and nothing named "work" appears.
+    const script = `${followRenamedScript(`tmux -L ${socket}`, "work")}[ -n "$pzza_follow" ] && tmux -L ${socket} new-session -d -t "$pzza_follow" -s pzza-v-follow-test`;
+    await exec("sh", ["-c", script]);
+    assert.equal((await tmux("display-message", "-p", "-t", "=pzza-v-follow-test:", "#{session_group}")).stdout.trim(), "it's -third");
+    await assert.rejects(tmux("has-session", "-t", "=work"));
+  } finally {
+    await tmux("kill-server").catch(() => {});
+  }
+});
+
 test("termination preserves device scope and propagates remote failure", async (t) => {
   const { terminationCommand, terminateSession } = await import("../lib/tmux.js");
   const requests = [];

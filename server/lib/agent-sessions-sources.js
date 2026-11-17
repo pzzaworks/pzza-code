@@ -15,9 +15,10 @@
 // or
 //   rows(root, scope, limit) -> row fields, newest first, from a database
 //
-// Row fields: { id, cwd?, title?, prompt?, startedAt?, lastAt?, branch?,
-// messages? }; `title` is a summary the agent stored, `prompt` the first
-// thing the user asked, used when there is no title.
+// Row fields: { id, cwd?, latestCwd?, title?, prompt?, startedAt?, lastAt?,
+// branch?, messages? }; `title` is a summary the agent stored, `prompt` the
+// first thing the user asked, used when there is no title, `latestCwd` the
+// folder it worked in last when that can change during a conversation.
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -145,6 +146,7 @@ const claude = {
     const head = (!hasCwd(first) || !hasUser(first)) && more ? [...first, ...await more()] : first;
     const titles = { custom: "", ai: "", summary: "" };
     let cwd = "";
+    let latestCwd = "";
     let branch = "";
     let prompt = "";
     let lastPrompt = "";
@@ -154,6 +156,8 @@ const claude = {
       else if (record.type === "summary" && typeof record.summary === "string") titles.summary = record.summary;
       else if (record.type === "last-prompt" && typeof record.lastPrompt === "string") lastPrompt = record.lastPrompt;
       if (!cwd && typeof record.cwd === "string") cwd = record.cwd;
+      // A conversation follows its shell's cd, so the tail knows where it ended.
+      if (typeof record.cwd === "string" && record.cwd) latestCwd = record.cwd;
       if (typeof record.gitBranch === "string" && record.gitBranch && record.gitBranch !== "HEAD") branch = record.gitBranch;
     }
     for (const record of head) {
@@ -166,7 +170,7 @@ const claude = {
     const title = titles.custom || titles.ai || titles.summary;
     // A file without anything the user asked (a bare /resume) is no conversation.
     if (!title && !prompt && !lastPrompt) return null;
-    return { id, cwd, title, prompt: prompt || userPrompt(lastPrompt), branch, ...span([...head, ...tail]) };
+    return { id, cwd, latestCwd, title, prompt: prompt || userPrompt(lastPrompt), branch, ...span([...head, ...tail]) };
   },
 };
 

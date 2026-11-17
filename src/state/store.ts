@@ -107,7 +107,9 @@ const SESSIONWS_KEY = "pzza.sessionWs";
 const HIDDEN_KEY = "pzza.hidden";
 const DEVICES_KEY = "pzza.devices";
 const DEVICE_RDP_KEY = "pzza.deviceRdp";
-const TILESPAN_KEY = "pzza.tileSpan";
+// Saved tile sizes per workspace (see WorkspaceTileSpans); the legacy key held one map for all.
+const TILESPAN_KEY = "pzza.tileSpans";
+const LEGACY_TILESPAN_KEY = "pzza.tileSpan";
 const TILETITLES_KEY = "pzza.tileTitles";
 const TILECODE_KEY = "pzza.tileCode";
 const TRANSPARENCY_KEY = "pzza.semiTransparent";
@@ -300,14 +302,58 @@ function persist(key: string, value: unknown): void {
   }
 }
 
-// Remove one saved tile span, returning the original map untouched when the
-// id has no explicit layout (the common case: fresh tiles are auto).
-function dropTileSpan(spans: Record<string, { c: number; r: number }>, id: string): Record<string, { c: number; r: number }> {
-  if (!(id in spans)) return spans;
-  const tileSpan = { ...spans };
-  delete tileSpan[id];
-  persist(TILESPAN_KEY, tileSpan);
-  return tileSpan;
+export type TileSpanMap = Record<string, { c: number; r: number }>;
+// Saved tile sizes per workspace (workspace id → tile id → span). A span is
+// measured in its workspace's columns and row units, which differ with every
+// workspace's tile count and columns (and All shows every tile), so a size set
+// in one workspace never applies in another.
+export type WorkspaceTileSpans = Record<string, TileSpanMap>;
+
+/** The saved sizes a workspace lays its tiles out with. */
+export function workspaceSpans(spans: WorkspaceTileSpans, workspaceId: string): TileSpanMap {
+  return Object.hasOwn(spans, workspaceId) ? spans[workspaceId] : NO_SPANS;
+}
+const NO_SPANS: TileSpanMap = {};
+
+// Applies `change` to every workspace's sizes, dropping workspaces left with
+// none. The original object comes back when nothing changed.
+function mapSpans(spans: WorkspaceTileSpans, change: (map: TileSpanMap) => TileSpanMap): WorkspaceTileSpans {
+  let changed = false;
+  const next: WorkspaceTileSpans = {};
+  for (const [workspaceId, map] of Object.entries(spans)) {
+    const updated = change(map);
+    if (updated !== map) changed = true;
+    if (Object.keys(updated).length) next[workspaceId] = updated;
+    else changed = true;
+  }
+  return changed ? next : spans;
+}
+
+// Removes the tiles' saved sizes in every workspace and persists the result;
+// the original object when none had one (the common case: fresh tiles are auto).
+function dropTileSpans(spans: WorkspaceTileSpans, ids: readonly string[]): WorkspaceTileSpans {
+  const next = mapSpans(spans, (map) => {
+    if (!ids.some((id) => Object.hasOwn(map, id))) return map;
+    const kept = { ...map };
+    for (const id of ids) delete kept[id];
+    return kept;
+  });
+  if (next !== spans) persist(TILESPAN_KEY, next);
+  return next;
+}
+const dropTileSpan = (spans: WorkspaceTileSpans, id: string) => dropTileSpans(spans, [id]);
+
+// Sizes saved before they were kept per workspace were one map for all of
+// them. They are kept for All, where tiles are most often sized; every
+// workspace starts automatic.
+function loadTileSpans(): WorkspaceTileSpans {
+  const current = loadValid<WorkspaceTileSpans | null>(TILESPAN_KEY, recordOf(recordOf(parseSpan)), null);
+  if (current) return current;
+  const legacy = loadValid(LEGACY_TILESPAN_KEY, recordOf(parseSpan), {});
+  const spans: WorkspaceTileSpans = Object.keys(legacy).length ? { [ALL_WORKSPACE_ID]: legacy } : {};
+  persist(TILESPAN_KEY, spans);
+  try { localStorage.removeItem(LEGACY_TILESPAN_KEY); } catch { /* preview / private mode */ }
+  return spans;
 }
 
 // Adds a file or folder tile to `workspaceId` with a full-tile editor. Every
@@ -397,16 +443,32 @@ interface ConsoleState {
   deviceRdp: Record<string, DeviceRdp>;
   setDeviceRdp: (id: string, cfg: DeviceRdp) => void;
 
-  // Per-tile grid span: {c: columns, r: rows}. Capped to the column count.
-  tileSpan: Record<string, { c: number; r: number }>;
-  setTileSpan: (id: string, c: number, r: number) => void;
-  clearTileSpan: (id: string) => void;
+  // Per-tile grid span {c: columns, r: rows} in each workspace (see
+  // WorkspaceTileSpans). Capped to the column count.
+  tileSpan: WorkspaceTileSpans;
+  setTileSpan: (workspaceId: string, id: string, c: number, r: number) => void;
+  clearTileSpan: (workspaceId: string, id: string) => void;
   // Drops every saved span in a workspace and lets the canvas pick its columns.
   autoArrange: (workspaceId: string) => number;
 
   // Optional per-tile display-name override (empty clears it back to default).
+  // Terminal tiles are renamed for real (renameSessionTiles / renameWindowTile);
+  // only file and folder tiles use an override.
   tileTitles: Record<string, string>;
   renameTile: (id: string, title: string) => void;
+  // After the device renamed tmux session `oldName` on `host` (as tiles
+  // resolve it: their own host, else the connected one; "" is this device):
+  // every tile of it
+  // (the session tile and its window tiles) moves to the ids of the new name,
+  // with everything kept per tile. A name tileTitle would shorten is kept as the session tile's
+  // display name, so it shows exactly as typed.
+  // Returns each moved tile's new id by its old one.
+  renameSessionTiles: (host: string, oldName: string, newName: string) => Record<string, string>;
+  // After the device renamed a window tile's tmux window.
+  renameWindowTile: (tileId: string, windowName: string) => void;
+  // Drops what earlier tiles with these ids left behind (title, editor, span,
+  // hidden state), so a new session never inherits an old one's.
+  forgetTileState: (ids: readonly string[]) => void;
 
   // Grid columns are per-workspace.
   // AUTO_COLUMNS (0) picks the columns from the tile count and window size.
@@ -662,9 +724,13 @@ export const useStore = create<ConsoleState>((set, get) => ({
     for (const k of Object.keys(sessionWs)) {
       if (sessionWs[k] === id) sessionWs[k] = DEFAULT_WORKSPACE_ID;
     }
+    // Its tile sizes go with it; a workspace made later never inherits them.
+    const tileSpan = { ...get().tileSpan };
+    delete tileSpan[id];
     persist(WORKSPACES_KEY, workspaces);
     persist(SESSIONWS_KEY, sessionWs);
-    set({ workspaces, sessionWs });
+    persist(TILESPAN_KEY, tileSpan);
+    set({ workspaces, sessionWs, tileSpan });
     if (get().activeWorkspaceId === id) get().setWorkspace(workspaces[0].id);
   },
 
@@ -771,31 +837,140 @@ export const useStore = create<ConsoleState>((set, get) => ({
     persist(TILETITLES_KEY, tileTitles);
     set({ tileTitles });
   },
+  renameSessionTiles: (host, oldName, newName) => {
+    const moved: Record<string, string> = {};
+    set((state) => {
+      const hostOf = (tile: Session) => tile.host ?? state.connection.host ?? "";
+      if (oldName === newName) return {};
+      const oldLabel = `${tileTitle(oldName)} · `;
+      const renamed = (tile: Session): Session => {
+        const prefix = tile.host ? `${tile.host}::` : "";
+        if (tile.window === undefined) return { ...tile, id: prefix + newName, name: newName, ...(tile.session !== undefined ? { session: newName } : {}) };
+        // A window tile's name starts with its session's display name.
+        const name = tile.name.startsWith(oldLabel) ? `${tileTitle(newName)} · ${tile.name.slice(oldLabel.length)}` : tile.name;
+        return { ...tile, id: `${prefix}${newName}::w::${tile.window}`, session: newName, name };
+      };
+      // Old tile id → the tile before and after.
+      const renamedTiles = new Map<string, { before: Session; after: Session }>();
+      for (const tile of state.tiles) {
+        if (isSessionTile(tile) && hostOf(tile) === host && (tile.session ?? tile.name) === oldName) {
+          const after = renamed(tile);
+          renamedTiles.set(tile.id, { before: tile, after });
+          moved[tile.id] = after.id;
+        }
+      }
+      const pairs = Object.entries(moved);
+      if (!pairs.length) return {};
+      const renamedId = (id: string) => (Object.hasOwn(moved, id) ? moved[id] : id);
+      const targets = new Set(Object.values(moved));
+      // The device just accepted the name, so a tile still open under one of
+      // the new ids shows a session that no longer exists: the renamed tile
+      // takes its place.
+      const tiles = state.tiles.filter((tile) => renamedTiles.has(tile.id) || !targets.has(tile.id)).map((tile) => renamedTiles.get(tile.id)?.after ?? tile);
+      // Every per-tile entry moves to the new id. Whatever a closed tile left
+      // under a new id is dropped first, so nothing old is inherited.
+      const rekey = <T,>(map: Record<string, T>): Record<string, T> => {
+        const next = { ...map };
+        for (const to of targets) delete next[to];
+        for (const [from, to] of pairs) {
+          if (Object.hasOwn(map, from)) next[to] = map[from];
+          delete next[from];
+        }
+        return next;
+      };
+      const tileTitles = rekey(state.tileTitles);
+      // The session is named for real now: no override hides its name,
+      // except the typed one when the name alone would display differently.
+      for (const { after } of renamedTiles.values()) {
+        if (after.window !== undefined) continue;
+        delete tileTitles[after.id];
+        if (tileTitle(newName) !== newName) tileTitles[after.id] = newName;
+      }
+      // The workspace is kept per session (window tiles share its key).
+      const keys = new Map([...renamedTiles.values()].map(({ before, after }) => [wsKeyOf(before), wsKeyOf(after)]));
+      const sessionWs = { ...state.sessionWs };
+      for (const to of keys.values()) delete sessionWs[to];
+      for (const [from, to] of keys) {
+        if (Object.hasOwn(state.sessionWs, from)) sessionWs[to] = state.sessionWs[from];
+        delete sessionWs[from];
+      }
+      const hiddenTiles = state.hiddenTiles.filter((id) => !targets.has(id)).map(renamedId);
+      const tileCode = rekey(state.tileCode);
+      const tileSpan = mapSpans(state.tileSpan, rekey);
+      persist(TILES_KEY, tiles);
+      persist(TILETITLES_KEY, tileTitles);
+      persist(SESSIONWS_KEY, sessionWs);
+      persist(HIDDEN_KEY, hiddenTiles);
+      persist(TILECODE_KEY, tileCode);
+      persist(TILESPAN_KEY, tileSpan);
+      return {
+        tiles, tileTitles, sessionWs, hiddenTiles, tileCode, tileSpan,
+        tileObserved: rekey(state.tileObserved), changesReveal: rekey(state.changesReveal),
+        activeId: state.activeId !== null ? renamedId(state.activeId) : null,
+        refreshNonce: state.refreshNonce + 1,
+      };
+    });
+    return moved;
+  },
+  renameWindowTile: (tileId, windowName) =>
+    set((state) => {
+      const tile = sessionTileById(state.tiles, tileId);
+      const session = tile?.session;
+      if (!tile || tile.window === undefined || !session) return {};
+      const tiles = state.tiles.map((entry) => (entry.id === tileId ? { ...tile, name: `${tileTitle(session)} · ${windowName}` } : entry));
+      const tileTitles = { ...state.tileTitles };
+      delete tileTitles[tileId];
+      persist(TILES_KEY, tiles);
+      persist(TILETITLES_KEY, tileTitles);
+      return { tiles, tileTitles };
+    }),
+  forgetTileState: (ids) =>
+    set((state) => {
+      // An open tile keeps its own state; only leftovers of closed ones go.
+      const stale = ids.filter((id) => !state.tiles.some((tile) => tile.id === id));
+      if (!stale.some((id) => id in state.tileTitles || id in state.tileCode || Object.values(state.tileSpan).some((map) => Object.hasOwn(map, id)) || state.hiddenTiles.includes(id))) return {};
+      const drop = <T,>(map: Record<string, T>): Record<string, T> => {
+        const next = { ...map };
+        for (const id of stale) delete next[id];
+        return next;
+      };
+      const tileTitles = drop(state.tileTitles);
+      const tileCode = drop(state.tileCode);
+      const tileSpan = dropTileSpans(state.tileSpan, stale);
+      const hiddenTiles = state.hiddenTiles.filter((id) => !stale.includes(id));
+      persist(TILETITLES_KEY, tileTitles);
+      persist(TILECODE_KEY, tileCode);
+      persist(TILESPAN_KEY, tileSpan);
+      persist(HIDDEN_KEY, hiddenTiles);
+      return { tileTitles, tileCode, tileSpan, hiddenTiles };
+    }),
 
-  tileSpan: loadValid(TILESPAN_KEY, recordOf(parseSpan), {}),
-  setTileSpan: (id, c, r) => {
-    const tileSpan = { ...get().tileSpan, [id]: { c, r } };
+  tileSpan: loadTileSpans(),
+  setTileSpan: (workspaceId, id, c, r) => {
+    const current = get().tileSpan;
+    const tileSpan = { ...current, [workspaceId]: { ...workspaceSpans(current, workspaceId), [id]: { c, r } } };
     persist(TILESPAN_KEY, tileSpan);
     set((state) => ({ tileSpan, refreshNonce: state.refreshNonce + 1 }));
   },
-  clearTileSpan: (id) => {
-    const tileSpan = { ...get().tileSpan };
-    if (!(id in tileSpan)) return;
-    delete tileSpan[id];
+  clearTileSpan: (workspaceId, id) => {
+    const current = get().tileSpan;
+    if (!Object.hasOwn(workspaceSpans(current, workspaceId), id)) return;
+    const map = { ...current[workspaceId] };
+    delete map[id];
+    const tileSpan = { ...current };
+    if (Object.keys(map).length) tileSpan[workspaceId] = map;
+    else delete tileSpan[workspaceId];
     persist(TILESPAN_KEY, tileSpan);
     set((state) => ({ tileSpan, refreshNonce: state.refreshNonce + 1 }));
   },
   autoArrange: (workspaceId) => {
     const state = get();
+    // Only this workspace's sizes: the same tiles keep theirs in the others.
+    const visible = new Set(state.tiles.filter((tile) =>
+      workspaceId === ALL_WORKSPACE_ID || (state.sessionWs[wsKeyOf(tile)] ?? DEFAULT_WORKSPACE_ID) === workspaceId).map((tile) => tile.id));
+    const cleared = Object.keys(workspaceSpans(state.tileSpan, workspaceId)).filter((id) => visible.has(id)).length;
     const tileSpan = { ...state.tileSpan };
-    let cleared = 0;
-    for (const tile of state.tiles) {
-      const inWorkspace = workspaceId === ALL_WORKSPACE_ID || (state.sessionWs[wsKeyOf(tile)] ?? DEFAULT_WORKSPACE_ID) === workspaceId;
-      if (inWorkspace && tile.id in tileSpan) {
-        delete tileSpan[tile.id];
-        cleared++;
-      }
-    }
+    delete tileSpan[workspaceId];
     const workspaceColumns = { ...state.workspaceColumns, [workspaceId]: AUTO_COLUMNS };
     persist(TILESPAN_KEY, tileSpan);
     persist(WSCOLUMNS_KEY, workspaceColumns);
@@ -1040,11 +1215,15 @@ export const useStore = create<ConsoleState>((set, get) => ({
       const code = tileCode[fileId];
       delete tileCode[fileId];
       if (code) tileCode[sessionId] = { ...code, open: true, layout: "side-by-side" };
-      const tileSpan = { ...state.tileSpan };
-      const span = tileSpan[fileId];
-      delete tileSpan[fileId];
-      if (span) tileSpan[sessionId] = span;
-      else delete tileSpan[sessionId];
+      // In every workspace the terminal takes the file tile's size.
+      const tileSpan = mapSpans(state.tileSpan, (map) => {
+        if (!Object.hasOwn(map, fileId) && !Object.hasOwn(map, sessionId)) return map;
+        const next = { ...map };
+        delete next[fileId];
+        if (Object.hasOwn(map, fileId)) next[sessionId] = map[fileId];
+        else delete next[sessionId];
+        return next;
+      });
       const tileTitles = { ...state.tileTitles };
       delete tileTitles[fileId];
       const hiddenTiles = state.hiddenTiles.filter((hidden) => hidden !== fileId && hidden !== sessionId);
@@ -1082,20 +1261,25 @@ export const useStore = create<ConsoleState>((set, get) => ({
       const slots = state.tiles.flatMap((tile, index) => (ids.has(tile.id) ? [index] : []));
       const tiles = [...state.tiles];
       wanted.forEach((entry, position) => { tiles[slots[position]] = state.tiles.find((tile) => tile.id === entry.id)!; });
-      const tileSpan = { ...state.tileSpan };
+      // The snapshot's sizes are this workspace's.
+      const spans = { ...workspaceSpans(state.tileSpan, workspaceId) };
       const tileTitles = { ...state.tileTitles };
       const hidden = new Set(state.hiddenTiles);
       const tileCode = { ...state.tileCode };
       for (const entry of wanted) {
-        if (entry.span) tileSpan[entry.id] = entry.span;
-        else delete tileSpan[entry.id];
+        if (entry.span) spans[entry.id] = entry.span;
+        else delete spans[entry.id];
         if (entry.title) tileTitles[entry.id] = entry.title;
         else delete tileTitles[entry.id];
-        if (entry.hidden) hidden.add(entry.name);
-        else hidden.delete(entry.name);
+        // Hidden tiles are kept by id (a remote or window tile's name is not its id).
+        if (entry.hidden) hidden.add(entry.id);
+        else hidden.delete(entry.id);
         // A snapshot without a view restores the file tree, not whatever view is showing now.
         tileCode[entry.id] = entry.code ? { ...tileCode[entry.id], ...entry.code, view: entry.code.view } : { ...tileCode[entry.id], open: false, path: undefined };
       }
+      const tileSpan = { ...state.tileSpan };
+      if (Object.keys(spans).length) tileSpan[workspaceId] = spans;
+      else delete tileSpan[workspaceId];
       const hiddenTiles = [...hidden];
       const workspaceColumns = layout.columns ? { ...state.workspaceColumns, [workspaceId]: layout.columns } : state.workspaceColumns;
       persist(TILES_KEY, tiles);
@@ -1247,13 +1431,9 @@ export const useStore = create<ConsoleState>((set, get) => ({
     if (localStorage.getItem(FLAG)) return;
     const state = useStore.getState();
     const open = new Set(state.tiles.map((tile) => tile.id));
-    const tileSpan: Record<string, { c: number; r: number }> = {};
-    let changed = false;
-    for (const [id, span] of Object.entries(state.tileSpan)) {
-      if (open.has(id)) tileSpan[id] = span;
-      else changed = true;
-    }
-    if (changed) {
+    const closed = new Set(Object.values(state.tileSpan).flatMap((map) => Object.keys(map)).filter((id) => !open.has(id)));
+    const tileSpan = dropTileSpans(state.tileSpan, [...closed]);
+    if (tileSpan !== state.tileSpan) {
       persist(TILESPAN_KEY, tileSpan);
       useStore.setState({ tileSpan });
     }

@@ -23,7 +23,8 @@ import { createAttachmentRecovery, type AttachmentStatus } from "../state/quickC
 import { readNativeDrop, registerTerminalDropTarget, releaseNativeDrop, shellQuotePaths, validateDroppedFiles, type TerminalDrop } from "./fileDrop";
 import { BROADCAST_APPROVAL_APPEARED, BROADCAST_PENDING_APPROVAL, PendingApprovalError, registerBroadcastTarget } from "./broadcast";
 import { registerSearchTarget } from "./terminalSearch";
-import { sessionDisplayName, type TileStatus } from "../sessionMeta";
+import { SESSION_FOLLOWED_EVENT, sessionDisplayName, type TileStatus } from "../sessionMeta";
+import { RENAMED_OSC } from "../../server/lib/session-follow.js";
 import { registerContextMenu, clipboardPaste, readClipboardData } from "../ui/ContextMenu";
 import { registerDictationTarget, useDictation } from "../state/dictation";
 import { createDictationComposition, separatedFromCaret } from "./dictationComposition";
@@ -800,6 +801,12 @@ function TerminalView({ tileId, name, host, cmd, args, cwd, window: win, active,
       });
       const messageListener = term.parser.registerOscHandler(9, (data) => notificationSignals.osc9(data));
       const titledMessageListener = term.parser.registerOscHandler(777, (data) => notificationSignals.osc777(data));
+      // The attach followed a session renamed elsewhere (see session-follow.js).
+      // Only a hint: the app reads the new name from the device itself.
+      const renamedListener = term.parser.registerOscHandler(RENAMED_OSC, (data) => {
+        if (data === "renamed") window.dispatchEvent(new CustomEvent(SESSION_FOLLOWED_EVENT, { detail: { host: host ?? "" } }));
+        return true;
+      });
 
       // The bundled Nerd Font symbols load asynchronously. Because the @font-face
       // has a restricted unicode-range, we must ask for it with actual icon glyphs
@@ -1458,6 +1465,7 @@ function TerminalView({ tileId, name, host, cmd, args, cwd, window: win, active,
         cursorStyleListener.dispose();
         messageListener.dispose();
         titledMessageListener.dispose();
+        renamedListener.dispose();
         pasteController.abort();
         cancelAnimationFrame(raf);
         cancelAnimationFrame(fitRaf);

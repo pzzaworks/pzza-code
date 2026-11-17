@@ -144,6 +144,12 @@ function accountChoice(row: AgentSessionRow): { account?: string } | { reason: s
 }
 
 /**
+ * The folder a conversation reopens in: its own, or, when the device found
+ * that one moved or deleted, where it went on (see AgentSessionRow.resumeIn).
+ */
+export const resumeFolder = (row: AgentSessionRow): string => row.resumeIn || row.cwd;
+
+/**
  * The shell line that resumes a conversation. A conversation reopened by its
  * id gets `cd <cwd> &&` in front when `cwd` is given; an agent that can only
  * continue its newest conversation continues the one of the folder it starts
@@ -187,7 +193,7 @@ export function resumeBlocker(row: AgentSessionRow, loaded: readonly AgentSessio
   if (newer) return `${agent.label} can only continue the newest conversation of a folder, and a newer one exists here: "${newer.title || newer.id}".`;
   if (row.resume === "last" && !row.cwd) return "The folder this conversation ran in is not known.";
   try {
-    agentSessionCommand(row, undefined, row.cwd || undefined);
+    agentSessionCommand(row, undefined, resumeFolder(row) || undefined);
   } catch (error) {
     return error instanceof Error ? error.message : "This conversation cannot be resumed.";
   }
@@ -264,12 +270,13 @@ export async function resumeInNewTile({ host, row, mode, loaded = [], anchorTile
   if (!device || !agent || "reason" in account) throw new Error("This conversation cannot be resumed.");
   const anchor = anchorTileId ? state.tiles.find((tile) => tile.id === anchorTileId) : undefined;
   const destination = workspaceId ?? (anchor ? state.sessionWs[wsKeyOf(anchor)] ?? DEFAULT_WORKSPACE_ID : undefined);
-  const name = uniqueSessionName(sessionNameBase(folderName(row.cwd) || agent.id), takenSessionNames(deviceHost(device)));
+  const folder = resumeFolder(row);
+  const name = uniqueSessionName(sessionNameBase(folderName(folder) || agent.id), takenSessionNames(deviceHost(device)));
   const chosen = validMode(row.agent, mode);
   // An agent that reopens by id gets the conversation's id; one that can only
   // continue its newest conversation continues it, in its folder.
   const choice = row.resume === "id" ? { id: agent.id, mode: chosen, session: row.id, ...account } : { id: agent.id, mode: chosen, resume: true, ...account };
-  const tileId = await createSessionInApp({ name, deviceId: device.id, workspaceId: destination, cwd: row.cwd || undefined, agent: choice });
+  const tileId = await createSessionInApp({ name, deviceId: device.id, workspaceId: destination, cwd: folder || undefined, agent: choice });
   if (anchor) placeAfter(tileId, anchor.id);
   return tileId;
 }
@@ -295,7 +302,8 @@ export async function resumeInTile({ tileId, host, row, mode, loaded = [], confi
   const agent = sessionAgent(row.agent);
   if (!target || !agent) throw new Error("The tile this list was opened from is closed.");
   // The folder is changed first only when the tile is somewhere else.
-  const command = agentSessionCommand(row, mode, row.cwd && row.cwd !== target.folder ? row.cwd : undefined);
+  const folder = resumeFolder(row);
+  const command = agentSessionCommand(row, mode, folder && folder !== target.folder ? folder : undefined);
   if (confirm) {
     const accepted = await confirmAction({
       title: "Resume this conversation here?",

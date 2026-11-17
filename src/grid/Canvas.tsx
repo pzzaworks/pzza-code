@@ -36,7 +36,7 @@ import {
   X,
   type LucideIcon,
 } from "lucide-react";
-import { fileTileFolder, fileTilePath, isFileTile, isSessionTile, sessionTileById, useStore, type FileTile, type Session, type Tile } from "../state/store";
+import { fileTileFolder, fileTilePath, isFileTile, isSessionTile, sessionTileById, useStore, workspaceSpans, type FileTile, type Session, type Tile } from "../state/store";
 import { openTerminalInFileTile, useFileTileConversions } from "../openFiles";
 import { deviceForHost, deviceNameFor } from "../devices";
 import { Modal } from "../ui/Modal";
@@ -52,6 +52,8 @@ import { confirmEditorDiscard, hasUnsavedEditors } from "../editorChanges";
 import { confirmAction } from "../ui/ConfirmDialog";
 import { attachCommand, sessionConnection } from "../connection";
 import {
+  renameStartValue,
+  SESSION_FOLLOWED_EVENT,
   sessionDisplayName,
   sessionIcon,
   SESSION_DND,
@@ -77,7 +79,7 @@ import { compactPath } from "./compactPath";
 import { BroadcastBar, useBroadcastPresence } from "./BroadcastBar";
 import { CheckpointsChip, TileCheckpoints } from "./Checkpoints";
 import { AgentSessionsHost } from "./AgentSessions";
-import { moveAgentToWorktree } from "../sessionActions";
+import { TILES_RENAMED_EVENT, followRenamedSessions, moveAgentToWorktree, movedTilesOf, renameSessionTile } from "../sessionActions";
 import { landWorktree, useWorktreeInfo, useWorktreeTaskTitle, type LandKind, type LandResult } from "../worktreeLand";
 import { installPathDrops, usePathDrag } from "../terminal/folderDrop";
 
@@ -541,7 +543,13 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
     // maximized locally in the canvas.
     if (activeId && fullId && activeId !== fullId) setFullId(null);
   }, [activeId, fullId]);
-  const [renaming, setRenaming] = useState<{ id: string; val: string } | null>(null);
+  // The title being edited: what it showed when editing began, and whether
+  // the device is renaming it right now.
+  const [renaming, setRenaming] = useState<{ id: string; val: string; initial: string; pending?: boolean } | null>(null);
+  const [renameError, setRenameError] = useState<string | null>(null);
+  // Set once Enter, Escape or a blur decided the edit: the blur that follows
+  // Enter or Escape (the input going away) must not apply it again.
+  const renameSettled = useRef(false);
   // A header drag previews the drop: the dragged tile moves to slot `to` of
   // the visible order and the rest reflow around it until the drop commits.
   const [drag, setDrag] = useState<TileDrag | null>(null);
@@ -570,7 +578,8 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
   const spacing = useStore((s) => s.spacing);
   const canvasSize = useCanvasSize(gridRef, wsTiles.length, Math.max(0, spacing), true);
   const previewTiles = drag && drag.to !== drag.from && wsTiles[drag.from]?.id === drag.id && drag.to < wsTiles.length ? moveItem(wsTiles, drag.from, drag.to) : wsTiles;
-  const arrangement = arrangeTiles({ ids: previewTiles.map((entry) => entry.id), saved: tileSpan, setting: columns, size: canvasSize, maxRows: MAX_TILE_ROWS });
+  // Sizes are kept per workspace: one set in All never sizes the tile in its own workspace.
+  const arrangement = arrangeTiles({ ids: previewTiles.map((entry) => entry.id), saved: workspaceSpans(tileSpan, activeWorkspaceId), setting: columns, size: canvasSize, maxRows: MAX_TILE_ROWS });
   const { tracks } = arrangement;
   const columnTracks = tracks / arrangement.columns;
 
@@ -578,11 +587,24 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
   const scrollToTile = useCallback((id: string) => {
     if (fullId) return;
     const element = document.querySelector(`[data-tile-id="${CSS.escape(id)}"]`);
-    if (!(element instanceof HTMLElement) || !element.getClientRects().length) return;
-    const rect = element.getBoundingClientRect();
-    if (rect.top < 84 || rect.bottom > window.innerHeight - 8) {
-      element.scrollIntoView({ block: "center", inline: "nearest", behavior: "smooth" });
+    const canvas = gridRef.current?.parentElement;
+    if (!(element instanceof HTMLElement) || !canvas || !element.getClientRects().length) return;
+    // Vertical only, measured from the layout box: the grid always fits the
+    // canvas width, and a tile still gliding to its new place (a transform)
+    // made scrollIntoView shift the whole canvas sideways. A tile taller than
+    // the canvas aligns its top, so its header stays in view.
+    // offsetTop is in the canvas's scroll coordinates (the canvas is the
+    // tile's offset parent), so transforms never enter the math.
+    const padding = parseFloat(getComputedStyle(canvas).paddingTop) || 0;
+    let top = 0;
+    for (let node: Element | null = element; node && node !== canvas; node = node instanceof HTMLElement ? node.offsetParent : null) {
+      if (node instanceof HTMLElement) top += node.offsetTop;
     }
+    const height = element.offsetHeight;
+    const view = canvas.clientHeight;
+    if (top >= canvas.scrollTop && top + height <= canvas.scrollTop + view) return;
+    const target = height > view - padding * 2 ? top - padding : top - (view - height) / 2;
+    canvas.scrollTo({ top: Math.max(0, target), behavior: "smooth" });
   }, [fullId]);
   useEffect(() => {
     const move = (event: PointerEvent) => {
@@ -757,7 +779,7 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
         const half = (value: number) => Math.round(value * 2) / 2;
         const c = Math.max(0.5, Math.min(current.columns, half(span.c / (current.tracks / current.columns) + step[0] / 2)));
         const r = Math.max(0.5, Math.min(MAX_TILE_ROWS, half(span.r / 2 + step[1] / 2)));
-        state.setTileSpan(id, c, r);
+        state.setTileSpan(state.activeWorkspaceId, id, c, r);
         return;
       }
       let target = -1;
@@ -889,13 +911,14 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
     setDuplicateError(null);
     const host = source.host ?? connection.host ?? undefined;
     const workspace = sessionWs[wsKeyOf(source)] ?? DEFAULT_WORKSPACE_ID;
-    const label = `${sessionDisplayName(source, tileTitles)} copy`;
     try {
       const copy = await duplicateSession(source.session ?? source.name, source.window, host);
       const store = useStore.getState();
       const id = host ? `${host}::${copy.name}` : copy.name;
       store.assignSession(id, store.workspaces.some((entry) => entry.id === workspace) ? workspace : DEFAULT_WORKSPACE_ID);
-      store.renameTile(id, label);
+      // The copy shows its own tmux name ("<name> Copy"), never a label that
+      // differs from it, nor one an earlier tile of that name left behind.
+      store.forgetTileState([id]);
       store.openSession(copy.name, copy.cwd, host);
       return id;
     } catch (error) {
@@ -919,8 +942,96 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
     return () => window.removeEventListener("keydown", onKey);
   }, [effFull]);
 
-  const canvasControl = useRef({ fullId, duplicate });
-  canvasControl.current = { fullId, duplicate };
+  // A terminal tile is renamed on its device (its tmux session or window); a
+  // renamed session's tiles stay maximized or selected under their new ids. A
+  // file or folder tile only has a display name. Resolves to the tile's id and
+  // the name it now has.
+  const rename = async (tile: Tile, value: string): Promise<{ tileId: string; name: string }> => {
+    if (isFileTile(tile)) {
+      useStore.getState().renameTile(tile.id, value);
+      return { tileId: tile.id, name: value.trim() || tile.name };
+    }
+    let tileId = tile.id;
+    const follow = (event: Event) => {
+      const moved = movedTilesOf(event);
+      if (moved && Object.hasOwn(moved, tileId)) tileId = moved[tileId];
+    };
+    window.addEventListener(TILES_RENAMED_EVENT, follow);
+    try {
+      return { name: await renameSessionTile(tile.id, value), tileId };
+    } finally {
+      window.removeEventListener(TILES_RENAMED_EVENT, follow);
+    }
+  };
+
+  // Renamed tiles (here, in another window, or on another Mac) stay
+  // maximized or selected under their new ids.
+  useEffect(() => {
+    const onRenamed = (event: Event) => {
+      const moved = movedTilesOf(event);
+      if (!moved) return;
+      const next = (id: string) => (Object.hasOwn(moved, id) ? moved[id] : id);
+      setFullId((current) => (current === null ? current : next(current)));
+      setSelectedIds((current) => current.map(next));
+    };
+    // An attach that followed a renamed session: the device's tiles follow too.
+    const onFollowed = (event: Event) => {
+      const host: unknown = event instanceof CustomEvent && event.detail && typeof event.detail === "object" ? event.detail.host : undefined;
+      if (typeof host === "string") void followRenamedSessions(host);
+    };
+    window.addEventListener(TILES_RENAMED_EVENT, onRenamed);
+    window.addEventListener(SESSION_FOLLOWED_EVENT, onFollowed);
+    return () => {
+      window.removeEventListener(TILES_RENAMED_EVENT, onRenamed);
+      window.removeEventListener(SESSION_FOLLOWED_EVENT, onFollowed);
+    };
+  }, []);
+
+  // A listing of the connected device that misses a tile's session: it may
+  // have been renamed elsewhere.
+  useEffect(() => {
+    if (!allSessions.length) return;
+    const live = new Set(allSessions.map((session) => session.name));
+    const state = useStore.getState();
+    if (state.tiles.some((tile) => isSessionTile(tile) && tile.host === undefined && !live.has(tile.session ?? tile.name))) {
+      void followRenamedSessions(state.connection.host ?? "");
+    }
+  }, [allSessions]);
+
+  const startRename = (tile: Tile, shown: string) => {
+    if (renaming?.pending) return;
+    renameSettled.current = false;
+    setRenaming({ id: tile.id, val: shown, initial: shown });
+  };
+  const cancelRename = () => {
+    renameSettled.current = true;
+    setRenaming(null);
+  };
+  const commitRename = (tile: Tile) => {
+    if (renameSettled.current || !renaming || renaming.id !== tile.id) return;
+    renameSettled.current = true;
+    const { val, initial } = renaming;
+    // Unchanged: nothing is renamed, even when the shown title is not a valid session name.
+    if (val.trim() === initial.trim() || (isSessionTile(tile) && !val.trim() && !tileTitles[tile.id])) {
+      setRenaming(null);
+      return;
+    }
+    // Empty on a terminal tile drops an earlier display override, as before.
+    if (isSessionTile(tile) && !val.trim()) {
+      renameTile(tile.id, "");
+      setRenaming(null);
+      return;
+    }
+    setRenaming({ ...renaming, pending: true });
+    const done = () => setRenaming((current) => (current?.id === tile.id && current.pending ? null : current));
+    rename(tile, val).then(done, (error: unknown) => {
+      done();
+      setRenameError(error instanceof Error ? error.message : "Could not rename the session.");
+    });
+  };
+
+  const canvasControl = useRef({ fullId, duplicate, rename });
+  canvasControl.current = { fullId, duplicate, rename };
   useEffect(() => {
     const requireTile = (id: unknown) => {
       const state = useStore.getState();
@@ -951,6 +1062,7 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
       registerAppControlHandler("set_focus_mode", maximize),
       registerAppControlHandler("set_fullscreen", maximize),
       registerAppControlHandler("duplicate_tile", async args => ({ tileId: await canvasControl.current.duplicate(requireSessionTile(args.tileId)) })),
+      registerAppControlHandler("rename_tile", args => canvasControl.current.rename(requireTile(args.tileId), String(args.name))),
       registerAppControlHandler("terminate_tile", async args => {
         const current = requireSessionTile(args.tileId);
         const state = useStore.getState();
@@ -1263,21 +1375,23 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
               className="tile-title-input"
               autoFocus
               value={renaming.val}
+              readOnly={renaming.pending}
+              aria-busy={renaming.pending || undefined}
+              aria-label={isSessionTile(t) ? "Session name" : "Tile name"}
               spellCheck={false}
               onMouseDown={(e) => e.stopPropagation()}
-              onChange={(e) => setRenaming({ id: t.id, val: e.target.value })}
+              onChange={(e) => setRenaming((current) => (current && !current.pending ? { ...current, val: e.target.value } : current))}
               onFocus={(e) => e.currentTarget.select()}
               onKeyDown={(e) => {
-                if (e.key === "Enter") {
-                  renameTile(t.id, renaming.val);
-                  setRenaming(null);
-                } else if (e.key === "Escape") {
-                  setRenaming(null);
-                }
+                if (e.key === "Enter") commitRename(t);
+                else if (e.key === "Escape" && !renaming.pending) cancelRename();
               }}
               onBlur={() => {
-                renameTile(t.id, renaming.val);
-                setRenaming(null);
+                // Switching to another app is not a decision: a terminal tile's
+                // rename changes its device, so the edit waits for Enter or a
+                // click elsewhere in the app.
+                if (isSessionTile(t) && !document.hasFocus()) return;
+                commitRename(t);
               }}
             />
           ) : (
@@ -1287,7 +1401,7 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
               onMouseDown={(e) => e.stopPropagation()}
               onClick={(e) => {
                 e.stopPropagation();
-                setRenaming({ id: t.id, val: displayName });
+                startRename(t, renameStartValue(t, tileTitles));
               }}
             >
               {displayName}
@@ -1345,8 +1459,8 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
           <TileResizeHandles
             span={{ c: trackSpan.c / columnTracks, r: trackSpan.r / 2 }}
             columns={arrangement.columns}
-            onCommit={(c, r) => setTileSpan(t.id, c, r)}
-            onReset={() => clearTileSpan(t.id)}
+            onCommit={(c, r) => setTileSpan(activeWorkspaceId, t.id, c, r)}
+            onReset={() => clearTileSpan(activeWorkspaceId, t.id)}
           />
         ) : null}
       </motion.div>
@@ -1358,6 +1472,10 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
       <Modal open={duplicateError !== null} onClose={() => setDuplicateError(null)} title="Duplicate session" size="sm">
         <p role="alert">{duplicateError}</p>
         <div className="modal-actions"><button className="btn" onClick={() => setDuplicateError(null)}>Dismiss</button></div>
+      </Modal>
+      <Modal open={renameError !== null} onClose={() => setRenameError(null)} title="Rename session" size="sm">
+        <p role="alert">{renameError}</p>
+        <div className="modal-actions"><button className="btn" onClick={() => setRenameError(null)}>Dismiss</button></div>
       </Modal>
       <AgentSessionsHost />
       <div

@@ -33,6 +33,8 @@ export interface SessionAgentResumeById {
   args: readonly string[];
   /** Regular expression source the whole id must match. */
   id: string;
+  /** The agent finds the id from any folder, not only the one the conversation ran in. */
+  anyFolder?: boolean;
 }
 
 export interface SessionAgentPrompt {

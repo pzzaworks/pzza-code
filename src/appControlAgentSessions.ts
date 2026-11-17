@@ -35,6 +35,7 @@ const describe = (row: AgentSessionRow) => ({
   agentLabel: agentLabelOf(row.agent),
   sessionId: row.id,
   cwd: row.cwd || null,
+  resumeIn: row.resumeIn ?? null,
   title: row.title,
   startedAt: new Date(row.startedAt).toISOString(),
   lastAt: new Date(row.lastAt).toISOString(),

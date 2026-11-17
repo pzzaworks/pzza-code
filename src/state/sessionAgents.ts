@@ -56,6 +56,24 @@ export function rememberSessionAgent(tileId: string, choice: SessionAgentChoice 
   }
 }
 
+/** Moves the recorded choices of renamed tiles to their new ids (old id → new id). */
+export function moveSessionAgents(moved: Readonly<Record<string, string>>): void {
+  const current = useSessionAgents.getState().agents;
+  if (!Object.keys(moved).some((from) => Object.hasOwn(current, from))) return;
+  const agents = { ...current };
+  for (const [from, to] of Object.entries(moved)) {
+    delete agents[to];
+    if (Object.hasOwn(current, from)) agents[to] = current[from];
+    delete agents[from];
+  }
+  useSessionAgents.setState({ agents });
+  try {
+    localStorage.setItem(KEY, JSON.stringify(agents));
+  } catch {
+    /* preferences are optional */
+  }
+}
+
 // The agent last seen running in each local session's active window, by
 // session name: what a snapshot records for sessions whose agent was not
 // started through the app. Kept in memory; the native side keeps its own copy.

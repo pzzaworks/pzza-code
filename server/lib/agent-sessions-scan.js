@@ -102,14 +102,20 @@ export function sessionTitle(value) {
 
 const finiteTime = (value) => (typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.round(value) : null);
 
+// An absolute, normalized folder without a trailing slash, or "".
+function folderPath(value) {
+  let folder = typeof value === "string" ? value : "";
+  if (folder.length > 1) folder = folder.replace(/\/+$/, "");
+  return folder.startsWith("/") && folder.length <= MAX_CWD_LENGTH && !CONTROL.test(folder) && path.posix.normalize(folder) === folder ? folder : "";
+}
+
 // Checks and shapes the fields a source read; null drops the row.
 function finishRow(source, root, fields, fallback) {
   if (!fields || typeof fields !== "object") return null;
   const id = typeof fields.id === "string" ? fields.id : typeof fields.id === "number" ? String(fields.id) : "";
   if (!id || id.length > MAX_ID_LENGTH || !/^[A-Za-z0-9][A-Za-z0-9_.:-]*$/.test(id)) return null;
-  let cwd = typeof fields.cwd === "string" ? fields.cwd : "";
-  if (cwd.length > 1) cwd = cwd.replace(/\/+$/, "");
-  if (!cwd.startsWith("/") || cwd.length > MAX_CWD_LENGTH || CONTROL.test(cwd) || path.posix.normalize(cwd) !== cwd) cwd = "";
+  const cwd = folderPath(fields.cwd);
+  const latestCwd = folderPath(fields.latestCwd);
   const lastAt = finiteTime(fields.lastAt) ?? fallback.lastAt;
   const startedAt = Math.min(finiteTime(fields.startedAt) ?? lastAt, lastAt);
   const branch = typeof fields.branch === "string" && fields.branch.length <= MAX_BRANCH_LENGTH && !CONTROL.test(fields.branch) ? fields.branch : "";
@@ -117,6 +123,8 @@ function finishRow(source, root, fields, fallback) {
   const account = root.account ?? accountName(source.agent, root.dir);
   return {
     agent: source.agent, id, cwd,
+    // Kept for resumeFolders only, never answered.
+    ...(cwd && latestCwd && latestCwd !== cwd ? { latestCwd } : {}),
     title: sessionTitle(fields.title) || sessionTitle(fields.prompt),
     startedAt, lastAt,
     ...(branch ? { branch } : {}),
@@ -182,6 +190,26 @@ export function selectAgentSessions(rows, query, home = os.homedir()) {
   const offset = query.offset ?? 0;
   const limit = query.limit ?? 150;
   return { sessions: selected.slice(offset, offset + limit), total: selected.length, agents };
+}
+
+const isFolder = (folder) => fs.promises.stat(folder).then((stat) => stat.isDirectory(), () => false);
+
+/**
+ * The rows as answered: a conversation of an agent that finds its id from any
+ * folder, whose own folder is gone (moved or deleted), gets `resumeIn`: the
+ * newest folder it worked in that still exists, else home. Checked on every
+ * answer, since folders move while the scan cache is fresh.
+ */
+export async function resumeFolders(rows, home = os.homedir(), exists = isFolder) {
+  const checked = new Map();
+  const check = (folder) => {
+    if (!checked.has(folder)) checked.set(folder, exists(folder));
+    return checked.get(folder);
+  };
+  return Promise.all(rows.map(async ({ latestCwd, ...row }) => {
+    if (row.resume !== "id" || !row.cwd || !sessionAgent(row.agent)?.resume.byId?.anyFolder || await check(row.cwd)) return row;
+    return { ...row, resumeIn: latestCwd && await check(latestCwd) ? latestCwd : home };
+  }));
 }
 
 /**
@@ -325,7 +353,8 @@ export function createAgentSessionsScanner({ sources = AGENT_SESSION_SOURCES, ho
     // While a rescan of a scope runs past the budget, the previous complete
     // answer is better than a half-read one.
     const rows = scan.done ? scan.rows : scan.previous?.rows ?? scan.rows;
-    return { ...selectAgentSessions(rows, query, home()), partial: !scan.done };
+    const selected = selectAgentSessions(rows, query, home());
+    return { ...selected, sessions: await resumeFolders(selected.sessions, home()), partial: !scan.done };
   }
 
   return { list, stats };

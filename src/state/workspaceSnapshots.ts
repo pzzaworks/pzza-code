@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { isSessionTile, useStore } from "./store";
+import { isSessionTile, useStore, workspaceSpans } from "./store";
 import { useDetectedAgents, useSessionAgents } from "./sessionAgents";
 import { createSessionInApp } from "../sessionActions";
 import { runLocalAppCommand } from "../appControl";
@@ -88,7 +88,7 @@ function captureWorkspace(state: AppState, workspaceId: string): (Pick<Workspace
     devices: state.devices,
     sessionPaths: Object.fromEntries(state.allSessions.map(session => [session.name, session.path])),
     agents: tileAgents(state),
-    spans: state.tileSpan,
+    spans: workspaceSpans(state.tileSpan, workspaceId),
     titles: state.tileTitles,
     hidden: state.hiddenTiles,
     code: state.tileCode,

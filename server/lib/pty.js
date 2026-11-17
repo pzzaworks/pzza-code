@@ -7,6 +7,7 @@ import { DEVBOX, IS_CLIENT } from "./config.js";
 import { sh, shOn, shQuote, SSH_TOKEN } from "./shell.js";
 import { tmuxCommand } from "./tmux-client.js";
 import { quickChatAttachmentGuard } from "./quick-chat.js";
+import { followRenamedScript } from "./session-follow.js";
 import { hostOk, tokenOk } from "./http.js";
 
 const OUTPUT_HIGH = 256 * 1024;
@@ -153,7 +154,10 @@ export async function startPtyBridge(server) {
             const view = `pzza-v-${Date.now().toString(36)}-${Math.floor(Math.random() * 46656).toString(36)}`;
             viewSession = view;
             attach =
-              `${tmux} new-session -d -t ${shQuote(name)} -s ${shQuote(view)} 2>/dev/null; ` +
+              // A session renamed elsewhere is followed by its id (see session-follow.js).
+              followRenamedScript(tmux, name) +
+              `pzza_base=${shQuote(name)}; [ -z "$pzza_follow" ] || pzza_base=$pzza_follow; ` +
+              `${tmux} new-session -d -t "$pzza_base" -s ${shQuote(view)} 2>/dev/null; ` +
               `${tmux} set-option -t ${shQuote(view)} window-size latest 2>/dev/null; ` +
               `${tmux} select-window -t ${shQuote(view + ":" + msg.window)} 2>/dev/null; ` +
               `exec ${tmux} -u attach -t ${shQuote(view)}${statusOff(view)}`;
@@ -163,7 +167,11 @@ export async function startPtyBridge(server) {
             const prep =
               `${tmux} show-environment -g LANG >/dev/null 2>&1 || ${tmux} set-environment -g LANG "\${LANG:-en_US.UTF-8}" 2>/dev/null; ` +
               `${tmux} set-option -t ${shQuote(name)} window-size latest 2>/dev/null; ${tmux} set-option -t ${shQuote(name)} aggressive-resize on 2>/dev/null`;
-            attach = `${prep}; exec ${tmux} -u new-session -A -s ${shQuote(name)}${
+            // A session renamed elsewhere is attached by its id instead: new-session
+            // -A would create an empty one under the old name (see session-follow.js).
+            attach = `${prep}; ${followRenamedScript(tmux, name)}` +
+              `[ -z "$pzza_follow" ] || exec ${tmux} -u attach -t "$pzza_follow" \\; set-option -t "$pzza_follow" status off; ` +
+              `exec ${tmux} -u new-session -A -s ${shQuote(name)}${
               msg.cwd ? ` -c ${shQuote(msg.cwd)}` : ""
             }${statusOff(`=${name}:`)}`;
           }

@@ -56,7 +56,7 @@ async function startAgent(t) {
 test("a JSON null, array or primitive body is refused on every route and never ends the agent", { timeout: 30_000 }, async (t) => {
   const { agent, port, post } = await startAgent(t);
   const routes = ["/projects/sync/cancel", "/projects/sync", "/projects/scan", "/forward/toggle", "/mcp/install",
-    "/file/write", "/agent/install", "/create", "/kill", "/sessions/duplicate", "/ports/kill", "/mcp/repair", "/usage/fix"];
+    "/file/write", "/agent/install", "/create", "/kill", "/sessions/duplicate", "/sessions/rename", "/ports/kill", "/mcp/repair", "/usage/fix"];
   for (const route of routes) {
     for (const body of ["null", "[]", "7", '"text"']) {
       const response = await post(route, body);
@@ -66,6 +66,16 @@ test("a JSON null, array or primitive body is refused on every route and never e
   const health = await fetch(`http://127.0.0.1:${port}/health`);
   assert.equal(health.status, 200);
   assert.equal(agent.exitCode, null, "the agent is still running");
+});
+
+test("session rename validates the session, window and new name", { timeout: 30_000 }, async (t) => {
+  const { post } = await startAgent(t);
+  for (const body of [{ newName: "x" }, { name: "work\nx", newName: "x" }, { name: "work", newName: "bad:name" }, { name: "work", newName: "  " },
+    { name: "work", newName: "a".repeat(129) }, { name: "work", window: -1, newName: "x" }, { name: "work", windowId: "@1", newName: "x" },
+    { name: "work", window: 1, windowId: "@1;x", newName: "x" }, { name: "work", host: "-oProxyCommand=x", newName: "x" }]) {
+    const response = await post("/sessions/rename", JSON.stringify(body));
+    assert.equal(response.status, 400, `${JSON.stringify(body)}: ${response.text}`);
+  }
 });
 
 test("window termination validates the window id it is given", { timeout: 30_000 }, async (t) => {

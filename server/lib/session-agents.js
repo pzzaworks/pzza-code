@@ -57,7 +57,7 @@ export const RESUME_SESSION = "@SESSION@";
 // Conversation id shapes for `resume.byId.id` (regular expression sources,
 // matched against the whole id).
 const UUID_ID = "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}";
-const byId = (args, id) => ({ args: [...args, RESUME_SESSION], id });
+const byId = (args, id, { anyFolder = false } = {}) => ({ args: [...args, RESUME_SESSION], id, ...(anyFolder ? { anyFolder } : {}) });
 
 // OpenCode and Kilo append an agent's own permission rules after the global
 // ones and the last matching rule wins, so a user's `agent.<name>.permission`
@@ -88,8 +88,10 @@ export const SESSION_AGENTS = [
     // CLAUDE_CONFIG_DIR, so a resumed or Quick Chat session keeps using it.
     account: { env: "CLAUDE_CONFIG_DIR", folder: ".claude" },
     // `--resume <session id>` (claude --help); conversations are stored per
-    // folder, so it is run in the folder the conversation ran in.
-    resume: { kind: "continue-last", scope: "directory", args: ["-c"], byId: byId(["--resume"], UUID_ID) },
+    // folder, so it is run in the folder the conversation ran in. It finds the
+    // id from any folder too (2.1.x), so one whose folder was moved or deleted
+    // still reopens, in the folder it last worked in.
+    resume: { kind: "continue-last", scope: "directory", args: ["-c"], byId: byId(["--resume"], UUID_ID, { anyFolder: true }) },
     prompt: { style: "arg" },
     install: [
       { method: "curl", command: "curl -fsSL https://claude.ai/install.sh | bash" },

@@ -24,6 +24,19 @@ export function recentFiles(tileId: string): string[] {
   return load()[tileId] ?? [];
 }
 
+/** Moves the lists of renamed tiles to their new ids (old id → new id). */
+export function moveRecentFiles(moved: Readonly<Record<string, string>>): void {
+  const all = load();
+  if (!Object.keys(moved).some((from) => Object.hasOwn(all, from))) return;
+  const next: RecentFiles = {};
+  const targets = new Set(Object.values(moved));
+  // Order is kept: it decides which editors are dropped first.
+  for (const [tileId, paths] of Object.entries(all)) {
+    if (!targets.has(tileId)) next[Object.hasOwn(moved, tileId) ? moved[tileId] : tileId] = paths;
+  }
+  try { localStorage.setItem(KEY, JSON.stringify(next)); } catch { /* Storage full or blocked: the lists stay under the old ids. */ }
+}
+
 export function rememberRecentFile(tileId: string, path: string): void {
   const all = load();
   const next = [path, ...(all[tileId] ?? []).filter((entry) => entry !== path)].slice(0, PER_EDITOR);

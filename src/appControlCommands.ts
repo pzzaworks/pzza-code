@@ -7,7 +7,7 @@ export type AppControlStore = Pick<ReturnType<typeof useStore.getState>,
   | "tiles" | "activeId" | "activeWorkspaceId" | "connection" | "sessionWs" | "hiddenTiles" | "tileTitles" | "tileCode" | "workspaceColumns" | "defaultColumns"
   | "setActive" | "setWorkspace" | "unhideTile" | "toggleTileCode" | "setTileCodeRoot" | "setTileCodePath" | "setTileCodeLayout" | "setColumns" | "openSession" | "openWindow"
   | "workspaces" | "addWorkspace" | "removeWorkspace" | "renameWorkspace" | "setWorkspaceIcon" | "setWorkspaceColor" | "reorderWorkspace" | "assignSession"
-  | "hideTile" | "closeTile" | "renameTile" | "reorderTile" | "setTileSpan" | "tileSpan" | "devices" | "activeDevices" | "addDevice" | "removeDevice" | "setHost" | "loadSessions"
+  | "hideTile" | "closeTile" | "reorderTile" | "setTileSpan" | "tileSpan" | "devices" | "activeDevices" | "addDevice" | "removeDevice" | "setHost" | "loadSessions"
   | "refreshing"
   | "themeId" | "setTheme" | "fontSize" | "setFontSize" | "cursorBlink" | "setCursorBlink" | "osc52Clipboard" | "setOsc52Clipboard"
   | "semiTransparent" | "setSemiTransparent" | "grayscale" | "setGrayscale" | "transparencyOptions" | "setTransparencyOptions" | "spacing" | "setSpacing"
@@ -61,7 +61,8 @@ export function appControlSnapshot(context: AppControlContext) {
           : { kind: "session" as const, session: tile.session ?? tile.name, window: tile.window, host: tile.host ?? state.connection.host ?? "" }),
         workspaceId: workspaceFor(state, tile, context.defaultWorkspaceId),
         hidden: state.hiddenTiles.includes(tile.id),
-        span: state.tileSpan?.[tile.id] ?? { c: 1, r: 1 },
+        // Sizes are kept per workspace: this is the one the active workspace lays it out with.
+        span: state.tileSpan[state.activeWorkspaceId]?.[tile.id] ?? { c: 1, r: 1 },
         editor: { open: editor?.open ?? false, layout: editor?.layout ?? "side-by-side", path: editor?.path, root: editor?.root, unsaved: context.hasUnsavedEditor(tile.id), loadState: "not_reported" },
       };
     }),
@@ -114,7 +115,6 @@ export function executeAppControl(action: string, args: Record<string, unknown>,
       state.assignSession(wsKeyOf(target), id);
       return appControlSnapshot(context);
     }
-    case "rename_tile": state.renameTile(requireTile(args.tileId).id, args.name as string); return appControlSnapshot(context);
     case "hide_tile": state.hideTile(requireTile(args.tileId).id); return appControlSnapshot(context);
     case "show_tile": state.unhideTile(requireTile(args.tileId).id); return appControlSnapshot(context);
     case "close_tile": {
@@ -124,7 +124,7 @@ export function executeAppControl(action: string, args: Record<string, unknown>,
       return appControlSnapshot(context);
     }
     case "reorder_tile": { const source = requireTile(args.tileId); const target = requireTile(args.targetId); state.reorderTile(source.id, target.id); return appControlSnapshot(context); }
-    case "set_tile_span": state.setTileSpan(requireTile(args.tileId).id, args.columns as number, args.rows as number); return appControlSnapshot(context);
+    case "set_tile_span": state.setTileSpan(state.activeWorkspaceId, requireTile(args.tileId).id, args.columns as number, args.rows as number); return appControlSnapshot(context);
     case "configure_appearance": {
       if (args.theme !== undefined) {
         if (!findTheme(args.theme as string)) throw new Error("Unknown theme. Read list_themes for theme IDs.");
