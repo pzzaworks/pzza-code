@@ -1284,7 +1284,7 @@ export const HELP_PAGES: Record<HelpTopic, HelpPage> = {
     ),
     body: (
       <>
-        <Row ui={<IB icon={SettingsIcon} />} name="General">Appearance (theme, grayscale, spacing, transparency), Menu buttons, Terminal, Saved prompts{IS_MAC ? " and Dictation" : ""}.</Row>
+        <Row ui={<IB icon={SettingsIcon} />} name="General">Appearance (theme, grayscale, spacing, transparency), Menu buttons, Terminal, Saved prompts{IS_MAC ? ", Dictation and Power (keeping agents running while the Mac would sleep)" : ""}.</Row>
         <Row ui={<IB icon={Bell} />} name="Notifications">Activity history and alert preferences.</Row>
         <Row ui={<IB icon={Wrench} />} name="Setup">Permissions, tools and this device's health.</Row>
         <Row ui={<IB icon={MessageSquare} />} name="Quick Chat">The agent and device it uses.</Row>

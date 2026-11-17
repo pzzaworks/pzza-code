@@ -27,6 +27,8 @@ export const DEVICE_APP_COMMANDS = {
   close_quick_chat: command("Hide Quick Chat while keeping its conversation running."),
   get_updates: command("Read update availability and download/install progress."),
   configure_updates: command("Set automatic updates. Enabling can install an update already waiting, matching Settings behavior.", { autoUpdate: boolean }, ["autoUpdate"]),
+  get_power: command("Read the Keep agents running setting and what is held now: idle sleep, sleep on lid close (needs the helper approved in Settings), and any pause reason."),
+  configure_power: command("Set Keep agents running (the Mac does not sleep while the app is open) and whether it also holds on battery, matching Settings. Turning either on asks the user to confirm. Setting up the lid-close helper is only done from Settings.", { keepAwake: boolean, onBattery: boolean }),
   check_updates: command("Check for a signed app update without installing it. Returns running state; poll get_updates."),
   install_update: command("Begin installing the exact previously checked version. Returns running state; poll get_updates. Does not restart the app.", { version: text(80) }, ["version"]),
 };

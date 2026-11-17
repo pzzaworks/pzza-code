@@ -6,6 +6,7 @@ import { useForwardConfig, updateForwardConfig, reconcileSelectedForwarding } fr
 import { configureRemoteDesktop, openSaved, useRdpConnection } from "./panels/RdpMenu";
 import { useQuickChatPreferences, useQuickChatView } from "./panels/QuickChat";
 import { useUpdates } from "./state/updates";
+import { POWER_SUPPORTED, usePower, type KeepAwake } from "./state/power";
 import { DEFAULT_MIN_PORT, DEFAULT_SKIP, forwardScan } from "./forward";
 import { fetchForwardState, setForwardEnabled, type SyncOptions } from "./serverApi";
 import { HAS_TAURI } from "./tauriEnv";
@@ -96,6 +97,18 @@ function updates() {
   return { supported: HAS_TAURI, autoUpdate, status: status.kind, ...("update" in status ? { version: status.update.version, currentVersion: status.update.currentVersion, date: status.update.date } : {}), ...("pct" in status ? { progress: status.pct } : {}), ...("msg" in status ? { error: status.msg } : {}) };
 }
 function desktopUpdates() { if (!HAS_TAURI) throw new Error("App updates are available in the desktop app."); }
+function power() {
+  const { enabled, onBattery, status } = usePower.getState();
+  return { supported: POWER_SUPPORTED, keepAwake: enabled, onBattery, ...(status ? { helper: status.helper, awake: status.awake, lid: status.lid, paused: status.paused, error: status.error } : {}) };
+}
+async function configurePower(args: Readonly<Record<string, unknown>>) {
+  if (!POWER_SUPPORTED) throw new Error("Keeping the Mac awake is available in the macOS desktop app.");
+  const patch: Partial<KeepAwake> = {};
+  if (typeof args.keepAwake === "boolean") patch.enabled = args.keepAwake;
+  if (typeof args.onBattery === "boolean") patch.onBattery = args.onBattery;
+  await usePower.getState().setKeepAwake(patch);
+  return power();
+}
 export function initDeviceAppControlHandlers(): () => void {
   const handlers: Record<string, (args: Readonly<Record<string, unknown>>) => unknown | Promise<unknown>> = {
     get_sync_preferences: syncPreferences, configure_sync: configureSync, get_sync_state: projectSyncSnapshot,
@@ -108,12 +121,13 @@ export function initDeviceAppControlHandlers(): () => void {
     configure_quick_chat: args => { if (typeof args.deviceId === "string") device(args.deviceId); useQuickChatPreferences.getState().update(args as Partial<ReturnType<typeof useQuickChatPreferences.getState>["defaults"]>); return quickChat(); },
     open_quick_chat: () => { useQuickChatView.setState({ open: true }); return quickChat(); },
     close_quick_chat: () => { useQuickChatView.setState({ open: false }); return quickChat(); },
+    get_power: power, configure_power: configurePower,
     get_updates: updates,
     configure_updates: args => { desktopUpdates(); useUpdates.getState().setAutoUpdate(args.autoUpdate === true); return updates(); },
     check_updates: () => { desktopUpdates(); void useUpdates.getState().check(true, false); return updates(); },
     install_update: args => { desktopUpdates(); const status = useUpdates.getState().status; if (status.kind !== "available" || status.update.version !== args.version) throw new Error("Check updates and select the exact available version before installing."); void useUpdates.getState().install(); return updates(); },
   };
   const cleanups = Object.entries(handlers).map(([action, handler]) => registerAppControlHandler(action, handler));
-  cleanups.push(registerAppControlState("devices", () => ({ sync: syncPreferences(), syncActivity: projectSyncSnapshot(), forwarding: forwardingConfig(), remoteDesktop: remoteDesktop(), quickChat: quickChat(), updates: updates() })));
+  cleanups.push(registerAppControlState("devices", () => ({ sync: syncPreferences(), syncActivity: projectSyncSnapshot(), forwarding: forwardingConfig(), remoteDesktop: remoteDesktop(), quickChat: quickChat(), updates: updates(), power: power() })));
   return () => { for (const cleanup of cleanups) cleanup(); };
 }

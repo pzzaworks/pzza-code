@@ -16,6 +16,7 @@ import { relaunchApp } from "./updater";
 import { ALL_WORKSPACE_ID, DEFAULT_WORKSPACE_ID, wsKeyOf } from "./workspaces";
 import { deleteWorkspaceSnapshot, relaunchWorkspaceSnapshot, renameWorkspaceSnapshot, saveWorkspaceSnapshot, snapshotSummaries, useWorkspaceSnapshots } from "./state/workspaceSnapshots";
 import { usePrompts } from "./state/prompts";
+import { usePower } from "./state/power";
 import { openTilePullRequest, reviewTileChanges, tileGitStatus } from "./tileGit";
 import { configureSyncConfirmation, syncProjectsConfirmation, terminateSessionConfirmation } from "./appControlConfirmations";
 import { useProjectSyncPreferences } from "./state/projectSync";
@@ -86,6 +87,9 @@ export async function confirmAppControlAction(action: string, args: Readonly<Rec
     if (tile) options = { title: "Resume a conversation in this tile?", message: `Types the ${sessionAgent(args.agent)?.label ?? "agent"} resume command for conversation ${String(args.sessionId)} into ${state.tileTitles[tile.id] ?? tile.name} and runs it there.`, confirmLabel: "Resume here" };
   } else if (action === "clear_notifications" && useNotifications.getState().items.length) {
     options = { title: "Clear notification history?", message: "Permanently remove all notification history on this device? This cannot be undone.", confirmLabel: "Clear history", danger: true };
+  } else if (action === "configure_power" && ((args.keepAwake === true && !usePower.getState().enabled) || (args.onBattery === true && !usePower.getState().onBattery))) {
+    // Keeping the Mac awake costs battery and heat, so an agent cannot switch it on unasked.
+    options = { title: "Keep the Mac awake?", message: args.onBattery === true ? "While PzzaCode is open the Mac will not sleep, on battery too (down to 20%). This uses more battery and keeps it warm." : "While PzzaCode is open and on the power adapter, the Mac will not sleep. This keeps it running and warm.", confirmLabel: "Keep awake" };
   } else if (action === "configure_appearance" && args.osc52Clipboard === true && !state.osc52Clipboard) {
     options = { title: "Allow terminal clipboard writes?", message: "Programs running in your terminals will be able to replace your clipboard using OSC 52. Enable this only for programs you trust.", confirmLabel: "Allow clipboard writes" };
   }

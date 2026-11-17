@@ -18,6 +18,7 @@ import { useEffect } from "react";
 import { confirmAction } from "../ui/ConfirmDialog";
 import { SESSION_HEADER_ITEMS, STATUS_BAR_ID, STATUS_BAR_ITEMS, TOP_BAR_ITEMS, type BarItemId } from "../barItems";
 import { hasRemoteDevice } from "../devices";
+import { POWER_SUPPORTED, usePower, type PowerStatus } from "../state/power";
 
 export function SettingsMenu({ section }: { section: GeneralSection }) {
   return (
@@ -27,6 +28,7 @@ export function SettingsMenu({ section }: { section: GeneralSection }) {
       {section === "terminal" && <TerminalSection />}
       {section === "prompts" && <PromptSettings />}
       {section === "dictation" && <DictationSection />}
+      {section === "power" && <PowerSection />}
     </div>
   );
 }
@@ -148,6 +150,69 @@ export function UpdatesSection() {
       {status.kind === "ready" && status.error ? <p className="set-note" role="alert">{status.error}</p> : null}
     </Section>
   );
+}
+
+// What the lid row says for each state of the lid-close helper (power.rs).
+function lidHint(status: PowerStatus | null): string {
+  switch (status?.helper) {
+    case "ready": return "Closing the lid locks the screen and turns it off while the Mac keeps running. Keep it out of a closed bag.";
+    case "needsApproval": return "Allow PzzaCode in the background in System Settings > Login Items to finish.";
+    case "notInstalled": return "macOS sleeps when the lid closes. A small helper, approved once in System Settings, lets PzzaCode keep it awake.";
+    case "unavailable": return "Available in the installed PzzaCode app.";
+    case "unsupported": return "Needs macOS 13 or later.";
+    default: return "Checking…";
+  }
+}
+
+function powerNote(status: PowerStatus | null): string | null {
+  if (!status) return null;
+  if (status.paused) return `Paused: ${status.paused}. The Mac can sleep until that changes.`;
+  if (status.lid) return "Keeping the Mac awake, even with the lid closed.";
+  if (status.awake) return "Keeping the Mac awake while the lid is open.";
+  return null;
+}
+
+function PowerSection() {
+  const enabled = usePower((s) => s.enabled);
+  const onBattery = usePower((s) => s.onBattery);
+  const status = usePower((s) => s.status);
+  const installing = usePower((s) => s.installing);
+  const actionError = usePower((s) => s.actionError);
+  const setKeepAwake = usePower((s) => s.setKeepAwake);
+  const installHelper = usePower((s) => s.installHelper);
+  const openLoginItems = usePower((s) => s.openLoginItems);
+  // Fresh status on open; the window focus listener (initializePower) keeps it current.
+  useEffect(() => { void usePower.getState().apply(); }, []);
+  if (!POWER_SUPPORTED) return null;
+  const note = enabled ? powerNote(status) : null;
+  const error = actionError ?? (enabled ? status?.error : null);
+  return <Section title="Power">
+    <Row label="Keep agents running" hint="While PzzaCode is open the Mac does not sleep, so agents in your sessions keep working. The display still turns off.">
+      <button className={`switch ${enabled ? "switch-on" : ""}`} type="button"
+        role="switch" aria-label="Keep agents running" aria-checked={enabled}
+        onClick={() => void setKeepAwake({ enabled: !enabled })}>
+        <span className="switch-knob" />
+      </button>
+    </Row>
+    {enabled ? <>
+      <Row label="Also on battery" hint="Otherwise only on the power adapter. On battery it stops below 20% or in Low Power Mode.">
+        <button className={`switch ${onBattery ? "switch-on" : ""}`} type="button"
+          role="switch" aria-label="Also on battery" aria-checked={onBattery}
+          onClick={() => void setKeepAwake({ onBattery: !onBattery })}>
+          <span className="switch-knob" />
+        </button>
+      </Row>
+      <Row label="With the lid closed" hint={lidHint(status)}>
+        {status?.helper === "notInstalled"
+          ? <AsyncButton className="btn btn-sm" loading={installing} icon={Download} onClick={() => void installHelper()}>Set up</AsyncButton>
+          : status?.helper === "needsApproval"
+            ? <button type="button" className="btn btn-sm" onClick={() => void openLoginItems()}>Open Login Items</button>
+            : null}
+      </Row>
+    </> : null}
+    {note ? <p className="set-note" role="status">{note}</p> : null}
+    {error ? <p className="set-note" role="alert">{error}</p> : null}
+  </Section>;
 }
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {

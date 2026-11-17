@@ -1,9 +1,10 @@
 [package]
 name = "pzzacode"
-version = "0.2.81"
+version = "0.2.82"
 description = "PzzaCode - every terminal, every agent, one grid"
 authors = ["Berke (pzzaworks)"]
 edition = "2021"
+default-run = "pzzacode"
 
 [lib]
 name = "pzzacode_lib"
@@ -36,7 +37,11 @@ objc2-core-audio = { version = "0.3", default-features = false, features = ["std
 # Raw input callback for the dictation microphone (see voice_io::TappedUnit).
 objc2-audio-toolbox = { version = "0.3", default-features = false, features = ["std", "objc2-core-audio-types", "AUComponent", "AudioComponent", "AudioUnitProperties"] }
 objc2-core-audio-types = { version = "0.3", default-features = false, features = ["std", "CoreAudioBaseTypes"] }
-objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFString", "CFArray", "CFLocale"] }
+objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFString", "CFArray", "CFLocale", "CFDictionary", "CFNumber"] }
+# Power settings (power.rs): Low Power Mode, heat and the OS version check, and
+# registering the lid-close helper as a LaunchDaemon.
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSError", "NSProcessInfo"] }
+objc2-service-management = { version = "0.3", default-features = false, features = ["std", "SMAppService", "objc2", "objc2-foundation"] }
 whisper-rs = { version = "=0.16.0", features = ["metal"] }
 # ONNX Runtime for dictation's voice activity detection (voice_vad.rs). The
 # official onnxruntime dylib ships inside the app bundle (signed with it) and

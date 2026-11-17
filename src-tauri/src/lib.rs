@@ -10,6 +10,9 @@ mod pane_mode;
 mod appearance;
 mod forward;
 mod permissions;
+mod power;
+#[cfg(target_os = "macos")]
+mod power_ipc;
 mod pty;
 mod rdp;
 mod speech;
@@ -449,6 +452,7 @@ pub fn run() {
         .manage(shutdown::TerminalStartup::default())
         .manage(open_files::OpenedFiles::default())
         .manage(open_panel::OpenPanel::default())
+        .manage(power::PowerState::default())
         .on_page_load(open_files::page_load)
         .setup(|app| {
             #[cfg(target_os = "macos")]
@@ -530,6 +534,10 @@ pub fn run() {
             permissions::permission_request,
             permissions::permission_open_settings,
             appearance::set_desktop_blur,
+            power::power_keep_awake,
+            power::power_status,
+            power::power_install_helper,
+            power::power_open_login_items,
             open_files::take_opened_files,
             open_panel::pick_and_open,
             open_files::default_editor_status,
