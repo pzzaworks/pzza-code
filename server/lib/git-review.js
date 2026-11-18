@@ -6,7 +6,7 @@
 // inputs are positional, single-quoted arguments.
 import { execFile, spawn } from "node:child_process";
 import { constants as fsConstants } from "node:fs";
-import { lstat, mkdir, open, readlink, realpath, rename } from "node:fs/promises";
+import { lstat, mkdir, open, readdir, readlink, realpath, rename } from "node:fs/promises";
 import nodePath from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { DEVBOX, IS_CLIENT } from "./config.js";
@@ -19,6 +19,8 @@ export const GIT_REVIEW_LIMITS = {
   side: 512 * 1024,
   binaryProbe: 8 * 1024,
   worktrees: 200,
+  folderEntries: 1000,
+  repositories: 50,
   listBytes: 1024 * 1024,
   ghBytes: 1024 * 1024,
   localMs: 8000,
@@ -460,6 +462,78 @@ export function gitRemote({ host, path }, { execImpl, ghCommand = "gh", now = Da
   remoteCache.set(key, entry);
   promise.catch(() => { if (remoteCache.get(key) === entry) remoteCache.delete(key); });
   return promise;
+}
+
+// ------------------------------------------------------------- repositories
+
+// The folders to read worktrees from for a folder a tile works in: the folder
+// itself when it is inside a repository, otherwise one folder for each
+// repository directly inside it (a folder of projects), however many of that
+// repository's worktrees sit there side by side. Hidden folders and symbolic
+// links are skipped; nothing below the first level is read.
+async function localRepositories(path) {
+  if (ok(await runLocal("git", ["-C", path, "rev-parse", "--show-toplevel"], { maxBytes: 8192 }))) return [path];
+  let entries;
+  try { entries = await readdir(path, { withFileTypes: true }); } catch { throw notRepo(); }
+  const children = entries
+    .filter((entry) => entry.isDirectory() && !entry.name.startsWith(".") && !CONTROL.test(entry.name))
+    .map((entry) => nodePath.join(path, entry.name))
+    .sort()
+    .slice(0, GIT_REVIEW_LIMITS.folderEntries);
+  const seen = new Set();
+  const folders = [];
+  for (let index = 0; index < children.length && folders.length < GIT_REVIEW_LIMITS.repositories; index += 16) {
+    const commons = await Promise.all(children.slice(index, index + 16).map(async (child) => {
+      if (!await lstat(nodePath.join(child, ".git")).then(() => true, () => false)) return null;
+      const result = await runLocal("git", ["-C", child, "rev-parse", "--git-common-dir"], { maxBytes: 8192 });
+      const common = ok(result) ? firstLine(result.stdout) : "";
+      return common && !CONTROL.test(common) ? realpath(nodePath.resolve(child, common)).catch(() => null) : null;
+    }));
+    commons.forEach((common, offset) => {
+      if (!common || seen.has(common) || folders.length >= GIT_REVIEW_LIMITS.repositories) return;
+      seen.add(common);
+      folders.push(children[index + offset]);
+    });
+  }
+  return folders;
+}
+
+// $1 folder. The same as localRepositories: one "repo" record for the folder
+// itself when it is inside a repository, else one per repository directly
+// inside it, keyed by the real path of its common Git directory.
+export const REMOTE_REPOSITORIES_SCRIPT = String.raw`export LC_ALL=C GIT_TERMINAL_PROMPT=0
+PATH="$PATH:/opt/homebrew/bin:/usr/local/bin"
+if git -C "$1" rev-parse --show-toplevel >/dev/null 2>&1 </dev/null; then printf '\036repo\n%s\n' "$1"; exit 0; fi
+[ -d "$1" ] || exit 3
+seen="
+"
+scanned=0 found=0
+for d in "$1"/*; do
+  [ -d "$d" ] && [ ! -L "$d" ] || continue
+  scanned=$((scanned + 1))
+  [ "$scanned" -le ${GIT_REVIEW_LIMITS.folderEntries} ] && [ "$found" -lt ${GIT_REVIEW_LIMITS.repositories} ] || break
+  [ -e "$d/.git" ] || continue
+  common=$(cd -P -- "$d" 2>/dev/null && dir=$(git rev-parse --git-common-dir 2>/dev/null </dev/null) && cd -P -- "$dir" 2>/dev/null && pwd -P) || continue
+  case "$seen" in *"
+$common
+"*) continue ;; esac
+  seen="$seen$common
+"
+  found=$((found + 1))
+  printf '\036repo\n%s\n' "$d"
+done
+exit 0`;
+
+async function remoteRepositories(host, path, execImpl) {
+  const { stdout } = await runRemote(host, REMOTE_REPOSITORIES_SCRIPT, [path], { execImpl });
+  return sections(stdout.toString("utf8"))
+    .filter(([name, body]) => name === "repo" && body.startsWith("/") && !CONTROL.test(body))
+    .map(([, body]) => body)
+    .slice(0, GIT_REVIEW_LIMITS.repositories);
+}
+
+export async function gitRepositories({ host, path }, { execImpl } = {}) {
+  return { folders: isLocal(host) ? await localRepositories(path) : await remoteRepositories(host, path, execImpl) };
 }
 
 // ---------------------------------------------------------------- worktrees
@@ -967,6 +1041,7 @@ const ROUTES = {
   "/git/changes": [validateGitChangesRequest, gitChanges],
   "/git/diff": [validateGitDiffRequest, gitDiff],
   "/git/remote": [validateGitRemoteRequest, gitRemote],
+  "/git/repositories": [validateGitWorktreesRequest, gitRepositories],
   "/git/worktrees": [validateGitWorktreesRequest, gitWorktrees],
   "/git/worktrees/remove": [validateGitRemoveWorktreeRequest, gitRemoveWorktree],
   "/git/ci-failures": [validateGitCiFailuresRequest, gitCiFailures],

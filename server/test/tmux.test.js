@@ -651,3 +651,50 @@ test("real activity probe matches a full process snapshot and reads each agent p
     syncBuiltinESMExports();
   }
 });
+
+test("real activity probe reports the conversation of each Claude Code process from its own session file", { skip: process.platform !== "darwin", timeout: 20_000 }, async (t) => {
+  const root = await realpath(await mkdtemp("/tmp/pzza-claude-session-"));
+  const socket = path.join(root, "socket");
+  const home = path.join(root, "home");
+  const realTmux = (await run("sh", ["-c", "command -v tmux"])).stdout.trim();
+  const tmux = (...args) => run(realTmux, ["-S", socket, ...args]);
+  t.after(async () => {
+    await tmux("kill-server").catch(() => {});
+    await rm(root, { recursive: true, force: true });
+  });
+  for (const folder of [".claude", ".claude-alt"]) await mkdir(path.join(home, folder, "sessions"), { recursive: true });
+  const bin = path.join(root, "bin");
+  await mkdir(bin);
+  await writeFile(path.join(bin, "tmux"), `#!/bin/sh\nexec ${shQuote(realTmux)} -S ${shQuote(socket)} "$@"\n`, { mode: 0o700 });
+  // A stand-in for Claude Code that records itself the way Claude Code does:
+  // `ps lstart` in the C locale and UTC, in its config folder's sessions/<pid>.json.
+  const script = path.join(root, "node_modules", "@anthropic-ai/claude-code", "cli.js");
+  await mkdir(path.dirname(script), { recursive: true });
+  await writeFile(script, `const { execFileSync } = require("node:child_process");
+const fs = require("node:fs");
+const path = require("node:path");
+const folder = process.env.CLAUDE_CONFIG_DIR || path.join(process.env.HOME, ".claude");
+const started = execFileSync("/bin/ps", ["-o", "lstart=", "-p", String(process.pid)], { env: { ...process.env, LC_ALL: "C", TZ: "UTC" }, encoding: "utf8" }).trim();
+const procStart = process.env.FAKE_STALE ? "Thu Jan  1 00:00:00 1970" : started;
+fs.writeFileSync(path.join(folder, "sessions", process.pid + ".json"), JSON.stringify({ pid: process.pid, sessionId: process.env.FAKE_SESSION, cwd: "/Users/me/app", procStart, kind: "interactive", status: "idle", tmux: process.env.TMUX_PANE }));
+execFileSync(${JSON.stringify(realTmux)}, ["-S", ${JSON.stringify(socket)}, "wait-for", "-S", process.env.FAKE_SIGNAL]);
+setInterval(() => {}, 1000);
+`);
+  const conversations = ["11111111-2222-4333-8444-555555555555", "66666666-7777-4888-9999-aaaaaaaaaaaa", "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff"];
+  const start = async (window, environment, signal) => {
+    if (window > 0) await tmux("new-window", "-t", "agents", "bash --noprofile --norc");
+    await tmux("send-keys", "-t", `agents:${window}`, `env -u CLAUDE_CONFIG_DIR HOME=${shQuote(home)} FAKE_SIGNAL=${signal} ${environment} ${shQuote(process.execPath)} ${shQuote(script)}`, "Enter");
+    await tmux("wait-for", signal);
+  };
+  await tmux("-f", "/dev/null", "new-session", "-d", "-s", "agents", "bash --noprofile --norc");
+  await start(0, `FAKE_SESSION=${conversations[0]}`, "default-ready");
+  await start(1, `CLAUDE_CONFIG_DIR=${shQuote(path.join(home, ".claude-alt"))} FAKE_SESSION=${conversations[1]}`, "account-ready");
+  // A file whose start time is not this process's: a reused pid.
+  await start(2, `FAKE_STALE=1 FAKE_SESSION=${conversations[2]}`, "stale-ready");
+  const rows = JSON.parse((await run(process.execPath, ["-e", ACTIVITY_PROBE_SCRIPT], { timeout: 10_000, env: { ...process.env, HOME: home, PATH: `${bin}:${process.env.PATH}` } })).stdout);
+  assert.deepEqual(rows.map((row) => [row.window, row.command, row.launch]), [
+    [0, "claude", { mode: null, account: null, conversation: conversations[0], status: "idle" }],
+    [1, "claude", { mode: null, account: path.join(home, ".claude-alt"), conversation: conversations[1], status: "idle" }],
+    [2, "claude", undefined],
+  ]);
+});

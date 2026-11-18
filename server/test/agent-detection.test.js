@@ -1,11 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import * as fs from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import { ACTIVITY_PROBE_SCRIPT, detectSessionActivity, processAgentCommand } from "../lib/session-activity.js";
+import { ACTIVITY_PROBE_SCRIPT, detectSessionActivity, processAgentCommand, processStartTimes, readClaudeSessionFile } from "../lib/session-activity.js";
 import { SESSION_AGENTS, agentProcessRules, matchAgentProcess } from "../lib/session-agents.js";
 
 const node = (entrypoint, ...rest) => ({ command: "node", executable: "/usr/bin/node", entrypoint, args: ["node", entrypoint, ...rest] });
@@ -169,6 +170,93 @@ test("detected agents report how they were started: catalog mode and account fol
   assert.deepEqual(remote({ mode: null, account: null, accountUnusable: true }), { mode: null, account: null, accountUnusable: true });
   assert.equal(remote({ mode: "rm -rf", account: "/home/me/.claude-work; id" }), undefined);
   assert.equal(remote("bad"), undefined);
+});
+
+const CONVERSATION = "0f1e2d3c-4b5a-4968-8776-655443322110";
+const PROCESS_START = "Wed Nov 18 05:54:42 2026";
+const sessionFile = (overrides = {}) => ({ pid: 20, sessionId: CONVERSATION, cwd: "/Users/me/app", procStart: PROCESS_START, kind: "interactive", status: "busy", updatedAt: 1794981283270, tmux: "work:@0.%0", ...overrides });
+
+test("a Claude Code session file is read only when it is a small regular file naming this interactive process", async (t) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "pzza-claude-sessions-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  await mkdir(path.join(directory, "sessions"));
+  const write = (pid, content) => writeFile(path.join(directory, "sessions", `${pid}.json`), typeof content === "string" ? content : JSON.stringify(content));
+  const read = (pid) => readClaudeSessionFile(fs, path, directory, pid);
+
+  await write(20, sessionFile());
+  assert.deepEqual(await read(20), { conversation: CONVERSATION, status: "busy", procStart: PROCESS_START });
+  // ps pads a one-digit day; the start time is compared in a single-spaced form.
+  await write(21, sessionFile({ pid: 21, status: "idle", procStart: "Thu Nov  5 05:54:42 2026" }));
+  assert.deepEqual(await read(21), { conversation: CONVERSATION, status: "idle", procStart: "Thu Nov 5 05:54:42 2026" });
+  // An unknown state keeps the conversation and reports no status.
+  await write(22, sessionFile({ pid: 22, status: "shell" }));
+  assert.deepEqual(await read(22), { conversation: CONVERSATION, procStart: PROCESS_START });
+
+  const rejected = {
+    30: sessionFile(), // another process's file
+    31: sessionFile({ pid: 31, kind: "background" }),
+    32: sessionFile({ pid: 32, kind: undefined }),
+    33: sessionFile({ pid: 33, sessionId: CONVERSATION.toUpperCase() }),
+    34: sessionFile({ pid: 34, sessionId: "not-a-session" }),
+    35: sessionFile({ pid: 35, sessionId: `${CONVERSATION}/../x` }),
+    36: sessionFile({ pid: 36, procStart: undefined }),
+    37: sessionFile({ pid: 37, procStart: "1794981282000" }),
+    38: sessionFile({ pid: "38" }),
+    39: "{\"pid\": 39, \"sessionId\":",
+    40: "[]",
+    41: JSON.stringify({ ...sessionFile({ pid: 41 }), padding: "x".repeat(16 * 1024) }),
+  };
+  for (const [pid, content] of Object.entries(rejected)) await write(pid, content);
+  for (const pid of Object.keys(rejected)) assert.equal(await read(Number(pid)), null, `file ${pid}`);
+  assert.equal(await read(50), null, "a missing file");
+
+  // A symlink to a valid file, a FIFO and a folder are never read.
+  await write("target", sessionFile({ pid: 51 }));
+  await symlink(path.join(directory, "sessions", "target.json"), path.join(directory, "sessions", "51.json"));
+  assert.equal(await read(51), null, "a symlink");
+  await promisify(execFile)("mkfifo", [path.join(directory, "sessions", "52.json")]);
+  assert.equal(await read(52), null, "a FIFO");
+  await mkdir(path.join(directory, "sessions", "53.json"));
+  assert.equal(await read(53), null, "a folder");
+
+  assert.equal(await readClaudeSessionFile(fs, path, "relative/folder", 20), null);
+  assert.equal(await readClaudeSessionFile(fs, path, "", 20), null);
+  assert.equal(await readClaudeSessionFile(fs, path, directory, 0), null);
+});
+
+test("a pane reports its Claude Code conversation only from a session file this process wrote", () => {
+  const claude = (overrides) => [row(), row({ pid: 20, ppid: 10, pgid: 20, ...native("claude"), exactArgs: ["claude"], started: PROCESS_START, claudeSession: { conversation: CONVERSATION, status: "busy", procStart: PROCESS_START }, ...overrides })];
+  const launch = (overrides) => detectSessionActivity([pane()], claude(overrides))[0].launch;
+  assert.deepEqual(launch(), { mode: null, account: null, conversation: CONVERSATION, status: "busy" });
+  assert.deepEqual(launch({ exactArgs: ["claude", "--dangerously-skip-permissions"], accountDirectory: "/Users/me/.claude-pz", account: "/Users/me/.claude-pz" }),
+    { mode: "bypass", account: "/Users/me/.claude-pz", conversation: CONVERSATION, status: "busy" });
+  assert.deepEqual(launch({ claudeSession: { conversation: CONVERSATION, procStart: PROCESS_START } }), { mode: null, account: null, conversation: CONVERSATION });
+  // A file left by a crashed process whose pid was reused by this one.
+  assert.equal(launch({ started: "Wed Nov 18 05:54:43 2026" }), undefined, "pid reuse");
+  assert.equal(launch({ started: undefined }), undefined, "no start time to compare");
+  assert.equal(launch({ claudeSession: { conversation: "bad", status: "busy", procStart: PROCESS_START } }), undefined);
+  assert.deepEqual(launch({ claudeSession: { conversation: CONVERSATION, status: "rm -rf", procStart: PROCESS_START } }), { mode: null, account: null, conversation: CONVERSATION });
+  // Only Claude Code writes these files.
+  assert.equal(detectSessionActivity([pane()], claude({ ...native("codex") }))[0].launch, undefined);
+
+  // A remote device verified its own file; only a UUID and a known state pass through.
+  const remote = (command, value) => detectSessionActivity([pane({ command, launch: value })], [])[0].launch;
+  assert.deepEqual(remote("claude", { mode: null, account: null, conversation: CONVERSATION, status: "idle" }), { mode: null, account: null, conversation: CONVERSATION, status: "idle" });
+  assert.deepEqual(remote("claude", { mode: "bypass", account: null, conversation: CONVERSATION, status: "asleep" }), { mode: "bypass", account: null, conversation: CONVERSATION });
+  assert.equal(remote("claude", { mode: null, account: null, conversation: "../../etc/passwd", status: "busy" }), undefined);
+  assert.equal(remote("codex", { mode: null, account: null, conversation: CONVERSATION, status: "busy" }), undefined);
+});
+
+test("start times for a snapshot without them are ps lstart in the C locale and UTC", async () => {
+  let call;
+  const execute = async (command, args, environment) => {
+    call = { command, args, locale: environment.LC_ALL, zone: environment.TZ };
+    return `   20 Thu Nov  5 05:54:42 2026\n   21 garbage\n  999 Wed Nov 18 05:54:42 2026\n`;
+  };
+  assert.deepEqual([...await processStartTimes(execute, [20, 21, 20, -1])], [[20, "Thu Nov 5 05:54:42 2026"]]);
+  assert.deepEqual(call, { command: "ps", args: ["-o", "pid=,lstart=", "-p", "20,21"], locale: "C", zone: "UTC" });
+  assert.deepEqual([...await processStartTimes(async () => "", [20])], []);
+  assert.deepEqual([...await processStartTimes(execute, [])], []);
 });
 
 test("without a process snapshot, unambiguous pane commands name the agent and ambiguous ones do not", () => {

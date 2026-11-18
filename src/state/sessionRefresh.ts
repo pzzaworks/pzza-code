@@ -54,6 +54,8 @@ export interface AgentResume {
   command: string;
   /** Only recorded, not detected: resume only if that pane runs a program that can be this agent. */
   onlyIfBusy: boolean;
+  /** The exact conversation to continue, when the agent reported it; otherwise the native side decides from its record. */
+  conversation?: string;
 }
 
 interface RefreshReport {
@@ -70,7 +72,7 @@ export interface LocalTile {
   choice?: SessionAgentChoice;
 }
 
-type ActivityRow = Pick<SessionActivity, "session" | "window" | "active" | "command" | "effectiveProvider" | "launch">;
+type ActivityRow = Pick<SessionActivity, "session" | "window" | "active" | "command" | "effectiveProvider" | "launch" | "panes">;
 
 /**
  * Which agents to start again after the restart, from the catalog. Detected
@@ -100,8 +102,27 @@ export function agentsToResume(rows: readonly ActivityRow[] | null, tiles: reado
     const mode = row.launch?.mode ?? recorded;
     const account = row.launch?.account ?? undefined;
     const command = sessionAgentResumeCommand(agent, mode !== undefined || account !== undefined ? { id: agent, mode: mode ?? "", account } : undefined);
-    return command ? [{ session: row.session, window: row.window, command, onlyIfBusy: false }] : [];
+    const conversation = row.launch?.conversation;
+    return command ? [{ session: row.session, window: row.window, command, onlyIfBusy: false, ...(conversation ? { conversation } : {}) }] : [];
   });
+}
+
+// Programs a pane can sit at with nothing running (pane_current_command, as
+// the native restore and folder sync count shells).
+const SHELLS = new Set(["bash", "zsh", "fish", "sh", "dash", "ksh", "mksh", "tcsh", "csh", "nu", "xonsh", "elvish", "login"]);
+
+/**
+ * The sessions a restart would stop work in: a window running any program
+ * but a shell, or an agent that is not known to be idle (waiting for you).
+ * Only a window's active pane is read, so a window with more panes always
+ * counts as busy. Empty when every window is at a shell or an idle agent.
+ */
+export function busySessions(rows: readonly ActivityRow[]): string[] {
+  return [...new Set(rows.filter(row => {
+    if ((row.panes ?? 1) > 1) return true;
+    if (SHELLS.has(row.command.split("/").pop()?.replace(/^-/, "") ?? "")) return false;
+    return !(rowAgent(row) && row.launch?.status === "idle");
+  }).map(row => row.session))];
 }
 
 /**
@@ -184,13 +205,19 @@ function failureReason(error: unknown): string {
 /**
  * Saves, restarts and restores the local sessions. Throws only when a
  * refresh is already running; any other outcome is reported in the notice.
+ * With `onlyIfIdle` nothing happens (false) unless every local window is at a
+ * shell or an idle agent at this moment, so no running work is stopped.
  */
-export async function refreshLocalSessions(): Promise<void> {
+export async function refreshLocalSessions(options: { onlyIfIdle?: boolean } = {}): Promise<boolean> {
   if (useSessionRefresh.getState().running) throw new Error("Sessions are already refreshing.");
-  useSessionRefresh.setState({ running: true, restoring: false, notice: null });
+  useSessionRefresh.setState({ running: true, restoring: false });
+  let refreshed = false;
   try {
     const tiles = localTiles();
     const rows = await fetchSessionActivity("").catch(() => null);
+    if (options.onlyIfIdle && (!rows || busySessions(rows).length)) return false;
+    refreshed = true;
+    useSessionRefresh.setState({ notice: null });
     const detected = agentsToResume(rows, tiles);
     const agents = [...detected, ...snapshotAgents(detected, autoSavedLocalAgents())];
     const report = await invoke<RefreshReport>("local_tmux_refresh_sessions", { agents });
@@ -198,9 +225,16 @@ export async function refreshLocalSessions(): Promise<void> {
   } catch (error) {
     useSessionRefresh.setState({ notice: { tone: "fail", message: `Sessions could not be refreshed. ${failureReason(error)}`.trim(), failed: [] } });
   } finally {
-    useSessionRefresh.setState(state => ({ running: false, generation: state.generation + 1 }));
-    retieLocalWindowIds();
+    useSessionRefresh.setState(state => ({ running: false, generation: state.generation + (refreshed ? 1 : 0) }));
+    if (refreshed) retieLocalWindowIds();
   }
+  return refreshed;
+}
+
+/** The local sessions a refresh would stop work in now; null when activity is unavailable. */
+export async function busyLocalSessions(): Promise<string[] | null> {
+  const rows = await fetchSessionActivity("").catch(() => null);
+  return rows ? busySessions(rows) : null;
 }
 
 /**
@@ -345,38 +379,53 @@ export function observePermissionStatuses(next: Statuses): void {
     .catch(() => { /* No local terminal server: nothing is running without it. */ });
 }
 
-/** One status read shortly after launch, for grants made while the app was closed or that needed a relaunch. */
+// How often terminals left on the previous version are checked for idleness.
+const IDLE_POLL_MS = 15_000;
+
 /**
  * After an update the terminals keep running on the previous version (an
  * update never stops them). macOS then lets none of the app's permissions
  * reach them, and asks for none: Full Disk Access, Automation and the rest
- * look granted in System Settings but fail in every terminal. So the first
- * launch of a new version refreshes them onto it, once the launch's own
- * restore check is done; agents continue their conversations. A refresh that
- * fails says so in its notice and is not retried on its own.
+ * look granted in System Settings but fail in every terminal. Moving them
+ * onto the new version restarts every program in them, so it never happens
+ * while work runs: a notification says they are waiting, and the refresh
+ * starts on its own only once every local window is at a shell or an idle
+ * agent (checked again right before the restart). Agents then continue their
+ * own conversations. Refresh sessions in Setup moves them right away.
  */
-export function checkTerminalsUpdated(delayMs = 3000): () => void {
+export function checkTerminalsUpdated(delayMs = 3000, pollMs = IDLE_POLL_MS): () => void {
   if (!LOCAL_SESSIONS_KEPT) return () => {};
   let stopped = false;
-  const timer = window.setTimeout(() => {
-    void invoke<boolean>("local_tmux_outdated").then(async outdated => {
-      if (!outdated || stopped) return;
-      // Wait for the launch restore (or a refresh started by hand) to finish.
-      while (!stopped && (useSessionRefresh.getState().pending || useSessionRefresh.getState().running)) {
-        await new Promise(resolve => window.setTimeout(resolve, 500));
-      }
-      if (stopped) return;
+  let timer: number | undefined;
+  const outdated = () => invoke<boolean>("local_tmux_outdated").catch(() => false);
+  const moveWhenIdle = async () => {
+    if (stopped) return;
+    const state = useSessionRefresh.getState();
+    if (!state.pending && !state.running) {
+      // Refreshed by hand meanwhile: nothing is left on the previous version.
+      if (!await outdated()) return;
+      // A quiet look first, so tiles show no refresh while work still runs.
+      const busy = await busyLocalSessions();
+      if (busy && !busy.length && !stopped && await refreshLocalSessions({ onlyIfIdle: true }).catch(() => false)) return;
+    }
+    timer = window.setTimeout(() => void moveWhenIdle(), pollMs);
+  };
+  timer = window.setTimeout(() => {
+    void outdated().then(old => {
+      if (!old || stopped) return;
       notify({
         category: "app",
-        title: "Moving terminals to the new version",
-        body: "PzzaCode was updated while your terminals kept running, so they could not use its permissions (Full Disk Access, Automation, Screen Recording). Their sessions are being refreshed onto this version; agents continue their conversations.",
+        title: "Terminals wait to move to the new version",
+        body: "PzzaCode was updated while your terminals kept running, so they cannot use its permissions (Full Disk Access, Automation, Screen Recording) yet. They move to this version on their own once every agent is idle and nothing else runs in them, so no work is stopped; agents continue their own conversations. To move them now, use Refresh sessions in Settings > Setup.",
         dedupeKey: "terminals-outdated",
       });
-      await refreshLocalSessions().catch(() => { /* Already refreshing: that refresh moves them. */ });
-    }, () => { /* No terminal service: nothing runs on an old version. */ });
+      void moveWhenIdle();
+    });
   }, delayMs);
   return () => { stopped = true; window.clearTimeout(timer); };
 }
+
+/** One status read shortly after launch, for grants made while the app was closed or that needed a relaunch. */
 
 export function checkPermissionsAtLaunch(delayMs = 3000): () => void {
   if (!PERMISSIONS_SUPPORTED) return () => {};

@@ -289,6 +289,19 @@ test("the native restore allowlist matches the catalog and fits its length limit
     assert.ok(agentCanAutoResume(sessionAgent(entry.agent)));
   }
   assert.ok(!allowlist.some(entry => entry.command === "claude -c"), "plain claude starts in auto mode");
+  // Claude, whose running conversation the app records per pane, carries
+  // the same mode reopening one conversation by its id; no other agent does.
+  for (const entry of allowlist) {
+    if (entry.agent !== "claude") {
+      assert.equal(entry.byId, null, entry.command);
+      continue;
+    }
+    assert.deepEqual(entry.byId, { command: entry.command.replace(/^claude -c /, `claude --resume ${RESUME_SESSION} `), rule: "claude" });
+    const uuid = "0b1c2d3e-4f50-4a61-8b72-9c8d7e6f5a41";
+    const mode = sessionAgent("claude").modes.find(item => entry.command.endsWith(item.args.join(" ")));
+    assert.equal(entry.byId.command.replace(RESUME_SESSION, uuid), sessionAgentCommand({ id: "claude", mode: mode.id, session: uuid }));
+  }
+  assert.equal(allowlist.filter(entry => entry.byId).length, sessionAgent("claude").modes.length);
 });
 
 test("tmux pane commands map to an agent only when unambiguous", () => {

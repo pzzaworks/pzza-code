@@ -345,7 +345,11 @@
         "env": "CLAUDE_CONFIG_DIR",
         "folder": ".claude"
       },
-      "lookup": null
+      "lookup": null,
+      "byId": {
+        "command": "claude --resume @SESSION@ --permission-mode manual",
+        "rule": "claude"
+      }
     },
     {
       "command": "claude -c --permission-mode acceptEdits",
@@ -357,7 +361,11 @@
         "env": "CLAUDE_CONFIG_DIR",
         "folder": ".claude"
       },
-      "lookup": null
+      "lookup": null,
+      "byId": {
+        "command": "claude --resume @SESSION@ --permission-mode acceptEdits",
+        "rule": "claude"
+      }
     },
     {
       "command": "claude -c --permission-mode plan",
@@ -369,7 +377,11 @@
         "env": "CLAUDE_CONFIG_DIR",
         "folder": ".claude"
       },
-      "lookup": null
+      "lookup": null,
+      "byId": {
+        "command": "claude --resume @SESSION@ --permission-mode plan",
+        "rule": "claude"
+      }
     },
     {
       "command": "claude -c --permission-mode auto",
@@ -381,7 +393,11 @@
         "env": "CLAUDE_CONFIG_DIR",
         "folder": ".claude"
       },
-      "lookup": null
+      "lookup": null,
+      "byId": {
+        "command": "claude --resume @SESSION@ --permission-mode auto",
+        "rule": "claude"
+      }
     },
     {
       "command": "claude -c --permission-mode dontAsk",
@@ -393,7 +409,11 @@
         "env": "CLAUDE_CONFIG_DIR",
         "folder": ".claude"
       },
-      "lookup": null
+      "lookup": null,
+      "byId": {
+        "command": "claude --resume @SESSION@ --permission-mode dontAsk",
+        "rule": "claude"
+      }
     },
     {
       "command": "claude -c --dangerously-skip-permissions",
@@ -405,7 +425,11 @@
         "env": "CLAUDE_CONFIG_DIR",
         "folder": ".claude"
       },
-      "lookup": null
+      "lookup": null,
+      "byId": {
+        "command": "claude --resume @SESSION@ --dangerously-skip-permissions",
+        "rule": "claude"
+      }
     },
     {
       "command": "codex resume --last --sandbox read-only --ask-for-approval on-request",
@@ -414,7 +438,8 @@
       ],
       "versionProgram": false,
       "account": null,
-      "lookup": null
+      "lookup": null,
+      "byId": null
     },
     {
       "command": "codex resume --last --sandbox workspace-write --ask-for-approval on-request",
@@ -423,7 +448,8 @@
       ],
       "versionProgram": false,
       "account": null,
-      "lookup": null
+      "lookup": null,
+      "byId": null
     },
     {
       "command": "codex resume --last --approve-for-me",
@@ -432,7 +458,8 @@
       ],
       "versionProgram": false,
       "account": null,
-      "lookup": null
+      "lookup": null,
+      "byId": null
     },
     {
       "command": "codex resume --last --dangerously-bypass-approvals-and-sandbox",
@@ -441,7 +468,8 @@
       ],
       "versionProgram": false,
       "account": null,
-      "lookup": null
+      "lookup": null,
+      "byId": null
     },
     {
       "command": "env 'OPENCODE_CONFIG_CONTENT={\"permission\":{\"edit\":\"ask\",\"bash\":\"ask\",\"webfetch\":\"ask\"},\"agent\":{\"build\":{\"permission\":{\"edit\":\"ask\",\"bash\":\"ask\",\"webfetch\":\"ask\"}}}}' opencode -c --agent build",
@@ -450,7 +478,8 @@
       ],
       "versionProgram": false,
       "account": null,
-      "lookup": null
+      "lookup": null,
+      "byId": null
     },
     {
       "command": "opencode -c --agent plan",
@@ -459,7 +488,8 @@
       ],
       "versionProgram": false,
       "account": null,
-      "lookup": null
+      "lookup": null,
+      "byId": null
     },
     {
       "command": "opencode -c --auto",
@@ -468,7 +498,8 @@
       ],
       "versionProgram": false,
       "account": null,
-      "lookup": null
+      "lookup": null,
+      "byId": null
     },
     {
       "command": "gemini --resume latest --approval-mode default",
@@ -477,7 +508,8 @@
       ],
       "versionProgram": false,
       "account": null,
-      "lookup": null
+      "lookup": null,
+      "byId": null
     },
     {
       "command": "gemini --resume latest --approval-mode auto_edit",
@@ -486,7 +518,8 @@
       ],
       "versionProgram": false,
       "account": null,
-      "lookup": null
+      "lookup": null,
+      "byId": null
     },
     {
       "command": "gemini --resume latest --approval-mode plan",
@@ -495,7 +528,8 @@
       ],
       "versionProgram": false,
       "account": null,
-      "lookup": null
+      "lookup": null,
+      "byId": null
     },
     {
       "command": "gemini --resume latest --approval-mode yolo",
@@ -504,7 +538,8 @@
       ],
       "versionProgram": false,
       "account": null,
-      "lookup": null
+      "lookup": null,
+      "byId": null
     },
     {
       "command": "copilot --continue",
@@ -513,7 +548,8 @@
       ],
       "versionProgram": false,
       "account": null,
-      "lookup": null
+      "lookup": null,
+      "byId": null
     },
     {
       "command": "copilot --continue --plan",
@@ -522,7 +558,8 @@
       ],
       "versionProgram": false,
       "account": null,
-      "lookup": null
+      "lookup": null,
+      "byId": null
     },
     {
       "command": "copilot --continue --autopilot",
@@ -531,7 +568,8 @@
       ],
       "versionProgram": false,
       "account": null,
-      "lookup": null
+      "lookup": null,
+      "byId": null
     },
     {
       "command": "copilot --continue --allow-all-tools",
@@ -540,7 +578,8 @@
       ],
       "versionProgram": false,
       "account": null,
-      "lookup": null
+      "lookup": null,
+      "byId": null
     },
     {
       "command": "copilot --continue --yolo",
@@ -549,7 +588,8 @@
       ],
       "versionProgram": false,
       "account": null,
-      "lookup": null
+      "lookup": null,
+      "byId": null
     },
     {
       "command": "pi --continue --tools read,grep,find,ls",
@@ -558,7 +598,8 @@
       ],
       "versionProgram": false,
       "account": null,
-      "lookup": null
+      "lookup": null,
+      "byId": null
     },
     {
       "command": "pi --continue",
@@ -567,7 +608,8 @@
       ],
       "versionProgram": false,
       "account": null,
-      "lookup": null
+      "lookup": null,
+      "byId": null
     },
     {
       "command": "cline --id @SESSION@ --auto-approve false",
@@ -577,7 +619,8 @@
       ],
       "versionProgram": false,
       "account": null,
-      "lookup": "cline"
+      "lookup": "cline",
+      "byId": null
     },
     {
       "command": "cline --id @SESSION@ --auto-approve false -p",
@@ -587,7 +630,8 @@
       ],
       "versionProgram": false,
       "account": null,
-      "lookup": "cline"
+      "lookup": "cline",
+      "byId": null
     },
     {
       "command": "cline --id @SESSION@ -y",
@@ -597,35 +641,40 @@
       ],
       "versionProgram": false,
       "account": null,
-      "lookup": "cline"
+      "lookup": "cline",
+      "byId": null
     },
     {
       "command": "env GOOSE_MODE=approve goose session --resume --session-id @SESSION@",
       "programs": [],
       "versionProgram": false,
       "account": null,
-      "lookup": "goose"
+      "lookup": "goose",
+      "byId": null
     },
     {
       "command": "env GOOSE_MODE=smart_approve goose session --resume --session-id @SESSION@",
       "programs": [],
       "versionProgram": false,
       "account": null,
-      "lookup": "goose"
+      "lookup": "goose",
+      "byId": null
     },
     {
       "command": "env GOOSE_MODE=chat goose session --resume --session-id @SESSION@",
       "programs": [],
       "versionProgram": false,
       "account": null,
-      "lookup": "goose"
+      "lookup": "goose",
+      "byId": null
     },
     {
       "command": "env GOOSE_MODE=auto goose session --resume --session-id @SESSION@",
       "programs": [],
       "versionProgram": false,
       "account": null,
-      "lookup": "goose"
+      "lookup": "goose",
+      "byId": null
     },
     {
       "command": "agy -c",
@@ -634,7 +683,8 @@
       ],
       "versionProgram": false,
       "account": null,
-      "lookup": null
+      "lookup": null,
+      "byId": null
     },
     {
       "command": "agy -c --mode accept-edits",
@@ -643,7 +693,8 @@
       ],
       "versionProgram": false,
       "account": null,
-      "lookup": null
+      "lookup": null,
+      "byId": null
     },
     {
       "command": "agy -c --mode plan",
@@ -652,7 +703,8 @@
       ],
       "versionProgram": false,
       "account": null,
-      "lookup": null
+      "lookup": null,
+      "byId": null
     },
     {
       "command": "agy -c --dangerously-skip-permissions",
@@ -661,7 +713,8 @@
       ],
       "versionProgram": false,
       "account": null,
-      "lookup": null
+      "lookup": null,
+      "byId": null
     },
     {
       "command": "qwen --continue --approval-mode default",
@@ -670,7 +723,8 @@
       ],
       "versionProgram": false,
       "account": null,
-      "lookup": null
+      "lookup": null,
+      "byId": null
     },
     {
       "command": "qwen --continue --approval-mode plan",
@@ -679,7 +733,8 @@
       ],
       "versionProgram": false,
       "account": null,
-      "lookup": null
+      "lookup": null,
+      "byId": null
     },
     {
       "command": "qwen --continue --approval-mode auto-edit",
@@ -688,7 +743,8 @@
       ],
       "versionProgram": false,
       "account": null,
-      "lookup": null
+      "lookup": null,
+      "byId": null
     },
     {
       "command": "qwen --continue --approval-mode auto",
@@ -697,7 +753,8 @@
       ],
       "versionProgram": false,
       "account": null,
-      "lookup": null
+      "lookup": null,
+      "byId": null
     },
     {
       "command": "qwen --continue --approval-mode yolo",
@@ -706,7 +763,8 @@
       ],
       "versionProgram": false,
       "account": null,
-      "lookup": null
+      "lookup": null,
+      "byId": null
     },
     {
       "command": "crush --continue",
@@ -715,7 +773,8 @@
       ],
       "versionProgram": false,
       "account": null,
-      "lookup": null
+      "lookup": null,
+      "byId": null
     },
     {
       "command": "crush --continue -y",
@@ -724,7 +783,8 @@
       ],
       "versionProgram": false,
       "account": null,
-      "lookup": null
+      "lookup": null,
+      "byId": null
     },
     {
       "command": "env 'KILO_CONFIG_CONTENT={\"permission\":{\"edit\":\"ask\",\"bash\":\"ask\",\"webfetch\":\"ask\"},\"agent\":{\"code\":{\"permission\":{\"edit\":\"ask\",\"bash\":\"ask\",\"webfetch\":\"ask\"}}}}' kilo --continue",
@@ -734,7 +794,8 @@
       ],
       "versionProgram": false,
       "account": null,
-      "lookup": null
+      "lookup": null,
+      "byId": null
     },
     {
       "command": "kilo --continue --auto",
@@ -744,7 +805,8 @@
       ],
       "versionProgram": false,
       "account": null,
-      "lookup": null
+      "lookup": null,
+      "byId": null
     },
     {
       "command": "grok -c",
@@ -753,7 +815,8 @@
       ],
       "versionProgram": false,
       "account": null,
-      "lookup": null
+      "lookup": null,
+      "byId": null
     },
     {
       "command": "grok -c --always-approve",
@@ -762,7 +825,8 @@
       ],
       "versionProgram": false,
       "account": null,
-      "lookup": null
+      "lookup": null,
+      "byId": null
     },
     {
       "command": "droid --resume --last",
@@ -771,7 +835,8 @@
       ],
       "versionProgram": false,
       "account": null,
-      "lookup": null
+      "lookup": null,
+      "byId": null
     },
     {
       "command": "droid --resume --last --auto low",
@@ -780,7 +845,8 @@
       ],
       "versionProgram": false,
       "account": null,
-      "lookup": null
+      "lookup": null,
+      "byId": null
     },
     {
       "command": "droid --resume --last --auto medium",
@@ -789,7 +855,8 @@
       ],
       "versionProgram": false,
       "account": null,
-      "lookup": null
+      "lookup": null,
+      "byId": null
     },
     {
       "command": "droid --resume --last --auto high",
@@ -798,7 +865,8 @@
       ],
       "versionProgram": false,
       "account": null,
-      "lookup": null
+      "lookup": null,
+      "byId": null
     },
     {
       "command": "kiro-cli chat --resume",
@@ -808,7 +876,8 @@
       ],
       "versionProgram": false,
       "account": null,
-      "lookup": null
+      "lookup": null,
+      "byId": null
     },
     {
       "command": "kiro-cli chat --resume --trust-all-tools",
@@ -818,7 +887,8 @@
       ],
       "versionProgram": false,
       "account": null,
-      "lookup": null
+      "lookup": null,
+      "byId": null
     },
     {
       "command": "codebuddy -c --permission-mode default",
@@ -828,7 +898,8 @@
       ],
       "versionProgram": false,
       "account": null,
-      "lookup": null
+      "lookup": null,
+      "byId": null
     },
     {
       "command": "codebuddy -c --permission-mode acceptEdits",
@@ -838,7 +909,8 @@
       ],
       "versionProgram": false,
       "account": null,
-      "lookup": null
+      "lookup": null,
+      "byId": null
     },
     {
       "command": "codebuddy -c --permission-mode plan",
@@ -848,7 +920,8 @@
       ],
       "versionProgram": false,
       "account": null,
-      "lookup": null
+      "lookup": null,
+      "byId": null
     },
     {
       "command": "codebuddy -c -y",
@@ -858,7 +931,8 @@
       ],
       "versionProgram": false,
       "account": null,
-      "lookup": null
+      "lookup": null,
+      "byId": null
     },
     {
       "command": "kimi --continue",
@@ -867,7 +941,8 @@
       ],
       "versionProgram": false,
       "account": null,
-      "lookup": null
+      "lookup": null,
+      "byId": null
     },
     {
       "command": "kimi --continue --plan",
@@ -876,7 +951,8 @@
       ],
       "versionProgram": false,
       "account": null,
-      "lookup": null
+      "lookup": null,
+      "byId": null
     },
     {
       "command": "kimi --continue --yolo",
@@ -885,7 +961,8 @@
       ],
       "versionProgram": false,
       "account": null,
-      "lookup": null
+      "lookup": null,
+      "byId": null
     },
     {
       "command": "kimi --continue --auto",
@@ -894,7 +971,8 @@
       ],
       "versionProgram": false,
       "account": null,
-      "lookup": null
+      "lookup": null,
+      "byId": null
     },
     {
       "command": "devin --continue --permission-mode normal",
@@ -903,7 +981,8 @@
       ],
       "versionProgram": false,
       "account": null,
-      "lookup": null
+      "lookup": null,
+      "byId": null
     },
     {
       "command": "devin --continue --permission-mode accept-edits",
@@ -912,7 +991,8 @@
       ],
       "versionProgram": false,
       "account": null,
-      "lookup": null
+      "lookup": null,
+      "byId": null
     },
     {
       "command": "devin --continue --permission-mode smart",
@@ -921,7 +1001,8 @@
       ],
       "versionProgram": false,
       "account": null,
-      "lookup": null
+      "lookup": null,
+      "byId": null
     },
     {
       "command": "devin --continue --permission-mode dangerous",
@@ -930,7 +1011,8 @@
       ],
       "versionProgram": false,
       "account": null,
-      "lookup": null
+      "lookup": null,
+      "byId": null
     },
     {
       "command": "vibe --continue --agent ask",
@@ -939,7 +1021,8 @@
       ],
       "versionProgram": false,
       "account": null,
-      "lookup": null
+      "lookup": null,
+      "byId": null
     },
     {
       "command": "vibe --continue",
@@ -948,7 +1031,8 @@
       ],
       "versionProgram": false,
       "account": null,
-      "lookup": null
+      "lookup": null,
+      "byId": null
     },
     {
       "command": "vibe --continue --agent smart-approve",
@@ -957,7 +1041,8 @@
       ],
       "versionProgram": false,
       "account": null,
-      "lookup": null
+      "lookup": null,
+      "byId": null
     },
     {
       "command": "vibe --continue --auto-approve",
@@ -966,7 +1051,8 @@
       ],
       "versionProgram": false,
       "account": null,
-      "lookup": null
+      "lookup": null,
+      "byId": null
     },
     {
       "command": "aider --restore-chat-history --chat-mode ask",
@@ -978,7 +1064,8 @@
       ],
       "versionProgram": false,
       "account": null,
-      "lookup": null
+      "lookup": null,
+      "byId": null
     },
     {
       "command": "aider --restore-chat-history",
@@ -990,7 +1077,8 @@
       ],
       "versionProgram": false,
       "account": null,
-      "lookup": null
+      "lookup": null,
+      "byId": null
     },
     {
       "command": "aider --restore-chat-history --architect --no-auto-accept-architect",
@@ -1002,7 +1090,8 @@
       ],
       "versionProgram": false,
       "account": null,
-      "lookup": null
+      "lookup": null,
+      "byId": null
     },
     {
       "command": "aider --restore-chat-history --yes-always",
@@ -1014,7 +1103,8 @@
       ],
       "versionProgram": false,
       "account": null,
-      "lookup": null
+      "lookup": null,
+      "byId": null
     },
     {
       "command": "letta --permission-mode standard",
@@ -1023,7 +1113,8 @@
       ],
       "versionProgram": false,
       "account": null,
-      "lookup": null
+      "lookup": null,
+      "byId": null
     },
     {
       "command": "letta --permission-mode acceptEdits",
@@ -1032,7 +1123,8 @@
       ],
       "versionProgram": false,
       "account": null,
-      "lookup": null
+      "lookup": null,
+      "byId": null
     },
     {
       "command": "letta --yolo",
@@ -1041,7 +1133,8 @@
       ],
       "versionProgram": false,
       "account": null,
-      "lookup": null
+      "lookup": null,
+      "byId": null
     },
     {
       "command": "qodercli -c --permission-mode default",
@@ -1051,7 +1144,8 @@
       ],
       "versionProgram": false,
       "account": null,
-      "lookup": null
+      "lookup": null,
+      "byId": null
     },
     {
       "command": "qodercli -c --permission-mode plan",
@@ -1061,7 +1155,8 @@
       ],
       "versionProgram": false,
       "account": null,
-      "lookup": null
+      "lookup": null,
+      "byId": null
     },
     {
       "command": "qodercli -c --permission-mode accept_edits",
@@ -1071,7 +1166,8 @@
       ],
       "versionProgram": false,
       "account": null,
-      "lookup": null
+      "lookup": null,
+      "byId": null
     },
     {
       "command": "qodercli -c --yolo",
@@ -1081,28 +1177,32 @@
       ],
       "versionProgram": false,
       "account": null,
-      "lookup": null
+      "lookup": null,
+      "byId": null
     },
     {
       "command": "forge --conversation-id @SESSION@ --agent muse",
       "programs": [],
       "versionProgram": false,
       "account": null,
-      "lookup": "forge"
+      "lookup": "forge",
+      "byId": null
     },
     {
       "command": "forge --conversation-id @SESSION@ --agent sage",
       "programs": [],
       "versionProgram": false,
       "account": null,
-      "lookup": "forge"
+      "lookup": "forge",
+      "byId": null
     },
     {
       "command": "forge --conversation-id @SESSION@ --agent forge",
       "programs": [],
       "versionProgram": false,
       "account": null,
-      "lookup": "forge"
+      "lookup": "forge",
+      "byId": null
     },
     {
       "command": "acli rovodev run --restore",
@@ -1111,7 +1211,8 @@
       ],
       "versionProgram": false,
       "account": null,
-      "lookup": null
+      "lookup": null,
+      "byId": null
     },
     {
       "command": "acli rovodev run --restore --yolo",
@@ -1120,7 +1221,8 @@
       ],
       "versionProgram": false,
       "account": null,
-      "lookup": null
+      "lookup": null,
+      "byId": null
     }
   ]
 }

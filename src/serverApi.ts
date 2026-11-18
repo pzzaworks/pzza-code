@@ -139,6 +139,10 @@ export interface SessionAgentLaunchInfo {
   account: string | null;
   /** The agent runs with a config folder that cannot be passed back: never restart it with the default one. */
   accountUnusable?: true;
+  /** The conversation the agent is in now (a Claude Code session id), when its process reports one. */
+  conversation?: string;
+  /** Whether the agent is in the middle of a turn, when its process reports it. */
+  status?: "busy" | "idle";
 }
 export async function fetchSessionActivity(host?: string, signal?: AbortSignal): Promise<SessionActivity[]> {
   const response = await agentFetch(`${SERVER_HTTP}/sessions/activity${host !== undefined ? `?host=${encodeURIComponent(host)}` : ""}`, { signal });
@@ -1405,6 +1409,15 @@ function parseGitWorktree(value: unknown): GitWorktree | null {
     path: value.path, branch: value.branch, head: value.head, merged: value.merged, mergedBy,
     dirty: value.dirty, current: value.current, locked: value.locked, main: value.main,
   };
+}
+
+/** The folders to read worktrees from: `path` when it is in a repository, else one per repository directly inside it. */
+export async function fetchGitRepositories(host: string, path: string, signal?: AbortSignal): Promise<string[]> {
+  const value = await postGitReview("repositories", { host, path }, "Repositories unavailable", signal);
+  if (!isGitRecord(value) || !Array.isArray(value.folders) || !value.folders.every((folder): folder is string => typeof folder === "string" && folder.startsWith("/"))) {
+    throw new Error("Repositories unavailable");
+  }
+  return value.folders;
 }
 
 export async function fetchGitWorktrees(host: string, path: string, signal?: AbortSignal): Promise<GitWorktrees> {

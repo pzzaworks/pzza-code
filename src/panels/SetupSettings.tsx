@@ -4,7 +4,7 @@ import { PERMISSIONS, PERMISSIONS_SUPPORTED } from "../state/permissions";
 import { useSetup } from "../state/setup";
 import { refreshDefaultEditor, useDefaultEditor } from "../state/defaultEditor";
 import { usePermissionControls } from "./Permissions";
-import { refreshLocalSessions, useSessionRefresh } from "../state/sessionRefresh";
+import { busyLocalSessions, refreshLocalSessions, useSessionRefresh } from "../state/sessionRefresh";
 import { AllowAllButton, PermissionGuide, SetupDefaultEditor, SetupHealth, SetupPermissions, SetupRequirements, useRequirementsReady } from "../tour/SetupSteps";
 import { confirmAction } from "../ui/ConfirmDialog";
 import "../tour/OnboardingTour.css";
@@ -13,11 +13,14 @@ import "../tour/OnboardingTour.css";
 type Tone = "ok" | "busy" | "action" | "neutral";
 
 // Restarting the terminal server stops every program in this Mac's sessions,
-// so it only runs when asked for and confirmed.
+// so it only runs when asked for and confirmed, naming the sessions where
+// something is running right now.
 async function confirmRefresh(): Promise<void> {
+  const busy = await busyLocalSessions();
+  const running = busy === null ? "" : busy.length ? ` Running now in: ${busy.join(", ")}.` : " Nothing is running in them right now.";
   const accepted = await confirmAction({
     title: "Refresh this Mac's sessions?",
-    message: "The terminal server restarts so running sessions get new permissions. Sessions, folders, recent output and agent chats come back, but programs running in them stop: dev servers, watchers, and an agent in the middle of a turn.",
+    message: `The terminal server restarts so running sessions get new permissions. Sessions, folders, recent output and agent chats come back, but programs running in them stop: dev servers, watchers, and an agent in the middle of a turn.${running}`,
     confirmLabel: "Refresh sessions",
     danger: true,
   });

@@ -2,6 +2,8 @@
 // (server/lib/session-agents.js), the only copy the native side reads: the
 // commands a restored terminal may type and the binaries setup looks for,
 // with the path fragments that tell an agent's binary from a same-named tool.
+// A resume command may carry the by-id form a restore types for a recorded
+// conversation (byId).
 // Run `node scripts/agent-catalog.mjs` after changing the catalog; the
 // agent-catalog test fails while the file is out of date.
 import { writeFileSync } from "node:fs";
@@ -16,7 +18,7 @@ export function nativeAgentCatalog() {
       const { exclude, require } = agentBinaryPathRules(agent);
       return { id: agent.id, binaries: [...agent.binaries], installDirs: [...agent.installDirs], excludePaths: exclude, requirePaths: require };
     }),
-    resume: sessionAgentResumeAllowlist().map(({ command, programs, versionProgram, account, lookup }) => ({ command, programs, versionProgram, account, lookup })),
+    resume: sessionAgentResumeAllowlist().map(({ command, programs, versionProgram, account, lookup, byId }) => ({ command, programs, versionProgram, account, lookup, byId })),
   };
   return `${JSON.stringify(catalog, null, 2)}\n`;
 }

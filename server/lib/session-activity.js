@@ -180,6 +180,80 @@ export function agentLaunch(agent, mode, account, accountSet) {
   return { mode: modeKnown ? mode : null, account: chosen ? account : null, ...(unusable ? { accountUnusable: true } : {}) };
 }
 
+// The conversation a Claude Code process is in (its session id, which follows
+// /resume) and whether it is mid-turn. Only a lowercase UUID and the two known
+// states survive; anything else reports nothing (or no status).
+export function agentSessionState(conversation, status) {
+  if (typeof conversation !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(conversation)) return null;
+  return { conversation, ...(status === "busy" || status === "idle" ? { status } : {}) };
+}
+
+// Adds a verified session state to a launch; a launch that knew nothing else
+// still reports it, with no mode or account.
+function withAgentSession(launch, session) {
+  if (!session) return launch;
+  return { ...(launch || { mode: null, account: null }), ...session };
+}
+
+// The session state of a process's Claude Code session file, only when the
+// file was written by this very process: a crashed process leaves its file
+// behind, and a later process may reuse the pid. Both sides are `ps lstart`
+// with the C locale in UTC, the exact command Claude Code itself runs, so the
+// start times are equal to the second for the same process.
+function verifiedClaudeSession(process) {
+  const session = process.claudeSession;
+  if (!session || typeof process.started !== "string" || typeof session.procStart !== "string") return null;
+  if (session.procStart !== process.started.trim().replace(/\s+/g, " ")) return null;
+  return agentSessionState(session.conversation, session.status);
+}
+
+// Claude Code writes `<config folder>/sessions/<pid>.json` for each running
+// process and removes it on exit. The format is internal and undocumented, so
+// it is read defensively: a small regular file (never a symlink, a FIFO or
+// another device), the same pid, an interactive (terminal) session, a UUID
+// session id and a start time in `ps lstart` form. Any failure reports null.
+export async function readClaudeSessionFile(fs, path, directory, pid) {
+  const limit = 16 * 1024;
+  if (typeof directory !== "string" || !directory.startsWith("/") || !Number.isInteger(pid) || pid <= 0) return null;
+  let handle;
+  try {
+    const file = path.join(directory, "sessions", `${pid}.json`);
+    const metadata = await fs.lstat(file);
+    if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.size > limit) return null;
+    // O_NOFOLLOW and O_NONBLOCK: a swap after lstat can neither redirect the
+    // read through a symlink nor block it on a FIFO.
+    handle = await fs.open(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
+    const opened = await handle.stat();
+    if (!opened.isFile() || opened.size > limit) return null;
+    const buffer = Buffer.alloc(limit + 1);
+    const { bytesRead } = await handle.read(buffer, 0, limit + 1, 0);
+    if (bytesRead > limit) return null;
+    const data = JSON.parse(buffer.toString("utf8", 0, bytesRead));
+    if (!data || typeof data !== "object" || Array.isArray(data)) return null;
+    if (data.pid !== pid || data.kind !== "interactive" || typeof data.procStart !== "string") return null;
+    const procStart = data.procStart.trim().replace(/\s+/g, " ");
+    if (!/^[A-Za-z]{3} [A-Za-z]{3} \d{1,2} \d{1,2}:\d{2}:\d{2} \d{4}$/.test(procStart)) return null;
+    const state = agentSessionState(data.sessionId, data.status);
+    return state ? { ...state, procStart } : null;
+  } catch {
+    return null;
+  } finally {
+    await handle?.close().catch(() => {});
+  }
+}
+
+// `ps lstart` of each pid in the C locale and UTC (the form Claude Code
+// records), for platforms whose process snapshot carries no start time.
+export async function processStartTimes(execute, pids) {
+  const uniquePids = [...new Set(pids)].filter((pid) => Number.isInteger(pid) && pid > 0).slice(0, 64);
+  if (!uniquePids.length) return new Map();
+  const output = await execute("ps", ["-o", "pid=,lstart=", "-p", uniquePids.join(",")], { ...globalThis.process.env, LC_ALL: "C", TZ: "UTC" });
+  return new Map(output.split("\n").flatMap((line) => {
+    const match = line.trim().match(/^(\d+)\s+([A-Za-z]{3}\s+[A-Za-z]{3}\s+\d{1,2}\s+\d{1,2}:\d{2}:\d{2}\s+\d{4})$/);
+    return match && uniquePids.includes(Number(match[1])) ? [[Number(match[1]), match[2].replace(/\s+/g, " ")]] : [];
+  }));
+}
+
 function activityMetadata(row) {
   const normalized = normalizeEffectiveModel(row.effectiveModel, row.effectiveProvider);
   if (!normalized || row.effectiveProvider !== normalized.provider || !["reported", "configured"].includes(row.effectiveModelEvidence)) return null;
@@ -225,7 +299,8 @@ export function detectSessionActivity(panes, processes) {
         // Only exact arguments name a mode: ps output split on spaces cannot
         // tell a flag from the same words inside a prompt.
         const mode = matchAgentMode(process.exactArgs, AGENT_MODE_RULES[command] || []);
-        best = { command, metadata: processMetadata(process), launch: agentLaunch(command, mode, process.account, Boolean(process.accountDirectory)), depth };
+        const session = command === "claude" ? verifiedClaudeSession(process) : null;
+        best = { command, metadata: processMetadata(process), launch: withAgentSession(agentLaunch(command, mode, process.account, Boolean(process.accountDirectory)), session), depth };
       }
     }
     // Once a process snapshot exists, never infer an agent or preserve stale
@@ -233,8 +308,10 @@ export function detectSessionActivity(panes, processes) {
     const fallback = label(pane.command);
     const fallbackAgent = AGENT_IDS.includes(fallback);
     const metadata = best?.metadata || (!root && fallbackAgent ? activityMetadata(pane) : null);
-    // A remote device's row (no process snapshot here) brings its own launch.
-    const launch = best ? best.launch : !root && fallbackAgent ? agentLaunch(fallback, pane.launch?.mode, pane.launch?.account, pane.launch?.accountUnusable === true) : null;
+    // A remote device's row (no process snapshot here) brings its own launch;
+    // that device verified its session file, and only catalog values survive.
+    const remoteSession = fallback === "claude" ? agentSessionState(pane.launch?.conversation, pane.launch?.status) : null;
+    const launch = best ? best.launch : !root && fallbackAgent ? withAgentSession(agentLaunch(fallback, pane.launch?.mode, pane.launch?.account, pane.launch?.accountUnusable === true), remoteSession) : null;
     return {
       session: pane.session,
       window: pane.window,
@@ -389,7 +466,8 @@ async function macProcessSelectors(execute, pids) {
 }
 
 // Parses `ps -o pid=,ppid=,pgid=,tpgid=,tty=[,lstart=],comm=` rows. lstart is
-// requested only with LC_TIME=C, where it always prints as five fields.
+// requested only with LC_TIME=C and TZ=UTC, where it always prints as five
+// fields in UTC.
 export function parseProcessRows(text, withStart) {
   return String(text || "").split("\n").map((line) => {
     const fields = withStart
@@ -450,7 +528,8 @@ export async function probeSessionSnapshot(tmuxOptions, cache) {
   const activePanes = panes.filter((pane) => pane.paneActive);
   if (!activePanes.length) return { rows: detectSessionActivity(panes, []), panes };
   // The start time identifies a process across polls (a pid can be reused).
-  // LC_TIME=C fixes its format; the character locale is kept for names.
+  // LC_TIME=C fixes its format and TZ=UTC its zone, the form Claude Code
+  // records in its session files; the character locale is kept for names.
   const withStart = globalThis.process.platform === "darwin";
   let processEnvironment;
   if (withStart) {
@@ -459,6 +538,7 @@ export async function probeSessionSnapshot(tmuxOptions, cache) {
     delete processEnvironment.LC_ALL;
     if (characterLocale) processEnvironment.LC_CTYPE = characterLocale;
     processEnvironment.LC_TIME = "C";
+    processEnvironment.TZ = "UTC";
   }
   const listProcesses = async (selection) => parseProcessRows(
     await execute("ps", [...selection, "-o", `pid=,ppid=,pgid=,tpgid=,tty=,${withStart ? "lstart=," : ""}comm=`], processEnvironment), withStart);
@@ -538,7 +618,7 @@ export async function probeSessionSnapshot(tmuxOptions, cache) {
       const settled = Date.now() - 10_000;
       if (cache && selectorsByPid && argumentsText) {
         for (const process of unread) {
-          const started = Date.parse(process.started);
+          const started = Date.parse(`${process.started} UTC`);
           if (Number.isFinite(started) && started <= settled) cache.set(readKey(process), reads.get(readKey(process)));
         }
       }
@@ -559,10 +639,24 @@ export async function probeSessionSnapshot(tmuxOptions, cache) {
     // The account folder the process chose (CLAUDE_CONFIG_DIR), only when it
     // is a config folder in the home folder; none means the default one.
     if (process.accountDirectory) process.account = await accountDirectory(process.accountDirectory, fs, os, path);
+    // Its session file lives in that folder; one outside the home folder is
+    // never read, and the default folder only for a process without an override.
+    const sessionDirectory = process.accountDirectory ? process.account : await accountDirectory(path.join(os.homedir(), ".claude"), fs, os, path);
+    const session = await readClaudeSessionFile(fs, path, sessionDirectory, process.pid);
+    if (session) process.claudeSession = session;
     if (process.modelDeclared || processMetadata(process)) return;
     const metadata = await configuredModelSelection({}, process.accountDirectory, fs, os, path);
     if (metadata) Object.assign(process, metadata);
   }));
+  // Without a start time in the snapshot (Linux), read it for the processes
+  // whose session file must be checked against it.
+  const unstarted = withStart ? [] : candidates.filter((process) => process.claudeSession);
+  if (unstarted.length) {
+    const starts = await processStartTimes(execute, unstarted.map((process) => process.pid));
+    for (const process of unstarted) {
+      if (starts.has(process.pid)) process.started = starts.get(process.pid);
+    }
+  }
   return { rows: detectSessionActivity(panes, processes), panes };
 }
 
@@ -570,4 +664,4 @@ export async function probeSessionActivity(tmuxOptions = tmuxArgs([]), cache) {
   return (await probeSessionSnapshot(tmuxOptions, cache)).rows;
 }
 
-export const ACTIVITY_PROBE_SCRIPT = `const AGENT_PROCESS_RULES = ${JSON.stringify(AGENT_PROCESS_RULES)};\nconst AGENT_IDS = ${JSON.stringify(AGENT_IDS)};\nconst AGENT_MODE_RULES = ${JSON.stringify(AGENT_MODE_RULES)};\nconst AGENT_ACCOUNTS = ${JSON.stringify(AGENT_ACCOUNTS)};\nconst matchAgentMode = ${matchAgentMode.toString()};\nconst validAgentAccount = ${validAgentAccount.toString()};\nconst agentLaunch = ${agentLaunch.toString()};\nconst PROGRAM_AGENTS = ${JSON.stringify(PROGRAM_AGENTS)};\nconst KNOWN_PROGRAMS = ${JSON.stringify(KNOWN_PROGRAMS)};\nconst matchAgentProcess = ${matchAgentProcess.toString()};\nconst scriptInterpreter = ${scriptInterpreter.toString()};\nconst normalizeEffectiveModel = ${normalizeEffectiveModel.toString()};\nconst modelSelection = ${modelSelection.toString()};\nconst foregroundModelSelection = ${foregroundModelSelection.toString()};\nconst environmentValue = ${environmentValue.toString()};\nconst processModelSelectors = ${processModelSelectors.toString()};\nconst settingsModelSelection = ${settingsModelSelection.toString()};\nconst settingsFileSelection = ${settingsFileSelection.toString()};\nconst accountDirectory = ${accountDirectory.toString()};\nconst configuredModelSelection = ${configuredModelSelection.toString()};\nconst processMetadata = ${processMetadata.toString()};\nconst processAgentCommand = ${processAgentCommand.toString()};\nconst activityMetadata = ${activityMetadata.toString()};\nconst detectSessionActivity = ${detectSessionActivity.toString()};\nconst interpreterEntrypoint = ${interpreterEntrypoint.toString()};\nconst MAC_PROCESS_SELECTORS_SCRIPT = ${JSON.stringify(MAC_PROCESS_SELECTORS_SCRIPT)};\nconst applyProcessSelectors = ${applyProcessSelectors.toString()};\nconst macProcessSelectors = ${macProcessSelectors.toString()};\nconst parseProcessRows = ${parseProcessRows.toString()};\nconst processSnapshotComplete = ${processSnapshotComplete.toString()};\nconst probeSessionSnapshot = ${probeSessionSnapshot.toString()};\n(${probeSessionActivity.toString()})([]).then((rows) => process.stdout.write(JSON.stringify(rows))).catch(() => process.stdout.write("[]"));`;
+export const ACTIVITY_PROBE_SCRIPT = `const AGENT_PROCESS_RULES = ${JSON.stringify(AGENT_PROCESS_RULES)};\nconst AGENT_IDS = ${JSON.stringify(AGENT_IDS)};\nconst AGENT_MODE_RULES = ${JSON.stringify(AGENT_MODE_RULES)};\nconst AGENT_ACCOUNTS = ${JSON.stringify(AGENT_ACCOUNTS)};\nconst matchAgentMode = ${matchAgentMode.toString()};\nconst validAgentAccount = ${validAgentAccount.toString()};\nconst agentLaunch = ${agentLaunch.toString()};\nconst PROGRAM_AGENTS = ${JSON.stringify(PROGRAM_AGENTS)};\nconst KNOWN_PROGRAMS = ${JSON.stringify(KNOWN_PROGRAMS)};\nconst matchAgentProcess = ${matchAgentProcess.toString()};\nconst scriptInterpreter = ${scriptInterpreter.toString()};\nconst normalizeEffectiveModel = ${normalizeEffectiveModel.toString()};\nconst modelSelection = ${modelSelection.toString()};\nconst foregroundModelSelection = ${foregroundModelSelection.toString()};\nconst environmentValue = ${environmentValue.toString()};\nconst processModelSelectors = ${processModelSelectors.toString()};\nconst settingsModelSelection = ${settingsModelSelection.toString()};\nconst settingsFileSelection = ${settingsFileSelection.toString()};\nconst accountDirectory = ${accountDirectory.toString()};\nconst configuredModelSelection = ${configuredModelSelection.toString()};\nconst processMetadata = ${processMetadata.toString()};\nconst processAgentCommand = ${processAgentCommand.toString()};\nconst agentSessionState = ${agentSessionState.toString()};\nconst withAgentSession = ${withAgentSession.toString()};\nconst verifiedClaudeSession = ${verifiedClaudeSession.toString()};\nconst readClaudeSessionFile = ${readClaudeSessionFile.toString()};\nconst processStartTimes = ${processStartTimes.toString()};\nconst activityMetadata = ${activityMetadata.toString()};\nconst detectSessionActivity = ${detectSessionActivity.toString()};\nconst interpreterEntrypoint = ${interpreterEntrypoint.toString()};\nconst MAC_PROCESS_SELECTORS_SCRIPT = ${JSON.stringify(MAC_PROCESS_SELECTORS_SCRIPT)};\nconst applyProcessSelectors = ${applyProcessSelectors.toString()};\nconst macProcessSelectors = ${macProcessSelectors.toString()};\nconst parseProcessRows = ${parseProcessRows.toString()};\nconst processSnapshotComplete = ${processSnapshotComplete.toString()};\nconst probeSessionSnapshot = ${probeSessionSnapshot.toString()};\n(${probeSessionActivity.toString()})([]).then((rows) => process.stdout.write(JSON.stringify(rows))).catch(() => process.stdout.write("[]"));`;

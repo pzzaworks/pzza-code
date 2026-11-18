@@ -95,6 +95,17 @@ pub struct CatalogResume {
     /// Resumed by id: the store the id a folder last ran is read from
     /// (agent_sessions.rs); the command holds agent_sessions::PLACEHOLDER.
     pub lookup: Option<String>,
+    /// The same mode reopening one recorded conversation by its id, for an
+    /// agent whose running conversation the app records per pane.
+    pub by_id: Option<CatalogById>,
+}
+
+/// A resume command's by-id form: `command` holds agent_sessions::PLACEHOLDER
+/// where the id goes, and the id must pass agent_sessions::valid_id(`rule`).
+#[derive(Debug, Deserialize)]
+pub struct CatalogById {
+    pub command: String,
+    pub rule: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -125,6 +136,31 @@ pub fn resume_account(command: &str) -> Option<&str> {
     let account = resume_entry(command)?.account.as_ref()?;
     let default = folder.rsplit('/').next() == Some(account.folder.as_str());
     (account.env == name && !default).then_some(folder)
+}
+
+/// The line that reopens `conversation` for a valid resume command: its
+/// entry's by-id form with the id in place, behind the same account prefix
+/// the command has. None when the entry has no by-id form or the id does not
+/// have the agent's own shape (agent_sessions::valid_id), so nothing but a
+/// catalog command and plain id characters is ever typed.
+pub fn resume_by_id(command: &str, conversation: &str) -> Option<String> {
+    resume_by_id_in(command, conversation, home_folder().as_deref())
+}
+
+fn resume_by_id_in(command: &str, conversation: &str, home: Option<&Path>) -> Option<String> {
+    let entry = resume_entry_in(command, home)?;
+    let by_id = entry.by_id.as_ref()?;
+    if !crate::agent_sessions::valid_id(&by_id.rule, conversation) || !by_id.command.contains(crate::agent_sessions::PLACEHOLDER) {
+        return None;
+    }
+    // A command that is not the catalog command itself carries an account
+    // prefix (resume_entry_in), which goes in front of the by-id form the same
+    // way: one `env` with the account first.
+    let line = match account_prefix(command).filter(|_| entry.command != command) {
+        Some((_, name, folder)) => format!("env {name}={folder} {}", by_id.command.strip_prefix("env ").unwrap_or(&by_id.command)),
+        None => by_id.command.clone(),
+    };
+    Some(line.replacen(crate::agent_sessions::PLACEHOLDER, conversation, 1))
 }
 
 fn home_folder() -> Option<PathBuf> {
@@ -213,6 +249,35 @@ mod tests {
         assert_eq!(resume_account(&command(".claude")), None, "the default folder is the default account");
         assert_eq!(resume_account("claude -c --permission-mode plan"), None);
         assert_eq!(resume_account(&format!("env PATH={home}/.claude-work claude -c --permission-mode plan")), None);
+    }
+
+    #[test]
+    fn a_recorded_conversation_reopens_in_the_same_mode_and_account() {
+        let home = Some(Path::new("/Users/me"));
+        let id = "0b1c2d3e-4f50-4a61-8b72-9c8d7e6f5a41";
+        let by_id = |command: &str, conversation: &str| resume_by_id_in(command, conversation, home);
+        assert_eq!(by_id("claude -c --permission-mode plan", id).as_deref(), Some(format!("claude --resume {id} --permission-mode plan").as_str()));
+        assert_eq!(by_id("claude -c --dangerously-skip-permissions", id).as_deref(), Some(format!("claude --resume {id} --dangerously-skip-permissions").as_str()));
+        assert_eq!(
+            by_id("env CLAUDE_CONFIG_DIR=/Users/me/.claude-work claude -c --permission-mode manual", id).as_deref(),
+            Some(format!("env CLAUDE_CONFIG_DIR=/Users/me/.claude-work claude --resume {id} --permission-mode manual").as_str())
+        );
+        // Every Claude mode has its by-id form; agents without a recorded
+        // conversation have none.
+        assert!(catalog().resume.iter().filter(|entry| entry.programs == ["claude"]).all(|entry| entry.by_id.as_ref().is_some_and(|by_id| by_id.rule == "claude")));
+        assert!(by_id("codex resume --last --sandbox read-only --ask-for-approval on-request", id).is_none());
+        // Ids of another shape, and commands outside the catalog, give nothing.
+        for (command, conversation) in [
+            ("claude -c --permission-mode plan", "0B1C2D3E-4F50-4A61-8B72-9C8D7E6F5A41"),
+            ("claude -c --permission-mode plan", "0b1c2d3e-4f50-4a61-8b72-9c8d7e6f5a4"),
+            ("claude -c --permission-mode plan", "$(id)"),
+            ("claude -c --permission-mode plan", &format!("{id}; rm -rf ~")),
+            ("claude -c --permission-mode plan", ""),
+            ("claude -c", id),
+            ("env CLAUDE_CONFIG_DIR=/tmp/.claude-work claude -c --permission-mode manual", id),
+        ] {
+            assert!(by_id(command, conversation).is_none(), "{command} {conversation}");
+        }
     }
 
     #[test]

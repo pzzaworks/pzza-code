@@ -18,6 +18,10 @@
 //   is gone, sessions or windows a restore could not bring back) with their
 //   agents and the folder of their saved output under refresh/. A version
 //   that cannot read it never overwrites it and removes no saved output.
+// - sessions.conversations.json, journal.conversations.json: the Claude Code
+//   conversation each agent of sessions.json or journal.json ran, when known,
+//   valid only for the exact file written with it (see Conversations). Older
+//   versions never read them; a rewrite by one makes them stale and ignored.
 // - journal.lock: held while sessions are recorded, refreshed or restored,
 //   so two app copies never work on the same journal at once.
 // - refresh.lock: held only while a refresh or restore runs, so a refresh can
@@ -113,6 +117,58 @@ pub struct AgentResume {
     // this agent.
     #[serde(default)]
     only_if_busy: bool,
+    // The conversation the pane ran, when the app knew it (see AgentRequest):
+    // the pane then reopens exactly that one. Never part of sessions.json or
+    // journal.json, whose agents every released version reads as above; it
+    // is kept beside them (see Conversations).
+    #[serde(skip)]
+    conversation: Option<String>,
+}
+
+/// An agent to resume as the app asks for it: an AgentResume with, when
+/// known, the conversation (a Claude Code session id) its pane runs. Kept
+/// apart from AgentResume, whose saved shape never changes. An id that is not
+/// one the command's agent can be reopened with is taken as not known.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentRequest {
+    session: String,
+    #[serde(default)]
+    window: Option<u32>,
+    command: String,
+    #[serde(default)]
+    only_if_busy: bool,
+    #[serde(default)]
+    conversation: Option<String>,
+}
+
+impl From<AgentRequest> for AgentResume {
+    fn from(request: AgentRequest) -> Self {
+        let conversation = request.conversation.filter(|id| reopens(&request.command, id));
+        AgentResume { session: request.session, window: request.window, command: request.command, only_if_busy: request.only_if_busy, conversation }
+    }
+}
+
+fn requested(agents: Vec<AgentRequest>) -> Vec<AgentResume> {
+    agents.into_iter().map(AgentResume::from).collect()
+}
+
+/// Whether a resume command can reopen `conversation` by its id.
+fn reopens(command: &str, conversation: &str) -> bool {
+    valid_agent_command(command) && crate::agent_catalog::resume_by_id(command, conversation).is_some()
+}
+
+/// The conversations of a saved file's agents (sessions.json or
+/// journal.json), in a file beside it, since those formats never change.
+/// They apply only to the exact file they were written with: `file` is its
+/// identity right after that write (see file_stamp), so once any version
+/// rewrites it these are ignored, and its agents' conversations are unknown.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Conversations {
+    file: String,
+    // One per agent of that file, in its order.
+    agents: Vec<Option<String>>,
 }
 
 /// The local sessions as last seen on one server (identified by its pid and
@@ -261,8 +317,9 @@ pub struct RefreshReport {
     restored: Vec<String>,
     resumed: Vec<String>,
     failed: Vec<FailedSession>,
-    // Sessions whose agent was left at its shell: another pane in the same
-    // folder continues that agent's last conversation.
+    // Sessions whose agent was left at its shell, with why: another pane
+    // continues the same conversation, or its conversation is not known and
+    // continuing the folder's last one could take another pane's.
     skipped: Vec<FailedSession>,
 }
 
@@ -419,6 +476,9 @@ pub fn sanitize_journal(mut journal: Journal) -> Journal {
 
 fn sanitize_agents(agents: &mut Vec<AgentResume>, sessions: &[SavedSession]) {
     agents.retain(|agent| valid_agent_command(&agent.command) && sessions.iter().any(|session| session.name == agent.session));
+    for agent in agents.iter_mut() {
+        agent.conversation = agent.conversation.take().filter(|id| reopens(&agent.command, id));
+    }
     let mut seen = Vec::new();
     agents.retain(|agent| {
         let new = !seen.contains(agent);
@@ -661,27 +721,107 @@ pub struct AgentTarget {
     command: String,
     // The pane's folder, where a resume-by-id agent's conversation is looked up.
     folder: Option<String>,
+    // The recorded conversation to reopen by its id (see AgentResume).
+    conversation: Option<String>,
 }
+
+const SAME_CONVERSATION: &str = "Its agent was left at the shell: another pane reopens the same conversation.";
+const SAME_FOLDER: &str = "Its agent was left at the shell: another pane in the same folder continues that agent's last conversation.";
+const UNKNOWN_CONVERSATION: &str =
+    "Its agent was left at the shell: its conversation is not known, and another pane in the same folder runs that agent too.";
 
 /// The panes to type an agent command into: the active pane of each
 /// requested window that was saved and created again (`created`), one agent
 /// per pane (the first wins).
 ///
-/// Every catalog command continues the last conversation in its folder, so
-/// an agent continues in at most one pane per folder: the first one asked
-/// for, and none where a pane left running (`busy`) already runs that agent
-/// there. The other sessions stay at their shell and are returned with why.
+/// A pane whose conversation was recorded reopens exactly it, once per
+/// account: a second pane naming the same conversation stays at its shell.
+/// Every other catalog command continues the last conversation in its
+/// folder, so an agent continues in at most one pane per folder: the first
+/// one asked for, and none where a pane left running (`busy`) already runs
+/// that agent there. For an agent that can reopen by id, a pane whose
+/// conversation is not known continues only when it is the only pane of that
+/// agent and account in its folder (counting those with a known one), since
+/// the folder's last conversation may be another pane's. The other sessions
+/// stay at their shell and are returned with why.
 pub fn agent_targets(
     sessions: &[SavedSession],
     agents: &[AgentResume],
     busy: &[SavedSession],
     created: &dyn Fn(&str, u32) -> bool,
 ) -> (Vec<AgentTarget>, Vec<FailedSession>) {
+    let candidates = agent_panes(sessions, agents, created);
+    // An agent that can reopen by id (its program names) in a folder, per
+    // account folder (each keeps its own conversations).
+    let by_id_key = |target: &AgentTarget| {
+        crate::agent_catalog::resume_entry(&target.command)
+            .filter(|entry| entry.by_id.is_some())
+            .map(|entry| (entry.programs.as_slice(), target.folder.clone(), crate::agent_catalog::resume_account(&target.command).map(str::to_owned)))
+    };
+    let keys: Vec<_> = candidates.iter().map(by_id_key).collect();
+    let sharing: Vec<bool> = keys.iter().map(|key| key.is_some() && keys.iter().filter(|other| *other == key).count() > 1).collect();
     let mut targets: Vec<AgentTarget> = Vec::new();
     let mut skipped: Vec<FailedSession> = Vec::new();
     // An agent (its program names, or for one resumed by id its store) in a
     // folder, per account folder (each keeps its own conversations).
-    let mut continued: Vec<(&[String], Option<&str>, Option<&str>, Option<&str>)> = Vec::new();
+    let mut continued: Vec<(&[String], Option<String>, Option<String>, Option<&str>)> = Vec::new();
+    // Conversations reopened by their id: the agent, its account and the id.
+    let mut reopened: Vec<(&[String], Option<String>, String)> = Vec::new();
+    for (target, sharing) in candidates.into_iter().zip(sharing) {
+        let skip = match crate::agent_catalog::resume_entry(&target.command) {
+            // Not a catalog command (never asked for by the app): typed as is.
+            None => None,
+            Some(entry) => {
+                let account = crate::agent_catalog::resume_account(&target.command).map(str::to_owned);
+                match target.conversation.clone() {
+                    Some(id) => {
+                        let conversation = (entry.programs.as_slice(), account, id);
+                        let again = reopened.contains(&conversation);
+                        reopened.push(conversation);
+                        again.then_some(SAME_CONVERSATION)
+                    }
+                    None if sharing => Some(UNKNOWN_CONVERSATION),
+                    None => {
+                        let conversation = (entry.programs.as_slice(), target.folder.clone(), account, entry.lookup.as_deref());
+                        let running = panes_of(busy).any(|(_, live)| live.cwd == conversation.1 && agent_named(&live.command, &target.command));
+                        let taken = running || continued.contains(&conversation);
+                        continued.push(conversation);
+                        taken.then_some(SAME_FOLDER)
+                    }
+                }
+            }
+        };
+        match skip {
+            Some(error) => {
+                if !skipped.iter().any(|entry| entry.session == target.session) {
+                    skipped.push(FailedSession { session: target.session.clone(), error: error.into() });
+                }
+            }
+            None => targets.push(target),
+        }
+    }
+    (targets, skipped)
+}
+
+/// The line typed into a target's pane. A pane whose conversation was
+/// recorded reopens exactly it. A resume-by-id agent continues the
+/// conversation its folder last ran, read from the agent's own store. Any
+/// other command is typed as it is. None when the conversation cannot be
+/// named: the pane then stays at the shell rather than start or pick some
+/// other conversation.
+fn agent_line(command: &str, folder: Option<&str>, conversation: Option<&str>) -> Option<String> {
+    let lookup = crate::agent_catalog::resume_entry(command).and_then(|entry| entry.lookup.as_deref());
+    match (conversation, lookup) {
+        (Some(id), _) => crate::agent_catalog::resume_by_id(command, id),
+        (None, Some(lookup)) => folder.and_then(|folder| crate::agent_sessions::resolve(command, lookup, Path::new(folder))),
+        (None, None) => Some(command.to_string()),
+    }
+}
+
+/// The pane each agent goes to, one agent per pane (the first wins), with
+/// its recorded conversation when that pane's command can reopen it.
+fn agent_panes(sessions: &[SavedSession], agents: &[AgentResume], created: &dyn Fn(&str, u32) -> bool) -> Vec<AgentTarget> {
+    let mut targets: Vec<AgentTarget> = Vec::new();
     for agent in agents {
         let Some(session) = sessions.iter().find(|session| session.name == agent.session) else {
             continue;
@@ -699,21 +839,18 @@ pub fn agent_targets(
         if targets.iter().any(|existing| existing.target == target) {
             continue;
         }
-        if let Some(entry) = crate::agent_catalog::resume_entry(&agent.command) {
-            let conversation = (entry.programs.as_slice(), pane.cwd.as_deref(), crate::agent_catalog::resume_account(&agent.command), entry.lookup.as_deref());
-            let running = panes_of(busy).any(|(_, live)| live.cwd.as_deref() == conversation.1 && agent_named(&live.command, &agent.command));
-            if running || continued.contains(&conversation) {
-                if !skipped.iter().any(|entry| entry.session == session.name) {
-                    let error = "Its agent was left at the shell: another pane in the same folder continues that agent's last conversation.";
-                    skipped.push(FailedSession { session: session.name.clone(), error: error.into() });
-                }
-                continue;
-            }
-            continued.push(conversation);
-        }
-        targets.push(AgentTarget { session: session.name.clone(), window: window.index, target, pane: pane.id.clone(), command: agent.command.clone(), folder: pane.cwd.clone() });
+        let conversation = agent.conversation.clone().filter(|id| reopens(&agent.command, id));
+        targets.push(AgentTarget {
+            session: session.name.clone(),
+            window: window.index,
+            target,
+            pane: pane.id.clone(),
+            command: agent.command.clone(),
+            folder: pane.cwd.clone(),
+            conversation,
+        });
     }
-    (targets, skipped)
+    targets
 }
 
 type Tmux<'a> = &'a dyn Fn() -> Command;
@@ -1227,21 +1364,12 @@ pub fn restore(
     let made_window = |session: &str, window: u32| created.contains(&(session.to_string(), window));
     let (targets, skipped) = agent_targets(&restored, &agents, busy, &made_window);
     outcome.report.skipped = skipped;
-    for AgentTarget { session, window, target, pane, command, folder } in targets {
-        // A resume-by-id agent continues the conversation its folder last
-        // ran, read from the agent's own store; without one it stays at the
-        // shell rather than start or pick some other conversation.
-        let typed_command = match crate::agent_catalog::resume_entry(&command).and_then(|entry| entry.lookup.as_deref()) {
-            Some(lookup) => match folder.as_deref().and_then(|folder| crate::agent_sessions::resolve(&command, lookup, Path::new(folder))) {
-                Some(resolved) => resolved,
-                None => {
-                    if !outcome.report.skipped.iter().any(|entry| entry.session == session) {
-                        outcome.report.skipped.push(FailedSession { session: session.clone(), error: "Its agent was left at the shell: its conversation could not be found.".into() });
-                    }
-                    continue;
-                }
-            },
-            None => command.clone(),
+    for AgentTarget { session, window, target, pane, command, folder, conversation } in targets {
+        let Some(typed_command) = agent_line(&command, folder.as_deref(), conversation.as_deref()) else {
+            if !outcome.report.skipped.iter().any(|entry| entry.session == session) {
+                outcome.report.skipped.push(FailedSession { session: session.clone(), error: "Its agent was left at the shell: its conversation could not be found.".into() });
+            }
+            continue;
         };
         // Type once the pane has printed (and deleted) its saved output, so
         // the command is not echoed into the middle of it.
@@ -1255,7 +1383,7 @@ pub fn restore(
             .and_then(|_| run(tmux, &strings(&["send-keys", "-t", &target, "Enter"])));
         match typed {
             Ok(_) => {
-                outcome.started.push(AgentResume { session: session.clone(), window: Some(window), command, only_if_busy: false });
+                outcome.started.push(AgentResume { session: session.clone(), window: Some(window), command, only_if_busy: false, conversation });
                 if !outcome.report.resumed.contains(&session) {
                     outcome.report.resumed.push(session);
                 }
@@ -1583,14 +1711,20 @@ struct EarlierState {
 fn load(data: &Path) -> Saved {
     let (journal, journal_kept, journal_missing) = match stored::<Journal>(&journal_file(data)) {
         Stored::Missing => (Journal::default(), false, true),
-        Stored::Read(journal) if journal.version == JOURNAL_VERSION => (sanitize_journal(journal), false, false),
+        Stored::Read(mut journal) if journal.version == JOURNAL_VERSION => {
+            with_conversations(&journal_file(data), &mut journal.agents);
+            (sanitize_journal(journal), false, false)
+        }
         _ => (Journal::default(), true, false),
     };
     let mut saved = Saved { record: None, journal, journal_kept };
     let path = state_file(data);
     match stored::<SavedState>(&path) {
         Stored::Missing => {}
-        Stored::Read(state) => saved.record = Some(sanitize_state(state)),
+        Stored::Read(mut state) => {
+            with_conversations(&path, &mut state.agents);
+            saved.record = Some(sanitize_state(state));
+        }
         Stored::Unreadable(text) => match text.and_then(|text| serde_json::from_str::<EarlierState>(&text).ok()) {
             Some(earlier) => split_earlier(data, earlier, journal_missing, &mut saved),
             None => {
@@ -1674,19 +1808,82 @@ fn store_json(path: &Path, value: &impl Serialize) -> io::Result<()> {
     replace_file(path, &text)
 }
 
+/// Writes the record, then the conversations of its agents beside it.
 pub fn store_state(path: &Path, state: &SavedState) -> io::Result<()> {
-    store_json(path, state)
+    store_json(path, state)?;
+    store_conversations(path, &state.agents);
+    Ok(())
 }
 
-/// Writes the journal, or removes it once nothing is owed.
+/// Writes the journal (then the conversations of its agents beside it), or
+/// removes both once nothing is owed.
 fn store_journal(data: &Path, journal: &Journal) -> io::Result<()> {
     let path = journal_file(data);
     if !journal.owes_nothing() {
-        return store_json(&path, journal);
+        store_json(&path, journal)?;
+        store_conversations(&path, &journal.agents);
+        return Ok(());
     }
+    store_conversations(&path, &[]);
     match fs::remove_file(&path) {
         Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error),
         _ => Ok(()),
+    }
+}
+
+/// Where the conversations of a saved file's agents are kept (see
+/// Conversations): sessions.conversations.json beside sessions.json.
+fn conversations_file(path: &Path) -> PathBuf {
+    path.with_extension("conversations.json")
+}
+
+/// A saved file's identity: its device, inode, size and times. replace_file
+/// gives every write a new file, so a rewrite by any version changes it.
+fn file_stamp(path: &Path) -> Option<String> {
+    use std::os::unix::fs::MetadataExt;
+    let metadata = fs::symlink_metadata(path).ok()?;
+    metadata.is_file().then(|| {
+        format!(
+            "{} {} {} {}.{} {}.{}",
+            metadata.dev(),
+            metadata.ino(),
+            metadata.len(),
+            metadata.mtime(),
+            metadata.mtime_nsec(),
+            metadata.ctime(),
+            metadata.ctime_nsec()
+        )
+    })
+}
+
+/// Keeps the conversations of the agents just written to `path` beside it,
+/// or removes them when none is known. Best effort: conversations that could
+/// not be written are unknown, and stale ones no longer match the file.
+fn store_conversations(path: &Path, agents: &[AgentResume]) {
+    let side = conversations_file(path);
+    let conversations = agents
+        .iter()
+        .any(|agent| agent.conversation.is_some())
+        .then(|| file_stamp(path))
+        .flatten()
+        .map(|file| Conversations { file, agents: agents.iter().map(|agent| agent.conversation.clone()).collect() });
+    let written = conversations.is_some_and(|conversations| store_json(&side, &conversations).is_ok());
+    if !written {
+        let _ = fs::remove_file(&side);
+    }
+}
+
+/// Gives the agents read from `path` the conversations kept beside it, only
+/// when those were written with exactly this file and these agents.
+fn with_conversations(path: &Path, agents: &mut [AgentResume]) {
+    let Stored::Read(conversations) = stored::<Conversations>(&conversations_file(path)) else {
+        return;
+    };
+    if conversations.agents.len() != agents.len() || file_stamp(path).as_deref() != Some(conversations.file.as_str()) {
+        return;
+    }
+    for (agent, conversation) in agents.iter_mut().zip(conversations.agents) {
+        agent.conversation = conversation;
     }
 }
 
@@ -2078,9 +2275,9 @@ fn app_data(app: &tauri::AppHandle) -> Result<PathBuf, String> {
 /// Saves the local sessions, restarts the local tmux server and restores
 /// them. Refuses while another refresh or restore is running.
 #[tauri::command]
-pub async fn local_tmux_refresh_sessions(app: tauri::AppHandle, agents: Vec<AgentResume>) -> Result<RefreshReport, String> {
+pub async fn local_tmux_refresh_sessions(app: tauri::AppHandle, agents: Vec<AgentRequest>) -> Result<RefreshReport, String> {
     let data = app_data(&app)?;
-    tauri::async_runtime::spawn_blocking(move || refresh_blocking(data, agents))
+    tauri::async_runtime::spawn_blocking(move || refresh_blocking(data, requested(agents)))
         .await
         .map_err(|error| error.to_string())?
 }
@@ -2089,9 +2286,9 @@ pub async fn local_tmux_refresh_sessions(app: tauri::AppHandle, agents: Vec<Agen
 /// fall back on where none was recorded. Waits for a refresh or restore that
 /// is running (in any app copy) to finish first.
 #[tauri::command]
-pub async fn local_tmux_restore_sessions(app: tauri::AppHandle, agents: Vec<AgentResume>) -> Result<RefreshReport, String> {
+pub async fn local_tmux_restore_sessions(app: tauri::AppHandle, agents: Vec<AgentRequest>) -> Result<RefreshReport, String> {
     let data = app_data(&app)?;
-    tauri::async_runtime::spawn_blocking(move || restore_blocking(data, agents))
+    tauri::async_runtime::spawn_blocking(move || restore_blocking(data, requested(agents)))
         .await
         .map_err(|error| error.to_string())?
 }
@@ -2099,9 +2296,9 @@ pub async fn local_tmux_restore_sessions(app: tauri::AppHandle, agents: Vec<Agen
 /// Records the local sessions and the agents detected in them (null: not
 /// known now), and says whether the server was replaced with sessions lost.
 #[tauri::command]
-pub async fn local_tmux_record_sessions(app: tauri::AppHandle, agents: Option<Vec<AgentResume>>) -> Result<RecordStatus, String> {
+pub async fn local_tmux_record_sessions(app: tauri::AppHandle, agents: Option<Vec<AgentRequest>>) -> Result<RecordStatus, String> {
     let data = app_data(&app)?;
-    tauri::async_runtime::spawn_blocking(move || record_blocking(data, agents))
+    tauri::async_runtime::spawn_blocking(move || record_blocking(data, agents.map(requested)))
         .await
         .map_err(|error| error.to_string())?
 }
@@ -2258,15 +2455,15 @@ mod tests {
                 SavedWindow { index: 1, active: false, name: None, layout: String::new(), width: 80, height: 24, panes: vec![pane(0, true, "-zsh", "/")] },
             ],
         }];
-        let agent = |session: &str, window: u32, only_if_busy: bool| AgentResume { session: session.into(), window: Some(window), command: "claude -c --permission-mode manual".into(), only_if_busy };
+        let agent = |session: &str, window: u32, only_if_busy: bool| AgentResume { session: session.into(), window: Some(window), command: "claude -c --permission-mode manual".into(), only_if_busy, conversation: None };
         let all = |_: &str, _: u32| true;
         let targets = |agents: &[AgentResume]| agent_targets(&sessions, agents, &[], &all).0;
         let found = targets(&[agent("work", 0, true), agent("work", 0, false), agent("work", 1, true), agent("gone", 0, false), agent("work", 9, false)]);
-        assert_eq!(found, [AgentTarget { session: "work".into(), window: 0, target: "=work:0.1".into(), pane: "%1".into(), command: "claude -c --permission-mode manual".into(), folder: Some("/".into()) }]);
+        assert_eq!(found, [AgentTarget { session: "work".into(), window: 0, target: "=work:0.1".into(), pane: "%1".into(), command: "claude -c --permission-mode manual".into(), folder: Some("/".into()), conversation: None }]);
         // A detected agent resumes even where the pane now shows its shell.
         assert_eq!(targets(&[agent("work", 1, false)])[0].target, "=work:1.0");
         // Without a window, the session's active one.
-        let active = AgentResume { session: "work".into(), window: None, command: "codex resume --last --sandbox workspace-write --ask-for-approval on-request".into(), only_if_busy: false };
+        let active = AgentResume { session: "work".into(), window: None, command: "codex resume --last --sandbox workspace-write --ask-for-approval on-request".into(), only_if_busy: false, conversation: None };
         assert_eq!(targets(&[active])[0].target, "=work:0.1");
         // Nothing goes to a window that was not created again.
         assert!(agent_targets(&sessions, &[agent("work", 0, false)], &[], &|_, window| window != 0).0.is_empty());
@@ -2279,16 +2476,22 @@ mod tests {
             windows: vec![SavedWindow { index: 0, active: true, name: None, layout: String::new(), width: 80, height: 24, panes: vec![pane(0, true, "claude", cwd)] }],
         };
         let sessions = vec![session("a", "/repo"), session("b", "/repo"), session("c", "/other"), session("d", "/repo")];
-        let agent = |name: &str, command: &str| AgentResume { session: name.into(), window: Some(0), command: command.into(), only_if_busy: false };
+        let agent = |name: &str, command: &str| AgentResume { session: name.into(), window: Some(0), command: command.into(), only_if_busy: false, conversation: None };
         let claude = "claude -c --permission-mode manual";
         let codex = "codex resume --last --sandbox workspace-write --ask-for-approval on-request";
         let all = |_: &str, _: u32| true;
         // Another mode of the same agent is the same conversation; another
         // agent in that folder has a conversation of its own.
-        let agents = [agent("a", claude), agent("b", "claude -c --permission-mode plan"), agent("c", claude), agent("d", codex)];
+        let agents = [agent("a", codex), agent("b", "codex resume --last --sandbox read-only --ask-for-approval on-request"), agent("c", codex), agent("d", claude)];
         let (targets, skipped) = agent_targets(&sessions, &agents, &[], &all);
         assert_eq!(targets.iter().map(|target| target.session.as_str()).collect::<Vec<_>>(), ["a", "c", "d"]);
         assert_eq!(skipped.iter().map(|entry| entry.session.as_str()).collect::<Vec<_>>(), ["b"]);
+        assert_eq!(skipped[0].error, SAME_FOLDER);
+        // Claude can reopen a conversation by its id, so with none recorded
+        // no pane of a shared folder takes the folder's last conversation.
+        let (targets, skipped) = agent_targets(&sessions, &[agent("a", claude), agent("b", "claude -c --permission-mode plan"), agent("c", claude)], &[], &all);
+        assert_eq!(targets.iter().map(|target| target.session.as_str()).collect::<Vec<_>>(), ["c"]);
+        assert_eq!(skipped.iter().map(|entry| (entry.session.as_str(), entry.error.as_str())).collect::<Vec<_>>(), [("a", UNKNOWN_CONVERSATION), ("b", UNKNOWN_CONVERSATION)]);
         // A pane left running that already runs the agent in that folder
         // keeps its conversation; a script interpreter there does not count.
         let running = vec![session("live", "/repo")];
@@ -2305,6 +2508,196 @@ mod tests {
         let (targets, skipped) = agent_targets(&sessions, &[agent("a", goose), agent("b", forge), agent("d", goose)], &[], &all);
         assert_eq!(targets.iter().map(|target| (target.session.as_str(), target.command.as_str())).collect::<Vec<_>>(), [("a", goose), ("b", forge)]);
         assert_eq!(skipped.iter().map(|entry| entry.session.as_str()).collect::<Vec<_>>(), ["d"]);
+    }
+
+    const FIRST: &str = "0b1c2d3e-4f50-4a61-8b72-9c8d7e6f5a41";
+    const SECOND: &str = "7d6e5f40-3a2b-4c1d-9e8f-0a1b2c3d4e5f";
+
+    #[test]
+    fn a_recorded_conversation_reopens_by_its_id_in_its_own_pane() {
+        let session = |name: &str, cwd: &str| SavedSession {
+            name: name.into(),
+            windows: vec![SavedWindow { index: 0, active: true, name: None, layout: String::new(), width: 80, height: 24, panes: vec![pane(0, true, "claude", cwd)] }],
+        };
+        let sessions = vec![session("a", "/repo"), session("b", "/repo"), session("c", "/repo"), session("d", "/other")];
+        let agent = |name: &str, command: &str, conversation: Option<&str>| AgentResume {
+            session: name.into(),
+            window: Some(0),
+            command: command.into(),
+            only_if_busy: false,
+            conversation: conversation.map(String::from),
+        };
+        let manual = "claude -c --permission-mode manual";
+        let plan = "claude -c --permission-mode plan";
+        let all = |_: &str, _: u32| true;
+        let line = |target: &AgentTarget| agent_line(&target.command, target.folder.as_deref(), target.conversation.as_deref());
+
+        // Two panes in one folder, each with its own conversation: both
+        // reopen theirs, in their own mode.
+        let (targets, skipped) = agent_targets(&sessions, &[agent("a", manual, Some(FIRST)), agent("b", plan, Some(SECOND))], &[], &all);
+        assert!(skipped.is_empty(), "{skipped:?}");
+        assert_eq!(targets.iter().map(line).collect::<Vec<_>>(), [
+            Some(format!("claude --resume {FIRST} --permission-mode manual")),
+            Some(format!("claude --resume {SECOND} --permission-mode plan")),
+        ]);
+        // The catalog command is what is recorded once started, with its conversation.
+        assert_eq!((targets[0].command.as_str(), targets[0].conversation.as_deref()), (manual, Some(FIRST)));
+
+        // Two panes naming the same conversation: only the first reopens it.
+        let (targets, skipped) = agent_targets(&sessions, &[agent("a", manual, Some(FIRST)), agent("b", plan, Some(FIRST))], &[], &all);
+        assert_eq!(targets.iter().map(|target| target.session.as_str()).collect::<Vec<_>>(), ["a"]);
+        assert_eq!(skipped.iter().map(|entry| (entry.session.as_str(), entry.error.as_str())).collect::<Vec<_>>(), [("b", SAME_CONVERSATION)]);
+
+        // A conversation not known: alone in its folder it continues the
+        // folder's last one; beside a pane of that agent (with a known
+        // conversation or not) it stays at the shell.
+        let (targets, skipped) = agent_targets(&sessions, &[agent("d", manual, None)], &[], &all);
+        assert!(skipped.is_empty());
+        assert_eq!(targets.iter().map(line).collect::<Vec<_>>(), [Some(manual.to_string())]);
+        let agents = [agent("a", manual, Some(FIRST)), agent("b", manual, None), agent("c", plan, Some(SECOND)), agent("d", plan, None)];
+        let (targets, skipped) = agent_targets(&sessions, &agents, &[], &all);
+        assert_eq!(targets.iter().map(|target| target.session.as_str()).collect::<Vec<_>>(), ["a", "c", "d"]);
+        assert_eq!(skipped.iter().map(|entry| (entry.session.as_str(), entry.error.as_str())).collect::<Vec<_>>(), [("b", UNKNOWN_CONVERSATION)]);
+        assert_eq!(targets.iter().map(line).collect::<Vec<_>>(), [
+            Some(format!("claude --resume {FIRST} --permission-mode manual")),
+            Some(format!("claude --resume {SECOND} --permission-mode plan")),
+            Some(plan.to_string()),
+        ]);
+
+        // An id of another shape is not known: never typed, and treated as
+        // a pane whose conversation is not known.
+        for invalid in ["0B1C2D3E-4F50-4A61-8B72-9C8D7E6F5A41", "not-a-conversation", "$(id)", &format!("{FIRST}; rm -rf ~"), ""] {
+            let (targets, skipped) = agent_targets(&sessions, &[agent("d", manual, Some(invalid))], &[], &all);
+            assert!(skipped.is_empty(), "{invalid}");
+            assert_eq!(targets[0].conversation, None, "{invalid}");
+            assert_eq!(line(&targets[0]).as_deref(), Some(manual), "{invalid}");
+            let (targets, skipped) = agent_targets(&sessions, &[agent("a", manual, Some(invalid)), agent("b", manual, None)], &[], &all);
+            assert!(targets.is_empty(), "{invalid}");
+            assert_eq!(skipped.len(), 2, "{invalid}");
+        }
+        // Agents without a by-id form ignore a conversation.
+        let codex = "codex resume --last --sandbox read-only --ask-for-approval on-request";
+        let (targets, _) = agent_targets(&sessions, &[agent("d", codex, Some(FIRST))], &[], &all);
+        assert_eq!((targets[0].conversation.as_deref(), line(&targets[0])), (None, Some(codex.to_string())));
+
+        // A pane left running Claude in the folder takes the folder's last
+        // conversation, not one recorded for another pane.
+        let running = vec![session("live", "/repo")];
+        let (targets, skipped) = agent_targets(&sessions, &[agent("a", manual, Some(FIRST)), agent("b", manual, None)], &running, &all);
+        assert_eq!(targets.iter().map(|target| target.session.as_str()).collect::<Vec<_>>(), ["a"]);
+        assert_eq!(skipped[0].session, "b");
+    }
+
+    #[test]
+    fn each_account_keeps_its_own_conversations() {
+        let home = std::env::var("HOME").expect("tests run with a home folder");
+        let session = |name: &str| SavedSession {
+            name: name.into(),
+            windows: vec![SavedWindow { index: 0, active: true, name: None, layout: String::new(), width: 80, height: 24, panes: vec![pane(0, true, "claude", "/repo")] }],
+        };
+        let sessions = vec![session("a"), session("b")];
+        let work = format!("env CLAUDE_CONFIG_DIR={home}/.claude-work claude -c --permission-mode manual");
+        let agent = |name: &str, command: &str, conversation: Option<&str>| AgentResume {
+            session: name.into(),
+            window: Some(0),
+            command: command.into(),
+            only_if_busy: false,
+            conversation: conversation.map(String::from),
+        };
+        let all = |_: &str, _: u32| true;
+        // The same id in two accounts is two conversations, and each account
+        // alone in the folder continues its own last one.
+        for conversation in [Some(FIRST), None] {
+            let (targets, skipped) = agent_targets(&sessions, &[agent("a", "claude -c --permission-mode manual", conversation), agent("b", &work, conversation)], &[], &all);
+            assert!(skipped.is_empty(), "{skipped:?}");
+            assert_eq!(targets.len(), 2);
+        }
+        let (targets, _) = agent_targets(&sessions, &[agent("b", &work, Some(FIRST))], &[], &all);
+        assert_eq!(
+            agent_line(&targets[0].command, targets[0].folder.as_deref(), targets[0].conversation.as_deref()),
+            Some(format!("env CLAUDE_CONFIG_DIR={home}/.claude-work claude --resume {FIRST} --permission-mode manual"))
+        );
+    }
+
+    #[test]
+    fn the_app_names_a_conversation_beside_the_saved_agent_fields() {
+        let request = |json: &str| serde_json::from_str::<AgentRequest>(json).map(AgentResume::from);
+        let agent = request(&format!(r#"{{"session":"a","window":0,"command":"claude -c --permission-mode manual","onlyIfBusy":false,"conversation":"{FIRST}"}}"#)).unwrap();
+        assert_eq!(agent.conversation.as_deref(), Some(FIRST));
+        let agent = request(r#"{"session":"a","command":"claude -c --permission-mode manual"}"#).unwrap();
+        assert_eq!((agent.window, agent.only_if_busy, agent.conversation), (None, false, None));
+        let agent = request(r#"{"session":"a","command":"claude -c --permission-mode manual","conversation":null}"#).unwrap();
+        assert_eq!(agent.conversation, None);
+        // An id that is not one the agent can reopen is taken as not known.
+        for invalid in ["0B1C2D3E-4F50-4A61-8B72-9C8D7E6F5A41", "x; rm -rf ~", "20261115_3"] {
+            let agent = request(&format!(r#"{{"session":"a","command":"claude -c --permission-mode manual","conversation":"{invalid}"}}"#)).unwrap();
+            assert_eq!(agent.conversation, None, "{invalid}");
+        }
+        assert!(request(&format!(r#"{{"session":"a","command":"codex resume --last --sandbox read-only --ask-for-approval on-request","conversation":"{FIRST}"}}"#)).unwrap().conversation.is_none());
+        assert!(request(r#"{"session":"a","command":"claude -c --permission-mode manual","other":1}"#).is_err(), "unknown fields are refused");
+    }
+
+    #[test]
+    fn saved_files_keep_their_format_and_conversations_live_beside_them() {
+        let directory = PathBuf::from(format!("/private/tmp/pzza-refresh-conversations-test-{}", crate::agent::random_hex(6).unwrap()));
+        let data = directory.join("data");
+        let agent = |session: &str, conversation: Option<&str>| AgentResume {
+            session: session.into(),
+            window: Some(0),
+            command: "claude -c --permission-mode manual".into(),
+            only_if_busy: false,
+            conversation: conversation.map(String::from),
+        };
+        let state = SavedState { server: "1 2".into(), sessions: vec![saved("a"), saved("b")], agents: vec![agent("a", Some(FIRST)), agent("b", None)] };
+
+        // A record written by a version before conversations, read now.
+        let old = r#"{"server":"1 2","sessions":[{"name":"a","windows":[{"index":0,"active":true,"name":null,"layout":"L","width":80,"height":24,"panes":[{"index":0,"active":true,"id":"%0","command":"zsh","cwd":"/tmp"}]}]}],"agents":[{"session":"a","window":0,"command":"claude -c --permission-mode manual","onlyIfBusy":false}]}"#;
+        let parsed: SavedState = serde_json::from_str(old).unwrap();
+        assert_eq!(parsed.agents[0].conversation, None);
+        // Written now: exactly the fields every released version reads, so
+        // they still read it; a conversation never goes in it.
+        let text = serde_json::to_string(&state).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let mut keys: Vec<&String> = value["agents"][0].as_object().unwrap().keys().collect();
+        keys.sort();
+        assert_eq!(keys, ["command", "onlyIfBusy", "session", "window"]);
+        assert!(!text.contains(FIRST));
+        let with_field = old.replace(r#""onlyIfBusy":false}"#, &format!(r#""onlyIfBusy":false,"conversation":"{FIRST}"}}"#));
+        assert!(serde_json::from_str::<SavedState>(&with_field).is_err(), "the saved shape stays exactly the released one");
+
+        // The record and its conversations round trip; the journal too.
+        store_state(&state_file(&data), &state).unwrap();
+        let journal = Journal {
+            version: JOURNAL_VERSION,
+            server: "1 2".into(),
+            sessions: vec![saved("a"), saved("b")],
+            agents: vec![agent("b", Some(SECOND)), agent("a", None)],
+            ..Journal::default()
+        };
+        store_journal(&data, &journal).unwrap();
+        assert!(!fs::read_to_string(journal_file(&data)).unwrap().contains(SECOND));
+        let loaded = load(&data);
+        assert_eq!(loaded.record.as_ref().unwrap().agents, state.agents);
+        assert_eq!(loaded.journal.agents, journal.agents);
+        let side = fs::metadata(conversations_file(&state_file(&data))).unwrap();
+        assert_eq!(side.mode() & 0o777, 0o600);
+
+        // A record rewritten by a version that knows no conversations (the
+        // same agents, nothing beside it): what is beside it no longer applies.
+        let bytes = serde_json::to_vec(&state).unwrap();
+        replace_file(&state_file(&data), &bytes).unwrap();
+        assert!(load(&data).record.unwrap().agents.iter().all(|agent| agent.conversation.is_none()));
+        // A record without any known conversation leaves nothing beside it,
+        // and a journal that owes nothing goes with its conversations.
+        store_state(&state_file(&data), &SavedState { agents: vec![agent("a", None)], ..state.clone() }).unwrap();
+        assert!(!conversations_file(&state_file(&data)).exists());
+        store_journal(&data, &Journal::default()).unwrap();
+        assert!(!journal_file(&data).exists() && !conversations_file(&journal_file(&data)).exists());
+        // Conversations of a shape the agent does not have are dropped on reading.
+        let tampered = SavedState { agents: vec![agent("a", Some("x; rm -rf ~")), agent("b", Some(SECOND))], ..state.clone() };
+        store_state(&state_file(&data), &tampered).unwrap();
+        assert_eq!(load(&data).record.unwrap().agents.iter().map(|agent| agent.conversation.as_deref()).collect::<Vec<_>>(), [None, Some(SECOND)]);
+        fs::remove_dir_all(&directory).unwrap();
     }
 
     struct Server {
@@ -2484,7 +2877,7 @@ mod tests {
         let _ = server.client().arg("kill-server").output();
         // A different base index proves windows keep their saved numbers.
         server.start("0");
-        let agents = vec![AgentResume { session: "work one".into(), window: Some(1), command: "echo resumed-agent".into(), only_if_busy: false }];
+        let agents = vec![AgentResume { session: "work one".into(), window: Some(1), command: "echo resumed-agent".into(), only_if_busy: false, conversation: None }];
         let (report, _) = {
             let owed = Owed { sessions: sessions.clone(), partial: HashSet::new() };
             let outcome = restore(&client, &owed, &files, &agents, &[], &|_| true, &mut |_, _| {});
@@ -2659,7 +3052,7 @@ mod tests {
         assert_eq!(names(&owed), ["api", "notes", "old"]);
         assert_eq!(owed.sessions[1].windows[0].layout, "full");
         // Pending sessions are checked like recorded ones, and keep their agents.
-        let agent = |session: &str| AgentResume { session: session.into(), window: Some(0), command: "claude -c --permission-mode manual".into(), only_if_busy: false };
+        let agent = |session: &str| AgentResume { session: session.into(), window: Some(0), command: "claude -c --permission-mode manual".into(), only_if_busy: false, conversation: None };
         let clean = sanitize_journal(Journal {
             pending: vec![saved("old"), saved("old"), saved("pzza-v-x"), saved("bad\nname")],
             partial: vec!["old".into(), "old".into(), "gone".into()],
@@ -2683,8 +3076,8 @@ mod tests {
             pending: vec![saved("lost"), saved("named"), saved("half")],
             partial: vec!["half".into()],
             agents: vec![
-                AgentResume { session: "lost".into(), window: Some(0), command: "claude -c --permission-mode manual".into(), only_if_busy: false },
-                AgentResume { session: "closed".into(), window: Some(0), command: "claude -c --permission-mode manual".into(), only_if_busy: false },
+                AgentResume { session: "lost".into(), window: Some(0), command: "claude -c --permission-mode manual".into(), only_if_busy: false, conversation: None },
+                AgentResume { session: "closed".into(), window: Some(0), command: "claude -c --permission-mode manual".into(), only_if_busy: false, conversation: None },
             ],
             refresh: Some("0123456789abcdef".into()),
             recorded: vec!["1 100".into(), "2 200".into()],
@@ -2852,9 +3245,9 @@ mod tests {
             server: "1 1".into(),
             sessions: vec![saved("pzza-v-view"), saved("pzza-quick-chat"), saved("bad\nname"), bad_window, SavedSession { name: "empty".into(), windows: Vec::new() }],
             agents: vec![
-                AgentResume { session: "windows".into(), window: Some(0), command: "claude -c --permission-mode manual".into(), only_if_busy: false },
-                AgentResume { session: "windows".into(), window: Some(0), command: "claude; rm -rf /".into(), only_if_busy: false },
-                AgentResume { session: "gone".into(), window: Some(0), command: "claude -c --permission-mode manual".into(), only_if_busy: false },
+                AgentResume { session: "windows".into(), window: Some(0), command: "claude -c --permission-mode manual".into(), only_if_busy: false, conversation: None },
+                AgentResume { session: "windows".into(), window: Some(0), command: "claude; rm -rf /".into(), only_if_busy: false, conversation: None },
+                AgentResume { session: "gone".into(), window: Some(0), command: "claude -c --permission-mode manual".into(), only_if_busy: false, conversation: None },
             ],
             ..SavedState::default()
         });
@@ -2862,7 +3255,7 @@ mod tests {
         assert_eq!(state.sessions[0].windows[0].name, None);
         assert_eq!(state.sessions[0].windows[0].panes[0].cwd, None);
         assert_eq!(state.agents.len(), 1);
-        let recorded = with_recorded(vec![AgentResume { session: "a".into(), window: None, command: "codex resume --last --sandbox read-only --ask-for-approval on-request".into(), only_if_busy: false }], &state.agents);
+        let recorded = with_recorded(vec![AgentResume { session: "a".into(), window: None, command: "codex resume --last --sandbox read-only --ask-for-approval on-request".into(), only_if_busy: false, conversation: None }], &state.agents);
         assert_eq!(recorded.iter().map(|agent| agent.only_if_busy).collect::<Vec<_>>(), [false, true], "recorded agents wait for their program");
     }
 
@@ -2898,7 +3291,7 @@ mod tests {
         let client = || server.client();
         let data = server.directory.join("data");
         let path = state_file(&data);
-        let detected = vec![AgentResume { session: "api".into(), window: Some(3), command: "claude -c --permission-mode plan".into(), only_if_busy: false }];
+        let detected = vec![AgentResume { session: "api".into(), window: Some(3), command: "claude -c --permission-mode plan".into(), only_if_busy: false, conversation: None }];
         assert_eq!(record(&client, &data, Some(detected)).unwrap(), RecordStatus { restarted: false });
         assert_eq!(fs::metadata(&path).unwrap().mode() & 0o777, 0o600);
         assert_eq!(fs::metadata(path.parent().unwrap()).unwrap().mode() & 0o777, 0o700);
@@ -2961,7 +3354,7 @@ mod tests {
         let data = server.directory.join("data");
         // Recorded while the agents ran; "shell" stands for an agent that has
         // quit since, which stays stopped.
-        let detected = names.iter().chain(&["shell"]).map(|name| AgentResume { session: name.to_string(), window: Some(0), command: "claude -c --permission-mode manual".into(), only_if_busy: false }).collect();
+        let detected = names.iter().chain(&["shell"]).map(|name| AgentResume { session: name.to_string(), window: Some(0), command: "claude -c --permission-mode manual".into(), only_if_busy: false, conversation: None }).collect();
         record(&client, &data, Some(detected)).unwrap();
 
         // Activity detection found nothing at the moment of the refresh.
@@ -2984,6 +3377,66 @@ mod tests {
         assert!(!tmux(&["capture-pane", "-p", "-t", "=shell:"]).contains("resumed-agent"), "a shell is not given an agent");
         assert!(!refresh_root(&data).exists(), "saved output is deleted after restoring");
         assert_eq!(record(&client, &data, None).unwrap(), RecordStatus { restarted: false }, "the refresh recorded the new server");
+    }
+
+    // Three Claude panes in one folder: two with a recorded conversation
+    // reopen exactly theirs after the refresh, and the one whose conversation
+    // is not known stays at its shell instead of taking another pane's.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_refresh_reopens_each_recorded_conversation_in_its_own_pane() {
+        let server = Server::new();
+        let agent = server.fake_agent();
+        server.start("0");
+        let names = ["one", "two", "three"];
+        let folder = folders(&server, &["shared"]).remove(0);
+        let tmux = |args: &[&str]| server.read(args);
+        for name in names {
+            tmux(&["new-session", "-d", "-s", name, "-x", "100", "-y", "30", "-c", &folder]);
+            tmux(&["send-keys", "-t", &format!("={name}:"), &format!("{agent} 60"), "Enter"]);
+        }
+        tmux(&["kill-session", "-t", "=placeholder"]);
+        for name in names {
+            server.wait_command(&format!("={name}:"), "2.1.322");
+        }
+        let client = || server.client();
+        let data = server.directory.join("data");
+        let conversations = [Some(FIRST), Some(SECOND), None];
+        let detected = names
+            .iter()
+            .zip(conversations)
+            .map(|(name, conversation)| AgentResume {
+                session: name.to_string(),
+                window: Some(0),
+                command: "claude -c --permission-mode manual".into(),
+                only_if_busy: false,
+                conversation: conversation.map(String::from),
+            })
+            .collect();
+        record(&client, &data, Some(detected)).unwrap();
+        // The record keeps its released format; the ids are beside it.
+        let text = fs::read_to_string(state_file(&data)).unwrap();
+        assert!(!text.contains(FIRST) && serde_json::from_str::<SavedState>(&text).is_ok());
+
+        // Detection found nothing at the moment of the refresh: the recorded
+        // conversations carry through the journal and the restore.
+        let restart = || {
+            let _ = server.client().arg("kill-server").output();
+            server.start("0");
+            Ok(())
+        };
+        let report = refresh_with(&client, &data, Vec::new(), &restart).unwrap();
+        assert_eq!(report.restored, ["one", "three", "two"]);
+        assert_eq!(report.resumed, ["one", "two"]);
+        assert_eq!(report.skipped, [FailedSession { session: "three".into(), error: UNKNOWN_CONVERSATION.into() }]);
+        server.wait_for("=one:", &format!("resumed-agent --resume {FIRST} --permission-mode manual"));
+        server.wait_for("=two:", &format!("resumed-agent --resume {SECOND} --permission-mode manual"));
+        assert!(!tmux(&["capture-pane", "-p", "-t", "=three:"]).contains("resumed-agent"));
+        // The agents started are recorded with their conversations.
+        let recorded = load(&data).record.unwrap().agents;
+        let mut ids: Vec<(String, Option<String>)> = recorded.into_iter().map(|agent| (agent.session, agent.conversation)).collect();
+        ids.sort();
+        assert_eq!(ids, [("one".to_string(), Some(FIRST.to_string())), ("three".to_string(), None), ("two".to_string(), Some(SECOND.to_string()))]);
     }
 
     // A refresh that dies right after ending the server: "lost" was lost by
@@ -3126,7 +3579,7 @@ mod tests {
         tmux(&["kill-session", "-t", "=placeholder"]);
         let client = || server.client();
         let data = server.directory.join("data");
-        let agent = AgentResume { session: "doomed".into(), window: Some(4), command: "claude -c --permission-mode manual".into(), only_if_busy: false };
+        let agent = AgentResume { session: "doomed".into(), window: Some(4), command: "claude -c --permission-mode manual".into(), only_if_busy: false, conversation: None };
         record(&client, &data, Some(vec![agent.clone()])).unwrap();
         let _ = server.client().arg("kill-server").output();
         server.start("0");
