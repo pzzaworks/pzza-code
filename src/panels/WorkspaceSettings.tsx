@@ -11,7 +11,7 @@ import { compactPath } from "../grid/compactPath";
 import { AsyncButton } from "../ui/AsyncButton";
 import { deleteWorkspaceSnapshot, exportWorkspaceSnapshot, importWorkspaceSnapshot, relaunchWorkspaceSnapshot, renameWorkspaceSnapshot, saveWorkspaceSnapshot, snapshotPreview, useWorkspaceSnapshots, type PreviewStatus, type RelaunchResult } from "../state/workspaceSnapshots";
 import type { WorkspaceSnapshot } from "../workspaceSnapshots";
-import { fileTileFolder, isFileTile, isFolderTile, useStore, type Tile } from "../state/store";
+import { isFileTile, isFolderTile, tileFolder, useStore } from "../state/store";
 import { Modal } from "../ui/Modal";
 import { sessionDisplayName } from "../sessionMeta";
 import { DEFAULT_WORKSPACE_ID, WORKSPACE_COLORS, wsKeyOf } from "../workspaces";
@@ -376,14 +376,6 @@ function SnapshotSection({ workspaceId, workspaceName, hasSessions }: { workspac
       ) : null}
     </div>
   );
-}
-
-// The folder a tile works in: its own absolute cwd, or the connected device's
-// session list for tiles that live there.
-function tileFolder(tile: Tile, sessionPaths: ReadonlyMap<string, string>): string | undefined {
-  if (isFileTile(tile)) return fileTileFolder(tile);
-  if (tile.cwd?.startsWith("/")) return tile.cwd;
-  return tile.host ? undefined : sessionPaths.get(tile.session ?? tile.name);
 }
 
 const inside = (folder: string, root: string) => folder === root || folder.startsWith(root.endsWith("/") ? root : `${root}/`);
