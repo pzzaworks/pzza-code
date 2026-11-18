@@ -35,6 +35,12 @@ export interface SessionAgentResumeById {
   id: string;
   /** The agent finds the id from any folder, not only the one the conversation ran in. */
   anyFolder?: boolean;
+  /**
+   * The native id rule (agent_sessions.rs valid_id) a recorded conversation id
+   * must pass, for an agent whose running conversation the app records per
+   * pane, so a restore reopens exactly that conversation.
+   */
+  restore?: "claude";
 }
 
 export interface SessionAgentPrompt {
@@ -150,6 +156,15 @@ export interface SessionAgentResumeEntry {
   versionProgram: boolean;
   account: SessionAgentAccount | null;
   lookup: string | null;
+  /** The same mode reopening one conversation by its id (see resume.byId.restore). */
+  byId: SessionAgentResumeEntryById | null;
+}
+
+export interface SessionAgentResumeEntryById {
+  /** The command with RESUME_SESSION where the id goes. */
+  command: string;
+  /** The native id rule the id must pass. */
+  rule: string;
 }
 
 export interface AgentModeRule {

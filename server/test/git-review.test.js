@@ -8,7 +8,7 @@ import os from "node:os";
 import path from "node:path";
 import {
   GIT_REVIEW_LIMITS, branchWebUrl, clearGitRemoteCache, failedCiRuns, gitChanges, gitCiFailures, gitDiff, gitRemote, gitRemoveWorktree, gitReviewRouter,
-  gitWorktrees, parsePullRequest, parseRemoteUrl, parseStatusZ, remoteGitReviewCommand, summarizeChecks,
+  gitRepositories, gitWorktrees, parsePullRequest, parseRemoteUrl, parseStatusZ, remoteGitReviewCommand, summarizeChecks,
   validateGitCiFailuresRequest, validateGitDiffRequest, validateGitRemoveWorktreeRequest, validateGitChangesRequest, validateRepoFile,
 } from "../lib/git-review.js";
 
@@ -469,4 +469,35 @@ test("CI run selection keeps the newest commit's failed runs only and caps them"
   assert.deepEqual(failedCiRuns(JSON.stringify([{ databaseId: "1; rm", headSha: sha, conclusion: "failure" }])), { sha: null, runs: [] });
   assert.throws(() => validateGitCiFailuresRequest({ path: "/r", run: 1 }));
   assert.deepEqual(validateGitCiFailuresRequest({ host: "devbox", path: "/r" }), { host: "devbox", path: "/r" });
+});
+
+test("a folder of projects reads each repository directly inside it once, however many of its worktrees sit there", { timeout: 60000 }, async (t) => {
+  const root = await tempDir(t, "pzza-review-repositories-");
+  const projects = path.join(root, "projects");
+  const first = path.join(projects, "app");
+  const git = await makeRepo(first);
+  await writeFile(path.join(first, "a.txt"), "a\n");
+  await git("add", ".");
+  await git("commit", "-qm", "init");
+  // A linked worktree beside its repository, the way worktrees are often kept.
+  await git("worktree", "add", "-q", "-b", "feature", path.join(projects, "app-feature"));
+  await makeRepo(path.join(projects, "lib"));
+  await mkdir(path.join(projects, "notes"));
+  await makeRepo(path.join(projects, ".hidden"));
+  await makeRepo(path.join(root, "elsewhere"));
+  await symlink(path.join(root, "elsewhere"), path.join(projects, "linked"));
+  await writeFile(path.join(projects, "README"), "x\n");
+  await mkdir(path.join(first, "src"));
+
+  const device = shellDevice();
+  for (const [host, options] of [["", {}], ["devbox", { execImpl: device.execImpl }]]) {
+    assert.deepEqual(await gitRepositories({ host, path: projects }, options), { folders: [first, path.join(projects, "lib")] }, host);
+    // Inside a repository the folder itself is read, never its neighbours.
+    assert.deepEqual(await gitRepositories({ host, path: path.join(first, "src") }, options), { folders: [path.join(first, "src")] }, host);
+    assert.deepEqual(await gitRepositories({ host, path: path.join(projects, "notes") }, options), { folders: [] }, host);
+    await assert.rejects(gitRepositories({ host, path: path.join(root, "missing") }, options), /not inside a Git repository/, host);
+  }
+  // The folder found for a repository lists all of its worktrees.
+  const listed = await gitWorktrees({ host: "", path: first });
+  assert.deepEqual(listed.worktrees.map((entry) => entry.branch), ["main", "feature"]);
 });

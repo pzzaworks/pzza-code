@@ -387,7 +387,7 @@ mod instance {
 #[tauri::command(rename = "local_tmux_restore_sessions")]
 async fn restore_local_sessions(
     app: tauri::AppHandle,
-    agents: Vec<session_refresh::AgentResume>,
+    agents: Vec<session_refresh::AgentRequest>,
 ) -> Result<session_refresh::RefreshReport, String> {
     #[cfg(target_os = "macos")]
     {

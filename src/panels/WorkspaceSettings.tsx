@@ -2,7 +2,7 @@ import { LiveSessionIcon } from "../ui/LiveSessionIcon";
 import { DeviceIcon } from "../ui/DeviceIcon";
 import { useEffect, useId, useRef, useState } from "react";
 import { Check, ChevronRight, ClipboardPaste, Copy, Eye, EyeOff, FileText, Folder, GitMerge, GitPullRequestCreateArrow, Loader2, RotateCcw, Save, ShieldCheck, Trash2 } from "lucide-react";
-import { approveWorktreeSetup, fetchGitWorktrees, fetchWorktreeSetup, removeGitWorktree, saveWorktreeSetup, type GitMergeKind, type GitWorktree, type WorktreeSetup } from "../serverApi";
+import { approveWorktreeSetup, fetchGitRepositories, fetchGitWorktrees, fetchWorktreeSetup, removeGitWorktree, saveWorktreeSetup, type GitMergeKind, type GitWorktree, type WorktreeSetup } from "../serverApi";
 import { landWorktree, worktreeTask, type LandRequest, type LandResult } from "../worktreeLand";
 import { useTasks } from "../tasks/taskStore";
 import { openWebPage } from "../tileGit";
@@ -382,7 +382,8 @@ const inside = (folder: string, root: string) => folder === root || folder.start
 
 interface WorktreeRepo { host: string; root: string; base: string | null; worktrees: GitWorktree[] }
 
-// Extra Git worktrees of the repositories this workspace's tiles work in
+// Extra Git worktrees of the repositories this workspace's tiles work in, or
+// that sit directly in a folder of projects a tile works in
 // (New session → Worktree creates them), folded away like snapshots and only
 // read when opened. A worktree can be removed when it is clean, unlocked and
 // no tile works in it; a merged branch is deleted with it. Squash- and
@@ -430,7 +431,10 @@ function WorktreeSection({ workspaceId, onHandOff }: { workspaceId: string; onHa
     const controller = new AbortController();
     const list = sourcesRef.current;
     setLoading(true);
-    void Promise.all(list.map(({ host, folder }) => fetchGitWorktrees(host, folder, controller.signal).then((result) => ({ host, result }), () => null)))
+    // A tile working in a folder of projects reads every repository directly inside it.
+    void Promise.all(list.map(({ host, folder }) => fetchGitRepositories(host, folder, controller.signal).then((folders) => folders.map((path) => ({ host, path })), () => [])))
+      .then((found) => Promise.all([...new Map(found.flat().map((entry) => [JSON.stringify([entry.host, entry.path]), entry])).values()]
+        .map(({ host, path }) => fetchGitWorktrees(host, path, controller.signal).then((result) => ({ host, result }), () => null))))
       .then((results) => {
         if (controller.signal.aborted) return;
         const byRepo = new Map<string, WorktreeRepo>();

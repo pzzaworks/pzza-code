@@ -56,6 +56,8 @@ pub fn valid_id(lookup: &str, id: &str) -> bool {
         }),
         "goose" => id.len() <= 24 && id.split_once('_').is_some_and(|(date, count)| date.len() == 8 && digits(date) && digits(count)),
         "forge" => uuid(id),
+        // Claude Code session ids, as the app records them per pane: lowercase UUIDs.
+        "claude" => uuid(id) && !id.bytes().any(|byte| byte.is_ascii_uppercase()),
         _ => false,
     }
 }
@@ -122,7 +124,11 @@ mod tests {
         assert!(valid_id("goose", "20261115_3"));
         assert!(valid_id("goose", "20261115_042233"));
         assert!(valid_id("forge", "0f8e2c1a-6b3d-4e5f-9a7b-1c2d3e4f5a6b"));
+        assert!(valid_id("claude", "0f8e2c1a-6b3d-4e5f-9a7b-1c2d3e4f5a6b"));
         for (lookup, id) in [
+            ("claude", "0F8E2C1A-6B3D-4E5F-9A7B-1C2D3E4F5A6B"), ("claude", "0f8e2c1a6b3d4e5f9a7b1c2d3e4f5a6b"),
+            ("claude", "0f8e2c1a-6b3d-4e5f-9a7b-1c2d3e4f5a6b "), ("claude", "0f8e2c1a-6b3d-4e5f-9a7b-1c2d3e4f5a6g"),
+            ("claude", "0f8e2c1a-6b3d-4e5f-9a7b-1c2d3e4f5a6b;id"), ("claude", "-0f8e2c1a-6b3d-4e5f-9a7b-1c2d3e4f5a6"), ("claude", ""),
             ("cline", "1794686844123_A9Z0K"), ("cline", "1794686844123_a9z0"), ("cline", "x; rm -rf ~"),
             ("goose", "20261115_"), ("goose", "2026111_3"), ("goose", "20261115_3 && id"),
             ("forge", "0f8e2c1a-6b3d-4e5f-9a7b-1c2d3e4f5a6"), ("forge", "$(id)"), ("unknown", "20261115_3"),

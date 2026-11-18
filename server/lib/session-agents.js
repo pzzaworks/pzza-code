@@ -22,7 +22,10 @@
 //   `byId` (optional, any kind): the arguments that reopen one past
 //   conversation by its id (RESUME_SESSION marks where the id goes) and the
 //   regular expression source a whole id must match, so a listed conversation
-//   can be picked by id (`session` in sessionAgentLaunch).
+//   can be picked by id (`session` in sessionAgentLaunch). `byId.restore`
+//   names the native id rule (agent_sessions.rs valid_id) for an agent whose
+//   running conversation the app records per pane: a restored pane then
+//   reopens exactly that conversation instead of the folder's last one.
 // - prompt: how a starting prompt is passed (`arg`, `flag` or `none`).
 // - detect: process rules for spotting the agent in a terminal (see
 //   matchAgentProcess); `programs` are names tmux shows as the pane command.
@@ -57,7 +60,9 @@ export const RESUME_SESSION = "@SESSION@";
 // Conversation id shapes for `resume.byId.id` (regular expression sources,
 // matched against the whole id).
 const UUID_ID = "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}";
-const byId = (args, id, { anyFolder = false } = {}) => ({ args: [...args, RESUME_SESSION], id, ...(anyFolder ? { anyFolder } : {}) });
+const byId = (args, id, { anyFolder = false, restore } = {}) => ({
+  args: [...args, RESUME_SESSION], id, ...(anyFolder ? { anyFolder } : {}), ...(restore ? { restore } : {}),
+});
 
 // OpenCode and Kilo append an agent's own permission rules after the global
 // ones and the last matching rule wins, so a user's `agent.<name>.permission`
@@ -90,8 +95,9 @@ export const SESSION_AGENTS = [
     // `--resume <session id>` (claude --help); conversations are stored per
     // folder, so it is run in the folder the conversation ran in. It finds the
     // id from any folder too (2.1.x), so one whose folder was moved or deleted
-    // still reopens, in the folder it last worked in.
-    resume: { kind: "continue-last", scope: "directory", args: ["-c"], byId: byId(["--resume"], UUID_ID, { anyFolder: true }) },
+    // still reopens, in the folder it last worked in. The app records each
+    // pane's session id (session-activity.js), so a restore reopens that one.
+    resume: { kind: "continue-last", scope: "directory", args: ["-c"], byId: byId(["--resume"], UUID_ID, { anyFolder: true, restore: "claude" }) },
     prompt: { style: "arg" },
     install: [
       { method: "curl", command: "curl -fsSL https://claude.ai/install.sh | bash" },
@@ -944,8 +950,7 @@ export function sessionAgentLaunch(value, restore = false) {
     if (value.resume || value.prompt !== undefined) throw new Error("Reopen a conversation by its id without continuing the last one or a starting prompt.");
     if (!validAgentSessionId(agent, value.session)) throw new Error(`Choose a valid ${agent.label} conversation id.`);
     const { env } = sessionAgentLaunch({ id: agent.id, mode: selected.id, ...(value.account !== undefined ? { account: value.account } : {}) });
-    const args = agent.resume.byId.args.map(item => (item === RESUME_SESSION ? value.session : item));
-    return { env, argv: [agent.command, ...agent.baseArgs, ...args, ...selected.args] };
+    return { env, argv: byIdArgv(agent, selected, value.session) };
   }
   if (value.resume && !agentCanContinue(agent) && !(restore && agent.resume.lookup)) throw new Error(`${agent.label} cannot continue its last conversation from the command line.`);
   if (value.prompt !== undefined) {
@@ -964,6 +969,13 @@ export function sessionAgentLaunch(value, restore = false) {
     argv: [agent.command, ...base, ...(value.resume ? agent.resume.args : agent.freshArgs),
       ...(value.resume && agent.resume.kind === "by-id" ? [RESUME_SESSION] : []), ...selected.args, ...prompt],
   };
+}
+
+// The argv that reopens one conversation by its id in a mode, `session` in
+// place of RESUME_SESSION (or RESUME_SESSION itself, for a restore template).
+function byIdArgv(agent, selected, session) {
+  const args = agent.resume.byId.args.map(item => (item === RESUME_SESSION ? session : item));
+  return [agent.command, ...agent.baseArgs, ...args, ...selected.args];
 }
 
 export const AGENT_SESSION_ID_MAX_LENGTH = 128;
@@ -1062,6 +1074,10 @@ export function agentModeRules() {
 // outside the catalog. Every token except the quoted prompt is a fixed literal.
 export function sessionAgentCommand(value, restore = false) {
   const { env, argv } = sessionAgentLaunch(value, restore);
+  return commandLine(env, argv);
+}
+
+function commandLine(env, argv) {
   const words = argv.map(shellWord);
   return env.length ? ["env", ...env.map(([key, item]) => shellWord(`${key}=${item}`)), ...words].join(" ") : words.join(" ");
 }
@@ -1089,16 +1105,26 @@ export function sessionAgentResumeCommand(id, recorded) {
  * show while that agent runs. The native session restore accepts only these,
  * each also with `env <accountEnv>=<account folder>` in front for an agent
  * that has accounts (the folder checked as validAgentAccount does).
+ *
+ * `byId`, for an agent whose `resume.byId.restore` names a native id rule:
+ * the same mode reopening one conversation by its id (RESUME_SESSION where
+ * the id goes), which the restore types instead of `command` for a pane whose
+ * conversation id was recorded and passes that rule. The account prefix
+ * carries over the same way.
  */
 export function sessionAgentResumeAllowlist() {
-  return SESSION_AGENTS.filter(agentCanAutoResume).flatMap(agent => agent.modes.map(item => ({
-    agent: agent.id,
-    command: sessionAgentCommand({ id: agent.id, mode: item.id, resume: true }, true),
-    programs: [...agent.detect.programs],
-    versionProgram: agent.detect.versionProgram === true,
-    account: agent.account ? { ...agent.account } : null,
-    lookup: agent.resume.kind === "by-id" ? agent.resume.lookup : null,
-  })));
+  return SESSION_AGENTS.filter(agentCanAutoResume).flatMap(agent => agent.modes.map(item => {
+    const rule = agent.resume.byId?.restore;
+    return {
+      agent: agent.id,
+      command: sessionAgentCommand({ id: agent.id, mode: item.id, resume: true }, true),
+      programs: [...agent.detect.programs],
+      versionProgram: agent.detect.versionProgram === true,
+      account: agent.account ? { ...agent.account } : null,
+      lookup: agent.resume.kind === "by-id" ? agent.resume.lookup : null,
+      byId: rule ? { command: commandLine(Object.entries(item.env ?? {}), byIdArgv(agent, item, RESUME_SESSION)), rule } : null,
+    };
+  }));
 }
 
 /** The catalog agent tmux's pane command names, if one is unambiguous. */
