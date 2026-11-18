@@ -2,6 +2,8 @@ export interface ConfirmationOptions {
   title: string;
   message: string;
   confirmLabel?: string;
+  /** The label of the button that declines; "Cancel" by default. */
+  cancelLabel?: string;
   danger?: boolean;
 }
 export interface ConfirmationRequest extends ConfirmationOptions { id: number; resolve: (accepted: boolean) => void }
