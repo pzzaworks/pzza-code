@@ -39,6 +39,8 @@ interface SessionRefreshState {
   /** Bumped after each refresh so local terminals attach again. */
   generation: number;
   notice: SessionRefreshNotice | null;
+  /** The terminals still run on the version before an update and wait to move onto this one. */
+  outdated: boolean;
 }
 
 // The local terminal server and its saved state exist in the macOS app only.
@@ -46,7 +48,7 @@ const LOCAL_SESSIONS_KEPT = PERMISSIONS_SUPPORTED;
 // How often the saved local sessions are brought up to date.
 const RECORD_MS = 10_000;
 
-export const useSessionRefresh = create<SessionRefreshState>(() => ({ running: false, restoring: false, pending: false, generation: 0, notice: null }));
+export const useSessionRefresh = create<SessionRefreshState>(() => ({ running: false, restoring: false, pending: false, generation: 0, notice: null, outdated: false }));
 
 export interface AgentResume {
   session: string;
@@ -222,7 +224,8 @@ export async function refreshLocalSessions(options: { onlyIfIdle?: boolean } = {
     const detected = agentsToResume(rows, tiles);
     const agents = [...detected, ...snapshotAgents(detected, autoSavedLocalAgents())];
     const report = await invoke<RefreshReport>("local_tmux_refresh_sessions", { agents });
-    useSessionRefresh.setState({ notice: reportNotice(report, refreshOk(report)) });
+    // The restarted terminal server runs on this version.
+    useSessionRefresh.setState({ notice: reportNotice(report, refreshOk(report)), outdated: false });
   } catch (error) {
     useSessionRefresh.setState({ notice: { tone: "fail", message: `Sessions could not be refreshed. ${failureReason(error)}`.trim(), failed: [] } });
   } finally {
@@ -236,6 +239,24 @@ export async function refreshLocalSessions(options: { onlyIfIdle?: boolean } = {
 export async function busyLocalSessions(): Promise<string[] | null> {
   const rows = await fetchSessionActivity("").catch(() => null);
   return rows ? busySessions(rows) : null;
+}
+
+/**
+ * Refresh sessions as asked for by hand (Setup, or the top bar while the
+ * terminals wait for a new version): restarting the terminal server stops
+ * every program in this Mac's sessions, so it runs only once confirmed, and
+ * the dialog names the sessions where something is running right now.
+ */
+export async function confirmRefreshLocalSessions(): Promise<void> {
+  const busy = await busyLocalSessions();
+  const running = busy === null ? "" : busy.length ? ` Running now in: ${busy.join(", ")}.` : " Nothing is running in them right now.";
+  const accepted = await confirmAction({
+    title: "Refresh this Mac's sessions?",
+    message: `The terminal server restarts so running sessions get new permissions. Sessions, folders, recent output and agent chats come back, but programs running in them stop: dev servers, watchers, and an agent in the middle of a turn.${running}`,
+    confirmLabel: "Refresh sessions",
+    danger: busy === null || busy.length > 0,
+  });
+  if (accepted) await refreshLocalSessions().catch(() => undefined);
 }
 
 /**
@@ -389,10 +410,11 @@ const IDLE_POLL_MS = 15_000;
  * reach them, and asks for none: Full Disk Access, Automation and the rest
  * look granted in System Settings but fail in every terminal. Moving them
  * onto the new version restarts every program in them, so it never stops
- * work without asking: when nothing runs they move right away; otherwise a
- * dialog names the busy sessions and offers to refresh now or once every
- * local window is at a shell or an idle agent (checked again right before
- * the restart). Agents then continue their own conversations.
+ * work without asking: when nothing runs they move right away; otherwise
+ * they are marked as waiting (the top bar shows Refresh sessions beside the
+ * version, which asks first) and move on their own once every local window
+ * is at a shell or an idle agent (checked again right before the restart).
+ * Agents then continue their own conversations.
  */
 export function checkTerminalsUpdated(delayMs = 3000, pollMs = IDLE_POLL_MS): () => void {
   if (!LOCAL_SESSIONS_KEPT) return () => {};
@@ -410,7 +432,7 @@ export function checkTerminalsUpdated(delayMs = 3000, pollMs = IDLE_POLL_MS): ()
     const state = useSessionRefresh.getState();
     if (!state.pending && !state.running) {
       // Refreshed by hand meanwhile: nothing is left on the previous version.
-      if (!await outdated()) return;
+      if (!await outdated()) { useSessionRefresh.setState({ outdated: false }); return; }
       // A quiet look first, so tiles show no refresh while work still runs.
       const busy = await busyLocalSessions();
       if (busy && !busy.length && !stopped && await refreshLocalSessions({ onlyIfIdle: true }).catch(() => false)) return;
@@ -425,19 +447,8 @@ export function checkTerminalsUpdated(delayMs = 3000, pollMs = IDLE_POLL_MS): ()
     // Nothing would be stopped: move them now, still checked right before the restart.
     if (busy && !busy.length && await refreshLocalSessions({ onlyIfIdle: true }).catch(() => false)) return;
     if (stopped) return;
-    const now = await confirmAction({
-      title: "Move terminals to the new version?",
-      message: `PzzaCode was updated, but your terminals still run on the previous version, so they cannot use its permissions yet. Refreshing restarts the programs in them; agents continue their own conversations.${busy?.length ? ` Running now in: ${busy.join(", ")}.` : ""}`,
-      confirmLabel: "Refresh now",
-      cancelLabel: "When idle",
-      danger: Boolean(busy?.length),
-    });
-    if (stopped) return;
-    if (now) {
-      await refreshLocalSessions().catch(() => { /* Already refreshing: that refresh moves them. */ });
-      return;
-    }
-    void moveWhenIdle();
+    useSessionRefresh.setState({ outdated: true });
+    timer = window.setTimeout(() => void moveWhenIdle(), pollMs);
   };
   timer = window.setTimeout(() => void offer(), delayMs);
   return () => { stopped = true; window.clearTimeout(timer); };

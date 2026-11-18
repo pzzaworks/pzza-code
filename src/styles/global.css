@@ -4231,6 +4231,10 @@ button.update-button:hover { background: var(--surface-alt); }
 .update-button-ready { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 55%, transparent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
 button.update-button-ready:hover { background: color-mix(in srgb, var(--accent) 20%, transparent); }
 .update-button:disabled { opacity: 0.6; cursor: default; }
+/* A reminder, not a call to action: muted text with a small accent dot. */
+.update-button-pending { color: var(--muted); }
+button.update-button-pending:hover { color: var(--text); }
+.update-button-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--accent); flex: none; }
 .dictation-language-setting {
   display: flex;
   flex-direction: column;
