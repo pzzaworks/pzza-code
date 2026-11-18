@@ -9,7 +9,7 @@ function Confirmation({ request }: { request: ConfirmationRequest }) {
   return <Modal open onClose={() => answerConfirmation(request, false)} title={request.title} role="alertdialog" size="sm" describedBy={description} initialFocusRef={cancel}>
     <p className="confirmation-message" id={description}>{request.message}</p>
     <div className="modal-actions">
-      <button type="button" className="btn" ref={cancel} onClick={() => answerConfirmation(request, false)}>{request.cancelLabel ?? "Cancel"}</button>
+      <button type="button" className="btn" ref={cancel} onClick={() => answerConfirmation(request, false)}>Cancel</button>
       <button type="button" className={`btn ${request.danger ? "btn-danger" : "btn-accent"}`} onClick={() => answerConfirmation(request, true)}>{request.confirmLabel ?? "Confirm"}</button>
     </div>
   </Modal>;
