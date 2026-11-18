@@ -135,7 +135,7 @@ function notifyWorktreeSetup(setup: WorktreeSetupReport, started: boolean | unde
   const parts: string[] = [];
   if (setup.copied.length) parts.push(`Copied ${setup.copied.length === 1 ? setup.copied[0] : `${setup.copied.length} files`} from the main checkout.`);
   if (setup.run.length) parts.push(started === false ? "The setup commands could not be typed into the terminal." : `Running ${setup.run.length === 1 ? setup.run[0] : `${setup.run.length} setup commands`} before the agent.`);
-  if (setup.unapproved) parts.push("Its setup commands are not approved on this device yet; review them in Workspace settings → Worktrees.");
+  if (setup.unapproved) parts.push("Its setup commands are not approved on this device yet; review them under Setup in the session's Worktrees (its top bar).");
   if (setup.error) parts.push(setup.error);
   if (!parts.length) return;
   notify({ category: "app", title: "Worktree setup needs attention", body: `${name}: ${parts.join(" ")}`, target: { tileId } });

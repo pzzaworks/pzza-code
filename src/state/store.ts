@@ -159,6 +159,7 @@ const THEME_KEY = "pzza.theme";
 const FONT_KEY = "pzza.fontSize";
 const CURSOR_KEY = "pzza.cursorBlink";
 const OSC52_KEY = "pzza.osc52Clipboard";
+const AUTO_TRUST_KEY = "pzza.autoTrustFolders";
 const WORKSPACES_KEY = "pzza.workspaces";
 
 function load<T>(key: string, fallback: T): T {
@@ -499,6 +500,11 @@ interface ConsoleState {
   // output is untrusted and a silent clipboard overwrite is a paste-jacking vector.
   osc52Clipboard: boolean;
   setOsc52Clipboard: (v: boolean) => void;
+  // Answer the folder trust prompt coding agents show when they start in a
+  // folder they do not trust yet (see state/folderTrust). Off by default:
+  // trusting lets a repository's own agent hooks, MCP servers and settings run.
+  autoTrustFolders: boolean;
+  setAutoTrustFolders: (v: boolean) => void;
 
   settingsOpen: boolean;
   setSettingsOpen: (v: boolean) => void;
@@ -1017,6 +1023,11 @@ export const useStore = create<ConsoleState>((set, get) => ({
   setOsc52Clipboard: (v) => {
     persist(OSC52_KEY, v);
     set({ osc52Clipboard: v });
+  },
+  autoTrustFolders: loadValid(AUTO_TRUST_KEY, bool, false),
+  setAutoTrustFolders: (v) => {
+    persist(AUTO_TRUST_KEY, v);
+    set({ autoTrustFolders: v });
   },
 
   settingsOpen: false,

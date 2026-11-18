@@ -1,5 +1,5 @@
 import { AsyncButton } from "../ui/AsyncButton";
-import { Bell, Clock, Command, Copy, Download, EthernetPort, EyeOff, FileCode, Folder, FolderInput, FolderSync, Gauge, GitBranch, GitFork, HardDrive, ListTodo, Loader2, Maximize2, MessageSquare, MessagesSquare, Mic, Monitor, RefreshCw, RotateCw, SquareTerminal, type LucideIcon } from "lucide-react";
+import { Bell, Clock, Command, Copy, Download, EthernetPort, EyeOff, FileCode, Folder, FolderGit2, FolderInput, FolderSync, Gauge, GitBranch, GitFork, HardDrive, History, ListTodo, Loader2, Maximize2, MessageSquare, MessagesSquare, Mic, Monitor, RefreshCw, RotateCw, SquareTerminal, type LucideIcon } from "lucide-react";
 import { DEFAULT_TRANSPARENCY_OPTIONS, SPACING_RANGE, useStore } from "../state/store";
 import { useUpdates } from "../state/updates";
 import { HAS_TAURI } from "../tauriEnv";
@@ -19,6 +19,8 @@ import { confirmAction } from "../ui/ConfirmDialog";
 import { SESSION_HEADER_ITEMS, STATUS_BAR_ID, STATUS_BAR_ITEMS, TOP_BAR_ITEMS, type BarItemId } from "../barItems";
 import { hasRemoteDevice } from "../devices";
 import { POWER_SUPPORTED, usePower, type PowerStatus } from "../state/power";
+import { FOLDER_TRUST_AGENTS } from "../terminal/folderTrustPrompts";
+import { sessionAgent } from "../../server/lib/session-agents.js";
 
 export function SettingsMenu({ section }: { section: GeneralSection }) {
   return (
@@ -309,6 +311,11 @@ function AppearanceSection() {
   </Section>;
 }
 
+// Auto-trust folders: what it does, the risk, and which agents it answers for
+// (those whose trust prompt the app can read, see folderTrustPrompts).
+const AUTO_TRUST_AGENT_LABELS = FOLDER_TRUST_AGENTS.map((id) => sessionAgent(id)?.label ?? id).join(", ");
+const AUTO_TRUST_HINT = `Agents start without asking whether to trust a folder. A repository you don't know can then run its own agent hooks and tools. Only turn on if you only open code you trust. Works with ${AUTO_TRUST_AGENT_LABELS}; tool approvals still ask.`;
+const AUTO_TRUST_CONFIRM = `When ${AUTO_TRUST_AGENT_LABELS} asks whether you trust the folder it starts in, PzzaCode will answer Yes for you. A repository you don't know can then run its own agent hooks, MCP servers and tools on the device it runs on, local or remote. Turn this on only if you only open code you trust.`;
 
 function TerminalSection() {
   const fontSize = useStore((s) => s.fontSize);
@@ -317,6 +324,8 @@ function TerminalSection() {
   const setCursorBlink = useStore((s) => s.setCursorBlink);
   const osc52 = useStore((s) => s.osc52Clipboard);
   const setOsc52 = useStore((s) => s.setOsc52Clipboard);
+  const autoTrust = useStore((s) => s.autoTrustFolders);
+  const setAutoTrust = useStore((s) => s.setAutoTrustFolders);
   return (
     <Section title="Terminal">
       <div className="terminal-type-preview" aria-label="Terminal font preview" style={{ fontSize }}>
@@ -354,6 +363,19 @@ function TerminalSection() {
           <span className="switch-knob" />
         </button>
       </Row>
+      <Row label="Auto-trust folders" hint={AUTO_TRUST_HINT}>
+        <button
+          className={`switch ${autoTrust ? "switch-on" : ""}`}
+          onClick={async () => {
+            if (autoTrust || await confirmAction({ title: "Auto-trust every folder?", message: AUTO_TRUST_CONFIRM, confirmLabel: "Auto-trust folders", danger: true })) setAutoTrust(!autoTrust);
+          }}
+          role="switch"
+          aria-label="Auto-trust folders"
+          aria-checked={autoTrust}
+        >
+          <span className="switch-knob" />
+        </button>
+      </Row>
     </Section>
   );
 }
@@ -362,7 +384,7 @@ function TerminalSection() {
 const BAR_ITEM_ICONS: Record<Exclude<BarItemId, typeof STATUS_BAR_ID>, LucideIcon> = {
   "top:tasks": ListTodo, "top:quick-chat": MessageSquare, "top:agent-sessions": MessagesSquare, "top:sync": FolderSync, "top:remote": Monitor,
   "top:ports": EthernetPort, "top:usage": Gauge, "top:notifications": Bell,
-  "header:device": HardDrive, "header:shortcut": Command, "header:mic": Mic, "header:code": FileCode,
+  "header:device": HardDrive, "header:shortcut": Command, "header:mic": Mic, "header:code": FileCode, "header:worktrees": FolderGit2, "header:checkpoints": History,
   "header:move": FolderInput, "header:duplicate": Copy, "header:fullscreen": Maximize2, "header:hide": EyeOff,
   "status:session": SquareTerminal, "status:git": GitBranch, "status:worktree": GitFork,
   "status:path": Folder, "status:started": Clock,

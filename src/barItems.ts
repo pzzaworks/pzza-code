@@ -21,6 +21,8 @@ export const SESSION_HEADER_ITEMS = [
   { id: "header:shortcut", label: "Shortcut" },
   { id: "header:mic", label: "Dictation" },
   { id: "header:code", label: "Code" },
+  { id: "header:worktrees", label: "Worktrees" },
+  { id: "header:checkpoints", label: "Checkpoints" },
   { id: "header:move", label: "Move" },
   { id: "header:duplicate", label: "Duplicate" },
   { id: "header:fullscreen", label: "Fullscreen" },

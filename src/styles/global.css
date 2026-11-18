@@ -1513,7 +1513,7 @@ html.is-resizing-y, html.is-resizing-y * { cursor: row-resize !important; user-s
   background: transparent;
   color: var(--muted);
   font: inherit;
-  font-size: var(--fs-xs);
+  font-size: var(--fs-sm);
   font-weight: 600;
   cursor: pointer;
 }
@@ -1523,7 +1523,7 @@ html.is-resizing-y, html.is-resizing-y * { cursor: row-resize !important; user-s
 .code-diff-split { flex: 1; min-height: 0; overflow: auto; }
 /* Ask agent: a compact outlined action in the diff bar while lines are
    selected, and a one-line question box under the bar. */
-.code-diff-ask-btn.btn-sm { flex: 0 0 auto; height: 24px; padding: 0 8px; gap: 5px; font-size: var(--fs-xs); border-radius: var(--r-sm); }
+.code-diff-ask-btn.btn-sm { flex: 0 0 auto; height: 24px; padding: 0 8px; gap: 5px; font-size: var(--fs-sm); border-radius: var(--r-sm); }
 .code-diff-ask {
   display: flex;
   flex: 0 0 auto;
@@ -1952,7 +1952,7 @@ html.is-resizing-y, html.is-resizing-y * { cursor: row-resize !important; user-s
   display: flex;
   align-items: center;
   justify-content: center;
-  border: 2px dashed var(--accent);
+  border: 1px solid var(--accent);
   border-radius: var(--tile-radius);
   background: color-mix(in srgb, var(--accent) 8%, transparent);
   pointer-events: none;
@@ -2280,7 +2280,7 @@ button.tile-strip-shared:disabled { cursor: default; opacity: 0.7; }
 .broadcast-field > .broadcast-input { position: relative; z-index: 1; }
 .broadcast-ghost { position: absolute; inset: 0; z-index: 0; overflow: hidden; padding: 6px; font: inherit; font-size: var(--fs-md); line-height: 18px; white-space: pre-wrap; overflow-wrap: anywhere; pointer-events: none; }
 .broadcast-ghost-text { color: transparent; }
-.broadcast-ghost-words { color: var(--text); opacity: 0.75; text-decoration: underline dotted; text-underline-offset: 2px; }
+.broadcast-ghost-words { color: var(--text); opacity: 0.75; text-decoration: underline; text-decoration-color: color-mix(in srgb, var(--text) 40%, transparent); text-underline-offset: 2px; }
 .broadcast-ghost-dots { color: var(--text); }
 .broadcast-status { font-size: var(--fs-xs); }
 .broadcast-foot:empty { display: none; }
@@ -2292,7 +2292,7 @@ button.tile-strip-shared:disabled { cursor: default; opacity: 0.7; }
   display: flex;
   align-items: center;
   justify-content: center;
-  border: 2px dashed color-mix(in srgb, var(--accent) 45%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
   border-radius: var(--r-lg);
   pointer-events: none;
   transition: background 0.12s, border-color 0.12s;
@@ -2836,7 +2836,10 @@ button.tile-strip-shared:disabled { cursor: default; opacity: 0.7; }
   padding: 8px 10px;
   border-radius: var(--r-md);
   font-size: var(--fs-md);
-  line-height: 1.5;
+  /* The number badge centers on the first line, so it reads the line box
+     from here; contexts that change the text size override this. */
+  --step-line: calc(var(--fs-md) * 1.5);
+  line-height: var(--step-line);
   color: color-mix(in srgb, var(--text) 88%, var(--muted));
 }
 .doc-steps li:hover {
@@ -2847,7 +2850,7 @@ button.tile-strip-shared:disabled { cursor: default; opacity: 0.7; }
   flex: 0 0 auto;
   width: 20px;
   height: 20px;
-  margin-top: 1px;
+  margin-top: calc((var(--step-line) - 20px) / 2);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -3324,14 +3327,48 @@ button.tile-strip-shared:disabled { cursor: default; opacity: 0.7; }
   border-color: var(--accent);
   box-shadow: 0 0 0 2px var(--accent);
 }
-/* The dragged tile stays in the grid as the drop preview: a dashed outline
+/* The dragged tile stays in the grid as the drop preview: a thin outline
    where it will land while the other tiles make room. */
 .tile-dragging {
-  outline: 2px dashed var(--accent);
+  outline: 1px solid var(--accent);
   outline-offset: -2px;
   background: color-mix(in srgb, var(--accent) 8%, var(--terminal-bg, var(--bg)));
 }
 .tile-dragging > * { opacity: 0.35; }
+/* A scaled-down copy of the dragged tile follows the pointer (see
+   tileDrag.ts): header, its content as it looks now, and status bar. It only
+   ever moves by transform on its own layer, never hit tests, and carries no
+   blur, so following the pointer costs no layout or paint. */
+.tile-drag-ghost {
+  position: fixed;
+  left: 0;
+  top: 0;
+  z-index: 60;
+  pointer-events: none;
+  will-change: transform;
+  /* Its corner radius follows the shrunk tile's, set inline by tileDrag.ts. */
+  border: 1px solid var(--accent);
+  overflow: hidden;
+  background: var(--terminal-bg, var(--surface));
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.4);
+  opacity: 0.95;
+}
+/* The clone keeps the tile's real size (so its own container queries and
+   layout stay as they were) and is shrunk from its top-left corner. Its own
+   frame gives way to the ghost's; its corners are the tile's own, shrunk
+   with it (set inline). */
+.tile-drag-ghost > .tile-drag-ghost-tile {
+  position: absolute;
+  left: 0;
+  top: 0;
+  margin: 0;
+  transform-origin: 0 0;
+  border: 0;
+  box-shadow: none;
+  animation: none;
+  transition: none;
+}
+html.is-dragging-tile, html.is-dragging-tile * { cursor: grabbing !important; user-select: none; }
 .tile-head {
   flex: 0 0 auto;
   height: 30px;
@@ -3427,7 +3464,7 @@ button.tile-strip-shared:disabled { cursor: default; opacity: 0.7; }
   flex: 0 0 auto;
   align-items: center;
   justify-content: center;
-  gap: 5px;
+  gap: 4px;
   box-sizing: border-box;
   height: 19px;
   font-size: var(--fs-xs);
@@ -3454,17 +3491,14 @@ button.tile-strip-shared:disabled { cursor: default; opacity: 0.7; }
 }
 .tile-action { display: inline-flex; }
 .tile-action:empty { display: none; }
-/* Header buttons in groups - input (mic, editor) | session (move, duplicate)
-   | view (maximize, hide) | close - split by a short divider. */
-.tile-action-move,
-.tile-action-fullscreen,
-.tile-action-close {
+/* Header buttons in groups - input (mic, editor) | Git (worktrees,
+   checkpoints) | session (move, duplicate) | view (maximize, hide) | close -
+   split by a short divider before each group's first shown button. */
+.tile-action-group-start {
   position: relative;
   margin-left: 9px;
 }
-.tile-action-move::before,
-.tile-action-fullscreen::before,
-.tile-action-close::before {
+.tile-action-group-start::before {
   content: "";
   position: absolute;
   left: -5px;
@@ -3496,12 +3530,8 @@ button.tile-strip-shared:disabled { cursor: default; opacity: 0.7; }
   .tile-head { gap: 5px; padding: 0 5px 0 9px; }
   .tile-actions { gap: 0; margin-left: 2px; }
   .tile-actions .tile-btn { width: 22px; border-radius: var(--r-sm); }
-  .tile-action-move,
-  .tile-action-fullscreen,
-  .tile-action-close { margin-left: 7px; }
-  .tile-action-move::before,
-  .tile-action-fullscreen::before,
-  .tile-action-close::before { left: -4px; }
+  .tile-action-group-start { margin-left: 7px; }
+  .tile-action-group-start::before { left: -4px; }
 }
 /* One step tighter before the buttons move under the title, so the title keeps room. */
 @container tile (max-width: 360px) {
@@ -4231,10 +4261,9 @@ button.update-button:hover { background: var(--surface-alt); }
 .update-button-ready { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 55%, transparent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
 button.update-button-ready:hover { background: color-mix(in srgb, var(--accent) 20%, transparent); }
 .update-button:disabled { opacity: 0.6; cursor: default; }
-/* A reminder, not a call to action: muted text with a small accent dot. */
+/* A reminder, not a call to action: muted text. */
 .update-button-pending { color: var(--muted); }
 button.update-button-pending:hover { color: var(--text); }
-.update-button-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--accent); flex: none; }
 .dictation-language-setting {
   display: flex;
   flex-direction: column;
@@ -4699,7 +4728,7 @@ button.update-button-pending:hover { color: var(--text); }
 .ns-seg .cselect.ns-pill:hover:not(:disabled), .ns-seg .path-field.ns-pill:hover:not(:disabled), .ns-seg .ns-toggle:hover:not(:disabled) { background: var(--surface-alt); }
 .ns-seg .ns-pill-path { flex: 1 1 auto; min-width: 0; }
 .ns-seg .ns-pill-path .path-field.ns-pill { flex: 1 1 auto; min-width: 0; }
-.ns-seg .ns-pill-path .path-field-value { max-width: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: inherit; font-size: var(--fs-md); color: var(--text); }
+.ns-seg .ns-pill-path .path-field.ns-pill .path-field-value { max-width: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: inherit; font-size: var(--fs-md); color: var(--text); }
 .ns-seg .ns-pill-path .ns-clear { margin-right: 4px; align-self: center; }
 /* Pressed inside a segment: a filled cell like the other segmented switches, never a ring. */
 .ns-seg .ns-toggle.on { border: none; background: var(--surface-alt); color: var(--text); }
@@ -4714,7 +4743,7 @@ button.update-button-pending:hover { color: var(--text); }
 .cselect.ns-mode-danger { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 45%, var(--border)); }
 .ns-clear { display: inline-flex; align-items: center; justify-content: center; border: none; border-radius: var(--r-pill); background: transparent; color: var(--muted); cursor: pointer; }
 .ns-clear:hover { background: var(--surface-alt); color: var(--text); }
-.ns-toggle { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 5px; height: 28px; padding: 0 10px; border: 1px dashed var(--hairline-strong); border-radius: var(--r-pill); background: transparent; color: var(--muted); font-size: var(--fs-md); white-space: nowrap; cursor: pointer; }
+.ns-toggle { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 5px; height: 28px; padding: 0 10px; border: 1px solid var(--hairline-strong); border-radius: var(--r-pill); background: transparent; color: var(--muted); font-size: var(--fs-md); white-space: nowrap; cursor: pointer; }
 .ns-toggle:hover { color: var(--text); border-style: solid; }
 .ns-toggle.on { border: 1px solid var(--accent); background: color-mix(in srgb, var(--accent) 22%, transparent); color: var(--text); font-weight: 600; }
 .ns-toggle:disabled { opacity: 0.5; cursor: not-allowed; }
@@ -4998,7 +5027,7 @@ button.update-button-pending:hover { color: var(--text); }
   gap: 5px;
   height: 18px;
   padding: 0 7px;
-  border: 1px dashed var(--hairline-strong);
+  border: 1px solid var(--hairline-strong);
   border-radius: var(--r-sm);
   font-family: ui-monospace, Menlo, monospace;
   font-size: var(--fs-xs);
@@ -5058,7 +5087,7 @@ button.update-button-pending:hover { color: var(--text); }
   font-size: var(--fs-sm);
   color: var(--muted);
   padding: 0 6px;
-  border: 1px dashed var(--hairline-strong);
+  border: 1px solid var(--hairline-strong);
   border-radius: var(--r-sm);
 }
 .pj-branch {
@@ -5535,7 +5564,6 @@ button.update-button-pending:hover { color: var(--text); }
   flex: 0 0 auto;
   vertical-align: -2px;
 }
-.tile-device .device-os-icon,
 .ws-sess-device .device-os-icon,
 .pj-line-device .device-os-icon,
 .pj-k .device-os-icon,
@@ -5786,6 +5814,9 @@ html[data-transparency="on"] .tile-code { background: transparent; }
   --surface: color-mix(in srgb, var(--opaque-surface) 42%, transparent);
   --surface-alt: color-mix(in srgb, var(--opaque-surface-alt) 58%, transparent);
 }
+/* A sticky group label over glass blurs the options scrolling under it
+   instead of letting their text show through its own. */
+:root[data-transparency="on"] .cselect-group-label { background: var(--glass-bg-strong); -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px); }
 :root[data-appearance="light"] { --glass-tint: 72%; --glass-border: var(--hairline); }
 :root[data-grayscale="on"] { --glass-saturate: 100%; }
 @media (prefers-reduced-transparency: reduce) {
@@ -5880,7 +5911,13 @@ input[type="checkbox"]:disabled { opacity: .45; cursor: not-allowed; }
 .latest-notifications > .notification-list { padding-top: 0; }
 .notification-content .notification-title { display: flex; align-items: center; gap: 8px; color: var(--text); font-size: var(--fs-md); }
 .notification-title > strong { min-width: 0; overflow-wrap: anywhere; }
-.notification-title .notification-source { color: inherit; font-weight: inherit; }
+/* Where a notice comes from, under its title: the session, then the device
+   with its OS logo, smaller and muted like the tile header's device chip. */
+.notification-content .notification-origin { display: flex; align-items: center; gap: 5px; min-width: 0; margin-top: -2px; padding-right: calc(var(--notification-actions, 1) * 32px); color: var(--muted); font-size: var(--fs-xs); line-height: 1.3; }
+.notification-origin .notification-source { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: inherit; }
+.notification-origin .notification-origin-sep { font-size: inherit; }
+.notification-origin .notification-device { display: inline-flex; align-items: center; gap: 3px; flex: 0 0 auto; white-space: nowrap; font-size: inherit; }
+.notification-origin .device-os-icon { vertical-align: 0; }
 .notification-title > .notification-new { color: var(--text); background: var(--surface-alt); border: 1px solid var(--hairline); border-radius: var(--r-pill); padding: 2px 6px; flex-shrink: 0; font-size: var(--fs-xs); line-height: 1.2; font-weight: 600; }
 @media (prefers-reduced-motion: reduce) { .toolbar-sync-indicator { animation: none; } }
 
@@ -5958,23 +5995,9 @@ html[data-transparency="on"][data-appearance="light"] .term-surface {
 @media (prefers-reduced-transparency: reduce) {
   html[data-transparency="on"][data-appearance="light"] .app { background: var(--opaque-bg); }
 }
-/* Workspace settings: worktrees, in the same rows as snapshots. */
-.wt-repo { padding: 4px 2px 0; color: var(--muted); font-size: var(--fs-sm); font-family: ui-monospace, "SF Mono", Menlo, monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.snap-name.wt-branch { cursor: default; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: var(--fs-md); }
-.wt-merged { color: var(--success-foreground, var(--success)); }
-/* Worktrees: per-repository setup (files to copy, commands before the agent),
-   the pull request link left after Open PR, and the tile footer's Open PR and
-   Merge buttons for tiles working in a worktree. */
-.wt-setup-head { display: inline-flex; align-items: center; gap: 6px; justify-self: start; padding: 4px 2px; border: 0; background: transparent; color: var(--muted); font: inherit; font-size: var(--fs-sm); cursor: pointer; }
-.wt-setup-head:hover { color: var(--text); }
-.wt-setup-head:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; border-radius: var(--r-xs); }
-.wt-setup-head[aria-expanded="true"] .snap-chevron { transform: rotate(90deg); }
-.wt-setup { display: grid; gap: 6px; min-width: 0; padding: 10px; border: 1px solid var(--hairline); border-radius: var(--r-sm); background: var(--surface-alt); }
-.wt-setup code { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 0.95em; }
-.wt-setup-label { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; margin-top: 2px; color: var(--text); font-size: var(--fs-sm); font-weight: 600; }
-.field-input.wt-setup-input { height: auto; min-height: 0; padding: 6px 10px; border-radius: var(--r-sm); font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: var(--fs-sm); line-height: 1.5; resize: vertical; }
-.snap-note.wt-setup-pending { color: var(--warning); }
-.wt-setup .snap-actions { flex-wrap: wrap; }
+/* Worktrees: the pull request link left after Open PR (the tile footer and
+   the session's Worktrees dialog, src/grid/Worktrees.css), and the tile
+   footer's Open PR and Merge buttons for tiles working in a worktree. */
 .wt-link { display: inline; padding: 0; border: 0; background: transparent; color: var(--accent); font: inherit; text-align: left; text-decoration: underline; overflow-wrap: anywhere; cursor: pointer; }
 .wt-link:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; border-radius: var(--r-xs); }
 .tile-strip-wt { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 1px; margin-left: -3px; }

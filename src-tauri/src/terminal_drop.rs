@@ -283,6 +283,14 @@ pub fn init<R: Runtime>() -> tauri::plugin::TauriPlugin<R> {
             let Some(window) = app.get_webview_window(label) else {
                 return;
             };
+            // The user dropped these onto the app, so the editor may open
+            // them even outside home (folderDrop.ts opens what missed every
+            // terminal). The grant is made here, from the OS event itself;
+            // nothing the page sends can make one.
+            crate::agent::grant_opened(
+                app,
+                &crate::open_files::accepted_paths(paths.iter().cloned()),
+            );
             // Cocoa draggingLocation/frame use logical points in the installed
             // runtime; other backends provide physical coordinates.
             #[cfg(target_os = "macos")]

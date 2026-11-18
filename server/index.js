@@ -53,6 +53,7 @@ import { mcpConfigs, mcpInstall } from "./lib/mcp.js";
 import { createAppControl, createAppControlRouter } from "./lib/app-control.js";
 import { installAgent } from "./lib/install.js";
 import { filesRouter } from "./lib/files.js";
+import { desktopMessage } from "./lib/paths.js";
 import { codeSearchRouter } from "./lib/code-search.js";
 import { startPtyBridge, sweepOrphanViews } from "./lib/pty.js";
 import { PaneModeRequestError, paneLines, paneLinesRequest, paneMode, paneModeRequest } from "./lib/pane-mode.js";
@@ -445,4 +446,6 @@ server.listen(PORT, "127.0.0.1", () => {
 
 
 for (const signal of ["SIGTERM", "SIGINT"]) process.once(signal, shutdown.stop);
-watchDesktopLifetime(shutdown.stop);
+// The app's own stdin pipe also carries the files and folders the user opened
+// in it from outside home, the only paths past the editor's home bound.
+watchDesktopLifetime(shutdown.stop, desktopMessage);

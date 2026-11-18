@@ -2,13 +2,16 @@
 // launches it on 127.0.0.1:5190 at startup and kills it on exit. Every
 // server-backed panel (sessions, ports, usage, accounts, forwarding, MCP, the
 // setup wizard) and any external MCP client then talk to this one local backend.
+use std::collections::VecDeque;
 use std::path::PathBuf;
-use std::process::{Child, Command, ExitStatus, Stdio};
-use std::io::Read;
+use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
+use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Arc, Mutex, OnceLock};
+use std::sync::{mpsc, Arc, Mutex, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Manager, Runtime};
+
+use crate::open_files::Opened;
 
 pub const AGENT_PORT: &str = "5190";
 
@@ -48,6 +51,8 @@ pub struct AgentState {
     // The agent exited after an update replaced the app on disk, and stays
     // down until the app restarts into the new version.
     restart_required: AtomicBool,
+    // The input writer thread (see InputWriter), started on first use.
+    input: Mutex<Option<mpsc::Sender<AgentInput<ChildStdin>>>>,
 }
 
 // Sent once to the webview when the agent stopped for good until a restart
@@ -73,6 +78,179 @@ impl AgentState {
     fn release_watchdog(&self) -> bool {
         self.watchdog.store(false, Ordering::SeqCst);
         self.shutting_down.load(Ordering::SeqCst) || !self.claim_watchdog()
+    }
+
+    // Hands `input` to the input writer, starting it on first use. The input
+    // comes back when no writer runs.
+    fn send_input(&self, input: AgentInput<ChildStdin>) -> Result<(), AgentInput<ChildStdin>> {
+        let mut sender = self.input.lock().unwrap_or_else(PoisonError::into_inner);
+        if sender.is_none() {
+            let (next, inputs) = mpsc::channel();
+            let spawned = std::thread::Builder::new().name("device-agent-input".into()).spawn(move || {
+                let mut writer = InputWriter::default();
+                for input in inputs {
+                    writer.handle(input);
+                }
+            });
+            match spawned {
+                Ok(_) => *sender = Some(next),
+                Err(error) => {
+                    eprintln!("pzza agent: could not start writing to the agent: {error}");
+                    return Err(input);
+                }
+            }
+        }
+        let Some(writer) = sender.as_ref() else {
+            return Err(input);
+        };
+        match writer.send(input) {
+            Ok(()) => Ok(()),
+            Err(mpsc::SendError(input)) => {
+                *sender = None;
+                Err(input)
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------- opened paths
+//
+// The agent's editor only reaches the user's home tree (server/lib/paths.js),
+// so that nothing holding the agent token (an MCP client, a prompt-injected
+// one driving the app over app-control, the webview itself) can read or write
+// arbitrary files. A file or folder the user opens in the app from elsewhere
+// (dropped onto the window, opened from Finder, or chosen in File > Open) is
+// granted to it on its own. The grant starts here, from the native event, and
+// travels over the agent's stdin: a pipe whose write end only this process
+// holds, and which no Tauri command, webview call or HTTP request can write
+// to. The agent keeps the grants in memory only; the writer keeps them too and
+// sends them all again to an agent the watchdog respawns.
+
+/// A file or folder the user opened in the app, by its canonical path. A
+/// folder grants its whole tree, a file that path only.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct OpenedPath {
+    pub path: String,
+    pub folder: bool,
+}
+
+/// Grants kept for a respawned agent, newest last; past this the oldest is
+/// forgotten. The agent applies the same limit (OPENED_PATH_LIMIT in
+/// server/lib/paths.js), so both forget the same one.
+const MAX_OPENED_PATHS: usize = 256;
+
+/// One line on the agent's stdin (read by server/lib/agent-lifecycle.js).
+#[derive(serde::Serialize)]
+struct GrantMessage<'a> {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    path: &'a str,
+    folder: bool,
+}
+
+/// What the input writer is asked to do, in order.
+enum AgentInput<W> {
+    /// A newly spawned agent's stdin: every grant so far is sent to it.
+    Attach(W),
+    /// Paths the user just opened.
+    Grant(Vec<OpenedPath>),
+    /// Shutdown: let go of the stdin so the agent sees EOF.
+    Close,
+}
+
+/// Owns the agent's stdin on its own thread, so a stalled agent with a full
+/// pipe never blocks the main thread (drops and open events arrive there).
+/// A write that fails (the agent exited) drops the stdin until the watchdog
+/// attaches the next agent's.
+struct InputWriter<W: Write> {
+    opened: VecDeque<OpenedPath>,
+    sink: Option<W>,
+}
+
+impl<W: Write> Default for InputWriter<W> {
+    fn default() -> Self {
+        InputWriter { opened: VecDeque::new(), sink: None }
+    }
+}
+
+impl<W: Write> InputWriter<W> {
+    fn handle(&mut self, input: AgentInput<W>) {
+        match input {
+            AgentInput::Attach(sink) => {
+                self.sink = Some(sink);
+                let all: Vec<OpenedPath> = self.opened.iter().cloned().collect();
+                self.send(&all);
+            }
+            AgentInput::Grant(paths) => {
+                for path in &paths {
+                    self.remember(path.clone());
+                }
+                self.send(&paths);
+            }
+            AgentInput::Close => self.sink = None,
+        }
+    }
+
+    // Granting a path again makes it the newest, as it does in the agent.
+    fn remember(&mut self, path: OpenedPath) {
+        self.opened.retain(|known| known.path != path.path);
+        self.opened.push_back(path);
+        while self.opened.len() > MAX_OPENED_PATHS {
+            self.opened.pop_front();
+        }
+    }
+
+    fn send(&mut self, paths: &[OpenedPath]) {
+        let Some(sink) = self.sink.as_mut() else {
+            return;
+        };
+        if paths.is_empty() {
+            return;
+        }
+        let mut lines = Vec::new();
+        for path in paths {
+            let message = GrantMessage { kind: "grant", path: &path.path, folder: path.folder };
+            if let Ok(line) = serde_json::to_vec(&message) {
+                lines.extend_from_slice(&line);
+                lines.push(b'\n');
+            }
+        }
+        if sink.write_all(&lines).and_then(|()| sink.flush()).is_err() {
+            self.sink = None;
+        }
+    }
+}
+
+/// Grants the agent's editor the files and folders the user just opened in
+/// the app. Called only from native events (a window drop, an open-document
+/// event, the open panel), never from a command the webview can invoke, so
+/// neither the page nor anything driving it can widen what the editor reaches.
+pub(crate) fn grant_opened<R: Runtime>(app: &AppHandle<R>, opened: &Opened) {
+    if opened.is_empty() {
+        return;
+    }
+    let Some(state) = app.try_state::<AgentState>() else {
+        return;
+    };
+    let paths = opened
+        .files
+        .iter()
+        .map(|path| OpenedPath { path: path.clone(), folder: false })
+        .chain(opened.folders.iter().map(|path| OpenedPath { path: path.clone(), folder: true }))
+        .collect();
+    if state.send_input(AgentInput::Grant(paths)).is_err() {
+        eprintln!("pzza agent: could not let the editor open the paths the user opened");
+    }
+}
+
+// Hands a new agent's stdin to the input writer, which sends it every grant
+// so far. Without a writer the stdin stays in `child`: the agent only needs
+// it held open then.
+fn attach_input(state: &AgentState, child: &mut Child) {
+    if let Some(stdin) = child.stdin.take() {
+        if let Err(AgentInput::Attach(stdin)) = state.send_input(AgentInput::Attach(stdin)) {
+            child.stdin = Some(stdin);
+        }
     }
 }
 
@@ -506,7 +684,10 @@ fn launch(app: &AppHandle, (token, instance): (String, String)) {
         let alive = matches!(child.as_mut().map(Child::try_wait), Some(Ok(None)));
         if !alive {
             match spawn_agent_process(&launch) {
-                Ok(spawned) => *child = Some(spawned),
+                Ok(mut spawned) => {
+                    attach_input(&state, &mut spawned);
+                    *child = Some(spawned);
+                }
                 Err(e) => eprintln!("pzza agent: failed to launch: {e}"),
             }
         }
@@ -596,7 +777,9 @@ fn watch(app: AppHandle) {
         }
         spawned = Instant::now();
         match spawn_agent_process(&launch) {
-            Ok(child) => {
+            Ok(mut child) => {
+                // The new agent gets every grant the last one had.
+                attach_input(&state, &mut child);
                 *guard = Some(child);
                 eprintln!("pzza agent: respawned after it exited");
             }
@@ -623,8 +806,10 @@ fn spawn_agent_process(launch: &Launch) -> std::io::Result<Child> {
         .env("PZZA_AGENT_ID", &launch.instance)
         // Empty server host = source role: tmux/ports are local to this machine.
         .env("PZZA_SERVER_HOST", "")
-        // Keep the write end in Child. Process exit closes it even when Rust
-        // cleanup cannot run, so the agent also exits after a force-quit.
+        // Keep the write end in this process (the input writer, else Child).
+        // Process exit closes it even when Rust cleanup cannot run, so the
+        // agent also exits after a force-quit. It also carries the grants for
+        // paths the user opened (see InputWriter).
         .env("PZZA_MANAGED_AGENT", "1")
         .stdin(Stdio::piped());
     // So the tmux servers and shells the agent starts render UTF-8.
@@ -642,6 +827,10 @@ pub fn stop(app: &AppHandle) -> Result<(), String> {
         // Signal the watchdog before killing, so it does not respawn the agent
         // during shutdown.
         state.shutting_down.store(true, Ordering::SeqCst);
+        // The input writer lets go of the agent's stdin, so it sees EOF.
+        if let Some(writer) = state.input.lock().unwrap_or_else(PoisonError::into_inner).as_ref() {
+            let _ = writer.send(AgentInput::Close);
+        }
         let child = state.child.lock().map_err(|_| "Device agent lock failed")?.take();
         if let Some(mut child) = child {
             drop(child.stdin.take());
@@ -832,5 +1021,118 @@ mod launch_tests {
         std::fs::create_dir(&server).unwrap();
         assert!(launch.replaced());
         std::fs::remove_dir_all(&root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod input_tests {
+    use super::*;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    /// A stdin stand-in whose bytes the test reads back; `broken` fails writes
+    /// as a pipe to an exited agent does.
+    #[derive(Clone, Default)]
+    struct Sink {
+        bytes: Rc<RefCell<Vec<u8>>>,
+        broken: bool,
+    }
+
+    impl Write for Sink {
+        fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+            if self.broken {
+                return Err(std::io::Error::from(std::io::ErrorKind::BrokenPipe));
+            }
+            self.bytes.borrow_mut().extend_from_slice(data);
+            Ok(data.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl Sink {
+        fn lines(&self) -> Vec<serde_json::Value> {
+            String::from_utf8(self.bytes.borrow().clone())
+                .unwrap()
+                .lines()
+                .map(|line| serde_json::from_str(line).unwrap())
+                .collect()
+        }
+    }
+
+    fn file(path: &str) -> OpenedPath {
+        OpenedPath { path: path.into(), folder: false }
+    }
+
+    fn folder(path: &str) -> OpenedPath {
+        OpenedPath { path: path.into(), folder: true }
+    }
+
+    fn paths(writer: &InputWriter<Sink>) -> Vec<String> {
+        writer.opened.iter().map(|opened| opened.path.clone()).collect()
+    }
+
+    #[test]
+    fn grants_go_to_the_agent_as_json_lines() {
+        let mut writer = InputWriter::default();
+        let sink = Sink::default();
+        writer.handle(AgentInput::Attach(sink.clone()));
+        assert!(sink.lines().is_empty(), "nothing to send to a fresh agent");
+        writer.handle(AgentInput::Grant(vec![file("/private/tmp/a \"quoted\"\nname.txt"), folder("/Volumes/Data/project")]));
+        assert_eq!(
+            sink.lines(),
+            vec![
+                serde_json::json!({ "type": "grant", "path": "/private/tmp/a \"quoted\"\nname.txt", "folder": false }),
+                serde_json::json!({ "type": "grant", "path": "/Volumes/Data/project", "folder": true }),
+            ]
+        );
+        // One message per line whatever the path holds.
+        assert_eq!(sink.bytes.borrow().iter().filter(|&&byte| byte == b'\n').count(), 2);
+    }
+
+    #[test]
+    fn a_respawned_agent_gets_every_grant_again() {
+        let mut writer = InputWriter::default();
+        // Opened before the agent ever started: kept for it.
+        writer.handle(AgentInput::Grant(vec![file("/tmp/early.txt")]));
+        let first = Sink::default();
+        writer.handle(AgentInput::Attach(first.clone()));
+        writer.handle(AgentInput::Grant(vec![folder("/tmp/tree")]));
+        assert_eq!(first.lines().len(), 2);
+        // The agent exits: the failed write lets go of its stdin, the grant is kept.
+        writer.handle(AgentInput::Attach(Sink { broken: true, ..Sink::default() }));
+        assert!(writer.sink.is_none());
+        writer.handle(AgentInput::Grant(vec![file("/tmp/while-down.txt")]));
+        let next = Sink::default();
+        writer.handle(AgentInput::Attach(next.clone()));
+        let sent: Vec<_> = next.lines().iter().map(|line| line["path"].as_str().unwrap().to_owned()).collect();
+        assert_eq!(sent, ["/tmp/early.txt", "/tmp/tree", "/tmp/while-down.txt"]);
+    }
+
+    #[test]
+    fn shutdown_closes_the_agents_input() {
+        let mut writer = InputWriter::default();
+        let sink = Sink::default();
+        writer.handle(AgentInput::Attach(sink.clone()));
+        writer.handle(AgentInput::Close);
+        assert!(writer.sink.is_none());
+        writer.handle(AgentInput::Grant(vec![file("/tmp/after.txt")]));
+        assert!(sink.lines().is_empty());
+        assert_eq!(paths(&writer), ["/tmp/after.txt"]);
+    }
+
+    #[test]
+    fn grants_are_bounded_and_a_repeat_becomes_the_newest() {
+        let mut writer: InputWriter<Sink> = InputWriter::default();
+        writer.handle(AgentInput::Grant((0..MAX_OPENED_PATHS).map(|index| file(&format!("/tmp/{index}"))).collect()));
+        writer.handle(AgentInput::Grant(vec![file("/tmp/0")]));
+        assert_eq!(writer.opened.len(), MAX_OPENED_PATHS);
+        assert_eq!(writer.opened.back(), Some(&file("/tmp/0")));
+        writer.handle(AgentInput::Grant(vec![folder("/tmp/new")]));
+        assert_eq!(writer.opened.len(), MAX_OPENED_PATHS);
+        assert_eq!(writer.opened.front(), Some(&file("/tmp/2")), "the oldest grant is forgotten first");
+        assert!(!paths(&writer).contains(&"/tmp/1".to_string()));
     }
 }

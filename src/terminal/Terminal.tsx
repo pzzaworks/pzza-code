@@ -29,6 +29,7 @@ import { registerContextMenu, clipboardPaste, readClipboardData } from "../ui/Co
 import { registerDictationTarget, useDictation } from "../state/dictation";
 import { createDictationComposition, separatedFromCaret } from "./dictationComposition";
 import { notify } from "../state/notifications";
+import { noticeDeviceFor } from "../devices";
 import { createTerminalSignals } from "./notificationSignals";
 import { agentSignalled } from "./agentFinished";
 import { createPermissionWatcher, hasPendingPermission } from "../state/permissionPrompts";
@@ -39,6 +40,7 @@ import { leavePaneMode, paneInMode, paneLines, type PaneTarget } from "./paneMod
 import { createTerminalAppController, registerTerminalAppControl, validateTerminalPaste } from "../appControlTerminal";
 import { IS_MAC } from "../shortcuts";
 import { layoutPreviewActive, onLayoutPreviewEnd } from "../grid/layoutPreview";
+import { registerTileSnapshot } from "../grid/tileDrag";
 import { ChevronDown, ChevronUp, ClipboardPaste, Copy, Eraser, TextSelect, X } from "lucide-react";
 import type { SessionAgentId } from "../../server/lib/session-agents.js";
 
@@ -121,6 +123,9 @@ interface Props {
 // apart over many rows, pushing the last line past the tile's clipped edge.
 // Cap simultaneous GPU contexts; additional visible terminals use xterm's DOM renderer.
 const MAX_WEBGL_TERMINALS = 8;
+// How long a drag snapshot waits for the terminal to draw before it copies
+// what is there (a DOM renderer, or a terminal that does not draw now).
+const SNAPSHOT_WAIT_MS = 120;
 // GPU renderers a pre-warming off-screen tile leaves free for tiles on screen.
 const PREWARM_HEADROOM = 2;
 let liveWebglTerminals = 0;
@@ -640,8 +645,8 @@ function TerminalView({ tileId, name, host, cmd, args, cwd, window: win, active,
         const tile = sessionTileById(state.tiles, tileId);
         const label = sessionDisplayName(tile ?? { id: tileId, name, session: name, host, window: win }, state.tileTitles)
           .replace(/[\x00-\x1f\x7f-\x9f]/g, "").slice(0, 100);
-        const device = (tile?.host ?? host ?? "This device").replace(/[\x00-\x1f\x7f-\x9f]/g, "").slice(0, 100) || "This device";
-        const noticeId = notify({ ...notification, source: `${label || "Terminal"} (${device})`, body: notification.body });
+        const device = noticeDeviceFor(state.devices, tile?.host ?? host);
+        const noticeId = notify({ ...notification, source: label || "Terminal", device, body: notification.body });
         if (notification.event === "terminal-bell") agentSignalled(tileId, noticeId);
       }, {
         attachment: true,
@@ -1331,6 +1336,36 @@ function TerminalView({ tileId, name, host, cmd, args, cwd, window: win, active,
       const permissionScanListener = permissionWatcher ? term.onWriteParsed(() => permissionWatcher.schedule()) : null;
       permissionWatcher?.schedule();
 
+      // A dragged tile's ghost shows this terminal as it looks now. The WebGL
+      // renderer keeps its pixels only for the frame it draws (no preserved
+      // drawing buffer), so the canvases are copied in onRender, which runs in
+      // that same frame right after drawing. A DOM renderer, or a terminal
+      // that does not draw (hidden), is copied as it is after a short wait.
+      const unregisterSnapshot = registerTileSnapshot(tileId, () => new Promise((resolve) => {
+        const copy = () => {
+          const images = new Map<HTMLCanvasElement, CanvasImageSource>();
+          for (const canvas of container.querySelectorAll("canvas")) {
+            const image = document.createElement("canvas");
+            image.width = canvas.width;
+            image.height = canvas.height;
+            try { image.getContext("2d")?.drawImage(canvas, 0, 0); } catch { continue; }
+            images.set(canvas, image);
+          }
+          return images;
+        };
+        let rendered: { dispose(): void } | null = null;
+        const finish = () => {
+          if (!rendered) return;
+          rendered.dispose();
+          rendered = null;
+          window.clearTimeout(timeout);
+          resolve(copy());
+        };
+        rendered = term.onRender(finish);
+        const timeout = window.setTimeout(finish, SNAPSHOT_WAIT_MS);
+        term.refresh(0, term.rows - 1);
+      }));
+
       const unregisterControl = registerTerminalAppControl(tileId, createTerminalAppController({
         state: () => ({ connected: connected(), cols: term.cols, rows: term.rows, bufferLines: term.buffer.active.length, viewportY: term.buffer.active.viewportY, hasSelection: term.hasSelection(), bracketedPasteMode: term.modes.bracketedPasteMode }),
         lines: async () => {
@@ -1424,6 +1459,7 @@ function TerminalView({ tileId, name, host, cmd, args, cwd, window: win, active,
         transportResize.dispose();
         unregisterDrop();
         unregisterControl();
+        unregisterSnapshot();
         unregisterSearch();
         unsubscribePreviewEnd();
         revealCleanup?.dispose();

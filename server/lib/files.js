@@ -1,7 +1,7 @@
 // File access for the code view: directory listing, text read, raw byte stream
 // and write, plus pasted-image save. Each has a local branch (this device) and
 // an ssh-proxied branch to another device, both bounded to the user's home tree
-// by the guards in paths.js.
+// by the guards in paths.js (locally, plus what the user opened in the app).
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -10,7 +10,7 @@ import { execFile, spawn } from "node:child_process";
 import { DEVBOX, IS_CLIENT } from "./config.js";
 import { SSH_TOKEN, shOn, shQuote } from "./shell.js";
 import { cors, json, readBody } from "./http.js";
-import { denied, mimeType, realSafePath, refusalReason, remoteGuard, remotePath, safePath } from "./paths.js";
+import { denied, grantedPath, mimeType, realSafePath, refusalReason, remoteGuard, remotePath, safePath } from "./paths.js";
 
 import { FILE_MUTATION_SCRIPT } from "./file-mutations.js";
 import { terminalDropRouter } from "./terminal-drop.js";
@@ -584,7 +584,10 @@ export async function filesRouter(req, res, url) {
   }
 
   if (url.pathname === "/fs/list") {
-    const p = safePath(url.searchParams.get("path"), { listOnly: true }) || os.homedir();
+    // A path outside home lists only when the user opened it (or a folder
+    // holding it); home stands in for any other.
+    const requested = url.searchParams.get("path");
+    const p = safePath(requested, { listOnly: true }) || grantedPath(requested) || os.homedir();
     try {
       const entries = fs
         .readdirSync(p, { withFileTypes: true })

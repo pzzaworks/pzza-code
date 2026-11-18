@@ -10,7 +10,8 @@ import { altBadge, digitFromCode, NEW_WORKSPACE_SHORTCUT } from "../shortcuts";
 import { useWorkspaceIconSet, workspaceIcon, DEFAULT_WORKSPACE_ICON } from "../workspaceIcons";
 import { IconPicker, WorkspaceSettings } from "../lazySurfaces";
 import { whenLoaded } from "../lazySurface";
-import { SESSION_DND, SESSION_TILE_DND, sessionDisplayName } from "../sessionMeta";
+import { sessionDisplayName } from "../sessionMeta";
+import { useTileDragTarget } from "./tileDrag";
 import { unreadTileIds, useNotifications } from "../state/notifications";
 import { countLabel } from "../panels/Notifications";
 
@@ -143,7 +144,8 @@ export function WorkspaceTabs({ openRequest = 0 }: { openRequest?: number }) {
       window.removeEventListener("resize", measure);
     };
   }, [workspaces]);
-  const [dragOver, setDragOver] = useState<string | null>(null);
+  // The tab a dragged tile is over (the tile drag itself runs in Canvas).
+  const dragOver = useTileDragTarget((s) => s.overWorkspace);
   const [workspaceDrop, setWorkspaceDrop] = useState<{ id: string; placement: "before" | "after" } | null>(null);
   const draggedWorkspace = useRef<string | null>(null);
   const dragEndedAt = useRef(-Infinity);
@@ -213,22 +215,22 @@ export function WorkspaceTabs({ openRequest = 0 }: { openRequest?: number }) {
 
   const onDropTab = (wsId: string, e: React.DragEvent) => {
     e.preventDefault();
-    setDragOver(null);
     setWorkspaceDrop(null);
     const workspace = e.dataTransfer.getData(WORKSPACE_DND);
-    if (workspace) {
-      if (workspace === draggedWorkspace.current) {
-        const rect = e.currentTarget.getBoundingClientRect();
-        reorderWorkspace(workspace, wsId, e.clientX < rect.left + rect.width / 2 ? "before" : "after");
-      }
-      return;
+    if (workspace === draggedWorkspace.current) {
+      const rect = e.currentTarget.getBoundingClientRect();
+      reorderWorkspace(workspace, wsId, e.clientX < rect.left + rect.width / 2 ? "before" : "after");
     }
-    const session = e.dataTransfer.getData(SESSION_DND);
-    if (!session) return;
-    const current = sessionWs[session] ?? DEFAULT_WORKSPACE_ID;
-    if (current === wsId) return;
-    setPending({ session, tileId: e.dataTransfer.getData(SESSION_TILE_DND) || session, wsId });
   };
+
+  // A tile dropped on a tab (see tileDrag.ts) asks before it moves there.
+  useEffect(() => useTileDragTarget.subscribe((state) => {
+    const drop = state.drop;
+    if (!drop) return;
+    useTileDragTarget.setState({ drop: null });
+    const current = useStore.getState().sessionWs[drop.session] ?? DEFAULT_WORKSPACE_ID;
+    if (current !== drop.wsId) setPending(drop);
+  }), []);
 
   const confirmMove = () => {
     if (!pending) return;
@@ -292,6 +294,8 @@ export function WorkspaceTabs({ openRequest = 0 }: { openRequest?: number }) {
               className={`ws-tab ${active ? "ws-tab-active" : ""} ${
                 dragOver === w.id ? "ws-tab-drop" : ""
               } ${workspaceDrop?.id === w.id ? `ws-tab-reorder-${workspaceDrop.placement}` : ""}`}
+              // Takes tile drops (see tileDrag.ts).
+              data-ws-tab={w.id}
               draggable
               // A click on the active tab opens its settings.
               onPointerEnter={active ? () => void WorkspaceSettings.preload() : undefined}
@@ -305,7 +309,6 @@ export function WorkspaceTabs({ openRequest = 0 }: { openRequest?: number }) {
                 draggedWorkspace.current = null;
                 dragEndedAt.current = performance.now();
                 setWorkspaceDrop(null);
-                setDragOver(null);
               }}
               onClick={(e) => {
                 if (performance.now() - dragEndedAt.current < 200) return;
@@ -332,17 +335,10 @@ export function WorkspaceTabs({ openRequest = 0 }: { openRequest?: number }) {
                   e.dataTransfer.dropEffect = "move";
                   const rect = e.currentTarget.getBoundingClientRect();
                   setWorkspaceDrop({ id: w.id, placement: e.clientX < rect.left + rect.width / 2 ? "before" : "after" });
-                } else if (e.dataTransfer.types.includes(SESSION_DND)) {
-                  e.preventDefault();
-                  // Must match the source's effectAllowed ("move") or WebKit
-                  // refuses the drop.
-                  e.dataTransfer.dropEffect = "move";
-                  setDragOver(w.id);
                 }
               }}
               onDragLeave={(e) => {
                 if (e.relatedTarget instanceof Node && e.currentTarget.contains(e.relatedTarget)) return;
-                setDragOver((d) => (d === w.id ? null : d));
                 setWorkspaceDrop((target) => target?.id === w.id ? null : target);
               }}
               onDrop={(e) => onDropTab(w.id, e)}

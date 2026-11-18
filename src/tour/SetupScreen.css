@@ -89,7 +89,9 @@
   border: 1px solid var(--hairline);
   border-radius: var(--r-pill);
 }
-.setup-plan-copy { display: flex; flex-direction: column; gap: 2px; min-width: 0; font-size: var(--fs-md); }
+/* The title line is as tall as the icon beside it, so the two share a center. */
+.setup-plan-copy { display: flex; flex-direction: column; min-width: 0; font-size: var(--fs-md); }
+.setup-plan-copy > strong { line-height: 22px; }
 .setup-plan-copy span { color: var(--muted); line-height: 1.5; }
 
 @media (prefers-reduced-motion: reduce) {

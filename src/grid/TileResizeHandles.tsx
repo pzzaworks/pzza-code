@@ -1,86 +1,77 @@
 import { useRef, useState, type KeyboardEvent, type PointerEvent } from "react";
 import { createPortal } from "react-dom";
+import type { ResizeAxis } from "./autoLayout";
 
 // Rows a tile may span; the canvas auto layout clamps to the same limit.
 export const MAX_TILE_ROWS = 4;
 
-type Axis = "x" | "y" | "xy";
+type Axis = ResizeAxis;
 // Column/row units in 0.5 steps.
 type Span = { c: number; r: number };
+// A resolved drag: the span to save and the tile's box (viewport pixels) once saved.
+export interface ResizeTarget { c: number; r: number; left: number; top: number; width: number; height: number }
+// Turns the wanted right/bottom edge (viewport pixels) into the size the tile
+// ends at. Made by the canvas when a drag starts, from the grid as laid out then.
+export type TileResizer = (axis: Axis, edgeX: number, edgeY: number) => ResizeTarget | null;
 interface Drag {
   axis: Axis;
   pointer: number;
   x: number;
   y: number;
+  // The tile's box when the drag started.
   left: number;
   top: number;
-  width: number;
-  height: number;
-  // Size of one grid track: half a column, half a row.
-  colTrack: number;
-  rowTrack: number;
-  gapX: number;
-  gapY: number;
+  right: number;
+  bottom: number;
+  resolve: TileResizer;
   moved: boolean;
 }
-
-// Two presses close in time and space count as a double-click: pointer capture
-// on a prevented pointerdown makes native dblclick unreliable across engines.
-const DOUBLE_PRESS_MS = 400;
-const DOUBLE_PRESS_PX = 6;
+// Two clicks (presses released without dragging) close in time and space count
+// as a double-click: pointer capture on a prevented pointerdown makes native
+// dblclick unreliable across engines. Only clicks count, and only on release:
+// a press that might start a drag always starts one, so a quick retry right
+// after a drag that stayed under the snap step is never taken for a reset.
+const DOUBLE_CLICK_MS = 400;
+const DOUBLE_CLICK_PX = 6;
+// Movement under this is still a click, not a drag.
+const DRAG_THRESHOLD_PX = 3;
 const CURSOR: Record<Axis, string> = { x: "is-resizing-x", y: "is-resizing-y", xy: "is-resizing-xy" };
 
-// Edge and corner grips that resize a tile by dragging. The drag previews the
-// snapped span (half column / half row steps) as an outline and writes it once
-// on release, so terminals reflow a single time. Double-click resets to auto.
-export function TileResizeHandles({ span, columns, onCommit, onReset }: {
+// Edge and corner grips that resize a tile by dragging. The outline shows the
+// tile exactly as it will be once the size is saved (the canvas lays the
+// whole grid out for each reachable size, see chooseResize), and the size is
+// written once on release, so terminals reflow a single time. Double-click
+// resets to auto.
+export function TileResizeHandles({ span, columns, resizer, onCommit, onReset }: {
   span: Span;
   columns: number;
+  resizer: () => TileResizer | null;
   onCommit: (c: number, r: number) => void;
   onReset: () => void;
 }) {
   const drag = useRef<Drag | null>(null);
-  const lastPress = useRef<{ time: number; x: number; y: number } | null>(null);
-  const [ghost, setGhost] = useState<{ axis: Axis; left: number; top: number; width: number; height: number; c: number; r: number } | null>(null);
+  const lastClick = useRef<{ time: number; x: number; y: number } | null>(null);
+  const [ghost, setGhost] = useState<(ResizeTarget & { axis: Axis }) | null>(null);
   // Work in whole tracks, report in units.
   const clampSpan = (cTracks: number, rTracks: number): Span => ({
     c: Math.max(1, Math.min(columns * 2, Math.round(cTracks))) / 2,
     r: Math.max(1, Math.min(MAX_TILE_ROWS * 2, Math.round(rTracks))) / 2,
   });
-  const target = (state: Drag, clientX: number, clientY: number): Span => clampSpan(
-    state.axis === "y" ? span.c * 2 : (state.width + clientX - state.x + state.gapX) / state.colTrack,
-    state.axis === "x" ? span.r * 2 : (state.height + clientY - state.y + state.gapY) / state.rowTrack,
-  );
+  // The grip follows the pointer: the dragged edge moves as far as the pointer did.
+  const target = (state: Drag, clientX: number, clientY: number): ResizeTarget | null =>
+    state.resolve(state.axis, state.right + clientX - state.x, state.bottom + clientY - state.y);
 
   const onPointerDown = (event: PointerEvent<HTMLElement>, axis: Axis) => {
     if (event.button !== 0) return;
     event.preventDefault();
     event.stopPropagation();
-    const previous = lastPress.current;
-    const now = performance.now();
-    lastPress.current = { time: now, x: event.clientX, y: event.clientY };
-    if (previous && now - previous.time <= DOUBLE_PRESS_MS &&
-        Math.abs(event.clientX - previous.x) <= DOUBLE_PRESS_PX && Math.abs(event.clientY - previous.y) <= DOUBLE_PRESS_PX) {
-      lastPress.current = null;
-      onReset();
-      return;
-    }
     const tile = event.currentTarget.closest(".tile");
-    const grid = tile?.parentElement;
-    if (!(tile instanceof HTMLElement) || !grid) return;
-    // Measure the live grid tracks so snapping matches the browser's layout:
-    // a column track is the grid width split evenly, a row track is this
-    // tile's height divided by the tracks it spans (rows stretch to fill).
+    const resolve = resizer();
+    if (!(tile instanceof HTMLElement) || !resolve) return;
     const rect = tile.getBoundingClientRect();
-    const style = getComputedStyle(grid);
-    const gapX = parseFloat(style.columnGap) || 0;
-    const gapY = parseFloat(style.rowGap) || 0;
     drag.current = {
       axis, pointer: event.pointerId, x: event.clientX, y: event.clientY,
-      left: rect.left, top: rect.top, width: rect.width, height: rect.height,
-      colTrack: (grid.getBoundingClientRect().width + gapX) / Math.max(1, columns * 2),
-      rowTrack: (rect.height + gapY) / Math.max(1, span.r * 2),
-      gapX, gapY, moved: false,
+      left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom, resolve, moved: false,
     };
     event.currentTarget.setPointerCapture(event.pointerId);
     document.documentElement.classList.add(CURSOR[axis]);
@@ -88,14 +79,10 @@ export function TileResizeHandles({ span, columns, onCommit, onReset }: {
   const onPointerMove = (event: PointerEvent<HTMLElement>) => {
     const state = drag.current;
     if (!state || event.pointerId !== state.pointer) return;
-    if (!state.moved && Math.hypot(event.clientX - state.x, event.clientY - state.y) < 3) return;
+    if (!state.moved && Math.hypot(event.clientX - state.x, event.clientY - state.y) < DRAG_THRESHOLD_PX) return;
     state.moved = true;
     const next = target(state, event.clientX, event.clientY);
-    setGhost({
-      axis: state.axis, left: state.left, top: state.top, c: next.c, r: next.r,
-      width: next.c * 2 * state.colTrack - state.gapX,
-      height: next.r * 2 * state.rowTrack - state.gapY,
-    });
+    if (next) setGhost({ ...next, axis: state.axis });
   };
   const finish = (event: PointerEvent<HTMLElement>, commit: boolean) => {
     const state = drag.current;
@@ -103,9 +90,24 @@ export function TileResizeHandles({ span, columns, onCommit, onReset }: {
     drag.current = null;
     setGhost(null);
     document.documentElement.classList.remove(CURSOR[state.axis]);
-    if (!commit || !state.moved) return;
+    if (!commit) return;
+    if (!state.moved) {
+      // A click: the second one in a row resets the tile to its auto size.
+      const previous = lastClick.current;
+      const now = performance.now();
+      const repeat = previous !== null && now - previous.time <= DOUBLE_CLICK_MS &&
+        Math.abs(state.x - previous.x) <= DOUBLE_CLICK_PX && Math.abs(state.y - previous.y) <= DOUBLE_CLICK_PX;
+      lastClick.current = repeat ? null : { time: now, x: state.x, y: state.y };
+      if (repeat) onReset();
+      return;
+    }
+    lastClick.current = null;
     const next = target(state, event.clientX, event.clientY);
-    if (next.c !== span.c || next.r !== span.r) onCommit(next.c, next.r);
+    if (!next) return;
+    // An auto tile keeps its auto size when the drag ends where it already is.
+    const moves = Math.abs(next.left - state.left) > 1 || Math.abs(next.top - state.top) > 1 ||
+      Math.abs(next.left + next.width - state.right) > 1 || Math.abs(next.top + next.height - state.bottom) > 1;
+    if (next.c !== span.c || next.r !== span.r || moves) onCommit(next.c, next.r);
   };
   const onKeyDown = (event: KeyboardEvent<HTMLButtonElement>) => {
     const delta: Record<string, [number, number]> = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] };

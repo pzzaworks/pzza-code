@@ -1,4 +1,4 @@
-import { deviceNameFor } from "../devices";
+import { noticeDeviceFor } from "../devices";
 import { OUTPUT_ACTIVITY_SHARE_MS, readPaneOutputActivity } from "./outputActivityCache";
 import { sessionDisplayName } from "../sessionMeta";
 import { notify, useNotifications } from "../state/notifications";
@@ -68,7 +68,7 @@ function dot(tile: Tile, activity: number, title: string, body: string): void {
   const live = useStore.getState();
   const label = sessionDisplayName(tile, live.tileTitles)
     .replace(/[\x00-\x1f\x7f-\x9f]/g, "").slice(0, 100);
-  const device = deviceNameFor(live.devices, tile.host) || "This device";
+  const device = noticeDeviceFor(live.devices, tile.host);
   dotted.add(tile.id);
   notify({
     category: "terminal",
@@ -77,7 +77,7 @@ function dot(tile: Tile, activity: number, title: string, body: string): void {
     body,
     target: { tileId: tile.id },
     dedupeKey: `bg-activity:${tile.id}:${activity}`,
-    source: `${label || "Terminal"} (${device})`,
+    source: label || "Terminal", device,
   });
 }
 

@@ -10,6 +10,7 @@ import { useNotifications, NOTIFICATION_EVENTS, NOTIFICATION_EVENT_CATEGORIES, t
 import { useStore } from "../state/store";
 import { DEFAULT_WORKSPACE_ID, wsKeyOf } from "../workspaces";
 import { Dropdown } from "../ui/Dropdown";
+import { DeviceIcon } from "../ui/DeviceIcon";
 import { openTileChangesView } from "../tileGit";
 
 export function openNotice(item: Notice) {
@@ -60,7 +61,12 @@ function NoticeRow({ item, readOnly, openDetails }: { item: Notice; readOnly: bo
   const permission = item.action?.kind === "permission";
   return <article className={`notification-row ${item.read ? "" : "unread"} ${permission ? "notification-row-permission" : ""}`} style={{ "--notification-actions": actions } as CSSProperties}>
     <button className="notification-content" onClick={() => { useNotifications.getState().read(item.id); if (!readOnly) openDetails?.(); }}>
-      <span className="notification-title"><strong>{item.source ? <><span className="notification-source">{item.source}</span> - </> : null}{item.title}</strong>{!item.read ? <span className="notification-new">New</span> : null}</span>
+      <span className="notification-title"><strong>{item.title}</strong>{!item.read ? <span className="notification-new">New</span> : null}</span>
+      {item.source || item.device ? <span className="notification-origin">
+        {item.source ? <span className="notification-source">{item.source}</span> : null}
+        {item.source && item.device ? <span className="notification-origin-sep" aria-hidden="true">·</span> : null}
+        {item.device ? <span className="notification-device"><DeviceIcon host={item.device.host} size={9} />{item.device.name}</span> : null}
+      </span> : null}
       {waiting ? null : <span ref={body} className={`notification-body ${expanded ? "" : readOnly ? "is-clamped-long" : "is-clamped"}`}>{expanded ? item.body.trim() : item.body.trim().replace(/\s*\n\s*/g, " ")}</span>}
       <small>{item.category} · <time dateTime={new Date(item.createdAt).toISOString()}>{new Date(item.createdAt).toLocaleString()}</time></small>
     </button>
