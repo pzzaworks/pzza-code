@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { create } from "zustand";
 import { isSessionTile, useStore } from "./store";
 import { notify } from "./notifications";
+import { confirmAction } from "./confirmations";
 import { noteDetectedAgents, useSessionAgents } from "./sessionAgents";
 import { PERMISSIONS, PERMISSIONS_SUPPORTED, permissionStatuses, type PermissionId, type PermissionStatus } from "./permissions";
 import { autoSavedLocalAgents } from "./workspaceSnapshots";
@@ -387,17 +388,23 @@ const IDLE_POLL_MS = 15_000;
  * update never stops them). macOS then lets none of the app's permissions
  * reach them, and asks for none: Full Disk Access, Automation and the rest
  * look granted in System Settings but fail in every terminal. Moving them
- * onto the new version restarts every program in them, so it never happens
- * while work runs: a notification says they are waiting, and the refresh
- * starts on its own only once every local window is at a shell or an idle
- * agent (checked again right before the restart). Agents then continue their
- * own conversations. Refresh sessions in Setup moves them right away.
+ * onto the new version restarts every program in them, so it never stops
+ * work without asking: when nothing runs they move right away; otherwise a
+ * dialog names the busy sessions and offers to refresh now or once every
+ * local window is at a shell or an idle agent (checked again right before
+ * the restart). Agents then continue their own conversations.
  */
 export function checkTerminalsUpdated(delayMs = 3000, pollMs = IDLE_POLL_MS): () => void {
   if (!LOCAL_SESSIONS_KEPT) return () => {};
   let stopped = false;
   let timer: number | undefined;
   const outdated = () => invoke<boolean>("local_tmux_outdated").catch(() => false);
+  const settled = async () => {
+    // Wait for the launch restore (or a refresh started by hand) to finish.
+    while (!stopped && (useSessionRefresh.getState().pending || useSessionRefresh.getState().running)) {
+      await new Promise(resolve => window.setTimeout(resolve, 500));
+    }
+  };
   const moveWhenIdle = async () => {
     if (stopped) return;
     const state = useSessionRefresh.getState();
@@ -410,18 +417,29 @@ export function checkTerminalsUpdated(delayMs = 3000, pollMs = IDLE_POLL_MS): ()
     }
     timer = window.setTimeout(() => void moveWhenIdle(), pollMs);
   };
-  timer = window.setTimeout(() => {
-    void outdated().then(old => {
-      if (!old || stopped) return;
-      notify({
-        category: "app",
-        title: "Terminals wait to move to the new version",
-        body: "PzzaCode was updated while your terminals kept running, so they cannot use its permissions (Full Disk Access, Automation, Screen Recording) yet. They move to this version on their own once every agent is idle and nothing else runs in them, so no work is stopped; agents continue their own conversations. To move them now, use Refresh sessions in Settings > Setup.",
-        dedupeKey: "terminals-outdated",
-      });
-      void moveWhenIdle();
+  const offer = async () => {
+    if (!await outdated() || stopped) return;
+    await settled();
+    if (stopped) return;
+    const busy = await busyLocalSessions();
+    // Nothing would be stopped: move them now, still checked right before the restart.
+    if (busy && !busy.length && await refreshLocalSessions({ onlyIfIdle: true }).catch(() => false)) return;
+    if (stopped) return;
+    const now = await confirmAction({
+      title: "Move terminals to the new version?",
+      message: `PzzaCode was updated, but your terminals still run on the previous version, so they cannot use its permissions yet. Refreshing restarts the programs in them; agents continue their own conversations.${busy?.length ? ` Running now in: ${busy.join(", ")}.` : ""}`,
+      confirmLabel: "Refresh now",
+      cancelLabel: "When idle",
+      danger: Boolean(busy?.length),
     });
-  }, delayMs);
+    if (stopped) return;
+    if (now) {
+      await refreshLocalSessions().catch(() => { /* Already refreshing: that refresh moves them. */ });
+      return;
+    }
+    void moveWhenIdle();
+  };
+  timer = window.setTimeout(() => void offer(), delayMs);
   return () => { stopped = true; window.clearTimeout(timer); };
 }
 
