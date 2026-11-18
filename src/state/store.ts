@@ -85,6 +85,19 @@ export const fileTilePath = (tile: FileTile): string => tile.folder ?? tile.file
 /** The folder a file or folder tile works in: the folder itself, or the one holding the file. */
 export const fileTileFolder = (tile: FileTile): string => tile.folder ?? fileFolder(tile.file);
 export const isSessionTile = (tile: Tile): tile is Session => tile.kind !== "file";
+/**
+ * The folder a tile works in now: a window tile's own folder, else the
+ * connected device's live session folder (`sessionPaths`, by session name),
+ * else the folder it was opened in. The opening cwd never follows a later cd,
+ * so it only fills in when the live folder is unknown (another device, or not
+ * listed yet).
+ */
+export function tileFolder(tile: Tile, sessionPaths: ReadonlyMap<string, string>): string | undefined {
+  if (isFileTile(tile)) return fileTileFolder(tile);
+  const live = tile.path ?? (tile.host ? undefined : sessionPaths.get(tile.session ?? tile.name));
+  if (live?.startsWith("/")) return live;
+  return tile.cwd?.startsWith("/") ? tile.cwd : undefined;
+}
 /** The terminal tile with this id; undefined when none is open or it is a file tile. */
 export function sessionTileById(tiles: readonly Tile[], id: string | null | undefined): Session | undefined {
   const tile = tiles.find((entry) => entry.id === id);

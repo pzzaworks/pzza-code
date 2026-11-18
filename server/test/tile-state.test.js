@@ -27,8 +27,8 @@ async function loadStore(t, seed) {
   } });
   const outfile = path.join(dir, "store.mjs");
   await build({ entryPoints: ["src/state/store.ts"], outfile, bundle: true, format: "esm", platform: "node", logLevel: "silent" });
-  const { useStore } = await import(pathToFileURL(outfile).href);
-  return { useStore, saved: (key) => JSON.parse(storage.get(key) ?? "null") };
+  const { useStore, tileFolder } = await import(pathToFileURL(outfile).href);
+  return { useStore, tileFolder, saved: (key) => JSON.parse(storage.get(key) ?? "null") };
 }
 
 const seed = {
@@ -217,4 +217,21 @@ test("saved sizes report every row track their tiles take, so the canvas fits th
   assert.equal(short.rows, 1);
   assert.equal(short.rowTracks, 2);
   assert.deepEqual(short.spans.get("b"), { c: 2, r: 1 });
+});
+
+test("a tile's folder follows the session's live folder, not the folder it was opened in", async (t) => {
+  const { tileFolder } = await loadStore(t, {});
+  const live = new Map([["work", "/repo/app"], ["relative", "repo"]]);
+  // Opened in a parent folder, then cd'd into the repository: the live folder wins.
+  assert.equal(tileFolder({ id: "work", name: "work", cwd: "/repo" }, live), "/repo/app");
+  // A window tile keeps its own folder, not the session's active window.
+  assert.equal(tileFolder({ id: "work::w::1", name: "work · logs", session: "work", window: 1, path: "/repo/logs", cwd: "/repo" }, live), "/repo/logs");
+  // Not listed yet, or listed without an absolute folder: the opening folder fills in.
+  assert.equal(tileFolder({ id: "fresh", name: "fresh", cwd: "/repo" }, live), "/repo");
+  assert.equal(tileFolder({ id: "relative", name: "relative", cwd: "/repo" }, live), "/repo");
+  // The session list belongs to the connected device, so another device's tile never reads it.
+  assert.equal(tileFolder({ id: "box::work", name: "work", session: "work", host: "box", cwd: "/srv/app" }, live), "/srv/app");
+  assert.equal(tileFolder({ id: "box::other", name: "other", session: "other", host: "box" }, live), undefined);
+  // File and folder tiles work in their own folder.
+  assert.equal(tileFolder({ id: "file:/repo/app/a.ts", name: "a.ts", kind: "file", file: "/repo/app/a.ts" }, live), "/repo/app");
 });
