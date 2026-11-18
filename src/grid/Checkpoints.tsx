@@ -37,25 +37,31 @@ export function useCheckpointList(host: string, path: string | undefined, enable
 }
 
 /**
- * The status bar's checkpoints button, the one way into a tile's timeline:
- * shown in every Git folder, with the count once there are any, so a
- * checkpoint can be saved by hand before the first turn.
+ * The session top bar's checkpoints button, the one way into a tile's
+ * timeline: shown in every Git folder (a folder Git cannot read hides it),
+ * with the count in its tooltip once there are any, so a checkpoint can be saved
+ * by hand before the first turn.
  */
-export function CheckpointsChip({ tileId, host, path, visible }: { tileId: string; host: string; path: string; visible: boolean }) {
-  const { list } = useCheckpointList(host, path, visible);
+export function CheckpointsButton({ tileId, host, path, visible }: { tileId: string; host: string; path: string; visible: boolean }) {
+  const { list, status } = useCheckpointList(host, path, visible);
+  const open = useCheckpointsUi((ui) => ui.openTileId === tileId);
+  if (status === "error" && !list) return null;
   const count = list?.checkpoints.length ?? 0;
   const label = `${count} ${count === 1 ? "checkpoint" : "checkpoints"}`;
   return <button
     type="button"
-    className={`tile-strip-checkpoints ${count ? "" : "is-empty"}`}
+    className={`tile-btn ${open ? "tile-btn-on" : ""}`}
     title={count ? `${label} of this folder\nClick to compare or restore them` : "Checkpoints\nNone in this folder yet. Click to save one"}
     aria-label={count ? `Open ${label}` : "Checkpoints"}
     aria-haspopup="dialog"
     onPointerEnter={() => void CheckpointsPanel.preload()}
     onMouseDown={(event) => event.stopPropagation()}
-    onClick={() => useCheckpointsUi.getState().open(tileId)}
+    onClick={(event) => {
+      event.stopPropagation();
+      useCheckpointsUi.getState().open(tileId);
+    }}
   >
-    <History size={11} aria-hidden="true" />{count ? <span className="tile-strip-checkpoints-count">{count}</span> : null}
+    <History size={13} aria-hidden="true" />
   </button>;
 }
 

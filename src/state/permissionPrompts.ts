@@ -4,10 +4,11 @@ import {
   sameDeclinedPermissionPrompt, samePermissionPrompt, screenWithHistory,
   type PermissionPrompt, type Screen,
 } from "../terminal/permissionPrompts";
-import { notify, useNotifications, type PermissionOutcome } from "./notifications";
+import { notify, useNotifications, type NoticeDevice, type PermissionOutcome } from "./notifications";
 import { isSessionTile, useStore } from "./store";
 import { sessionDisplayName } from "../sessionMeta";
-import { deviceNameFor } from "../devices";
+import { noticeDeviceFor } from "../devices";
+import { createFolderTrustResponder } from "./folderTrust";
 
 // Approval prompts that coding agents show in their terminals, answered from
 // the app. Each terminal registers a target that can read its visible screen
@@ -116,14 +117,13 @@ export function hasPendingPermission(tileId: string): boolean {
   return !!usePermissionPrompts.getState().pending[tileId] || onScreen.has(tileId);
 }
 
-function noticeSource(tileId: string): string {
+function noticeOrigin(tileId: string): { source: string; device: NoticeDevice } {
   const state = useStore.getState();
   const tile = state.tiles.find(candidate => candidate.id === tileId);
   const clean = (text: string) => text.replace(/[\x00-\x1f\x7f-\x9f]/g, "").slice(0, 100);
   const label = tile ? clean(sessionDisplayName(tile, state.tileTitles)) : clean(tileId);
   const host = tile && isSessionTile(tile) ? tile.host : undefined;
-  const device = clean(host ? deviceNameFor(state.devices, host) || host : "This device") || "This device";
-  return `${label || "Terminal"} (${device})`;
+  return { source: label || "Terminal", device: noticeDeviceFor(state.devices, host) };
 }
 
 function resolveNotice(entry: PendingPermission, outcome: PermissionOutcome, choice?: string): void {
@@ -152,7 +152,7 @@ function announce(tileId: string, prompt: PermissionPrompt, focused: boolean): v
   const noticeId = notify({
     category: "terminal", event: "agent-permission",
     title: permissionTitle(prompt), body: prompt.subject || prompt.question,
-    source: noticeSource(tileId), target: { tileId },
+    ...noticeOrigin(tileId), target: { tileId },
     action: { kind: "permission", promptId: id, agent: prompt.agent },
     dedupeKey: `agent-permission:${id}`,
   });
@@ -174,7 +174,7 @@ function announceUnoffered(tileId: string, prompt: PermissionPrompt, reason: str
     category: "terminal", event: "agent-permission",
     title: `${permissionAgentLabel(prompt.agent)}: Waiting for approval in the terminal`,
     body: `${reason} Answer in the terminal.`,
-    source: noticeSource(tileId), target: { tileId },
+    ...noticeOrigin(tileId), target: { tileId },
     dedupeKey: `agent-permission-unoffered:${tileId}:${crypto.randomUUID()}`,
   });
   if (noticeId && focused) useNotifications.getState().read(noticeId);
@@ -250,6 +250,12 @@ export function createPermissionWatcher(tileId: string, target: PermissionTarget
   // this one's.
   let paneAgent: string | undefined;
   targets.set(tileId, target);
+  // Folder trust prompts ride on the same scans, answered only while Auto-trust
+  // folders is on. Switching it on looks at a prompt already showing.
+  const folderTrust = createFolderTrustResponder(target, { enabled: () => useStore.getState().autoTrustFolders });
+  const unsubscribeTrust = useStore.subscribe((state, previous) => {
+    if (state.autoTrustFolders && !previous.autoTrustFolders) folderTrust.check();
+  });
 
   // The rows above the screen, kept for the screen they line up with, so an
   // input that starts above the screen reads in full. Read only while such a
@@ -335,6 +341,7 @@ export function createPermissionWatcher(tileId: string, target: PermissionTarget
   const scan = () => {
     timer = undefined;
     if (disposed) return;
+    folderTrust.check();
     burstAt = 0;
     outputDue = 0;
     lastScan = performance.now();
@@ -427,6 +434,8 @@ export function createPermissionWatcher(tileId: string, target: PermissionTarget
       disposed = true;
       clearTimeout(timer);
       clearTimeout(historyRetry);
+      folderTrust.dispose();
+      unsubscribeTrust();
       if (targets.get(tileId) === target) targets.delete(tileId);
       // A closed tile cannot be answered any more. A remounted one (same
       // tile, new attachment) registers again and rescans.

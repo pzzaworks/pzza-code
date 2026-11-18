@@ -1,7 +1,7 @@
 import { activityAgent, LiveSessionIcon, runningAgent, useSessionActivity } from "../ui/LiveSessionIcon";
 import { useDelayedLoading } from "../ui/useDelayedLoading";
 import { DeviceIcon } from "../ui/DeviceIcon";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type HTMLAttributes, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type HTMLAttributes, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { createPortal } from "react-dom";
 import { MotionConfig, motion } from "framer-motion";
@@ -11,9 +11,9 @@ import {
   FileCode,
   FileText,
   Folder,
+  FolderGit2,
   FolderInput,
   FolderOpen,
-  FolderPlus,
   ClipboardPaste,
   ArrowDown,
   ArrowUp,
@@ -25,6 +25,7 @@ import {
   GitPullRequest,
   GitPullRequestCreateArrow,
   GitPullRequestDraft,
+  History,
   Loader2,
   Maximize2,
   Minimize2,
@@ -56,8 +57,6 @@ import {
   SESSION_FOLLOWED_EVENT,
   sessionDisplayName,
   sessionIcon,
-  SESSION_DND,
-  SESSION_TILE_DND,
   type TileStatus,
 } from "../sessionMeta";
 import { ALL_WORKSPACE_ID, DEFAULT_WORKSPACE_ID, wsKeyOf } from "../workspaces";
@@ -69,33 +68,49 @@ import { useExclusiveMenu } from "../ui/menuBus";
 import { unreadTileIds, useNotifications } from "../state/notifications";
 import { useSessionRefresh } from "../state/sessionRefresh";
 import { STATUS_BAR_ID, type BarItemId } from "../barItems";
-import { MAX_TILE_ROWS, TileResizeHandles } from "./TileResizeHandles";
+import { MAX_TILE_ROWS, TileResizeHandles, type TileResizer } from "./TileResizeHandles";
 import { useGitStatus } from "./gitStatus";
 import { sendFailingChecks, useGitRemote, useSharedBranch } from "./gitRemote";
 import { useTileEdges } from "./tileEdges";
-import { arrangeTiles, useCanvasSize } from "./autoLayout";
+import { arrangeTiles, chooseResize, fitRowTracks, sizedRowTrack, useCanvasSize, type ResizeAxis, type Span as TileSpan } from "./autoLayout";
 import { setLayoutPreview } from "./layoutPreview";
+import { createDragGhost, useTileDragTarget, workspaceTabAt, workspaceTabBoxes, type DragGhost, type TabBox } from "./tileDrag";
 import { compactPath } from "./compactPath";
 import { BroadcastBar, useBroadcastPresence } from "./BroadcastBar";
-import { CheckpointsChip, TileCheckpoints } from "./Checkpoints";
+import { CheckpointsButton, TileCheckpoints } from "./Checkpoints";
 import { AgentSessionsHost } from "./AgentSessions";
+import { WorktreesButton, WorktreesHost } from "./Worktrees";
 import { TILES_RENAMED_EVENT, followRenamedSessions, moveAgentToWorktree, movedTilesOf, renameSessionTile } from "../sessionActions";
 import { landWorktree, useWorktreeInfo, useWorktreeTaskTitle, type LandKind, type LandResult } from "../worktreeLand";
 import { installPathDrops, usePathDrag } from "../terminal/folderDrop";
 
-// Header buttons in display order. A terminal tile has every one but
-// "terminal"; a file tile has "terminal" (Open terminal here), move,
-// fullscreen, hide and close.
+// Header buttons in display order, in groups split by a short divider: input
+// (dictation, editor) | Git (worktrees, checkpoints) | session (move,
+// duplicate) | view (maximize, hide) | close. A terminal tile has every one
+// but "terminal" (the Git ones once its folder is known); a file tile has
+// "terminal" (Open terminal here), move, fullscreen, hide and close.
 const HEADER_ACTIONS = [
-  { id: "terminal", Icon: SquareTerminal },
-  { id: "mic", Icon: Mic },
-  { id: "code", Icon: FileCode },
-  { id: "move", Icon: FolderInput },
-  { id: "duplicate", Icon: Copy },
-  { id: "fullscreen", Icon: Maximize2 },
-  { id: "hide", Icon: EyeOff },
-  { id: "close", Icon: X },
-] as const satisfies ReadonlyArray<{ id: string; Icon: LucideIcon }>;
+  { id: "terminal", Icon: SquareTerminal, group: "input" },
+  { id: "mic", Icon: Mic, group: "input" },
+  { id: "code", Icon: FileCode, group: "input" },
+  { id: "worktrees", Icon: FolderGit2, group: "git" },
+  { id: "checkpoints", Icon: History, group: "git" },
+  { id: "move", Icon: FolderInput, group: "session" },
+  { id: "duplicate", Icon: Copy, group: "session" },
+  { id: "fullscreen", Icon: Maximize2, group: "view" },
+  { id: "hide", Icon: EyeOff, group: "view" },
+  { id: "close", Icon: X, group: "close" },
+] as const satisfies ReadonlyArray<{ id: string; Icon: LucideIcon; group: string }>;
+
+// The class of each shown header button: a divider goes before the first
+// shown button of every group but the first, so hiding a group's first
+// button in Settings never loses the divider.
+function headerActionClasses<T extends { id: string; group: string }>(shown: readonly T[]): Array<T & { className: string }> {
+  return shown.map((action, index) => ({
+    ...action,
+    className: `tile-action tile-action-${action.id}${index > 0 && shown[index - 1].group !== action.group ? " tile-action-group-start" : ""}`,
+  }));
+}
 type HeaderAction = typeof HEADER_ACTIONS[number]["id"];
 // The empty workspace's preview header shows a terminal tile's buttons.
 const PREVIEW_ACTIONS = HEADER_ACTIONS.filter(({ id }) => id !== "terminal");
@@ -139,8 +154,8 @@ function SessionHeader({ status, icon, title, shortcut, device, actions, ...even
     <div className="tile-head-spacer" />
     <div className="tile-actions">
       {actions
-        ? HEADER_ACTIONS.filter(({ id }) => shown(id) && actions[id] !== undefined).map(({ id }) => <span key={id} className={`tile-action tile-action-${id}`}>{actions[id]}</span>)
-        : PREVIEW_ACTIONS.filter(({ id }) => shown(id)).map(({ id, Icon }) => <span key={id} className={`tile-action tile-action-${id}`}>
+        ? headerActionClasses(HEADER_ACTIONS.filter(({ id }) => shown(id) && actions[id] !== undefined)).map(({ id, className }) => <span key={id} className={className}>{actions[id]}</span>)
+        : headerActionClasses(PREVIEW_ACTIONS.filter(({ id }) => shown(id))).map(({ id, Icon, className }) => <span key={id} className={className}>
           <span className={`tile-btn ${id === "close" ? "tile-btn-danger" : ""}`}><Icon size={id === "close" ? 14 : 13} /></span>
         </span>)}
     </div>
@@ -345,7 +360,6 @@ function TileStatusStrip({ tileId, session, window: windowIndex, host, gitHost, 
     {shown("status:session") ? <span className="tile-strip-target" title="tmux session">{windowIndex === undefined ? session : `${session}:${windowIndex}`}</span> : null}
     {git && shown("status:git") ? <FooterGit git={git} remote={remote} shared={shared} onReview={() => { if (path) useStore.getState().openTileChanges(tileId, path); }} onIsolate={isolate} isolating={isolating}
       onSendChecks={sendChecks} sendingChecks={sendingChecks} /> : null}
-    {git && path && shown("status:git") ? <CheckpointsChip tileId={tileId} host={gitHost} path={path} visible={visible} /> : null}
     {git && path && shown("status:worktree") ? <FooterWorktree host={gitHost} path={path} git={git} hasPullRequest={!!remote?.pr && remote.pr.state !== "CLOSED"} /> : null}
     {path && shown("status:path") ? <FooterPath path={path} /> : null}
     {createdAt && shown("status:started") ? <time className="tile-strip-time" dateTime={new Date(createdAt).toISOString()} title={`Session started ${new Date(createdAt).toLocaleString()}`}>
@@ -413,6 +427,8 @@ const ARROW_STEPS: Record<string, readonly [number, number]> = { ArrowLeft: [-1,
 // Pixels from the canvas edge where a drag starts scrolling, and the top speed.
 const AUTO_SCROLL_EDGE = 56;
 const AUTO_SCROLL_SPEED = 18;
+// Pixels a pressed header moves before it becomes a drag (less is a click).
+const TILE_DRAG_THRESHOLD = 5;
 // Tiles glide to new places on one spring (transform only, never their size).
 const TILE_SPRING = { type: "spring", stiffness: 420, damping: 38, mass: 0.9 } as const;
 
@@ -689,67 +705,174 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
     return () => window.removeEventListener("keydown", onKey, true);
   }, [activateTile]);
 
-  // Header drags: the pointer picks a slot of the layout as it was when the
-  // drag started, the grid previews the move, and a drop on the canvas
-  // commits it. Near the canvas top or bottom the canvas scrolls. Esc or a
-  // drop anywhere else ends the drag without moving (onDragEnd).
+  // Header drags run on pointer events (see tileDrag.ts): past a few pixels
+  // the header is captured, a copy of it follows the pointer (transform only)
+  // and once per frame the pointer picks a slot of the layout as it was when
+  // the drag started, from boxes measured then. Only a new slot re-renders
+  // the grid to preview the move; terminals hold their size until the drag
+  // ends (layoutPreview). Releasing over the canvas commits the order,
+  // releasing over a workspace tab offers the move there, and Esc, a lost
+  // pointer or a release anywhere else ends it without moving. Near the
+  // canvas top or bottom the canvas scrolls.
   const dragSlots = useRef<Slot[]>([]);
-  const endDrag = useCallback(() => {
-    updateDrag(null);
-    setLayoutPreview(false);
-  }, [updateDrag]);
-  const dragging = drag !== null;
-  useEffect(() => {
+  const endTileDrag = useRef<(() => void) | null>(null);
+  const startTileDrag = useCallback((event: ReactPointerEvent<HTMLElement>, tileId: string) => {
+    if (event.button !== 0 || event.shiftKey || event.metaKey || event.ctrlKey || event.altKey || !event.isPrimary) return;
+    // Controls and the title field keep their own clicks.
+    if (event.target instanceof Element && event.target.closest("button, input, select, textarea, a, [contenteditable='true']")) return;
+    endTileDrag.current?.();
+    const header = event.currentTarget;
     const grid = gridRef.current;
     const canvas = grid?.parentElement;
-    if (!dragging || !grid || !canvas) return;
-    let pointer: { x: number; y: number } | null = null;
+    if (!grid || !canvas) return;
+    const pointerId = event.pointerId;
+    const origin = { x: event.clientX, y: event.clientY };
+    let pointer = origin;
+    let started = false;
     let frame = 0;
-    const over = (event: DragEvent) => {
-      const current = dragRef.current;
-      if (!current) return;
-      pointer = { x: event.clientX, y: event.clientY };
-      if (!(event.target instanceof Node) || !canvas.contains(event.target)) {
-        // Over a workspace tab or the top bar: the grid shows its real order.
-        updateDrag({ ...current, to: current.from });
-        return;
-      }
-      event.preventDefault();
-      if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
-      const box = grid.getBoundingClientRect();
-      const slot = slotAt(dragSlots.current, event.clientX - box.left, event.clientY - box.top);
-      if (slot !== null) updateDrag({ ...current, to: slot });
+    let ghost: DragGhost | null = null;
+    // Measured once when the drag starts (and on a window resize); the
+    // canvas scroll offset is followed from scroll events, so a frame reads
+    // no layout unless it scrolls the canvas.
+    let canvasBox = new DOMRect();
+    let gridBox = new DOMRect();
+    let tabBoxes: TabBox[] = [];
+    let scrollStart = 0;
+    let scrollTop = 0;
+    const measure = () => {
+      canvasBox = canvas.getBoundingClientRect();
+      gridBox = grid.getBoundingClientRect();
+      tabBoxes = workspaceTabBoxes();
+      scrollStart = scrollTop = canvas.scrollTop;
     };
-    const drop = (event: DragEvent) => {
-      const current = dragRef.current;
-      if (!current) return;
-      event.preventDefault();
-      const target = wsTilesRef.current[current.to];
-      if (target && current.to !== current.from) useStore.getState().reorderTile(current.id, target.id);
-      endDrag();
+    const onScroll = () => { scrollTop = canvas.scrollTop; };
+    const insideCanvas = () => pointer.x >= canvasBox.left && pointer.x <= canvasBox.right && pointer.y >= canvasBox.top && pointer.y <= canvasBox.bottom;
+    const setOverWorkspace = (id: string | null) => {
+      if (useTileDragTarget.getState().overWorkspace !== id) useTileDragTarget.setState({ overWorkspace: id });
     };
     const speed = (depth: number) => Math.ceil(AUTO_SCROLL_SPEED * Math.min(1, depth / AUTO_SCROLL_EDGE));
-    const scroll = () => {
-      frame = requestAnimationFrame(scroll);
-      if (!pointer) return;
-      const box = canvas.getBoundingClientRect();
-      if (pointer.x < box.left || pointer.x > box.right || pointer.y < box.top || pointer.y > box.bottom) return;
-      const up = box.top + AUTO_SCROLL_EDGE - pointer.y;
-      const down = pointer.y - (box.bottom - AUTO_SCROLL_EDGE);
-      if (up > 0) canvas.scrollTop -= speed(up);
-      else if (down > 0) canvas.scrollTop += speed(down);
+    // One pass per frame: move the ghost, pick the slot or workspace tab
+    // under the pointer, and scroll at the canvas edges (which keeps the
+    // frames coming while the pointer rests there).
+    const step = () => {
+      frame = 0;
+      const current = dragRef.current;
+      if (!started || !current) return;
+      ghost?.move(pointer.x, pointer.y);
+      if (!insideCanvas()) {
+        // Over a workspace tab or the top bar: the grid shows its real order.
+        if (current.to !== current.from) updateDrag({ ...current, to: current.from });
+        setOverWorkspace(workspaceTabAt(tabBoxes, pointer.x, pointer.y));
+        return;
+      }
+      setOverWorkspace(null);
+      const slot = slotAt(dragSlots.current, pointer.x - gridBox.left, pointer.y - gridBox.top + scrollTop - scrollStart);
+      if (slot !== null && slot !== current.to) updateDrag({ ...current, to: slot });
+      const up = canvasBox.top + AUTO_SCROLL_EDGE - pointer.y;
+      const down = pointer.y - (canvasBox.bottom - AUTO_SCROLL_EDGE);
+      if (up <= 0 && down <= 0) return;
+      // Only at the edges: reading the scroll room measures layout.
+      if (up > 0 ? scrollTop > 0 : scrollTop < canvas.scrollHeight - canvas.clientHeight) {
+        canvas.scrollTop += up > 0 ? -speed(up) : speed(down);
+        frame = requestAnimationFrame(step);
+      }
     };
-    frame = requestAnimationFrame(scroll);
-    document.addEventListener("dragover", over);
-    canvas.addEventListener("drop", drop);
-    return () => {
-      cancelAnimationFrame(frame);
-      document.removeEventListener("dragover", over);
-      canvas.removeEventListener("drop", drop);
+    const schedule = () => { if (!frame) frame = requestAnimationFrame(step); };
+    const begin = () => {
+      const from = wsTilesRef.current.findIndex((entry) => entry.id === tileId);
+      if (from < 0) return false;
+      started = true;
+      measure();
+      dragSlots.current = tileSlots(grid, wsTilesRef.current.map((entry) => entry.id));
+      // A drag is never a click: the canvas must not scroll to the tile on release.
+      if (pointerIntent.current) pointerIntent.current.cancelled = true;
+      try { header.setPointerCapture(pointerId); } catch { /* the pointer is already gone */ }
+      window.getSelection()?.removeAllRanges();
+      document.documentElement.classList.add("is-dragging-tile");
+      ghost = createDragGhost(header.closest<HTMLElement>(".tile") ?? header, tileId, pointer.x, pointer.y);
+      setLayoutPreview(true);
+      updateDrag({ id: tileId, from, to: from });
+      return true;
     };
-  }, [dragging, updateDrag, endDrag]);
-  // The preview pauses terminal fits; never leave it paused.
-  useEffect(() => () => setLayoutPreview(false), []);
+    const finish = (commit: boolean) => {
+      window.removeEventListener("pointermove", onMove, true);
+      window.removeEventListener("pointerup", onUp, true);
+      window.removeEventListener("pointercancel", onCancel, true);
+      window.removeEventListener("keydown", onKey, true);
+      window.removeEventListener("blur", onCancel);
+      window.removeEventListener("resize", measure);
+      canvas.removeEventListener("scroll", onScroll);
+      if (endTileDrag.current === cancel) endTileDrag.current = null;
+      if (frame) cancelAnimationFrame(frame);
+      frame = 0;
+      if (!started) return;
+      // The release after a drag must not click what is under the header.
+      const swallow = (click: MouseEvent) => { click.preventDefault(); click.stopPropagation(); };
+      window.addEventListener("click", swallow, { capture: true, once: true });
+      setTimeout(() => window.removeEventListener("click", swallow, true), 0);
+      try { if (header.hasPointerCapture(pointerId)) header.releasePointerCapture(pointerId); } catch { /* released with the pointer */ }
+      document.documentElement.classList.remove("is-dragging-tile");
+      ghost?.remove();
+      ghost = null;
+      const current = dragRef.current;
+      const overWorkspace = useTileDragTarget.getState().overWorkspace;
+      setOverWorkspace(null);
+      if (commit && current) {
+        const state = useStore.getState();
+        const moved = state.tiles.find((entry) => entry.id === current.id);
+        if (!insideCanvas() && overWorkspace && moved) {
+          useTileDragTarget.setState({ drop: { session: wsKeyOf(moved), tileId: moved.id, wsId: overWorkspace } });
+        } else if (insideCanvas() && current.to !== current.from) {
+          const target = wsTilesRef.current[current.to];
+          if (target) state.reorderTile(current.id, target.id);
+        }
+      }
+      updateDrag(null);
+      setLayoutPreview(false);
+    };
+    const cancel = () => finish(false);
+    function onMove(move: PointerEvent) {
+      if (move.pointerId !== pointerId) return;
+      pointer = { x: move.clientX, y: move.clientY };
+      if (!started) {
+        if (Math.hypot(pointer.x - origin.x, pointer.y - origin.y) < TILE_DRAG_THRESHOLD) return;
+        if (!begin()) { cancel(); return; }
+      }
+      move.preventDefault();
+      schedule();
+    }
+    function onUp(up: PointerEvent) {
+      if (up.pointerId !== pointerId) return;
+      pointer = { x: up.clientX, y: up.clientY };
+      // Settle on where the pointer was released before committing.
+      if (started) step();
+      finish(true);
+    }
+    function onCancel(lost: Event) {
+      if (lost instanceof PointerEvent && lost.pointerId !== pointerId) return;
+      cancel();
+    }
+    function onKey(key: KeyboardEvent) {
+      if (key.key !== "Escape" || !started) return;
+      key.preventDefault();
+      key.stopPropagation();
+      cancel();
+    }
+    endTileDrag.current = cancel;
+    window.addEventListener("pointermove", onMove, true);
+    window.addEventListener("pointerup", onUp, true);
+    window.addEventListener("pointercancel", onCancel, true);
+    window.addEventListener("keydown", onKey, true);
+    window.addEventListener("blur", onCancel);
+    window.addEventListener("resize", measure);
+    canvas.addEventListener("scroll", onScroll, { passive: true });
+  }, [updateDrag]);
+  // A drag in progress ends with the canvas; the preview pauses terminal
+  // fits, so it is never left paused.
+  useEffect(() => () => {
+    endTileDrag.current?.();
+    setLayoutPreview(false);
+  }, []);
 
   // Ctrl+Option (Ctrl+Alt) + arrows move the active tile: left and right
   // through the tile order, up and down to the tile above or below it. With
@@ -870,7 +993,7 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
   // neighbour to a new row, and a tile count that drops makes the auto rows
   // (so each unit) taller. Measuring by the auto rows alone made the grid
   // one or more screens tall then; this keeps it on screen.
-  const rowTrackCount = Math.max(arrangement.rows * 2, arrangement.rowTracks);
+  const rowTrackCount = fitRowTracks(arrangement);
   useLayoutEffect(() => {
     const grid = gridRef.current;
     const canvas = grid?.parentElement;
@@ -882,14 +1005,46 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
       const style = getComputedStyle(canvas);
       const height = canvas.clientHeight - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom);
       const gap = parseFloat(getComputedStyle(grid).rowGap) || 0;
-      const trackCount = rowTrackCount;
-      grid.style.setProperty("--row-track", `${Math.max(0, (height - gap * (trackCount - 1)) / trackCount)}px`);
+      // The resize grips preview with the same formula (see tileBox).
+      grid.style.setProperty("--row-track", `${sizedRowTrack(height, gap, rowTrackCount)}px`);
     };
     apply();
     const observer = new ResizeObserver(apply);
     observer.observe(canvas);
     return () => observer.disconnect();
   }, [sizedRows, rowTrackCount]);
+  // A resize grip's drag, resolved against the grid as laid out when it
+  // starts: each reachable size is arranged as if saved and measured with the
+  // same track sizes the browser gets (see chooseResize), so the outline is
+  // exactly where the tile ends up.
+  const resizerFor = (id: string, from: TileSpan) => (): TileResizer | null => {
+    const grid = gridRef.current;
+    const canvas = grid?.parentElement;
+    if (!grid || !canvas) return null;
+    const gridStyle = getComputedStyle(grid);
+    const canvasStyle = getComputedStyle(canvas);
+    const rect = grid.getBoundingClientRect();
+    const left = rect.left + grid.clientLeft + parseFloat(gridStyle.paddingLeft);
+    const top = rect.top + grid.clientTop + parseFloat(gridStyle.paddingTop);
+    const layout = {
+      ids: wsTiles.map((entry) => entry.id),
+      saved: workspaceSpans(tileSpan, activeWorkspaceId),
+      setting: columns,
+      size: canvasSize,
+      maxRows: MAX_TILE_ROWS,
+      box: {
+        width: grid.clientWidth - parseFloat(gridStyle.paddingLeft) - parseFloat(gridStyle.paddingRight),
+        height: canvas.clientHeight - parseFloat(canvasStyle.paddingTop) - parseFloat(canvasStyle.paddingBottom),
+        gap: parseFloat(gridStyle.rowGap) || 0,
+      },
+    };
+    return (axis: ResizeAxis, edgeX: number, edgeY: number) => {
+      const choice = chooseResize(layout, id, axis, from, { x: edgeX - left, y: edgeY - top });
+      if (!choice) return null;
+      const { span, box } = choice;
+      return { c: span.c, r: span.r, left: box.left + left, top: box.top + top, width: box.width, height: box.height };
+    };
+  };
   // Only tiles currently on screen take part in a broadcast.
   const selectedTiles = wsTiles.filter(isSessionTile).filter((tile) => selectedIds.includes(tile.id) && (!effFull || tile.id === effFull));
   // The composer slides away with its last chips once fewer than two tiles are selected.
@@ -1132,6 +1287,9 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
         >
           <FileCode size={13} />
         </button>),
+        // Both read the session's folder, so they wait until it is known.
+        worktrees: folder ? <WorktreesButton tileId={t.id} /> : undefined,
+        checkpoints: folder ? <CheckpointsButton tileId={t.id} host={t.host ?? connection.host ?? ""} path={folder} visible={visible} /> : undefined,
         duplicate: (<button
           className="tile-btn"
           title="Duplicate session"
@@ -1327,31 +1485,9 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
         onMouseDown={() => activateTile(t.id)}
       >
         <SessionHeader
-          draggable={!effFull && !isRenaming}
-          onDragStart={(e) => {
-            const from = wsTiles.indexOf(t);
-            const grid = gridRef.current;
-            if (from < 0 || !grid) return;
-            dragSlots.current = tileSlots(grid, wsTiles.map((entry) => entry.id));
-            // The placeholder look waits a frame so the drag image is the tile as it was.
-            const next = { id: t.id, from, to: from };
-            dragRef.current = next;
-            requestAnimationFrame(() => { if (dragRef.current === next) setDrag(next); });
-            setLayoutPreview(true);
-            e.dataTransfer.effectAllowed = "move";
-            // Carry the workspace key (host-namespaced), so dropping on a tab
-            // assigns exactly the key the grid filters by.
-            e.dataTransfer.setData(SESSION_DND, wsKeyOf(t));
-            e.dataTransfer.setData(SESSION_TILE_DND, t.id);
-            // Drag a snapshot of the whole tile, not just the header.
-            const tileEl = (e.currentTarget as HTMLElement).closest(".tile");
-            if (tileEl) {
-              const r = tileEl.getBoundingClientRect();
-              e.dataTransfer.setDragImage(tileEl, e.clientX - r.left, e.clientY - r.top);
-            }
-          }}
-          // Esc, a drop outside the canvas or on a workspace tab: the preview goes away.
-          onDragEnd={endDrag}
+          // Drag the header to move the tile (see startTileDrag); never while
+          // maximized or while its title is being edited.
+          onPointerDown={!effFull && !isRenaming ? (event) => startTileDrag(event, t.id) : undefined}
           onMouseDownCapture={(e) => {
             // Shift+click selects; keep the browser from extending a text selection.
             if (e.shiftKey && !(e.target instanceof Element && e.target.closest("button, input"))) e.preventDefault();
@@ -1463,6 +1599,7 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
           <TileResizeHandles
             span={{ c: trackSpan.c / columnTracks, r: trackSpan.r / 2 }}
             columns={arrangement.columns}
+            resizer={resizerFor(t.id, { c: trackSpan.c / columnTracks, r: trackSpan.r / 2 })}
             onCommit={(c, r) => setTileSpan(activeWorkspaceId, t.id, c, r)}
             onReset={() => clearTileSpan(activeWorkspaceId, t.id)}
           />
@@ -1482,6 +1619,7 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
         <div className="modal-actions"><button className="btn" onClick={() => setRenameError(null)}>Dismiss</button></div>
       </Modal>
       <AgentSessionsHost />
+      <WorktreesHost />
       <div
         ref={gridRef}
         className={`grid ${effFull ? "grid-full" : ""} ${sizedRows ? "grid-sized" : ""} ${broadcast.shown ? "grid-with-broadcast" : ""}`}
@@ -1505,8 +1643,8 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
         // Fixed to the canvas's visible box so a scrolled canvas is still fully covered.
         <div className={`canvas-drop-overlay ${pathDrag.target === "open" ? "canvas-drop-overlay-on" : ""}`} aria-hidden="true" style={canvasBox()}>
           <div className="canvas-drop-label">
-            {pathDrag.target === "terminal" ? <ClipboardPaste size={18} /> : pathDrag.session ? <FolderPlus size={18} /> : <FolderOpen size={18} />}
-            <span>{pathDrag.target === "terminal" ? "Drop to paste the path of" : pathDrag.session ? "Drop to start a session in" : "Drop to open"}</span>
+            {pathDrag.target === "terminal" ? <ClipboardPaste size={18} /> : <FolderOpen size={18} />}
+            <span>{pathDrag.target === "terminal" ? "Drop to paste the path of" : "Drop to open"}</span>
             <code>{pathDrag.label}</code>
           </div>
         </div>

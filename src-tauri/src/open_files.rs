@@ -118,6 +118,10 @@ pub(crate) fn deliver(app: &AppHandle, opened: Opened) {
     if opened.is_empty() {
         return;
     }
+    // Only native sources call this (the open-document event, the open
+    // panel), so the user opened these: the editor may open them even outside
+    // home. The grant is sent before the page hears of them.
+    crate::agent::grant_opened(app, &opened);
     let ready = app
         .state::<OpenedFiles>()
         .0

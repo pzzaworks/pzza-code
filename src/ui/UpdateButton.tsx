@@ -41,7 +41,6 @@ export function UpdateButton() {
       title="Your terminals still run on the previous version, so they cannot use its permissions yet. They move on their own once nothing runs in them; click to refresh them now.">
       {refreshing ? <Loader2 size={12} className="sw-spin" aria-hidden="true" /> : <RefreshCw size={12} strokeWidth={2.2} aria-hidden="true" />}
       {refreshing ? "Refreshing" : "Refresh sessions"}
-      <span className="update-button-dot" aria-hidden="true" />
     </button>;
   }
   return null;

@@ -1,5 +1,5 @@
 import { captureTurnCheckpoint } from "../checkpoints";
-import { deviceNameFor } from "../devices";
+import { noticeDeviceFor } from "../devices";
 import { fetchGitChanges, fetchSessionActivity } from "../serverApi";
 import { sessionDisplayName } from "../sessionMeta";
 import { noticeAllowed, notify, useNotifications, type NoticeAction } from "../state/notifications";
@@ -86,6 +86,6 @@ async function announce(tileId: string, noticeId: string | undefined): Promise<v
     category: "terminal", event: "agent-finished", title, action,
     body: "The agent stopped and its folder has uncommitted changes. Review them before you commit.",
     target: { tileId }, dedupeKey: `agent-finished:${tileId}`,
-    source: `${label} (${deviceNameFor(state.devices, tile.host) || "This device"})`,
+    source: label, device: noticeDeviceFor(state.devices, tile.host),
   });
 }

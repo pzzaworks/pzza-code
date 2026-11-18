@@ -90,7 +90,7 @@ import {
   X,
   type LucideIcon,
 } from "lucide-react";
-import { ListTodo, Trophy } from "lucide-react";
+import { ListTodo, SlidersHorizontal, Trophy } from "lucide-react";
 import { ALT_LABEL, altBadge, COMMAND_PALETTE_SHORTCUT, ctrlBadge, IS_MAC, NEW_SESSION_SHORTCUT, NEW_WORKSPACE_SHORTCUT, SEARCH_TERMINALS_SHORTCUT, TASKS_SHORTCUT } from "../shortcuts";
 import { ClaudeIcon, CodexIcon } from "../icons/BrandIcons";
 import { AgentIcon } from "../icons/AgentIcon";
@@ -212,6 +212,8 @@ const TileHeadDemo = ({ title = "api", shortcut = 1, selected = false, actions =
       <div className="tile-actions">
         <TB icon={Mic} />
         <TB icon={FileCode} />
+        <TB icon={FolderGit2} />
+        <TB icon={History} />
         <TB icon={FolderInput} />
         <TB icon={Copy} />
         <TB icon={Maximize2} />
@@ -450,14 +452,19 @@ const NotificationsDemo = () => (
     <div className="menu-body latest-notifications">
       <div className="notification-list">
         {[
-          { title: "api finished · 12 files changed", body: "The agent stopped and its folder has uncommitted changes. Review them before you commit.", unread: true, review: true },
-          { title: "web - Claude is waiting for you", body: "Do you want to make this edit to server.ts?", unread: false, review: false },
+          { title: "Finished · 12 files changed", source: "api", body: "The agent stopped and its folder has uncommitted changes. Review them before you commit.", unread: true, review: true },
+          { title: "Claude is waiting for you", source: "web", body: "Do you want to make this edit to server.ts?", unread: false, review: false },
         ].map((item) => (
           <article key={item.title} className={`notification-row ${item.unread ? "unread" : ""}`}>
             <span className="notification-content">
               <span className="notification-title">
                 <strong>{item.title}</strong>
                 {item.unread ? <span className="notification-new">New</span> : null}
+              </span>
+              <span className="notification-origin">
+                <span className="notification-source">{item.source}</span>
+                <span className="notification-origin-sep" aria-hidden="true">·</span>
+                <span className="notification-device"><Monitor size={9} className="device-os-icon" aria-hidden="true" />Devbox</span>
               </span>
               <span className="notification-body">{item.body}</span>
             </span>
@@ -923,8 +930,6 @@ const ReviewDemo = () => (
   </div>
 );
 
-// Workspace settings → Worktrees with one merged and one open worktree.
-
 // The Tasks dropdown's list, built from its own classes, non-interactive.
 const TasksDemo = () => (
   <Panel caption="Menu bar · Tasks">
@@ -977,30 +982,43 @@ const TaskModesDemo = () => (
   </Panel>
 );
 
+// A session's Worktrees dialog with one merged and one open worktree, built
+// from the dialog's own classes, non-interactive.
 const WorktreesDemo = () => (
-  <Panel caption="Workspace settings · Worktrees" wide>
-    <div className="menu-body">
-      <div className="field snap-section">
-        <div className="snap-body">
-          <div className="snap-actions"><span className="btn btn-sm"><Trash2 size={13} /> Clean up 1 merged</span></div>
-          <div className="snap-list">
-            <span className="wt-setup-head"><ChevronRight size={12} className="snap-chevron" aria-hidden="true" />Setup for new worktrees</span>
-            {[
-              { branch: "pzza/fix-login", meta: "Squash-merged into main · ~/api.worktrees/fix-login", merged: true },
-              { branch: "pzza/api-tests", meta: "Not merged · ~/api.worktrees/api-tests", merged: false },
-            ].map((worktree) => (
-              <div key={worktree.branch} className="snap-row">
-                <div className="snap-row-copy">
-                  <span className="snap-name wt-branch">{worktree.branch}</span>
-                  <span className="snap-meta"><span className={worktree.merged ? "wt-merged" : undefined}>{worktree.meta}</span></span>
-                </div>
-                <span className="snap-icon"><GitPullRequestCreateArrow size={14} /></span>
-                <span className="snap-icon"><GitMerge size={14} /></span>
-                <span className="snap-icon"><Trash2 size={14} /></span>
-              </div>
-            ))}
+  <Panel caption="Session top bar · Worktrees" wide>
+    <div className="wtm">
+      <div className="as-bar">
+        <span className="as-search"><Search size={14} aria-hidden="true" /><span className="muted">Search branches, folders or tasks</span></span>
+        <span className="btn btn-sm"><Trash2 size={13} aria-hidden="true" /> Clean up 1 merged</span>
+      </div>
+      <div className="wtm-list">
+        <section className="wtm-repo">
+          <div className="wtm-repo-head">
+            <FolderGit2 size={13} className="wtm-repo-icon" aria-hidden="true" />
+            <span className="wtm-repo-name">api</span>
+            <span className="wtm-repo-path">~/Projects/api</span>
+            <span className="as-badge wtm-repo-base"><GitBranch size={10} aria-hidden="true" />main</span>
+            <span className="wtm-repo-count">2</span>
+            <span className="wtm-setup-toggle"><SlidersHorizontal size={12} aria-hidden="true" />Setup</span>
           </div>
-        </div>
+          {[
+            { branch: "pzza/fix-login", merge: "Squash-merged into main", path: "~/Projects/api.worktrees/fix-login", merged: true },
+            { branch: "pzza/api-tests", merge: "Not merged", path: "~/Projects/api.worktrees/api-tests", merged: false },
+          ].map((worktree) => (
+            <div key={worktree.branch} className="wtm-row">
+              <span className={`wtm-row-icon ${worktree.merged ? "is-merged" : ""}`} aria-hidden="true">{worktree.merged ? <GitMerge size={15} /> : <GitBranch size={15} />}</span>
+              <span className="wtm-row-main">
+                <span className="wtm-row-head"><span className="wtm-row-title">{worktree.branch}</span></span>
+                <span className="wtm-row-meta"><span className={worktree.merged ? "wtm-merged" : undefined}>{worktree.merge}</span><span className="wtm-row-path">{worktree.path}</span></span>
+              </span>
+              <span className="wtm-row-actions">
+                <span className="wtm-btn has-text"><GitPullRequestCreateArrow size={12} aria-hidden="true" /><span>Open PR</span></span>
+                <span className={`wtm-btn has-text ${worktree.merged ? "is-blocked" : ""}`}><GitMerge size={12} aria-hidden="true" /><span>Merge</span></span>
+                <span className="wtm-btn is-danger"><Trash2 size={12} aria-hidden="true" /></span>
+              </span>
+            </div>
+          ))}
+        </section>
       </div>
     </div>
   </Panel>
@@ -1329,6 +1347,8 @@ export const HELP_PAGES: Record<HelpTopic, HelpPage> = {
         <span className="tile-actions">
           <TB icon={Mic} />
           <TB icon={FileCode} />
+          <TB icon={FolderGit2} />
+          <TB icon={History} />
           <TB icon={FolderInput} />
           <TB icon={Copy} />
           <TB icon={Maximize2} />
@@ -1341,6 +1361,8 @@ export const HELP_PAGES: Record<HelpTopic, HelpPage> = {
       <>
         <Row ui={<TB icon={Mic} />} name="Dictation">Speak into this terminal (Mac).</Row>
         <Row ui={<TB icon={FileCode} />} name="Code editor">Open the editor beside the terminal.</Row>
+        <Row ui={<TB icon={FolderGit2} />} name="Worktrees">The Git worktrees of the session's repository, or of every repository in its folder.</Row>
+        <Row ui={<TB icon={History} />} name="Checkpoints">The folder's saved states: compare or restore them, or save one now.</Row>
         <Row ui={<TB icon={FolderInput} />} name="Move">Send the session to another workspace.</Row>
         <Row ui={<TB icon={Copy} />} name="Duplicate">A fresh terminal in the same folder and device.</Row>
         <Row ui={<TB icon={Maximize2} />} name="Maximize">Fill the canvas; <Kbd>Esc</Kbd> restores.</Row>
@@ -1434,7 +1456,7 @@ export const HELP_PAGES: Record<HelpTopic, HelpPage> = {
           <Step>Drag a tile's header onto a tab to move the session there.</Step>
           <Step>Switch with <Kbd>{altBadge(1)}</Kbd>–<Kbd>{altBadge(9)}</Kbd>; <Kbd>{altBadge(0)}</Kbd> shows <b>All</b>.</Step>
         </Steps>
-        <P>Click the active tab, or right-click any tab, for its settings: name and icon, its <b>Sessions</b> (show or hide each), <b>Snapshots</b> and <b>Worktrees</b>.</P>
+        <P>Click the active tab, or right-click any tab, for its settings: name and icon, its <b>Sessions</b> (show or hide each) and <b>Snapshots</b>.</P>
       </>
     ),
     tips: [
@@ -1560,7 +1582,8 @@ export const HELP_PAGES: Record<HelpTopic, HelpPage> = {
     body: (
       <>
         <P>Tick <b>Worktree</b> in New session: the agent gets <Code>{"<repo>.worktrees/<name>"}</Code> on a new <Code>{"pzza/<name>"}</Code> branch, with ignored <Code>.env*</Code> files copied in.</P>
-        <Row ui={<ChevronRight size={14} className="muted-icon" />} name="Setup for new worktrees">Files to copy and commands to run first (like <Code>npm install</Code>), saved in <Code>.pzzacode/worktree.json</Code>.</Row>
+        <P>Click <TB icon={FolderGit2} /> in a session's top bar to see the worktrees of its repository, or of every repository directly inside its folder, with Open PR, Merge and Remove on each.</P>
+        <Row ui={<SlidersHorizontal size={14} className="muted-icon" />} name="Setup for new worktrees">Files to copy and commands to run first (like <Code>npm install</Code>), saved in <Code>.pzzacode/worktree.json</Code>.</Row>
         <Row ui={<Trash2 size={14} className="muted-icon" />} name="Clean up">Removes merged worktrees with their branches, squash and rebase merges included.</Row>
       </>
     ),
@@ -1582,7 +1605,7 @@ export const HELP_PAGES: Record<HelpTopic, HelpPage> = {
         <P>Merge runs only when the worktree and the main checkout are clean and the main checkout is on the base branch. A conflicting merge is aborted.</P>
       </>
     ),
-    tips: [<>The same buttons sit on each row of Workspace settings → Worktrees.</>],
+    tips: [<>The same buttons sit on each row of a session's Worktrees dialog.</>],
   },
   changes: {
     label: "Changes view",

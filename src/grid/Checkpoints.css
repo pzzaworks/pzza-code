@@ -1,35 +1,6 @@
-/* Checkpoints: the status bar chip, the timeline dialog and its restore
+/* Checkpoints: the timeline dialog and its restore
    confirmation. Neutral surfaces from the theme tokens; color only marks
    added and removed lines and the kind of change a restore makes. */
-
-/* ---------- Status bar chip ---------- */
-.tile-strip-checkpoints {
-  display: inline-flex;
-  flex: 0 0 auto;
-  align-items: center;
-  gap: 3px;
-  height: 16px;
-  margin: 0 0 0 -3px;
-  padding: 0 4px 0 3px;
-  border: 0;
-  border-radius: var(--r-xs);
-  background: transparent;
-  color: var(--muted);
-  font: inherit;
-  font-size: var(--fs-xs);
-  font-variant-numeric: tabular-nums;
-  cursor: pointer;
-}
-.tile-strip-checkpoints:hover { background: var(--surface-alt); color: var(--text); }
-.tile-strip-checkpoints:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: -1px; }
-/* Narrow tiles keep the room for the branch name: the chip drops its count,
-   and an empty chip (nothing saved yet) steps aside until the tile is wider. */
-@container tile (max-width: 300px) {
-  .tile-strip-checkpoints.is-empty { display: none; }
-}
-@container tile (max-width: 200px) {
-  .tile-strip-checkpoints-count { display: none; }
-}
 
 /* ---------- Dialog frame ---------- */
 .modal.cp-modal {
@@ -119,7 +90,9 @@
   text-transform: uppercase;
   background: linear-gradient(var(--opaque-surface, var(--surface)) 70%, transparent);
 }
-:root[data-transparency="on"] .cp-day-label { background: none; -webkit-backdrop-filter: none; backdrop-filter: none; }
+/* Over glass, entries scrolling under the day are blurred behind its own glass
+   rather than showing through its text. */
+:root[data-transparency="on"] .cp-day-label { background: var(--glass-bg-strong); -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px); }
 .cp-item {
   position: relative;
   display: flex;
@@ -168,7 +141,7 @@
 }
 .cp-kind-start .cp-node { background: var(--opaque-surface, var(--surface)); border: 1.5px solid var(--muted); }
 .cp-kind-manual .cp-node { border-radius: 2px; transform: rotate(45deg) scale(0.9); }
-.cp-kind-backup .cp-node { background: var(--opaque-surface, var(--surface)); border: 1.5px dashed var(--muted); }
+.cp-kind-backup .cp-node { background: var(--opaque-surface, var(--surface)); border: 1px solid var(--muted); }
 .cp-item.on .cp-node { background: var(--text); border-color: var(--text); transform: scale(1.25); }
 .cp-item.on.cp-kind-manual .cp-node { transform: rotate(45deg) scale(1.15); }
 .cp-item.on:is(.cp-kind-start, .cp-kind-backup) .cp-node { background: var(--opaque-surface, var(--surface)); }

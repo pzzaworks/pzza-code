@@ -10,9 +10,6 @@ export type IconType = ComponentType<{
   style?: CSSProperties;
 }>;
 
-// dataTransfer type used when dragging a tile onto a workspace tab.
-export const SESSION_DND = "application/pzza-session";
-export const SESSION_TILE_DND = "application/pzza-tile";
 export const QUICK_CHAT_SESSION = "pzza-quick-chat";
 // Dispatched with { host } by a terminal whose attach followed a renamed
 // session (see session-follow.js): its tiles there should follow too.

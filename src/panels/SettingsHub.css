@@ -50,7 +50,7 @@
 .settings-hub-content .settings-empty p { margin: 0; }
 .settings-hub-content :is(.set-note, .settings-feedback) { margin: 10px 0 0; font-size: var(--fs-sm); line-height: 1.6; color: var(--muted); overflow-wrap: anywhere; }
 .settings-hub-content .settings-feedback[role="alert"] { color: var(--danger-foreground, var(--danger)); }
-.settings-hub-content .btn { width: auto; min-height: 30px; padding: 5px 10px; font-size: var(--fs-sm); font-weight: 500; box-shadow: none; border-radius: var(--r-sm); }
+.settings-hub-content .btn { width: auto; min-height: 30px; padding: 5px 10px; font-size: var(--fs-md); font-weight: 500; box-shadow: none; border-radius: var(--r-sm); }
 .settings-hub-content :is(input.input, .field-input, .cselect) { box-sizing: border-box; width: 100%; min-width: 0; min-height: 32px; padding: 6px 9px; border: 1px solid var(--hairline); border-radius: var(--r-sm); background: color-mix(in srgb, var(--surface-alt) 55%, var(--surface)); color: var(--text); font-size: var(--fs-md); box-shadow: none; }
 .settings-hub-content textarea.input { line-height: 1.6; resize: vertical; }
 .settings-hub-content .switch { width: 34px; height: 20px; flex: 0 0 34px; border: 1px solid var(--hairline-strong); border-radius: var(--r-lg); background: var(--surface-alt); box-shadow: none; }
@@ -92,7 +92,7 @@
 .settings-hub-content .notification-row:hover { background: color-mix(in srgb, var(--surface-alt) 45%, transparent); }
 .settings-hub-content .notification-content { padding: 13px 0; gap: 4px; }
 .settings-hub-content .notification-title strong { color: var(--text); font-size: var(--fs-md); font-weight: 550; }
-.settings-hub-content .notification-content > span:not(.notification-title) { font-size: var(--fs-sm); line-height: 1.5; }
+.settings-hub-content .notification-content > span:not(.notification-title):not(.notification-origin) { font-size: var(--fs-sm); line-height: 1.5; }
 
 /* Device and repository lists share the form rhythm instead of dropdown boxes. */
 .settings-hub-content .device-list { display: block; }
@@ -157,11 +157,14 @@
 @media (prefers-reduced-motion: reduce) { .help-nav-chevron { transition: none; } }
 /* Compact rows, steps and tables keep each page within about a screen and a half. */
 .settings-hub-content .help-page .doc-row { padding: 6px 0; gap: 10px; }
-.settings-hub-content .help-page .doc-row-ui { flex: 0 0 44px; justify-content: center; min-height: 22px; }
+/* The control column is exactly as tall as the first text line plus the body's
+   2px top inset, so a control of any height (a 28px toolbar button, a 24px tile
+   button, a kbd) centers on that line and overflows into the row padding. */
+.settings-hub-content .help-page .doc-row-ui { flex: 0 0 44px; justify-content: center; height: calc(var(--fs-sm) * 1.6 + 4px); min-height: 0; padding-top: 0; }
 .settings-hub-content .help-page .doc-row-body { padding-top: 2px; font-size: var(--fs-sm); line-height: 1.6; }
 .settings-hub-content .help-page .doc-row-name { display: inline; font-size: var(--fs-sm); font-weight: 600; color: var(--text); }
 .settings-hub-content .help-page .doc-row-desc { display: inline; margin: 0; font-size: var(--fs-sm); line-height: 1.6; }
-.settings-hub-content .help-page .doc-steps li { padding: 6px 0; line-height: 1.6; }
+.settings-hub-content .help-page .doc-steps li { padding: 6px 0; --step-line: calc(var(--fs-sm) * 1.6); }
 .settings-hub-content .help-page .doc-keys td { padding: 6px 0; }
 .settings-hub-content .help-page .doc-p { line-height: 1.65; }
 .help-page .doc-list { display: grid; gap: 7px; margin: 0; padding-left: 18px; font-size: var(--fs-sm); line-height: 1.6; }
@@ -183,12 +186,12 @@
 .doc-changes-side { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 .doc-changes-main { min-width: 0; overflow: hidden; border: 1px solid var(--hairline); border-radius: var(--r-sm); }
 .doc-changes-main .doc-tile-body { padding: 6px 8px; }
-.code-diff-mode > span { display: inline-flex; align-items: center; gap: 4px; height: 20px; padding: 0 8px; border-radius: var(--r-xs); color: var(--muted); font-size: var(--fs-xs); font-weight: 600; }
+.code-diff-mode > span { display: inline-flex; align-items: center; gap: 4px; height: 20px; padding: 0 8px; border-radius: var(--r-xs); color: var(--muted); font-size: var(--fs-sm); font-weight: 600; }
 .code-diff-mode > span.on { background: var(--surface-alt); color: var(--text); }
 .doc-diff-del { color: var(--danger-foreground, var(--danger)); }
 .doc-diff-add { color: var(--success-foreground, var(--success)); }
 .doc-review { overflow: hidden; border: 1px solid var(--hairline); border-radius: var(--r-sm); pointer-events: none; }
-.settings-hub-content .doc-review .code-diff-ask-btn.btn-sm { min-height: 0; height: 24px; padding: 0 8px; font-size: var(--fs-xs); }
+.settings-hub-content .doc-review .code-diff-ask-btn.btn-sm { min-height: 0; height: 24px; padding: 0 8px; font-size: var(--fs-sm); }
 .doc-review .doc-tile-body { border-top: 1px solid var(--divider); }
 .doc-diff-picked { background: color-mix(in srgb, var(--accent) 22%, transparent); }
 .doc-review .code-diff-ask { border-bottom: 0; }
@@ -210,8 +213,8 @@
 .settings-hub-content .doc-hero { padding: 12px; margin: 0 0 14px; border: 1px solid var(--hairline); border-radius: var(--r-sm); background: transparent; }
 .settings-hub-content .doc-demo { overflow: auto; padding: 10px; margin: 10px 0; }
 .settings-hub-content .doc-steps { gap: 0; margin: 8px 0 14px; }
-.settings-hub-content .doc-steps li { background: transparent; border-radius: 0; padding: 10px 0 10px 30px; font-size: var(--fs-sm); line-height: 1.7; }
-.settings-hub-content .doc-steps li::before { left: 0; top: 10px; width: 20px; height: 20px; font-size: var(--fs-xs); background: var(--surface-alt); }
+.settings-hub-content .doc-steps li { background: transparent; border-radius: 0; padding: 10px 0 10px 30px; font-size: var(--fs-sm); --step-line: calc(var(--fs-sm) * 1.7); line-height: var(--step-line); }
+.settings-hub-content .doc-steps li::before { width: 20px; height: 20px; font-size: var(--fs-xs); background: var(--surface-alt); }
 .settings-hub-content .doc-keys { width: 100%; font-size: var(--fs-sm); }
 .settings-hub-content .doc-keys td { padding: 10px 0; }
 

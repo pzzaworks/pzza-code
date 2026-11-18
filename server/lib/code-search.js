@@ -171,12 +171,13 @@ function remoteFilter(root, home) {
   };
 }
 
-// Resolves a local folder through the editor's own guards.
+// Resolves a local folder through the editor's own guards: one in home, or
+// one outside it that the user opened in the app.
 function localRoot(root) {
-  const lexical = safePath(root);
   let real = null;
   try { real = realSafePath(root); }
   catch (error) { throw error.code === "ENOENT" ? fail(404, "Folder not found") : error; }
+  const lexical = safePath(root) || (real && path.resolve(root));
   if (!lexical || !real) throw fail(403, refusalReason(root));
   let stat;
   try { stat = fs.statSync(real); } catch { throw fail(404, "Folder not found"); }

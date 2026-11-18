@@ -46,10 +46,14 @@ function savedAction(value: unknown): NoticeAction | undefined {
   }
   return undefined;
 }
+/** The device a terminal notice comes from: its name, and its host ("" for this Mac) for the OS logo. */
+export interface NoticeDevice { name: string; host: string }
 export interface Notice {
   event?: NotificationEvent;
   id: string; category: NotificationCategory; title: string; body: string;
+  /** Where the notice comes from: a session's name, or a part of the app. */
   source?: string;
+  device?: NoticeDevice;
   createdAt: number; read: boolean; target?: NotificationTarget; dedupeKey?: string;
   action?: NoticeAction;
 }
@@ -67,6 +71,28 @@ interface NotificationState {
 const storeName = "pzza.notifications.v1";
 const defaults: Preferences = { enabled: true, desktop: false, events: {}, categories: { sync: true, terminal: true, app: true }, mutedUntil: 0 };
 const categories = ["sync", "terminal", "app"];
+const CONTROL_CHARS = /[\x00-\x1f\x7f-\x9f]/g;
+/** A notice's device, kept only with a usable name; text is capped and stripped of control characters. */
+function noticeDevice(value: unknown): NoticeDevice | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const { name, host } = value as Record<string, unknown>;
+  const clean = (text: unknown) => (typeof text === "string" ? text.replace(CONTROL_CHARS, "").slice(0, 100) : "");
+  const device = { name: clean(name), host: clean(host) };
+  return device.name ? device : undefined;
+}
+
+// Terminal notices saved before the device was kept apart carry it in their
+// source as "session (device)". Split it back out so they show the device
+// with its logo too: "This device" is this Mac; any other name was the
+// device's name or ssh host, which the logo lookup takes as its host.
+const LEGACY_ORIGIN = /^(.+) \(([^()]+)\)$/;
+function legacyOrigin(category: string, source: string | undefined): Pick<Notice, "source" | "device"> | null {
+  const match = category === "terminal" && source ? LEGACY_ORIGIN.exec(source) : null;
+  if (!match) return null;
+  const [, session, name] = match;
+  return { source: session, device: { name, host: /^this (device|mac)$/i.test(name) ? "" : name } };
+}
+
 function initial(): { items: Notice[]; preferences: Preferences } {
   try {
     const saved: unknown = JSON.parse(localStorage.getItem(storeName) || "null");
@@ -88,7 +114,10 @@ function initial(): { items: Notice[]; preferences: Preferences } {
       const action = savedAction(item.action);
       // A prompt still waiting at the last run is rescanned and announced afresh.
       const read = item.read || (action?.kind === "permission" && !(item.action as { outcome?: unknown }).outcome);
-      return { ...item, read, event, target, action, dedupeKey: typeof item.dedupeKey === "string" ? item.dedupeKey.slice(0, 512) : undefined, source: typeof item.source === "string" && item.source ? item.source.slice(0, 160) : undefined };
+      const source = typeof item.source === "string" && item.source ? item.source.slice(0, 160) : undefined;
+      const device = noticeDevice(item.device);
+      const origin = device ? { source, device } : legacyOrigin(item.category, source) ?? { source, device };
+      return { ...item, read, event, target, action, dedupeKey: typeof item.dedupeKey === "string" ? item.dedupeKey.slice(0, 512) : undefined, source: origin.source, device: noticeDevice(origin.device) };
     }) : [];
     const preferences = { ...defaults, categories: { ...defaults.categories } };
     if (raw.preferences && typeof raw.preferences === "object") {
@@ -184,13 +213,14 @@ export function notify(input: Omit<Notice, "id" | "createdAt" | "read">): string
   if (!noticeAllowed(input.category, input.event)) return undefined;
   const now = Date.now();
   if (input.dedupeKey && items.some(item => item.dedupeKey === input.dedupeKey && now - item.createdAt < 30000)) return undefined;
-  const notice: Notice = { ...input, title: input.title.slice(0, 160), body: input.body.slice(0, 4000), source: input.source?.slice(0, 160) || undefined, id: crypto.randomUUID(), createdAt: now, read: false };
+  const notice: Notice = { ...input, title: input.title.slice(0, 160), body: input.body.slice(0, 4000), source: input.source?.slice(0, 160) || undefined, device: noticeDevice(input.device), id: crypto.randomUUID(), createdAt: now, read: false };
   useNotifications.setState({ items: [notice, ...items.filter(item => now - item.createdAt < 30 * 86400000)].slice(0, 300) });
   if (preferences.mutedUntil > now) return notice.id;
   const canDeliver = () => {
     const current = useNotifications.getState().preferences;
     return current.enabled && current.desktop && current.categories[input.category] && (!input.event || current.events[input.event] !== false) && current.mutedUntil <= Date.now() && !document.hasFocus();
   };
-  if (canDeliver()) void deliverDesktopAlert({ ...notice, title: notice.source ? `${notice.source} - ${notice.title}` : notice.title, body: noticePreview(notice.body) }, canDeliver).catch(() => { /* Activity history remains available when the OS rejects an alert. */ });
+  const origin = notice.source && notice.device ? `${notice.source} (${notice.device.name})` : notice.source;
+  if (canDeliver()) void deliverDesktopAlert({ ...notice, title: origin ? `${origin} - ${notice.title}` : notice.title, body: noticePreview(notice.body) }, canDeliver).catch(() => { /* Activity history remains available when the OS rejects an alert. */ });
   return notice.id;
 }

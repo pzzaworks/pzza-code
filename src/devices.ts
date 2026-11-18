@@ -1,3 +1,5 @@
+import type { NoticeDevice } from "./state/notifications";
+
 // A managed ssh device (used by RDP and port forwarding as server/client).
 export interface Device {
   id: string;
@@ -23,7 +25,12 @@ export function deviceNameFor(devices: Device[], host?: string): string {
   return devices.find((d) => d.id === THIS_MAC.id)?.name ?? THIS_MAC.name;
 }
 
-export type DeviceOs = "macos" | "linux" | "windows" | "freebsd" | "unknown";
+/** The device a tile's notices name, with its host for the OS logo ("" for this Mac). */
+export function noticeDeviceFor(devices: Device[], host?: string): NoticeDevice {
+  return { name: deviceNameFor(devices, host) || "This device", host: host ?? "" };
+}
+
+export type DeviceOs ="macos" | "linux" | "windows" | "freebsd" | "unknown";
 
 export function deviceHost(device: Device): string {
   return device.id === THIS_MAC.id ? "" : device.user ? `${device.user}@${device.host}` : device.host;

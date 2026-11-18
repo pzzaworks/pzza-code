@@ -5,8 +5,7 @@ import { build } from "esbuild";
 // folderDrop.ts with its app boundaries replaced: folders are the paths that
 // end in "/dir", terminals are hit at x < 100 and a dialog at x > 900.
 const STUBS = {
-  "../serverApi": "export const listDir = path => path.endsWith('/dir') ? Promise.resolve([]) : Promise.reject(new Error('not a folder'));",
-  "../state/newSession": "export const requestNewSession = (...args) => globalThis.calls.push(['session', ...args]);",
+  "../serverApi": "export const listDir = path => path.endsWith('/dir') || globalThis.listable?.has(path) ? Promise.resolve([]) : Promise.reject(new Error('not a folder'));",
   "../openFiles": "export const openFiles = paths => globalThis.calls.push(['files', paths]); export const openFolders = paths => globalThis.calls.push(['folders', paths]);",
   "./fileDrop": "export const terminalDropTargetAt = x => x < 100;",
   "../tauriEnv": "export const HAS_TAURI = false;",
@@ -34,16 +33,18 @@ async function drop(paths, x) {
   return { shown, calls: globalThis.calls, after: usePathDrag.getState() };
 }
 
-test("a single folder dropped off a terminal opens the new-session form", async () => {
-  const { shown, calls, after } = await drop(["/work/dir"], 500);
-  assert.deepEqual(shown, { label: "dir", session: true, target: "open" });
-  assert.deepEqual(calls, [["session", "/work/dir", ""]]);
-  assert.equal(after.label, null);
+test("a single folder or file dropped off a terminal opens straight away as its tile", async () => {
+  const folder = await drop(["/work/dir"], 500);
+  assert.deepEqual(folder.shown, { label: "dir", target: "open" });
+  assert.deepEqual(folder.calls, [["folders", ["/work/dir"]], ["files", []]]);
+  assert.equal(folder.after.label, null);
+  const file = await drop(["/work/a.ts"], 500);
+  assert.deepEqual(file.calls, [["folders", []], ["files", ["/work/a.ts"]]]);
 });
 
 test("files and several folders dropped off a terminal open as tiles", async () => {
   const { shown, calls } = await drop(["/work/a.ts", "/work/dir", "/other/dir"], 500);
-  assert.deepEqual(shown, { label: "3 items", session: false, target: "open" });
+  assert.deepEqual(shown, { label: "3 items", target: "open" });
   assert.deepEqual(calls, [["folders", ["/work/dir", "/other/dir"]], ["files", ["/work/a.ts"]]]);
 });
 
@@ -62,4 +63,16 @@ test("relative or control-character paths are ignored", async () => {
     assert.equal(shown.label, null);
     assert.deepEqual(calls, []);
   }
+});
+
+test("folders are told from files when the drop lands, after the app lets the agent list them", async () => {
+  // A folder outside home lists only once dropped: a listing tried while it
+  // was dragged over must not make it open as a file.
+  globalThis.calls = [];
+  globalThis.listable = new Set();
+  await handlePathDrag({ type: "enter", paths: ["/outside/tree"], x: 500, y: 10 });
+  globalThis.listable.add("/outside/tree");
+  await handlePathDrag({ type: "drop", paths: ["/outside/tree"], x: 500, y: 10 });
+  globalThis.listable = undefined;
+  assert.deepEqual(globalThis.calls, [["folders", ["/outside/tree"]], ["files", []]]);
 });

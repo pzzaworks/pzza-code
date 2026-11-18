@@ -9,7 +9,7 @@ import { refreshGitRemote } from "./grid/gitRemote";
 import { useTasks, useTasksUi, type Task, type TaskCandidate } from "./tasks/taskStore";
 
 // Bringing a worktree branch's work back, one path for every surface: the
-// tile footer, the Worktrees section of Workspace settings, app control and
+// tile footer, a session's Worktrees dialog, app control and
 // Tasks. A worktree a task started lands through that task's land flow (its
 // checks, and the outcome recorded on the task); any other worktree passes
 // the checks that apply to it (the agent is idle, nothing waits for approval,
@@ -165,7 +165,7 @@ export function useWorktreeTaskTitle(host: string, path: string | undefined): st
 export interface LandRequest { kind: LandKind; host: string; path: string; branch: string; base: string | null }
 
 /**
- * Lands a worktree from outside Tasks (the tile footer, Workspace settings,
+ * Lands a worktree from outside Tasks (the tile footer, the Worktrees dialog,
  * app control). A task's worktree goes through the task's land flow: with
  * `interactive`, the task window opens on that attempt (its checks with their
  * fixes, and Land); without, the task lands it here behind the same checks.
