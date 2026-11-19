@@ -26,6 +26,12 @@ pub struct TmuxSession {
 // directly (used when the app runs on the devbox itself for testing).
 fn tmux_capture(host: &Option<String>, remote: &str) -> std::io::Result<std::process::Output> {
     match host {
+        // The host comes from the webview: one starting with `-` would reach ssh as an option
+        // (e.g. -oProxyCommand=...), so it gets the same check as the other ssh call sites.
+        Some(h) if !crate::pane_mode::valid_host(h) => Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("invalid host: {h}"),
+        )),
         Some(h) => Command::new("ssh")
             .args(sshmux::control_args())
             .arg(h)

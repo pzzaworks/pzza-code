@@ -39,6 +39,16 @@ fn local_listening(port: u16) -> bool {
     .is_ok()
 }
 
+// Hosts arrive from the webview; one starting with `-` would reach ssh as an option
+// (e.g. -oProxyCommand=...). Same rule as the pane-mode ssh calls.
+fn checked_host(host: &str) -> Result<(), String> {
+    if crate::pane_mode::valid_host(host) {
+        Ok(())
+    } else {
+        Err(format!("invalid host: {host}"))
+    }
+}
+
 fn master_up(host: &str) -> bool {
     Command::new("ssh")
         .args(sshmux::control_args())
@@ -170,6 +180,7 @@ pub async fn forward_scan(
     skip: Vec<u16>,
     min_port: u16,
 ) -> Result<ForwardStatus, String> {
+    checked_host(&host)?;
     let active = state.active.clone();
     tauri::async_runtime::spawn_blocking(move || status(&active, &host, &skip, min_port))
         .await
@@ -184,6 +195,7 @@ pub async fn forward_set(
     port: u16,
     enable: bool,
 ) -> Result<(), String> {
+    checked_host(&host)?;
     let active = state.active.clone();
     tauri::async_runtime::spawn_blocking(move || {
         if enable {
@@ -217,6 +229,7 @@ pub async fn forward_release(
     state: tauri::State<'_, ForwardState>,
     host: String,
 ) -> Result<(), String> {
+    checked_host(&host)?;
     let active = state.active.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let ports: Vec<u16> = active.lock().unwrap().drain().collect();
@@ -237,6 +250,7 @@ pub async fn forward_reconcile(
     skip: Vec<u16>,
     min_port: u16,
 ) -> Result<ForwardStatus, String> {
+    checked_host(&host)?;
     let active = state.active.clone();
     tauri::async_runtime::spawn_blocking(move || {
         if ensure_master(&host) {
