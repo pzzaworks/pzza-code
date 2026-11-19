@@ -88,24 +88,38 @@ export function isJsonObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
+// Without a ceiling, anyone holding the token (an MCP client included) could stream gigabytes
+// into memory and take every terminal down with it. The largest legitimate body is a file save:
+// the editor opens text up to 2 MiB (TEXT_LIMIT in files.js), and JSON escaping can grow that up
+// to six times (\uXXXX), so the ceiling sits above 12 MiB.
+export const MAX_JSON_BODY_BYTES = 16 * 1024 * 1024;
+
 export function readBody(req) {
   return new Promise((resolve) => {
     let data = "";
-    req.on("data", (c) => (data += c));
+    let size = 0;
+    let done = false;
+    req.on("data", (c) => {
+      if (done) return;
+      size += c.length;
+      if (size > MAX_JSON_BODY_BYTES) {
+        // An empty object fails every route's validation; the connection is cut, not drained.
+        done = true;
+        data = "";
+        resolve({});
+        req.destroy();
+        return;
+      }
+      data += c;
+    });
     req.on("end", () => {
+      if (done) return;
+      done = true;
       try {
         resolve(JSON.parse(data || "{}"));
       } catch {
         resolve({});
       }
     });
-  });
-}
-
-export function readRawBody(req) {
-  return new Promise((resolve) => {
-    const chunks = [];
-    req.on("data", (c) => chunks.push(c));
-    req.on("end", () => resolve(Buffer.concat(chunks)));
   });
 }

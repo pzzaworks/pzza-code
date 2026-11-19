@@ -1,6 +1,6 @@
 import { AsyncButton } from "../ui/AsyncButton";
 import { useEditorTheme } from "../theme/editorTheme";
-import { useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type MouseEvent as ReactMouseEvent } from "react";
 import CodeMirror from "@uiw/react-codemirror";
 import { Decoration, EditorView, keymap, type DecorationSet } from "@codemirror/view";
 import { StateEffect, StateField } from "@codemirror/state";
@@ -18,6 +18,7 @@ import { FilePicker } from "../panels/FilePicker";
 import { Modal } from "../ui/Modal";
 import { beginFileMutation, editorLocked, fileMutationPending, notifyFileMutation, onEditorLocks, onFileMutation, registerEditorDiscard, registerEditorFile, remapFilePath } from "../editorChanges";
 import { copyImageToClipboard } from "../imageClipboard";
+import { openUrl } from "../forward";
 import { CodeLayoutButtons } from "./CodeLayoutButtons";
 import { createEditorAppController, registerEditorAppControl } from "../appControlEditor";
 import { SplitHandle } from "../ui/SplitHandle";
@@ -977,7 +978,7 @@ export function TileCodePanel({ tileId }: { tileId: string }) {
           ) : error && !dirty ? (
             <div className="code-status code-err">{error}</div>
           ) : preview && isMd ? (
-            <div className="md-preview" dangerouslySetInnerHTML={{ __html: html }} />
+            <div className="md-preview" onClick={handlePreviewLinkClick} dangerouslySetInnerHTML={{ __html: html }} />
           ) : (
             <CodeMirror
               value={content}
@@ -1014,4 +1015,19 @@ export function TileCodePanel({ tileId }: { tileId: string }) {
       </Modal>
     </div>
   );
+}
+
+/**
+ * Links in a previewed Markdown file are content from the file, not app navigation: left
+ * alone, a click turned the whole app window into that page (a convincing place for a fake
+ * prompt). Web links open in the browser, in-page anchors keep working, anything else
+ * (relative paths, file:, javascript:) goes nowhere.
+ */
+function handlePreviewLinkClick(event: ReactMouseEvent<HTMLDivElement>): void {
+  const anchor = event.target instanceof Element ? event.target.closest("a") : null;
+  if (!anchor) return;
+  const href = anchor.getAttribute("href") ?? "";
+  if (href.startsWith("#")) return;
+  event.preventDefault();
+  if (/^https?:\/\//i.test(href)) void openUrl(href).catch(() => undefined);
 }

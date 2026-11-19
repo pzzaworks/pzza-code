@@ -100,8 +100,10 @@ fn same_folder(path: &Path, folder: &Path) -> bool {
 }
 
 fn forge_newest(folder: &Path) -> Option<String> {
+    // Never a bare "forge": with Foundry first on PATH that ran the wrong tool in the folder.
+    let forge = crate::setup::catalog_binary("forgecode")?;
     let output = crate::local_tmux::bounded_output(
-        Command::new("forge").args(["conversation", "list", "--porcelain"]).current_dir(folder).env("PATH", crate::agent::login_path()),
+        Command::new(forge).args(["conversation", "list", "--porcelain"]).current_dir(folder).env("PATH", crate::agent::login_path()),
     ).ok()?;
     if !output.status.success() {
         return None;

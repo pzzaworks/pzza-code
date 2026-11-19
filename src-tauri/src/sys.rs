@@ -37,6 +37,13 @@ fn resolve_reveal_path(path: &str, home: Option<&str>) -> Result<std::path::Path
     std::fs::canonicalize(&expanded).map_err(|_| format!("{path} does not exist on this Mac"))
 }
 
+// Only a plain folder may be opened. Bundles (.app, .prefPane, .saver, ...) are directories
+// too, and `open` on them LAUNCHES or installs them; a repo can ship one, and a git checkout
+// carries no quarantine flag. Any directory with an extension is selected instead.
+fn opens_as_folder(path: &std::path::Path) -> bool {
+    path.is_dir() && path.extension().is_none()
+}
+
 // Shows a terminal path in Finder: a folder opens, a file is selected in its
 // folder. The path goes to `open` as an argument, never through a shell.
 #[tauri::command]
@@ -46,7 +53,7 @@ pub async fn reveal_path(path: String) -> Result<(), String> {
         #[cfg(target_os = "macos")]
         {
             let mut command = std::process::Command::new("/usr/bin/open");
-            if !resolved.is_dir() {
+            if !opens_as_folder(&resolved) {
                 command.arg("-R");
             }
             // The canonical path always starts with "/", so it is never read as an option.
@@ -65,7 +72,22 @@ pub async fn reveal_path(path: String) -> Result<(), String> {
 
 #[cfg(test)]
 mod reveal_tests {
-    use super::resolve_reveal_path;
+    use super::{opens_as_folder, resolve_reveal_path};
+
+    #[test]
+    fn bundles_and_files_are_selected_never_opened() {
+        let root = std::env::temp_dir().join(format!("pzza-reveal-{}", std::process::id()));
+        let plain = root.join("plain");
+        let bundle = root.join("Setup.app");
+        let file = root.join("notes.txt");
+        std::fs::create_dir_all(&plain).unwrap();
+        std::fs::create_dir_all(bundle.join("Contents")).unwrap();
+        std::fs::write(&file, "x").unwrap();
+        assert!(opens_as_folder(&plain));
+        assert!(!opens_as_folder(&bundle));
+        assert!(!opens_as_folder(&file));
+        std::fs::remove_dir_all(&root).unwrap();
+    }
 
     #[test]
     fn resolves_existing_absolute_and_home_paths_only() {
