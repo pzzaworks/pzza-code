@@ -19,6 +19,8 @@ test("macOS process scans preserve surviving identities when another process dis
   await writeFile(path.join(root, "package.json"), JSON.stringify({ name: "surviving-project" }));
   let exitCode = 1;
   t.mock.method(childProcess, "execFile", (command, args, options, callback) => {
+    // The process table and the session list are read too; neither is needed here.
+    if (command === "ps" || command === "tmux") return callback(null, "");
     assert.equal(command, "lsof");
     if (args.includes("-iTCP")) callback(null, "p1234\ncnode\nn127.0.0.1:4567\n");
     else callback(Object.assign(new Error("Process selection incomplete"), { code: exitCode }), `p1234\nn${root}\n`);
@@ -182,7 +184,7 @@ test("malformed metadata and unavailable daemons do not lose host listeners", as
     if (command === "docker") return ["invalid-json", containerRow("a".repeat(12), "bad", "0.0.0.0:1-65535->1-65535/tcp, 0.0.0.0:0->80/tcp"), containerRow("invalid", "bad", "0.0.0.0:9000->80/tcp")].join("\n");
     return "";
   } });
-  assert.deepEqual(result, [{ port: 8080, containers: [], processes: [] }]);
+  assert.deepEqual(result, [{ port: 8080, scope: "local", containers: [], processes: [] }]);
 });
 
 test("serialized device probe remains self-contained", async () => {
@@ -190,6 +192,7 @@ test("serialized device probe remains self-contained", async () => {
   const result = await probe({ platform: "darwin", dockerSocket: null, run: async (command, args) => {
     if (command === "lsof") return "p321\ncDocker\nn*:3000";
     if (command === "podman") return containerRow("c".repeat(12), "local-container", "[::1]:3000->80/tcp");
+    if (command === "ps" || command === "tmux") return "";
     assert.fail(`Unexpected command ${command} ${args.join(" ")}`);
   } });
   assert.equal(result[0].containers[0].name, "local-container");
@@ -217,5 +220,37 @@ test("local context sockets support Colima while remote endpoints never reach ps
     const ps = calls.filter((args) => args[0] === "docker" && args.includes("ps"));
     assert.equal(ps.length, endpoint.includes(".colima") ? 1 : 0);
     if (ps.length) assert.equal(ps[0][2], endpoint);
+  }
+});
+
+test("listeners report their reach, age, kind of service and the session that started them", async () => {
+  const root = await mkdtemp(path.join(os.homedir(), ".pzza-port-test-"));
+  try {
+    await writeFile(path.join(root, "package.json"), JSON.stringify({ name: "shop", dependencies: { next: "16.0.0", express: "5.0.0" } }));
+    const calls = [];
+    const result = await inspectPortProcesses({
+      platform: "darwin", containers: false, tmux: ["tmux", "-N", "-S", "/fixture/tmux.sock"],
+      run: async (command, args) => {
+        calls.push([command, ...args].join(" "));
+        if (command === "lsof" && args.includes("-iTCP")) return "p500\ncnode\nn127.0.0.1:3000\np600\ncnode\nn*:4000\np700\ncpostgres\nn[::1]:5432\n";
+        if (command === "lsof") return `p500\nn${root}\np600\nn${root}\np700\nn${root}\n`;
+        // 600 is a grandchild of the pane 20; 700 has no terminal above it.
+        if (command === "ps") return "  500    20       05:10\n  600   550 1-02:03:04\n  550    20       09:00\n   20     1    10:00:00\n  700     1       00:42\n";
+        if (command === "tmux") return "20\tShop dev\n";
+        return "";
+      },
+    });
+    const [web, api, database] = result;
+    assert.deepEqual([web.port, web.scope, api.port, api.scope, database.port, database.scope], [3000, "local", 4000, "network", 5432, "local"]);
+    // The framework is named before the server library under it.
+    assert.deepEqual({ kind: web.processes[0].kind, session: web.processes[0].session, uptime: web.processes[0].uptime }, { kind: "Next.js", session: "Shop dev", uptime: 310 });
+    assert.deepEqual({ session: api.processes[0].session, uptime: api.processes[0].uptime }, { session: "Shop dev", uptime: 93784 });
+    // A database started in a project folder is named by its process, not by the project's framework.
+    assert.deepEqual({ kind: database.processes[0].kind, session: database.processes[0].session, uptime: database.processes[0].uptime }, { kind: "PostgreSQL", session: null, uptime: 42 });
+    assert.ok(calls.includes("tmux -N -S /fixture/tmux.sock -u list-panes -a -F #{pane_pid}\t#{session_name}"));
+    // Only ids, parents and ages are read from the process table: no arguments.
+    assert.ok(calls.includes("ps -axo pid=,ppid=,etime="));
+  } finally {
+    await rm(root, { recursive: true, force: true });
   }
 });

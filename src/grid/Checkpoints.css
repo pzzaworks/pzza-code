@@ -92,7 +92,7 @@
 }
 /* Over glass, entries scrolling under the day are blurred behind its own glass
    rather than showing through its text. */
-:root[data-transparency="on"] .cp-day-label { background: var(--glass-bg-strong); -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px); }
+:root[data-transparency="on"] .cp-day-label { border-radius: var(--r-md); background: var(--glass-bg-strong); -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px); }
 .cp-item {
   position: relative;
   display: flex;

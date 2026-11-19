@@ -61,7 +61,7 @@ import {
 } from "../sessionMeta";
 import { ALL_WORKSPACE_ID, DEFAULT_WORKSPACE_ID, wsKeyOf } from "../workspaces";
 import { useWorkspaceIconSet, workspaceIcon } from "../workspaceIcons";
-import { ctrlBadge, digitFromCode, IS_MAC } from "../shortcuts";
+import { digitFromCode, IS_MAC, isTileModifier, tileBadge } from "../shortcuts";
 import { useDictation } from "../state/dictation";
 import { DictationButton } from "../ui/Dictation";
 import { useExclusiveMenu } from "../ui/menuBus";
@@ -72,7 +72,7 @@ import { MAX_TILE_ROWS, TileResizeHandles, type TileResizer } from "./TileResize
 import { useGitStatus } from "./gitStatus";
 import { sendFailingChecks, useGitRemote, useSharedBranch } from "./gitRemote";
 import { useTileEdges } from "./tileEdges";
-import { arrangeTiles, chooseResize, fitRowTracks, sizedRowTrack, useCanvasSize, type ResizeAxis, type Span as TileSpan } from "./autoLayout";
+import { arrangeTiles, chooseResize, screenRowTracks, sizedRowTrack, useCanvasSize, type ResizeAxis, type Span as TileSpan } from "./autoLayout";
 import { setLayoutPreview } from "./layoutPreview";
 import { createDragGhost, useTileDragTarget, workspaceTabAt, workspaceTabBoxes, type DragGhost, type TabBox } from "./tileDrag";
 import { compactPath } from "./compactPath";
@@ -147,7 +147,7 @@ function SessionHeader({ status, icon, title, shortcut, device, actions, ...even
     <span className={`stat stat-${status}`} title={status} />
     <span className="tile-icon">{icon}</span>
     {title}
-    {shortcut && shown("shortcut") ? <kbd className="kbd tile-kbd" title="Activate">{ctrlBadge(shortcut)}</kbd> : null}
+    {shortcut && shown("shortcut") ? <kbd className="kbd tile-kbd" title="Activate">{tileBadge(shortcut)}</kbd> : null}
     {device && shown("device") ? <span className="tile-device" title={`Running on ${device.name}`}>
       <DeviceIcon host={device.host} size={11} /><span className="tile-device-name">{device.name}</span>
     </span> : null}
@@ -655,7 +655,7 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
     };
   }, [scrollToTile]);
 
-  // Ctrl + number activates the Nth visible tile. Read the current order from a
+  // Cmd + number (Ctrl + number off macOS) activates the Nth visible tile. Read the current order from a
   // ref so the handler stays valid as tiles come and go.
   const wsTilesRef = useRef(wsTiles);
   useEffect(() => {
@@ -663,7 +663,7 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
   });
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.metaKey || e.altKey || e.shiftKey || !e.ctrlKey) return;
+      if (!isTileModifier(e) || e.isComposing) return;
       const n = digitFromCode(e.code);
       if (n === null || n < 1) return;
       const t = wsTilesRef.current[n - 1];
@@ -989,11 +989,10 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
   // fill the canvas, so a lone tile (or a lone row) never got shorter when
   // resized, and the size only showed once another tile arrived.
   const sizedRows = arrangement.sized && !effFull;
-  // Never fewer tracks than the tiles take: a widened tile wraps its
-  // neighbour to a new row, and a tile count that drops makes the auto rows
-  // (so each unit) taller. Measuring by the auto rows alone made the grid
-  // one or more screens tall then; this keeps it on screen.
-  const rowTrackCount = fitRowTracks(arrangement);
+  // The auto rows share the canvas height, so a row unit is as tall as in the
+  // automatic layout. Tiles pushed further down scroll into view; no tile is
+  // taller than the canvas (see arrangeTiles).
+  const rowTrackCount = screenRowTracks(arrangement);
   useLayoutEffect(() => {
     const grid = gridRef.current;
     const canvas = grid?.parentElement;

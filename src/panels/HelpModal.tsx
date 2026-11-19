@@ -91,7 +91,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { ListTodo, SlidersHorizontal, Trophy } from "lucide-react";
-import { ALT_LABEL, altBadge, COMMAND_PALETTE_SHORTCUT, ctrlBadge, IS_MAC, NEW_SESSION_SHORTCUT, NEW_WORKSPACE_SHORTCUT, SEARCH_TERMINALS_SHORTCUT, TASKS_SHORTCUT } from "../shortcuts";
+import { ALT_LABEL, altBadge, COMMAND_PALETTE_SHORTCUT, tileBadge, IS_MAC, NEW_SESSION_SHORTCUT, NEW_WORKSPACE_SHORTCUT, SEARCH_TERMINALS_SHORTCUT, TASKS_SHORTCUT } from "../shortcuts";
 import { ClaudeIcon, CodexIcon } from "../icons/BrandIcons";
 import { AgentIcon } from "../icons/AgentIcon";
 import { SESSION_AGENTS, SESSION_PROMPT_MAX_LENGTH, defaultSessionAgentMode, type SessionAgentDefinition, type SessionAgentMode } from "../../server/lib/session-agents.js";
@@ -202,7 +202,7 @@ const TileHeadDemo = ({ title = "api", shortcut = 1, selected = false, actions =
     <span className="stat stat-notify" />
     <ClaudeTileIcon />
     <span className="tile-title">{title}</span>
-    <kbd className="kbd tile-kbd">{ctrlBadge(shortcut)}</kbd>
+    <kbd className="kbd tile-kbd">{tileBadge(shortcut)}</kbd>
     <span className="tile-device">
       <Monitor size={11} className="device-os-icon" />
       Devbox
@@ -1152,7 +1152,7 @@ export const HELP_PAGES: Record<HelpTopic, HelpPage> = {
         </div>
         <Steps>
           <Step>Press <b>New session</b> (<Kbd>{NEW_SESSION_SHORTCUT.label}</Kbd>), name it, and pick the device, the folder and a terminal or an agent.</Step>
-          <Step>Press <Kbd>Enter</Kbd>. Hop between tiles with <Kbd>{ctrlBadge(1)}</Kbd>–<Kbd>{ctrlBadge(9)}</Kbd>.</Step>
+          <Step>Press <Kbd>Enter</Kbd>. Hop between tiles with <Kbd>{tileBadge(1)}</Kbd>–<Kbd>{tileBadge(9)}</Kbd>.</Step>
           <Step>Quit whenever: tiles run in <b>tmux</b> on their device, so closing the app or losing the connection only detaches your view.</Step>
         </Steps>
       </>
@@ -1399,7 +1399,7 @@ export const HELP_PAGES: Record<HelpTopic, HelpPage> = {
         <Row ui={<TB icon={Maximize2} on />} name="Maximize">Double-click a header for the whole canvas; again or <Kbd>Esc</Kbd> restores.</Row>
       </>
     ),
-    tips: [<><Kbd>{ctrlBadge(1)}</Kbd>–<Kbd>{ctrlBadge(9)}</Kbd> also scrolls the tile to the center.</>],
+    tips: [<><Kbd>{tileBadge(1)}</Kbd>–<Kbd>{tileBadge(9)}</Kbd> also scrolls the tile to the center.</>],
   },
   layout: {
     label: "Layout & grid",
@@ -1993,6 +1993,7 @@ export const HELP_PAGES: Record<HelpTopic, HelpPage> = {
         <Step>In <b>Settings → Connections → Port forwarding</b>, pick the <b>Source device</b> and the <b>Receiver</b> and turn it on.</Step>
         <Step>Ports appear under <b>Forwarded</b> in the Port manager; <b>Open</b> opens one in the browser.</Step>
         <Step><b>This device</b> lists local listeners; <Square size={11} className="doc-inline-icon" /> <b>Stop</b> ends one after a confirmation.</Step>
+        <Step>Each port names its project and what it runs (Next.js, PostgreSQL), the session that started it, how long it has been up, and whether it is open to the network or to this device only.</Step>
       </Steps>
     ),
     tips: [<>System services and the agent itself can never be stopped from here.</>],
@@ -2043,7 +2044,7 @@ export const HELP_PAGES: Record<HelpTopic, HelpPage> = {
           <tr><td><Kbd>{CMD} ,</Kbd></td><td>Settings</td></tr>
           <tr><td><Kbd>{CMD} {SHIFT} /</Kbd></td><td>PzzaCode Help</td></tr>
           <tr><td><Kbd>{altBadge(0)}</Kbd> – <Kbd>{altBadge(9)}</Kbd></td><td>All, then the Nth workspace</td></tr>
-          <tr><td><Kbd>{ctrlBadge(1)}</Kbd> – <Kbd>{ctrlBadge(9)}</Kbd></td><td>Activate the Nth visible tile</td></tr>
+          <tr><td><Kbd>{tileBadge(1)}</Kbd> – <Kbd>{tileBadge(9)}</Kbd></td><td>Activate the Nth visible tile</td></tr>
           <tr><td><Kbd>{CMD} J</Kbd></td><td>Next tile waiting on you</td></tr>
           <tr><td><Kbd>{TASKS_SHORTCUT.label}</Kbd></td><td>Show or hide Tasks</td></tr>
           <tr><td><Kbd>Shift Click</Kbd></td><td>Select tiles to broadcast</td></tr>

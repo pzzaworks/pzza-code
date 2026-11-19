@@ -28,8 +28,8 @@ export interface Arrangement {
   // measured in these, so one unit is that tall whatever the other tiles do.
   rows: number;
   // Row tracks the placed tiles reach down to. Saved sizes can take more
-  // than `rows` (a widened tile pushes its neighbour to a new row, a tall
-  // one outgrows a lone row); the canvas then shrinks the tracks to fit.
+  // than `rows` (a widened tile pushes its neighbour to a new row); the
+  // canvas then scrolls, the tracks keep their height.
   rowTracks: number;
   // Whether any tile has a saved span (the grid then sizes its rows itself).
   sized: boolean;
@@ -113,19 +113,23 @@ export function arrangeTiles({ ids, saved, setting, size, maxRows }: {
     return { columns, tracks, spans, cells, rows: rows.length, rowTracks: rows.length * 2, sized: false };
   }
   const tracks = columns * 2;
-  const rowTracks = placeMixed(ids, saved, tracks, maxRows * 2, spans, cells);
+  // No tile is taller than the canvas: a size saved among more rows would
+  // otherwise span several screens once tiles close and the rows get taller.
+  const rowTracks = placeMixed(ids, saved, tracks, Math.min(maxRows, Math.max(1, rows.length)) * 2, spans, cells);
   return { columns, tracks, spans, cells, rows: Math.max(1, rows.length), rowTracks, sized: true };
 }
 
-// Row tracks a sized grid fits into the canvas height: never fewer than the
-// auto rows take (a shorter tile leaves room below it), never fewer than the
-// tiles reach down to (so they all stay on screen).
-export const fitRowTracks = (arrangement: Arrangement): number => Math.max(arrangement.rows * 2, arrangement.rowTracks);
+// Row tracks of a sized grid that share the canvas height: the ones the auto
+// rows take. A row unit is therefore as tall as in the automatic layout,
+// whatever sizes are saved. Tiles that reach further down (a widened tile
+// pushes its neighbours to a new row) go below the fold and the canvas
+// scrolls, instead of every tile shrinking to keep them on screen.
+export const screenRowTracks = (arrangement: Arrangement): number => arrangement.rows * 2;
 
-// Floor of a sized grid's row track; global.css (.grid-sized) keeps the same
-// floor. It only keeps a tiny window usable: the resize grips never pick a
-// size whose tracks would need it.
-export const MIN_SIZED_ROW_TRACK = 80;
+// Floor of a sized grid's row track, the same as the automatic grid's
+// (global.css keeps both): in a short window the rows stop shrinking here and
+// the canvas scrolls.
+export const MIN_SIZED_ROW_TRACK = 150;
 
 // Height of one row track of a sized grid: `count` tracks and their gaps fill
 // `height` (the canvas content height), down to the floor.
@@ -141,24 +145,20 @@ export interface GridBox { width: number; height: number; gap: number }
 export interface TileBox { left: number; top: number; width: number; height: number }
 
 // Where a tile of a sized arrangement lands in pixels, computed the way the
-// browser sizes the tracks (columns share the width, rows fit the canvas).
-// `fits` tells whether the whole grid stays inside the canvas height.
-export function tileBox(arrangement: Arrangement, id: string, box: GridBox): { box: TileBox; fits: boolean } | null {
+// browser sizes the tracks (columns share the width, the auto rows share the
+// canvas height).
+export function tileBox(arrangement: Arrangement, id: string, box: GridBox): TileBox | null {
   const cell = arrangement.cells.get(id);
   const span = arrangement.spans.get(id);
   if (!cell || !span) return null;
   const { gap } = box;
   const colTrack = (box.width - gap * (arrangement.tracks - 1)) / arrangement.tracks;
-  const count = fitRowTracks(arrangement);
-  const rowTrack = sizedRowTrack(box.height, gap, count);
+  const rowTrack = sizedRowTrack(box.height, gap, screenRowTracks(arrangement));
   return {
-    box: {
-      left: cell.col * (colTrack + gap),
-      top: cell.row * (rowTrack + gap),
-      width: span.c * colTrack + (span.c - 1) * gap,
-      height: span.r * rowTrack + (span.r - 1) * gap,
-    },
-    fits: count * rowTrack + (count - 1) * gap <= box.height + 0.5,
+    left: cell.col * (colTrack + gap),
+    top: cell.row * (rowTrack + gap),
+    width: span.c * colTrack + (span.c - 1) * gap,
+    height: span.r * rowTrack + (span.r - 1) * gap,
   };
 }
 
@@ -176,10 +176,10 @@ export interface ResizeChoice { span: Span; box: TileBox }
 // The size a resize drag ends at. Every size the grip can reach (half column
 // and half row steps) is laid out as it would be once saved, and the one
 // whose dragged edge lands closest to the pointer wins. Saving a size changes
-// the whole grid (rows fit the window, neighbours reflow), so converting the
-// pointer with the tracks of the current layout previewed one size and
-// produced another. Sizes that would push the grid past the canvas are left
-// out while any size fits; ties keep the size closest to the current one.
+// the whole grid (neighbours reflow), so converting the pointer with the
+// tracks of the current layout previewed one size and produced another. A size
+// may push other tiles below the fold; ties keep the size closest to the
+// current one.
 // `from` is the tile's current span in units; `edge` is where the dragged
 // right/bottom edge should go, relative to the grid's top left corner.
 export function chooseResize(layout: TileLayout, id: string, axis: ResizeAxis, from: Span, edge: { x: number; y: number }): ResizeChoice | null {
@@ -191,20 +191,18 @@ export function chooseResize(layout: TileLayout, id: string, axis: ResizeAxis, f
   const range = (max: number) => Array.from({ length: max }, (_, index) => index + 1);
   const cs = axis === "y" ? [fromC] : range(maxC);
   const rs = axis === "x" ? [fromR] : range(maxR);
-  let best: { choice: ResizeChoice; fits: boolean; distance: number; change: number } | null = null;
+  let best: { choice: ResizeChoice; distance: number; change: number } | null = null;
   for (const c of cs) {
     for (const r of rs) {
       const span = { c: c / 2, r: r / 2 };
-      const placed = tileBox(arrangeTiles({ ...layout, saved: { ...layout.saved, [id]: span } }), id, layout.box);
-      if (!placed) continue;
-      const { box, fits } = placed;
+      const box = tileBox(arrangeTiles({ ...layout, saved: { ...layout.saved, [id]: span } }), id, layout.box);
+      if (!box) continue;
       const distance = (axis === "y" ? 0 : Math.abs(box.left + box.width - edge.x)) +
         (axis === "x" ? 0 : Math.abs(box.top + box.height - edge.y));
       const change = Math.abs(c - fromC) + Math.abs(r - fromR);
       const better = !best ||
-        (fits !== best.fits ? fits :
-          Math.abs(distance - best.distance) > 0.5 ? distance < best.distance : change < best.change);
-      if (better) best = { choice: { span, box }, fits, distance, change };
+        (Math.abs(distance - best.distance) > 0.5 ? distance < best.distance : change < best.change);
+      if (better) best = { choice: { span, box }, distance, change };
     }
   }
   return best?.choice ?? null;
@@ -226,8 +224,7 @@ const AUTO_ROW_TRACKS = 2;
 // Auto tiles start one row tall and then grow down into the free cells under
 // them, so they never leave a hole beside a taller tile; growing only into
 // cells no tile took keeps every placement as it was. A tall tile thus gets
-// its neighbours stacked beside it, and a tile made as tall as all of them
-// fills the window. All units are tracks. Fills `spans` and `cells`; returns
+// its neighbours stacked beside it. All units are tracks. Fills `spans` and `cells`; returns
 // the row tracks the placed tiles reach down to.
 function placeMixed(ids: readonly string[], saved: Readonly<Record<string, Span>>, tracks: number, maxR: number,
   spans: Map<string, Span>, cells: Map<string, Cell>): number {

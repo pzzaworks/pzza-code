@@ -31,7 +31,8 @@ export function listPorts() {
 }
 
 // This self-contained probe also runs on the selected SSH source. It reads
-// process names and project manifests, never process arguments or environments.
+// process names, start times, parent ids, project manifests and tmux session
+// names, never process arguments or environments.
 export async function inspectPortProcesses(options = {}) {
   const fs = await import("node:fs/promises");
   const path = await import("node:path");
@@ -79,16 +80,25 @@ export async function inspectPortProcesses(options = {}) {
     return Promise.all(requests.map(async ({ runtime, args }) => ({ runtime, output: await run(runtime, args) })));
   })();
   const listeners = new Map();
-  const add = (port, pid, process) => {
+  // Whether anything listens beyond this device, per port: a wildcard or LAN
+  // address is reachable from the network, a loopback one is not.
+  const reach = new Map();
+  const loopback = (address) => /^(127\.|\[?::1\]?$|localhost$)/.test(address);
+  const add = (port, pid, process, address) => {
     if (!Number.isInteger(port) || port < 1 || port > 65535) return;
     if (!listeners.has(port)) listeners.set(port, new Map());
     if (pid) listeners.get(port).set(pid, process);
+    if (typeof address === "string" && address) reach.set(port, reach.get(port) === "network" || !loopback(address) ? "network" : "local");
+  };
+  const bound = (endpoint) => {
+    const match = typeof endpoint === "string" ? endpoint.match(/^(.*):(\d+)$/) : null;
+    return match ? { address: match[1], port: Number(match[2]) } : { address: "", port: NaN };
   };
   if (platform === "linux") {
     const output = await run("ss", ["-ltnpH"]);
     for (const line of output.split("\n")) {
-      const port = Number(line.trim().split(/\s+/)[3]?.match(/:(\d+)$/)?.[1]);
-      add(port);
+      const { address, port } = bound(line.trim().split(/\s+/)[3]);
+      add(port, undefined, undefined, address);
       for (const match of line.matchAll(/\("([^"]+)",pid=(\d+)/g)) add(port, Number(match[2]), match[1]);
     }
   } else if (platform === "darwin") {
@@ -97,7 +107,10 @@ export async function inspectPortProcesses(options = {}) {
     for (const line of (await run("lsof", ["-nP", "-iTCP", "-sTCP:LISTEN", "-Fpcn"])).split("\n")) {
       if (line.startsWith("p")) pid = Number(line.slice(1));
       if (line.startsWith("c")) process = line.slice(1);
-      if (line.startsWith("n")) add(Number(line.match(/:(\d+)$/)?.[1]), pid, process);
+      if (line.startsWith("n")) {
+        const { address, port } = bound(line.slice(1));
+        add(port, pid, process, address);
+      }
     }
   } else {
     throw new Error("Process identification is not available on this operating system.");
@@ -113,6 +126,56 @@ export async function inspectPortProcesses(options = {}) {
   }
   const home = os.homedir();
   const clean = (text) => typeof text === "string" ? text.replace(/[\x00-\x1f\x7f]/g, "").slice(0, 120) : "";
+  // One process table read gives every listener its parent and its age.
+  // etime is "[[dd-]hh:]mm:ss" on both macOS and Linux.
+  const parents = new Map();
+  const ages = new Map();
+  if (pids.length) {
+    for (const line of (await run("ps", ["-axo", "pid=,ppid=,etime="])).split("\n")) {
+      const match = line.trim().match(/^(\d+)\s+(\d+)\s+(?:(\d+)-)?(?:(\d+):)?(\d+):(\d+)$/);
+      if (!match) continue;
+      parents.set(Number(match[1]), Number(match[2]));
+      ages.set(Number(match[1]), Number(match[3] || 0) * 86400 + Number(match[4] || 0) * 3600 + Number(match[5]) * 60 + Number(match[6]));
+    }
+  }
+  // The terminal session a listener was started from: the tmux pane among its
+  // ancestors. `options.tmux` names this device's tmux (PzzaCode runs its own
+  // server locally); the default is the plain one a remote source has.
+  const panes = new Map();
+  if (pids.length && options.sessions !== false) {
+    const [tmux, ...tmuxOptions] = Array.isArray(options.tmux) && options.tmux.length ? options.tmux : ["tmux"];
+    for (const line of (await run(tmux, [...tmuxOptions, "-u", "list-panes", "-a", "-F", "#{pane_pid}\t#{session_name}"])).split("\n")) {
+      const [panePid, ...name] = line.split("\t");
+      if (/^\d+$/.test(panePid) && name.length) panes.set(Number(panePid), clean(name.join("\t")));
+    }
+  }
+  const sessionOf = (pid) => {
+    for (let current = pid, depth = 0; current > 1 && depth < 32; current = parents.get(current), depth++) {
+      if (panes.has(current)) return panes.get(current) || null;
+      if (!parents.has(current)) break;
+    }
+    return null;
+  };
+  // What kind of service a project is, from the packages it depends on; the
+  // first match wins, so a framework is named before the bundler under it.
+  const FRAMEWORKS = [
+    ["next", "Next.js"], ["nuxt", "Nuxt"], ["@remix-run/dev", "Remix"], ["astro", "Astro"], ["@sveltejs/kit", "SvelteKit"],
+    ["expo", "Expo"], ["@nestjs/core", "NestJS"], ["@angular/core", "Angular"], ["gatsby", "Gatsby"], ["@docusaurus/core", "Docusaurus"],
+    ["@storybook/react", "Storybook"], ["storybook", "Storybook"], ["vite", "Vite"], ["webpack-dev-server", "webpack"],
+    ["fastify", "Fastify"], ["hono", "Hono"], ["koa", "Koa"], ["express", "Express"],
+  ];
+  const kindOf = (manifest) => {
+    const packages = { ...(manifest.dependencies && typeof manifest.dependencies === "object" ? manifest.dependencies : {}), ...(manifest.devDependencies && typeof manifest.devDependencies === "object" ? manifest.devDependencies : {}) };
+    return FRAMEWORKS.find(([name]) => Object.hasOwn(packages, name))?.[1] || null;
+  };
+  // Well-known services by process name, for listeners without a project.
+  const SERVICES = [
+    [/^postgres/i, "PostgreSQL"], [/^redis/i, "Redis"], [/^mongo[ds]/i, "MongoDB"], [/^mysqld|^mariadbd/i, "MySQL"], [/^nginx/i, "nginx"],
+    [/^(httpd|apache2)/i, "Apache"], [/^caddy/i, "Caddy"], [/^ollama/i, "Ollama"], [/^(com\.docker|docker)/i, "Docker"],
+    [/^(rapportd|ControlCe|AirPlayXPC|sharingd)/i, "macOS"], [/^sshd/i, "SSH server"], [/^OrbStack/i, "OrbStack"],
+  ];
+  const JS_RUNTIME = /^(node|bun|deno|next-server|tsx|vite|expo|npm|pnpm|yarn)/i;
+  const serviceOf = (process) => SERVICES.find(([pattern]) => pattern.test(process))?.[1] || null;
   const projects = new Map();
   const projectAt = async (cwd) => {
     if (!cwd || (cwd !== home && !cwd.startsWith(home + path.sep))) return null;
@@ -126,7 +189,7 @@ export async function inspectPortProcesses(options = {}) {
           if (stat.isFile() && stat.size <= 65536) {
             const manifest = JSON.parse(await fs.readFile(file, "utf8"));
             const name = clean(manifest.name);
-            if (name) return { name, source: "package", folder: path.basename(directory) };
+            if (name) return { name, source: "package", folder: path.basename(directory), kind: kindOf(manifest) };
           }
         } catch { /* A folder without a readable manifest can still identify the project. */ }
       }
@@ -161,27 +224,35 @@ export async function inspectPortProcesses(options = {}) {
       const identity = { id, container, runtime, name: [project, service].filter(Boolean).join(" / ") || container || "Container", ...(project ? { project } : {}), ...(service ? { service } : {}) };
       for (const binding of ports.split(",")) {
         // An arrow distinguishes published bindings from container-only exposed ports.
-        const match = binding.trim().match(/:(\d+)(?:-(\d+))?->\d+(?:-\d+)?\/tcp$/);
+        const match = binding.trim().match(/^(.*):(\d+)(?:-(\d+))?->\d+(?:-\d+)?\/tcp$/);
         if (!match) continue;
-        const first = Number(match[1]);
-        const last = Number(match[2] || match[1]);
+        const first = Number(match[2]);
+        const last = Number(match[3] || match[2]);
         if (first < 1 || last > 65535 || last < first || last - first > 4095) continue;
         for (let port = first; port <= last && publishedCount < 4096; port++) {
           if (!containers.has(port)) containers.set(port, new Map());
-          if (containers.get(port).has(id)) continue;
+          if (containers.get(port).has(id)) { add(port, undefined, undefined, match[1]); continue; }
           containers.get(port).set(id, identity);
           publishedCount++;
-          add(port);
+          add(port, undefined, undefined, match[1]);
         }
       }
     }
   }
   return [...listeners].sort(([a], [b]) => a - b).map(([port, entries]) => ({
     port,
+    // "network": reachable from other devices; "local": this device only.
+    scope: reach.get(port) || null,
     containers: [...(containers.get(port)?.values() || [])],
     processes: [...entries].map(([pid, process]) => {
       const project = identities.get(pid);
-      return { pid, process: clean(process), name: project?.name || clean(process) || "TCP service", source: project?.source || "process", folder: project?.folder || null };
+      return {
+        pid, process: clean(process), name: project?.name || clean(process) || "TCP service", source: project?.source || "process", folder: project?.folder || null,
+        // A database started from a project folder is still a database: the
+        // process decides first, the project only for a JavaScript runtime.
+        kind: serviceOf(clean(process)) || (JS_RUNTIME.test(clean(process)) ? project?.kind || null : null),
+        session: sessionOf(pid), uptime: ages.has(pid) ? ages.get(pid) : null,
+      };
     }),
   }));
 }
@@ -190,12 +261,14 @@ const pendingDetails = new Map();
 export async function listPortDetails(host) {
   const { DEVBOX, IS_CLIENT } = await import("./config.js");
   const { SSH_TOKEN, shQuote } = await import("./shell.js");
+  const { tmuxArgs } = await import("./tmux-client.js");
   const { execFile } = await import("node:child_process");
   if (host && !SSH_TOKEN.test(host)) throw new Error("Invalid device host");
   const target = host === undefined ? (IS_CLIENT ? DEVBOX : "") : host;
   if (pendingDetails.has(target)) return pendingDetails.get(target);
   const pending = (async () => {
-    if (!target) return inspectPortProcesses();
+    // Locally the sessions live in PzzaCode's own tmux server.
+    if (!target) return inspectPortProcesses({ tmux: ["tmux", ...tmuxArgs([])] });
     const script = `(${inspectPortProcesses.toString()})().then(result => console.log(JSON.stringify(result))).catch(() => process.exit(1))`;
     return new Promise((resolve, reject) => {
       execFile("ssh", ["-o", "BatchMode=yes", "-o", "ConnectTimeout=5", target, `node -e ${shQuote(script)}`],

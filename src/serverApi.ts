@@ -220,10 +220,26 @@ export async function fetchSessions(): Promise<RemoteSession[]> {
   return res.json();
 }
 
+export interface PortProcess {
+  pid: number;
+  process: string;
+  name: string;
+  source: "package" | "folder" | "process";
+  folder: string | null;
+  // The three below are missing from a source device running an older agent.
+  /** What the service is: its framework, or a well-known server. */
+  kind?: string | null;
+  /** The terminal session it was started from. */
+  session?: string | null;
+  /** Seconds since the process started. */
+  uptime?: number | null;
+}
 export interface PortDetails {
   port: number;
+  /** "network": other devices can reach it; "local": this device only. */
+  scope?: "local" | "network" | null;
   containers?: Array<{ name: string; runtime: "docker" | "podman"; project?: string; service?: string; container: string; id: string }>;
-  processes: Array<{ pid: number; process: string; name: string; source: "package" | "folder" | "process"; folder: string | null }>;
+  processes: PortProcess[];
 }
 export async function fetchPortDetails(host?: string, signal?: AbortSignal): Promise<PortDetails[]> {
   const response = await agentFetch(`${SERVER_HTTP}/ports/details${host !== undefined ? `?host=${encodeURIComponent(host)}` : ""}`, { signal });
