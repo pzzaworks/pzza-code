@@ -253,7 +253,7 @@ const WORKTREE_FUNC =
 // this agent is a receiver), else over ssh.
 function projectSshArgs(target, script) {
   return [
-    "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", "-o", "StrictHostKeyChecking=accept-new",
+    "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", "-o", "StrictHostKeyChecking=yes",
     "-o", "ControlMaster=auto", "-o", "ControlPath=~/.ssh/pzza-mux-%C",
     "-o", "ControlPersist=120", "-o", "ServerAliveInterval=10", "-o", "ServerAliveCountMax=2",
     target, script,

@@ -622,7 +622,7 @@ export async function filesRouter(req, res, url) {
         `trap 'rm -f "$f"' 0; trap 'exit 1' HUP INT TERM; ` +
         `cat >&3 && exec 3>&- && [ "$(wc -c < "$f" | tr -d ' ')" = ${buf.length} ] || exit 1; ` +
         `printf '%s' "$f"; trap - 0 HUP INT TERM`;
-      const child = execFile("ssh", ["-o", "BatchMode=yes", "-o", "ConnectTimeout=8", "-o", "StrictHostKeyChecking=accept-new",
+      const child = execFile("ssh", ["-o", "BatchMode=yes", "-o", "ConnectTimeout=8", "-o", "StrictHostKeyChecking=yes",
         "-o", "ControlMaster=auto", "-o", "ControlPath=~/.ssh/pzza-mux-%C", "-o", "ControlPersist=120", host, remote],
       { timeout: 30_000, maxBuffer: 16 * 1024 }, (error, stdout) => {
         if (error) return json(res, 500, { error: "Could not save image on the selected device" });

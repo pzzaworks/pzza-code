@@ -255,7 +255,7 @@ export async function listFilesLocal(root, { signal, rg } = {}) {
   return { root: lexical, ...result, files: result.files.sort() };
 }
 
-const SSH_ARGS = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=8", "-o", "StrictHostKeyChecking=accept-new"];
+const SSH_ARGS = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=8", "-o", "StrictHostKeyChecking=yes"];
 const quoteAll = (args) => args.map(shQuote).join(" ");
 const PRUNE = `\\( ${[...WALK_SKIP].map((name) => `-name ${shQuote(name)}`).join(" -o ")} \\) -prune`;
 
