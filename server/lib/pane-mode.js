@@ -83,7 +83,7 @@ function paneHost(host) {
 function runOnPaneHost(targetHost, command, callback) {
   const executable = targetHost ? "ssh" : "sh";
   const args = targetHost
-    ? ["-o", "BatchMode=yes", "-o", "ConnectTimeout=4", "-o", "StrictHostKeyChecking=accept-new", targetHost, command]
+    ? ["-o", "BatchMode=yes", "-o", "ConnectTimeout=4", "-o", "StrictHostKeyChecking=yes", targetHost, command]
     : ["-c", command];
   execFile(executable, args, { timeout: 5000, maxBuffer: PANE_OUTPUT_BYTES, env: deviceEnv(targetHost) }, callback);
 }

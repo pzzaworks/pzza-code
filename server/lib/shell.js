@@ -34,7 +34,7 @@ export function shOn(host, remote, cb) {
   if (!host) return sh(remote, cb);
   execFile(
     "ssh",
-    ["-o", "BatchMode=yes", "-o", "ConnectTimeout=8", "-o", "StrictHostKeyChecking=accept-new", host, remote],
+    ["-o", "BatchMode=yes", "-o", "ConnectTimeout=8", "-o", "StrictHostKeyChecking=yes", host, remote],
     { env: deviceEnv(host) },
     cb,
   );
@@ -47,7 +47,7 @@ export function sshBaseArgs({ port, identity }) {
     "-o",
     "ConnectTimeout=8",
     "-o",
-    "StrictHostKeyChecking=accept-new",
+    "StrictHostKeyChecking=yes",
   ];
   if (port) args.push("-p", String(port));
   if (identity) args.push("-i", identity);

@@ -446,7 +446,7 @@ fn ssh_base(port: Option<u16>, identity: &Option<String>) -> Vec<String> {
         "-o".into(),
         "ServerAliveCountMax=2".into(),
         "-o".into(),
-        "StrictHostKeyChecking=accept-new".into(),
+        "StrictHostKeyChecking=yes".into(),
     ];
     if let Some(p) = port {
         args.push("-p".into());

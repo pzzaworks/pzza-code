@@ -37,7 +37,7 @@ test("remote status runs one fixed script with every path single-quoted", () => 
   assert.ok(script.startsWith(`for d in '/a' ${shQuote(hostile)}; do`));
   const [cmd, args] = remoteGitStatusCommand("devbox", ["/a"]);
   assert.equal(cmd, "ssh");
-  assert.deepEqual(args.slice(0, 7), ["-o", "BatchMode=yes", "-o", "ConnectTimeout=8", "-o", "StrictHostKeyChecking=accept-new", "devbox"]);
+  assert.deepEqual(args.slice(0, 7), ["-o", "BatchMode=yes", "-o", "ConnectTimeout=8", "-o", "StrictHostKeyChecking=yes", "devbox"]);
   assert.equal(args[7], `sh -c ${shQuote(remoteGitStatusScript(["/a"]))}`);
   const output = `\u001e/a\n# branch.oid 1\n# branch.head dev\ndirty\n\u001e${hostile}\n`;
   assert.deepEqual(parseRemoteGitStatus(output, ["/a", hostile, "/missing"]), {

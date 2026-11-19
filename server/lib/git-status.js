@@ -89,7 +89,7 @@ export function parseRemoteGitStatus(output, paths) {
 
 export function remoteGitStatusCommand(host, paths) {
   const target = host || DEVBOX;
-  return ["ssh", ["-o", "BatchMode=yes", "-o", "ConnectTimeout=8", "-o", "StrictHostKeyChecking=accept-new", target, `sh -c ${shQuote(remoteGitStatusScript(paths))}`]];
+  return ["ssh", ["-o", "BatchMode=yes", "-o", "ConnectTimeout=8", "-o", "StrictHostKeyChecking=yes", target, `sh -c ${shQuote(remoteGitStatusScript(paths))}`]];
 }
 
 export async function gitStatus({ host, paths }, { execImpl = execFile, spawnImpl = spawn } = {}) {

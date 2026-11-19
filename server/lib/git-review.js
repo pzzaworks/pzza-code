@@ -139,7 +139,7 @@ const firstLine = (buffer) => buffer.toString("utf8").split("\n")[0];
 
 export function remoteGitReviewCommand(host, script, args) {
   const target = host || DEVBOX;
-  return ["ssh", ["-o", "BatchMode=yes", "-o", "ConnectTimeout=8", "-o", "StrictHostKeyChecking=accept-new", target,
+  return ["ssh", ["-o", "BatchMode=yes", "-o", "ConnectTimeout=8", "-o", "StrictHostKeyChecking=yes", target,
     ["sh", "-c", script, "pzza-git", ...args].map(shQuote).join(" ")]];
 }
 

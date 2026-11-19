@@ -342,7 +342,7 @@ test("squash and rebase merges count as merged and delete their branch; unmerged
 test("the remote command is one ssh call with every argument single-quoted", () => {
   const [cmd, args] = remoteGitReviewCommand("devbox", "echo \"$1\"", ["/tmp/x'; rm -rf /; '"]);
   assert.equal(cmd, "ssh");
-  assert.deepEqual(args.slice(0, 7), ["-o", "BatchMode=yes", "-o", "ConnectTimeout=8", "-o", "StrictHostKeyChecking=accept-new", "devbox"]);
+  assert.deepEqual(args.slice(0, 7), ["-o", "BatchMode=yes", "-o", "ConnectTimeout=8", "-o", "StrictHostKeyChecking=yes", "devbox"]);
   assert.equal(args[7], `'sh' '-c' 'echo "$1"' 'pzza-git' '/tmp/x'\\''; rm -rf /; '\\'''`);
 });
 

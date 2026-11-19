@@ -61,7 +61,7 @@ export function terminateSession(name, window, host, windowId) {
   const command = terminationCommand(name, window, targetHost, windowId);
   const executable = targetHost ? "ssh" : "sh";
   const args = targetHost
-    ? ["-o", "BatchMode=yes", "-o", "ConnectTimeout=8", "-o", "StrictHostKeyChecking=accept-new", targetHost, command]
+    ? ["-o", "BatchMode=yes", "-o", "ConnectTimeout=8", "-o", "StrictHostKeyChecking=yes", targetHost, command]
     : ["-c", command];
   return new Promise((resolve, reject) => {
     execFile(executable, args, { timeout: 15_000, env: deviceEnv(targetHost) }, (error) => {
@@ -116,7 +116,7 @@ export function listPreviousNames(host) {
   const command = `${tmuxCommand(targetHost)} -u list-sessions -F '#{session_name}\t#{${PREVIOUS_NAMES_OPTION}}'`;
   return new Promise((resolve, reject) => {
     execFile(targetHost ? "ssh" : "sh", targetHost
-      ? ["-o", "BatchMode=yes", "-o", "ConnectTimeout=8", "-o", "StrictHostKeyChecking=accept-new", targetHost, command]
+      ? ["-o", "BatchMode=yes", "-o", "ConnectTimeout=8", "-o", "StrictHostKeyChecking=yes", targetHost, command]
       : ["-c", command], { timeout: 15_000, maxBuffer: 1024 * 1024, env: deviceEnv(targetHost) }, (error, output, stderr) => {
       if (error && !/no server running|no sessions|error connecting.*No such file/.test(String(stderr || ""))) return reject(new Error("Could not list the sessions on this device"));
       resolve(error ? [] : parsePreviousNames(output));
@@ -130,7 +130,7 @@ export function renameSession(name, newName, window, host, windowId) {
   const command = renameCommand(name, newName, window, targetHost, windowId);
   return new Promise((resolve, reject) => {
     execFile(targetHost ? "ssh" : "sh", targetHost
-      ? ["-o", "BatchMode=yes", "-o", "ConnectTimeout=8", "-o", "StrictHostKeyChecking=accept-new", targetHost, command]
+      ? ["-o", "BatchMode=yes", "-o", "ConnectTimeout=8", "-o", "StrictHostKeyChecking=yes", targetHost, command]
       : ["-c", command], { timeout: 15_000, env: deviceEnv(targetHost) }, (error) => {
       if (!error) return resolve();
       if (error.code === RENAME_TAKEN_EXIT) return reject(Object.assign(new Error(`A session named "${newName}" already exists on this device. Choose another name.`), { status: 409 }));
@@ -173,7 +173,7 @@ export function duplicateSession(name, window, host) {
   const command = duplicationCommand(name, window, copyBase, targetHost);
   return new Promise((resolve, reject) => {
     execFile(targetHost ? "ssh" : "sh", targetHost
-      ? ["-o", "BatchMode=yes", "-o", "ConnectTimeout=8", "-o", "StrictHostKeyChecking=accept-new", targetHost, command]
+      ? ["-o", "BatchMode=yes", "-o", "ConnectTimeout=8", "-o", "StrictHostKeyChecking=yes", targetHost, command]
       : ["-c", command], { timeout: 15_000, maxBuffer: 64 * 1024, env: deviceEnv(targetHost) }, (error, output) => {
       const text = String(output ?? "");
       const split = text.indexOf("\n");
@@ -217,7 +217,7 @@ export function scanSessions(host) {
   const command = sessionsCommand(targetHost);
   return new Promise((resolve, reject) => {
     execFile(targetHost ? "ssh" : "sh", targetHost
-      ? ["-o", "BatchMode=yes", "-o", "ConnectTimeout=8", "-o", "StrictHostKeyChecking=accept-new", targetHost, command]
+      ? ["-o", "BatchMode=yes", "-o", "ConnectTimeout=8", "-o", "StrictHostKeyChecking=yes", targetHost, command]
       : ["-c", command], { timeout: 15000, env: deviceEnv(targetHost) }, (error, output, stderr) => {
       if (error && !/no server running|no sessions|error connecting.*No such file/.test(stderr || "")) return reject(new Error("Could not scan sessions on this device"));
       resolve(error ? [] : parseSessions(output));
@@ -259,7 +259,7 @@ export function listWindows(host) {
     };
     if (host === undefined) return sh(command(), done);
     execFile(host ? "ssh" : "sh", host
-      ? ["-o", "BatchMode=yes", "-o", "ConnectTimeout=8", "-o", "StrictHostKeyChecking=accept-new", host, command(host)]
+      ? ["-o", "BatchMode=yes", "-o", "ConnectTimeout=8", "-o", "StrictHostKeyChecking=yes", host, command(host)]
       : ["-c", command("")], { timeout: 15_000, env: deviceEnv(host) }, done);
   });
 }
@@ -286,7 +286,7 @@ export function sessionActivity(host) {
   if (pendingActivity.has(target)) return pendingActivity.get(target);
   const request = (target ? new Promise((resolve) => {
     const command = "ssh";
-    const args = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=3", "-o", "StrictHostKeyChecking=accept-new",
+    const args = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=3", "-o", "StrictHostKeyChecking=yes",
         "-o", "ControlMaster=auto", "-o", "ControlPath=~/.ssh/pzza-mux-%C", "-o", "ControlPersist=120", target,
         `if command -v node >/dev/null 2>&1; then node -e ${shQuote(ACTIVITY_PROBE_SCRIPT)}; else ${ACTIVITY_FALLBACK}; fi`];
     execFile(command, args, { timeout: 9_000, maxBuffer: 1024 * 1024, env: deviceEnv(target) }, (error, stdout) => {
@@ -365,7 +365,7 @@ export function paneOutputActivity(host) {
   // Remote probes ride the multiplexed connection the session-activity poll
   // keeps open, so a poll does not pay a full SSH handshake each time.
   const run = (command, callback) => execFile(targetHost ? "ssh" : "sh", targetHost
-    ? ["-o", "BatchMode=yes", "-o", "ConnectTimeout=8", "-o", "StrictHostKeyChecking=accept-new",
+    ? ["-o", "BatchMode=yes", "-o", "ConnectTimeout=8", "-o", "StrictHostKeyChecking=yes",
         "-o", "ControlMaster=auto", "-o", "ControlPath=~/.ssh/pzza-mux-%C", "-o", "ControlPersist=120", targetHost, command]
     : ["-c", command], { timeout: 15000, env: deviceEnv(targetHost) }, callback);
   const request = new Promise((resolve, reject) => {
