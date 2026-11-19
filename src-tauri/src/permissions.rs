@@ -98,7 +98,8 @@ mod imp {
     use objc2::runtime::{AnyClass, AnyObject, Bool};
     use objc2::{class, msg_send};
     use std::ffi::c_void;
-    use std::time::Duration;
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
 
     #[link(name = "AVFoundation", kind = "framework")]
     extern "C" {}
@@ -150,7 +151,7 @@ mod imp {
             "microphone" => microphone(),
             "screenRecording" => granted(unsafe { CGPreflightScreenCaptureAccess() }),
             "accessibility" => granted(unsafe { AXIsProcessTrusted() }),
-            "automation" => automation(false),
+            "automation" => automation_status(),
             "tmuxFullDiskAccess" => tmux_grant("kTCCServiceSystemPolicyAllFiles"),
             "tmuxAccessibility" => tmux_grant("kTCCServiceAccessibility"),
             "tmuxScreenRecording" => tmux_grant("kTCCServiceScreenCapture"),
@@ -364,6 +365,29 @@ mod imp {
             WOULD_REQUIRE_CONSENT => PermissionStatus::NotGranted,
             _ => PermissionStatus::Unknown,
         }
+    }
+
+    // The grant can only be read while System Events is running, and it quits when
+    // idle, so a plain check reported "not checked" for a grant that was there
+    // all along. Start it and read again. At most one start every 30 seconds, so
+    // a System Events that cannot start is not relaunched on every refresh.
+    fn automation_status() -> PermissionStatus {
+        let status = automation(false);
+        if !matches!(status, PermissionStatus::Unknown) {
+            return status;
+        }
+        static LAST_START: Mutex<Option<Instant>> = Mutex::new(None);
+        {
+            let mut last = LAST_START.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            if last.is_some_and(|at| at.elapsed() < Duration::from_secs(30)) {
+                return status;
+            }
+            *last = Some(Instant::now());
+        }
+        if launch_system_events().is_err() {
+            return status;
+        }
+        automation(false)
     }
 
     // Automation can only be checked against a running target. System Events

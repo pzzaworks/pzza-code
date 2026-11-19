@@ -1,6 +1,6 @@
 import { DeviceIcon } from "../ui/DeviceIcon";
 import { useEffect, useRef, useState } from "react";
-import { ExternalLink, LoaderCircle, Settings, Square } from "lucide-react";
+import { Clock, ExternalLink, Globe, LoaderCircle, Lock, Search, Settings, Square, SquareTerminal } from "lucide-react";
 import { create } from "zustand";
 import { AsyncButton } from "../ui/AsyncButton";
 import { useDelayedLoading } from "../ui/useDelayedLoading";
@@ -17,6 +17,7 @@ import {
   killPortProcess,
   stopPortContainer,
   type PortDetails,
+  type PortProcess,
   setForwardEnabled,
   type Capabilities,
 } from "../serverApi";
@@ -32,6 +33,8 @@ import {
 import { visibleInterval, visibleTimeout } from "../visibility";
 
 const POLL_MS = 4000;
+// A short list reads at a glance; the filter appears once it no longer does.
+const FILTER_FROM = 8;
 
 // Ports whose listeners are never offered a Stop action in the UI. Mirrors
 // PROTECTED_PORTS in server/lib/ports.js (the backend enforces the same list,
@@ -287,16 +290,72 @@ function useLoadingReport(loading: boolean, report?: (loading: boolean) => void)
   useEffect(() => () => report?.(false), [report]);
 }
 
+// "12m", "3h 5m", "2d 4h": how long a service has been up, two units at most.
+export function formatUptime(seconds: number): string {
+  if (seconds < 60) return "just started";
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return minutes % 60 ? `${hours}h ${minutes % 60}m` : `${hours}h`;
+  const days = Math.floor(hours / 24);
+  return hours % 24 ? `${days}d ${hours % 24}h` : `${days}d`;
+}
+
+const unique = (values: Array<string | null | undefined>): string[] => [...new Set(values.filter((value): value is string => !!value))];
+
+// Everything a row says about a port, also what the filter searches.
+function describePort(entry: PortDetails | undefined) {
+  const processes: PortProcess[] = entry?.processes ?? [];
+  const containers = entry?.containers ?? [];
+  const uptimes = processes.map(process => process.uptime).filter((value): value is number => typeof value === "number");
+  const names = unique(containers.length ? containers.map(container => container.name) : processes.map(process => process.name));
+  return {
+    names,
+    kinds: unique(containers.length ? [] : processes.map(process => process.kind)),
+    sessions: unique(processes.map(process => process.session)),
+    // Several processes on one port: the service is as old as its oldest.
+    uptime: uptimes.length ? Math.max(...uptimes) : null,
+    runs: unique(containers.length
+      ? containers.map(container => `${container.runtime} · ${container.container}`)
+      : processes.map(process => process.folder && process.folder !== process.name ? `${process.process} · ${process.folder}` : process.process))
+      // A process that is its own name (a system service) has nothing to add.
+      .filter(run => !names.includes(run)),
+  };
+}
+
+export function portMatches(entry: PortDetails, query: string): boolean {
+  const needle = query.trim().toLowerCase();
+  if (!needle) return true;
+  const { names, kinds, sessions, runs } = describePort(entry);
+  return [String(entry.port), ...names, ...kinds, ...sessions, ...runs].some(text => text.toLowerCase().includes(needle));
+}
+
 function PortIdentity({ port, details, live }: { port: number; details: PortDetails[]; live: boolean }) {
   const entry = details.find(entry => entry.port === port);
   const processes = entry?.processes ?? [];
   const containers = entry?.containers ?? [];
-  const names = [...new Set(containers.length ? containers.map(container => container.name) : processes.map(process => process.name))];
+  const { names, kinds, sessions, uptime, runs } = describePort(entry);
   const info = [...containers.map(container => `${container.runtime} · ${container.container}${container.project ? ` · project ${container.project}` : ""}${container.service ? ` · service ${container.service}` : ""}`), ...processes.map((process) => `${process.name} · ${process.source === "package" ? "project name" : process.source === "folder" ? "working folder" : "process name"} · ${process.process} · PID ${process.pid}`)].join("\n");
   return <div className="port-identity" title={info || "The source device has not provided a readable process identity."}>
-    <span className="port-project">{names.join(", ") || "TCP service"}</span>
-    <span className="port-num">{port}{live ? <span className="port-state on">live</span> : null}</span>
-    <span className="port-process">{[...new Set(containers.length ? containers.map(container => `${container.runtime} · ${container.container}`) : processes.map((process) => process.process))].join(", ")}</span>
+    <span className="port-title">
+      <span className="port-project">{names.join(", ") || "TCP service"}</span>
+      {kinds.map(kind => <span key={kind} className="port-kind">{kind}</span>)}
+    </span>
+    <span className="port-facts">
+      <span className="port-num">{port}{live ? <span className="port-state on">live</span> : null}</span>
+      {entry?.scope === "network" ? <span className="port-fact port-fact-open" title="Listens on every network interface: other devices on this network can reach it.">
+        <Globe size={11} aria-hidden="true" />Network
+      </span> : entry?.scope === "local" ? <span className="port-fact" title="Listens on this device only (localhost).">
+        <Lock size={11} aria-hidden="true" />This device
+      </span> : null}
+      {sessions.map(session => <span key={session} className="port-fact" title={`Started in the session “${session}”`}>
+        <SquareTerminal size={11} aria-hidden="true" /><span className="port-fact-text">{session}</span>
+      </span>)}
+      {uptime !== null ? <span className="port-fact" title="How long it has been running">
+        <Clock size={11} aria-hidden="true" />{formatUptime(uptime)}
+      </span> : null}
+    </span>
+    <span className="port-process">{runs.join(", ")}</span>
   </div>;
 }
 
@@ -591,12 +650,15 @@ function LocalPorts({ pollingActive, onLoadingChange, refreshToken, onChanged, n
   const [actionError, setActionError] = useState("");
   const showLoading = useDelayedLoading(loading);
   useLoadingReport(pollingActive && loading, onLoadingChange);
+  const [query, setQuery] = useState("");
   const rows = details.flatMap(entry => {
     // SSH client TCP listeners are tunnels; sshd is a service on this device.
     const processes = entry.processes.filter(item => item.process !== "ssh");
     if (entry.processes.length && !processes.length && !entry.containers?.length) return [];
     return [{ ...entry, processes }];
   }).sort((a, b) => a.port - b.port);
+  const open = rows.filter(entry => entry.scope === "network").length;
+  const shown = rows.filter(entry => portMatches(entry, query));
 
   return <>
     <div className="settings-row ports-status">
@@ -604,14 +666,20 @@ function LocalPorts({ pollingActive, onLoadingChange, refreshToken, onChanged, n
         {loading ? (showLoading ? "Checking ports…" : "\u00a0")
           : unavailable && rows.length === 0 ? "Port details unavailable"
           : rows.length === 0 ? "No listening ports."
-          : `${rows.length} listening port${rows.length === 1 ? "" : "s"} on this device`}
+          : `${rows.length} listening port${rows.length === 1 ? "" : "s"} on this device${open ? `, ${open} open to the network` : ""}`}
       </span>
       <div className="ports-status-spacer" />
     </div>
+    {rows.length > FILTER_FROM ? <label className="ports-filter">
+      <Search size={13} aria-hidden="true" />
+      <input type="search" value={query} onChange={event => setQuery(event.target.value)} placeholder="Filter by name, port or session" aria-label="Filter ports" spellCheck={false} />
+    </label> : null}
     {actionError ? <p className="small pad" role="alert">{actionError}</p> : null}
     {unavailable && rows.length > 0 ? <p className="small muted pad">Could not refresh service details. Showing last known names.</p> : null}
     <div className="ports-box">
-      {rows.length === 0 ? (loading ? null : <p className="settings-empty">Nothing is listening on this device.</p>) : rows.map(entry => (
+      {rows.length === 0 ? (loading ? null : <p className="settings-empty">Nothing is listening on this device.</p>)
+        : shown.length === 0 ? <p className="settings-empty">No port matches “{query.trim()}”.</p>
+        : shown.map(entry => (
         <div key={entry.port} className="settings-row port-row">
           <PortIdentity port={entry.port} details={rows} live={false} />
           <div className="port-actions">

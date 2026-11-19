@@ -22,7 +22,7 @@ Every tile is a live terminal - a shell or a coding agent (Claude Code, Codex) -
 - **Grid of terminals** - see and drive every session at once; drag to reorder, maximize, or resize a tile.
 - **Workspaces** - browser-style tabs group sessions, each with its own grid layout, icon and color.
 - **Focus & dim** - spotlight one tile, dim the rest, or grey out everything but the one you clicked.
-- **Keyboard-first** - `⌥1-9` switch workspaces, `⌃1-9` jump to a tile, `⌘V` pastes an image straight to your agent (even over SSH).
+- **Keyboard-first** - `⌥1-9` switch workspaces, `⌘1-9` jump to a tile, `⌘V` pastes an image straight to your agent (even over SSH).
 - **Per-device agents** - a small agent serves each machine's terminals, ports and saved state; a setup wizard installs it on a new device over SSH.
 - **Auto port forwarding** - the device's listening ports mirrored to your machine automatically.
 - **Project sync** - one click keeps the same git repos on every device: clone what is missing, stash local edits, fast-forward to the default branch and carry `.env` files across. Every project and device can opt out.

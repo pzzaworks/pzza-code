@@ -54,7 +54,7 @@
 }
 /* Over glass, worktrees scrolling under the header are blurred behind its own
    glass rather than showing through its text. */
-:root[data-transparency="on"] .wtm-repo-head { background: var(--glass-bg-strong); -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px); }
+:root[data-transparency="on"] .wtm-repo-head { border-radius: var(--r-md); background: var(--glass-bg-strong); -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px); }
 .wtm-repo-icon { flex: 0 0 auto; color: var(--muted); }
 .wtm-repo-name { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); font-weight: 650; }
 .wtm-repo-path {

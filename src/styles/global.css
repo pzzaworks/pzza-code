@@ -963,10 +963,9 @@ button {
 }
 /* Saved tile sizes: rows have a fixed unit height (set by Canvas from the
    canvas height), so a resized tile keeps its size instead of stretching.
-   Canvas fits every track the tiles take on screen, so the floor is lower
-   than the auto grid's: it only keeps a tiny window usable. */
+   The floor is the auto grid's; tiles past the canvas height scroll. */
 .grid-sized {
-  grid-auto-rows: minmax(80px, var(--row-track, 1fr));
+  grid-auto-rows: minmax(150px, var(--row-track, 1fr));
 }
 .grid-full .tile {
   height: 100%;
@@ -4258,12 +4257,13 @@ html.is-dragging-tile, html.is-dragging-tile * { cursor: grabbing !important; us
 }
 button.update-button:hover { background: var(--surface-alt); }
 .update-button-busy { color: var(--muted); cursor: default; }
-.update-button-ready { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 55%, transparent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
-button.update-button-ready:hover { background: color-mix(in srgb, var(--accent) 20%, transparent); }
+.update-button-ready { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 70%, transparent); background: color-mix(in srgb, var(--accent) 20%, transparent); }
+button.update-button-ready:hover { background: color-mix(in srgb, var(--accent) 30%, transparent); }
 .update-button:disabled { opacity: 0.6; cursor: default; }
-/* A reminder, not a call to action: muted text. */
-.update-button-pending { color: var(--muted); }
-button.update-button-pending:hover { color: var(--text); }
+/* A reminder rather than an update, so it takes no accent: full-strength text
+   on a light fill of the same colour, which reads at a glance in the bar. */
+.update-button-pending { border-color: color-mix(in srgb, var(--text) 30%, transparent); background: color-mix(in srgb, var(--text) 11%, transparent); color: var(--text); }
+button.update-button-pending:hover { background: color-mix(in srgb, var(--text) 18%, transparent); }
 .dictation-language-setting {
   display: flex;
   flex-direction: column;
@@ -5594,7 +5594,23 @@ button.update-button-pending:hover { color: var(--text); }
 .ft-operation-path { overflow-wrap: anywhere; font-size: var(--fs-md); }
 
 .port-identity { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.port-title { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; min-width: 0; }
 .port-project { font-size: var(--fs-md); font-weight: 600; overflow-wrap: anywhere; line-height: 1.4; }
+/* What the service is (Next.js, PostgreSQL): a quiet tag beside its name. */
+.port-kind { flex: 0 0 auto; padding: 0 6px; border-radius: var(--r-pill); background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent); font-size: var(--fs-xs); font-weight: 600; line-height: 16px; white-space: nowrap; }
+/* The facts worth a glance, in one row: port, reach, session, age. */
+.port-facts { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; min-width: 0; }
+.port-facts .port-num { margin-right: 2px; font-weight: 600; }
+.port-fact { display: inline-flex; align-items: center; gap: 4px; min-width: 0; max-width: 100%; padding: 0 6px; border: 1px solid var(--hairline); border-radius: var(--r-pill); color: var(--muted); font-size: var(--fs-xs); line-height: 16px; white-space: nowrap; }
+.port-fact > svg { flex: 0 0 auto; }
+.port-fact-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+/* Reachable from other devices: the one fact that should not be missed. */
+.port-fact-open { border-color: color-mix(in srgb, var(--warning, var(--accent)) 50%, transparent); color: var(--warning-foreground, var(--warning, var(--text))); }
+.ports-filter { display: flex; align-items: center; gap: 7px; margin: 0 10px 8px; padding: 0 9px; height: 28px; border: 1px solid var(--hairline); border-radius: var(--r-md); color: var(--muted); }
+.ports-filter:focus-within { border-color: var(--hairline-strong); }
+.ports-filter input { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; color: var(--text); font: inherit; font-size: var(--fs-sm); }
+.ports-filter input::placeholder { color: var(--muted); }
+.ports-filter input::-webkit-search-cancel-button { -webkit-appearance: none; }
 .port-process { color: var(--muted); font-size: var(--fs-sm); font-weight: 400; overflow-wrap: anywhere; line-height: 1.4; }
 .port-process:empty { display: none; }
 .ports-box .port-row { gap: 14px; align-items: center; padding-block: 10px; }
@@ -5816,7 +5832,7 @@ html[data-transparency="on"] .tile-code { background: transparent; }
 }
 /* A sticky group label over glass blurs the options scrolling under it
    instead of letting their text show through its own. */
-:root[data-transparency="on"] .cselect-group-label { background: var(--glass-bg-strong); -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px); }
+:root[data-transparency="on"] .cselect-group-label { border-radius: var(--r-sm); background: var(--glass-bg-strong); -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px); }
 :root[data-appearance="light"] { --glass-tint: 72%; --glass-border: var(--hairline); }
 :root[data-grayscale="on"] { --glass-saturate: 100%; }
 @media (prefers-reduced-transparency: reduce) {

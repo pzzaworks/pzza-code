@@ -196,7 +196,7 @@ async function loadLayout(t) {
   return import(pathToFileURL(outfile).href);
 }
 
-test("saved sizes report every row track their tiles take, so the canvas fits them on screen", async (t) => {
+test("saved sizes report every row track their tiles take, and no tile is taller than the canvas", async (t) => {
   const { arrangeTiles } = await loadLayout(t);
   const size = { width: 1380, height: 798, gap: 10 };
   const arrange = (saved) => arrangeTiles({ ids: ["a", "b"], saved, setting: 0, size, maxRows: 4 });
@@ -204,14 +204,16 @@ test("saved sizes report every row track their tiles take, so the canvas fits th
   const plain = arrange({});
   assert.equal(plain.rows, 1);
   assert.equal(plain.rowTracks, 2);
-  // Widened: the neighbour wraps to a second row, which used to make every row a full screen tall.
+  // Widened: the neighbour wraps to a second row, below the fold.
   const widened = arrange({ a: { c: 1.5, r: 1 } });
   assert.equal(widened.rows, 1);
   assert.equal(widened.rowTracks, 4);
   assert.deepEqual(widened.spans.get("b"), { c: 4, r: 2 });
-  // Taller than the auto row (a size kept from when more tiles shared the canvas).
+  // Taller than the auto row (a size kept from when more tiles shared the
+  // canvas): held to the canvas height instead of spanning two screens.
   const tall = arrange({ a: { c: 1, r: 2 } });
-  assert.equal(tall.rowTracks, 4);
+  assert.equal(tall.rowTracks, 2);
+  assert.equal(tall.spans.get("a").r, 2);
   // Shorter than the auto row: the unit stays the auto row, so the tile really is shorter.
   const short = arrange({ b: { c: 1, r: 0.5 } });
   assert.equal(short.rows, 1);
@@ -230,17 +232,20 @@ test("auto tiles stack beside a taller tile and grow into the holes it leaves", 
   assert.deepEqual(ids.map((id) => grid.spans.get(id)), [{ c: 2, r: 3 }, { c: 2, r: 2 }, { c: 2, r: 3 }, { c: 2, r: 2 }]);
   assert.deepEqual(cellsOf(grid), [{ row: 0, col: 0 }, { row: 0, col: 2 }, { row: 2, col: 2 }, { row: 3, col: 0 }]);
   assert.equal(grid.rowTracks, 5);
-  // As tall as the three tiles beside it: it takes the whole height.
+  // Asked to be three rows tall among two auto rows: it takes the canvas
+  // height, two tiles stack beside it and the last one goes below the fold.
   const full = arrangeTiles({ ids, saved: { a: { c: 1, r: 3 } }, setting: 0, size, maxRows: 4 });
-  assert.deepEqual(cellsOf(full), [{ row: 0, col: 0 }, { row: 0, col: 2 }, { row: 2, col: 2 }, { row: 4, col: 2 }]);
+  assert.deepEqual(cellsOf(full), [{ row: 0, col: 0 }, { row: 0, col: 2 }, { row: 2, col: 2 }, { row: 4, col: 0 }]);
   assert.equal(full.rowTracks, 6);
-  assert.equal(full.spans.get("a").r, full.rowTracks);
+  assert.equal(full.spans.get("a").r, full.rows * 2);
   // A tall tile in the second row: the tile beside it matches it.
   const lower = arrangeTiles({ ids, saved: { d: { c: 1, r: 1.5 } }, setting: 0, size, maxRows: 4 });
   assert.deepEqual(ids.map((id) => lower.spans.get(id).r), [2, 2, 3, 3]);
-  // Two side by side: the auto one fills the height next to a 2-row tile.
+  // Two side by side: a tile asked to be two rows tall is held to the one row
+  // the canvas has, and the auto one beside it matches it.
   const pair = arrangeTiles({ ids: ["a", "b"], saved: { a: { c: 1, r: 2 } }, setting: 0, size, maxRows: 4 });
-  assert.deepEqual(pair.spans.get("b"), { c: 2, r: 4 });
+  assert.deepEqual(pair.spans.get("a"), { c: 2, r: 2 });
+  assert.deepEqual(pair.spans.get("b"), { c: 2, r: 2 });
 });
 
 // The canvas the browser measurements ran in: 1318px grid, 630px of canvas height, 10px gaps.
@@ -252,19 +257,19 @@ test("a resize drag ends at the size whose laid out edge is closest to the point
   const ids = ["a", "b", "c", "d"];
   const layout = layoutOf(ids);
   const from = { c: 1, r: 1 };
-  // To the bottom of the window: the tile fills the height (its neighbours stack
-  // beside it). The track size of the 2x2 grid called this 1 x 2, which saved a
-  // tile only two thirds tall.
+  // To the bottom of the window: the tile fills the height. Rows keep their
+  // height, so that is two rows; a neighbour that no longer fits beside it
+  // goes below the fold.
   const bottom = chooseResize(layout, "a", "y", from, { x: 0, y: BOX.height });
-  assert.deepEqual(bottom.span, { c: 1, r: 3 });
+  assert.deepEqual(bottom.span, { c: 1, r: 2 });
   assert.equal(bottom.box.top, 0);
   assert.equal(Math.round(bottom.box.height), BOX.height);
   // Just past its own bottom edge: nothing reachable lands closer than where it is.
   assert.deepEqual(chooseResize(layout, "a", "y", from, { x: 0, y: 330 }).span, from);
-  // Further down: the next reachable size, measured once its row tracks fit the window.
-  const taller = chooseResize(layout, "a", "y", from, { x: 0, y: 390 });
+  // Further down: the next reachable size, half a row more at the same track height.
+  const taller = chooseResize(layout, "a", "y", from, { x: 0, y: 420 });
   assert.deepEqual(taller.span, { c: 1, r: 1.5 });
-  assert.equal(Math.round(taller.box.height), 374);
+  assert.equal(Math.round(taller.box.height), 470);
   // Up to a quarter of the height: half a row.
   assert.deepEqual(chooseResize(layout, "a", "y", from, { x: 0, y: 150 }).span, { c: 1, r: 0.5 });
   // Side by side in one row a tile already fills the height: dragging further
@@ -276,16 +281,24 @@ test("a resize drag ends at the size whose laid out edge is closest to the point
   assert.equal(Math.round(wide.box.left + wide.box.width), 654);
 });
 
-test("a resize never picks a size that pushes the grid past the canvas while one fits", async (t) => {
-  const { chooseResize, arrangeTiles, fitRowTracks, sizedRowTrack, MIN_SIZED_ROW_TRACK } = await loadLayout(t);
-  // A short canvas: eight tracks of four tiles would need tracks under the floor.
-  const box = { width: 1318, height: 400, gap: 10 };
-  const layout = layoutOf(["a", "b", "c", "d", "e", "f"], {}, box);
-  const choice = chooseResize(layout, "a", "y", { c: 1, r: 1 }, { x: 0, y: 5000 });
-  const grid = arrangeTiles({ ...layout, saved: { a: choice.span } });
-  const count = fitRowTracks(grid);
-  assert.ok(sizedRowTrack(box.height, box.gap, count) >= MIN_SIZED_ROW_TRACK);
-  assert.ok(count * sizedRowTrack(box.height, box.gap, count) + (count - 1) * box.gap <= box.height + 0.5);
+test("a resize pushes other tiles below the fold instead of shrinking every row", async (t) => {
+  const { chooseResize, arrangeTiles, screenRowTracks, sizedRowTrack, tileBox, MIN_SIZED_ROW_TRACK } = await loadLayout(t);
+  const ids = ["a", "b", "c", "d"];
+  const layout = layoutOf(ids);
+  // Dragged to the right edge: the tile takes the whole row.
+  const wide = chooseResize(layout, "a", "x", { c: 1, r: 1 }, { x: BOX.width, y: 0 });
+  assert.deepEqual(wide.span, { c: 2, r: 1 });
+  const grid = arrangeTiles({ ...layout, saved: { a: wide.span } });
+  // Two rows still share the canvas, so a row is as tall as before the resize...
+  assert.equal(screenRowTracks(grid), 4);
+  assert.equal(Math.round(tileBox(grid, "a", BOX).height), 310);
+  assert.equal(Math.round(tileBox(grid, "b", BOX).height), 310);
+  // ...and the tiles it displaced reach past the canvas, where they scroll into view.
+  assert.equal(grid.rowTracks, 6);
+  assert.ok(tileBox(grid, "d", BOX).top >= BOX.height);
+  // A short canvas stops shrinking at the floor the automatic grid has too.
+  assert.equal(sizedRowTrack(200, 10, 4), MIN_SIZED_ROW_TRACK);
+  assert.equal(MIN_SIZED_ROW_TRACK, 150);
 });
 
 test("the resize preview is the layout the saved size produces", async (t) => {
@@ -299,7 +312,7 @@ test("the resize preview is the layout the saved size produces", async (t) => {
           const edge = { x: (BOX.width * step) / 20, y: (BOX.height * step) / 20 };
           const choice = chooseResize(layout, "a", axis, { c: 1, r: 1 }, edge);
           const committed = arrangeTiles({ ...layout, saved: { ...saved, a: choice.span } });
-          assert.deepEqual(tileBox(committed, "a", BOX).box, choice.box, `${count} tiles, ${axis} to ${edge.x},${edge.y}`);
+          assert.deepEqual(tileBox(committed, "a", BOX), choice.box, `${count} tiles, ${axis} to ${edge.x},${edge.y}`);
           // Saved spans are what the browser is given: whole tracks, at most four rows.
           assert.ok(Number.isInteger(choice.span.c * 2) && Number.isInteger(choice.span.r * 2) && choice.span.r <= 4);
         }

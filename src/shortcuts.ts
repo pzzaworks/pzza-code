@@ -1,5 +1,5 @@
 // Keyboard-shortcut helpers. Workspaces switch with Alt/Option + number, tiles
-// activate with Ctrl + number. We key off KeyboardEvent.code ("Digit1"...) not
+// activate with Cmd + number on macOS and Ctrl + number elsewhere. We key off KeyboardEvent.code ("Digit1"...) not
 // .key, because Option+number on macOS yields special characters, not digits.
 
 export const IS_MAC =
@@ -7,7 +7,9 @@ export const IS_MAC =
 
 // Short labels shown on the buttons.
 export const ALT_LABEL = IS_MAC ? "⌥" : "Alt";
-export const CTRL_LABEL = IS_MAC ? "⌃" : "Ctrl";
+// The modifier that activates a tile by number: Command on macOS, where Control
+// belongs to the shell, and Ctrl elsewhere.
+export const TILE_LABEL = IS_MAC ? "⌘" : "Ctrl";
 export const NEW_SESSION_SHORTCUT = { label: IS_MAC ? "⌘N" : "Ctrl N", keys: IS_MAC ? "Meta+N" : "Control+N" };
 export const NEW_WORKSPACE_SHORTCUT = { label: IS_MAC ? "⇧⌘N" : "Ctrl Shift N", keys: IS_MAC ? "Meta+Shift+N" : "Control+Shift+N" };
 
@@ -29,7 +31,13 @@ export function commandPaletteShortcut(event: KeyboardEvent): boolean {
 
 // Pretty badge text for a given number, e.g. "⌥1" on macOS or "Alt 1" elsewhere.
 export const altBadge = (n: number) => (IS_MAC ? `${ALT_LABEL}${n}` : `${ALT_LABEL} ${n}`);
-export const ctrlBadge = (n: number) => (IS_MAC ? `${CTRL_LABEL}${n}` : `${CTRL_LABEL} ${n}`);
+export const tileBadge = (n: number) => (IS_MAC ? `${TILE_LABEL}${n}` : `${TILE_LABEL} ${n}`);
+
+/** True for the bare tile modifier: Command on macOS, Ctrl elsewhere, nothing else held. */
+export function isTileModifier(event: KeyboardEvent): boolean {
+  const modifier = IS_MAC ? event.metaKey && !event.ctrlKey : event.ctrlKey && !event.metaKey;
+  return modifier && !event.altKey && !event.shiftKey;
+}
 
 // Returns the 0-9 digit from a KeyboardEvent's physical code, or null.
 export function digitFromCode(code: string): number | null {

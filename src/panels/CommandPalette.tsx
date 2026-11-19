@@ -28,7 +28,7 @@ import { compactPath } from "../grid/compactPath";
 import { PZZACODE_THEMES, themeById } from "../theme/themes";
 import { SPACING_RANGE } from "../state/store";
 import { HAS_TAURI } from "../tauriEnv";
-import { altBadge, COMMAND_PALETTE_SHORTCUT, ctrlBadge, IS_MAC, NEW_SESSION_SHORTCUT, NEW_WORKSPACE_SHORTCUT } from "../shortcuts";
+import { altBadge, COMMAND_PALETTE_SHORTCUT, tileBadge, IS_MAC, NEW_SESSION_SHORTCUT, NEW_WORKSPACE_SHORTCUT } from "../shortcuts";
 import { FileSearch, ListPlus, ListTodo, ListTree, MessageSquareText, TextSearch } from "lucide-react";
 import { CODE_PICKERS, openCodePicker, type CodePickerKind } from "../code/pickerBus";
 import { TASK_SURFACES } from "../lazySurfaces";
@@ -158,7 +158,7 @@ function usePaletteItems(open: boolean): PaletteItem[] {
       if (tile.id === activeId) notes.unshift("Active");
       if (hiddenTiles.includes(tile.id)) notes.push("Hidden");
       items.push({ id: `tile:${tile.id}`, group: "sessions", icon: isFileTile(tile) ? (isFolderTile(tile) ? Folder : FileText) : sessionIcon(tile.command), label: sessionDisplayName(tile, tileTitles), detail: notes.join(" · "),
-        shortcut: index >= 0 && index < 9 ? ctrlBadge(index + 1) : undefined,
+        shortcut: index >= 0 && index < 9 ? tileBadge(index + 1) : undefined,
         keywords: isFileTile(tile) ? fileTilePath(tile) : `${tile.session ?? tile.name} ${tile.path ?? tile.cwd ?? ""}`, run: command("focus_tile", { tileId: tile.id }) });
     }
 

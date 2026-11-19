@@ -186,7 +186,7 @@
 }
 /* Over glass, rows scrolling under the header are blurred behind its own glass
    rather than showing through its text. */
-:root[data-transparency="on"] :is(.as-group-head, .as-day) { background: var(--glass-bg-strong); -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px); }
+:root[data-transparency="on"] :is(.as-group-head, .as-day) { border-radius: var(--r-md); background: var(--glass-bg-strong); -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px); }
 .as-group-head {
   display: flex;
   align-items: baseline;
