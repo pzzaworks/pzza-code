@@ -57,6 +57,19 @@ pub(crate) fn resolve(binary: &str) -> Option<String> {
 
 // Each catalog agent with the first of its binaries that is installed and is
 // not a same-named tool its catalog entry rules out.
+/// The binary for a catalog agent, found the same way setup finds it: by its names on the login
+/// PATH and install folders, skipping look-alikes the catalog excludes (Foundry's forge).
+pub(crate) fn catalog_binary(id: &str) -> Option<String> {
+    let catalog = crate::agent_catalog::catalog();
+    let agent = catalog.agents.iter().find(|agent| agent.id == id)?;
+    let path = crate::agent::login_path();
+    let home = std::env::var("HOME").ok();
+    agent
+        .binaries
+        .iter()
+        .find_map(|binary| find_binary(binary, path, home.as_deref(), &agent.install_dirs, |found| agent.allows_binary(found)))
+}
+
 fn agent_tools() -> Vec<SetupTool> {
     let path = crate::agent::login_path();
     let home = std::env::var("HOME").ok();

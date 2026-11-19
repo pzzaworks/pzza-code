@@ -55,3 +55,33 @@ test("project scan streams expose CORS only to trusted app origins", async (t) =
     assert.deepEqual(chunks.map((line) => JSON.parse(line).type), ["progress", "result"]);
   }
 });
+
+test("JSON request bodies stop at 1 MiB instead of filling memory", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "pzza-http-body-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const module = new URL("../lib/http.js", import.meta.url).href;
+  const script = `
+    import { EventEmitter } from "node:events";
+    const { readBody, MAX_JSON_BODY_BYTES } = await import(${JSON.stringify(module)});
+    const fakeRequest = () => {
+      const req = new EventEmitter();
+      req.destroyed = false;
+      req.destroy = () => { req.destroyed = true; };
+      return req;
+    };
+    const big = fakeRequest();
+    const bigBody = readBody(big);
+    big.emit("data", Buffer.alloc(MAX_JSON_BODY_BYTES, 0x20));
+    big.emit("data", Buffer.from("{}"));
+    const small = fakeRequest();
+    const smallBody = readBody(small);
+    small.emit("data", Buffer.from('{"a":1}'));
+    small.emit("end");
+    console.log(JSON.stringify({ big: await bigBody, destroyed: big.destroyed, small: await smallBody }));
+  `;
+  const { stdout } = await promisify(execFile)(process.execPath, ["--input-type=module", "-e", script], {
+    env: { ...process.env, XDG_CONFIG_HOME: root },
+    timeout: 5000,
+  });
+  assert.deepEqual(JSON.parse(stdout), { big: {}, destroyed: true, small: { a: 1 } });
+});

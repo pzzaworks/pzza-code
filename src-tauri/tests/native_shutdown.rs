@@ -12,6 +12,9 @@ mod agent;
 #[cfg(target_os = "macos")]
 #[path = "../src/local_tmux.rs"]
 mod local_tmux;
+
+#[path = "../src/open_files.rs"]
+mod open_files;
 #[cfg(target_os = "macos")]
 #[path = "../src/pty.rs"]
 mod pty;
@@ -30,6 +33,9 @@ mod speech;
 #[cfg(target_os = "macos")]
 #[path = "../src/speech_model.rs"]
 mod speech_model;
+
+#[path = "../src/sys.rs"]
+mod sys;
 #[cfg(target_os = "macos")]
 #[path = "../src/setup.rs"]
 mod setup;

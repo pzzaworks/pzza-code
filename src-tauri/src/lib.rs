@@ -360,7 +360,10 @@ mod instance {
                 panic!("A file nobody holds must not block launch");
             };
             drop(owner);
-            assert!(matches!(claim(&directory, Duration::ZERO).unwrap(), Claim::Owner(_)));
+            // Some patience: a test spawning a process in parallel can hold a forked copy of the
+            // locked descriptor until its exec closes it (O_CLOEXEC), and with none at all that
+            // window read as a running copy now and then.
+            assert!(matches!(claim(&directory, Duration::from_millis(500)).unwrap(), Claim::Owner(_)));
             std::fs::remove_dir_all(&directory).unwrap();
         }
 
