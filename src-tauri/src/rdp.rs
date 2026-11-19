@@ -417,24 +417,18 @@ fn keychain_password(service: &str) -> Option<String> {
 }
 
 // Store an RDP password in the login Keychain (created/updated), so it is never
-// persisted by the app in plaintext.
+// persisted by the app in plaintext. The command goes to `security -i` on stdin: as
+// arguments, the password was readable in the process list while it ran.
 fn keychain_set(service: &str, account: &str, password: &str) -> Result<(), String> {
-    let status = run_command(
-        Command::new("security").args([
-            "add-generic-password",
-            "-U",
-            "-s",
-            service,
-            "-a",
-            account,
-            "-w",
-            password,
-        ]),
-        &[],
-    )
-    .map_err(|e| e.to_string())?
-    .status;
-    if status.success() {
+    // Values are double-quoted for security's command parser, which has no escapes.
+    let quotable = |value: &str| !value.is_empty() && !value.chars().any(|c| c == '"' || c == '\\' || c.is_control());
+    if ![service, account, password].into_iter().all(quotable) {
+        return Err("could not write the RDP password to the Keychain".into());
+    }
+    let command = format!("add-generic-password -U -s \"{service}\" -a \"{account}\" -w \"{password}\"\n");
+    run_command(Command::new("security").arg("-i"), command.as_bytes()).map_err(|e| e.to_string())?;
+    // Interactive mode exits 0 even when the command fails, so the write is confirmed by reading it.
+    if keychain_password(service).as_deref() == Some(password) {
         Ok(())
     } else {
         Err("could not write the RDP password to the Keychain".into())
