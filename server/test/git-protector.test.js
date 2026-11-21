@@ -235,10 +235,10 @@ test("remote protection fails closed when no runtime can be found", async t => {
 test("staged environment variants, credentials, and private-key paths block without returning contents", async (t) => {
   const root = await repository(t);
   const content = `private-content-${crypto.randomUUID()}`;
-  for (const filename of [".env", ".env.example", "nested/.env.production", "credentials.json", ".credentials", "keys/private.pem", "service-account-production.json", "nested/auth.json"]) await stage(root, filename, content);
+  for (const filename of [".env", "nested/.env.production", "credentials.json", ".credentials", "keys/private.pem", "service-account-production.json", "nested/auth.json"]) await stage(root, filename, content);
   const result = await runGitProtection({ path: root, operation: "commit" });
   assert.equal(result.approved, false);
-  assert.equal(result.findings.filter((finding) => finding.rule === "sensitive-file").length, 8);
+  assert.equal(result.findings.filter((finding) => finding.rule === "sensitive-file").length, 7);
   assert.equal(JSON.stringify(result).includes(content), false);
 });
 
@@ -864,4 +864,79 @@ test("repair heals a chain into a vanished protection directory from an older re
   await stage(root, "safe.txt", "Safe.\n");
   await git(root, "commit", "-qm", "Own hooks run again");
   assert.equal(await readFile(path.join(top, ".git", "own-hook-ran"), "utf8"), "ran");
+});
+
+test("environment templates are scanned by content instead of refused by name", async t => {
+  const root = await repository(t);
+  await stage(root, ".env.example", "# Get yours at https://example.com\nPROJECT_ID=\nAPI_URL=https://api.example.com\n");
+  await stage(root, "config/.env.sample", "DATABASE_URL=postgres://localhost/app\n");
+  assert.equal((await runGitProtection({ path: root, operation: "commit" })).approved, true);
+  // A real key left in a template is still caught by its content.
+  const token = "ghp_" + crypto.randomBytes(27).toString("hex").slice(0, 36);
+  await stage(root, ".env.template", `GITHUB_TOKEN=${token}\n`);
+  const result = await runGitProtection({ path: root, operation: "commit" });
+  assert.equal(result.approved, false);
+  assert.ok(result.findings.some(finding => finding.path === ".env.template" && finding.rule !== "sensitive-file"));
+  assert.equal(JSON.stringify(result).includes(token), false);
+});
+
+test("a key the tree publishes as its own file is public, an unpublished one is not", async t => {
+  const root = await repository(t);
+  // Mixed letters and digits, like many IndexNow keys: always above the
+  // scanner's entropy threshold, so the unpublished case is a real finding.
+  const key = crypto.randomBytes(30).toString("base64").replace(/[^A-Za-z0-9]/g, "").slice(0, 32);
+  const script = `const INDEXNOW_KEY = "${key}";\nconst KEY_LOCATION = \`https://example.com/\${INDEXNOW_KEY}.txt\`;\n`;
+  await stage(root, "scripts/indexnow.mjs", script);
+  const unpublished = await runGitProtection({ path: root, operation: "commit" });
+  assert.equal(unpublished.approved, false, "the scanner flags the key on its own");
+  assert.equal(JSON.stringify(unpublished).includes(key), false);
+  await stage(root, `public/${key}.txt`, `${key}\n`);
+  assert.equal((await runGitProtection({ path: root, operation: "commit" })).approved, true);
+  // A file named after the key that holds anything else publishes nothing.
+  await stage(root, `public/${key}.txt`, `${key} and more\n`);
+  assert.equal((await runGitProtection({ path: root, operation: "commit" })).approved, false);
+});
+
+test("public EVM addresses pass while private keys are still caught", async t => {
+  const root = await repository(t);
+  const address = "0x" + crypto.randomBytes(20).toString("hex");
+  await stage(root, "src/config.ts", `// A deployed contract.\nexport const CONTRACT_TOKEN_ADDRESS = "${address}";\nexport const api_key = "${address}";\n`);
+  assert.equal((await runGitProtection({ path: root, operation: "commit" })).approved, true);
+  const privateKey = "0x" + crypto.randomBytes(32).toString("hex");
+  await stage(root, "src/wallet.ts", `export const PRIVATE_KEY = "${privateKey}";\n`);
+  const result = await runGitProtection({ path: root, operation: "commit" });
+  assert.equal(result.approved, false);
+  assert.equal(JSON.stringify(result).includes(privateKey), false);
+});
+
+test("a long history is scanned whole in batches instead of refused", { timeout: 120000 }, async t => {
+  const root = await repository(t);
+  // More files than one batch holds, with the secret in the last one.
+  for (let index = 0; index < 2100; index++) await writeFile(path.join(root, `file-${String(index).padStart(4, "0")}.txt`), `note ${index} ${crypto.randomUUID()}\n`);
+  await git(root, "add", "-A");
+  assert.equal((await runGitProtection({ path: root, operation: "commit" })).approved, true);
+  const token = "ghp_" + crypto.randomBytes(27).toString("hex").slice(0, 36);
+  await writeFile(path.join(root, "zz-last.txt"), `token = "${token}"\n`);
+  await git(root, "add", "-A");
+  const result = await runGitProtection({ path: root, operation: "commit" });
+  assert.equal(result.approved, false);
+  assert.ok(result.findings.some(finding => finding.path === "zz-last.txt"));
+});
+
+test("placeholders and word-only names pass while a random key beside them is caught", async t => {
+  const root = await repository(t);
+  await stage(root, "config/settings.ts", [
+    'export const API_KEY = "your-api-key-here";',
+    'export const ENCRYPTION_MASTER_KEY = "change-me-to-a-long-random-value";',
+    'export const client_secret = "<client-secret>";',
+    'const key = "app.notifications.v1";',
+    "",
+  ].join("\n"));
+  assert.equal((await runGitProtection({ path: root, operation: "commit" })).approved, true);
+  const secret = crypto.randomBytes(24).toString("base64url");
+  await stage(root, "config/live.ts", `export const api_key = "${secret}";\n`);
+  const result = await runGitProtection({ path: root, operation: "commit" });
+  assert.equal(result.approved, false);
+  assert.ok(result.findings.some(finding => finding.path === "config/live.ts"));
+  assert.equal(JSON.stringify(result).includes(secret), false);
 });

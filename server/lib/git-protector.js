@@ -293,11 +293,59 @@ async function protect() {
   try {
     const configuration = path.join(temporary, "rules.toml");
     const ignored = path.join(temporary, "ignore");
-    await fs.writeFile(configuration, "[extend]\nuseDefault = true\n", { mode: 0o600 });
     await fs.writeFile(ignored, "", { mode: 0o600 });
     const scannerArgs = ["--config", configuration, "--gitleaks-ignore-path", ignored, "--ignore-gitleaks-allow", "--redact=100", "--no-banner", "--no-color", "--log-level", "error", "--report-format", "json", "--report-path", "-", "--timeout", "25"];
+    // The trees being published, for values they publish themselves (below).
+    const publishedTrees = [];
+    // A value is public when the tree publishes it as its own file: a
+    // `<value>.txt` whose whole content is that value. That is how IndexNow
+    // and search engine site verification keys work (served at /<key>.txt),
+    // so the same value in the code that submits it is no secret. A random
+    // API key is never also published under its own name, so this cannot
+    // excuse one. Read from Git objects only, never from the working tree.
+    const publishedValues = async () => {
+      const values = new Set();
+      for (const treeish of [...new Set(publishedTrees)]) {
+        const listing = await run("git", ["ls-tree", "-r", "-l", "-z", "--full-tree", treeish], { allowFailure: true });
+        if (listing.code !== 0) continue;
+        const candidates = [];
+        for (const entry of listing.output.split("\0")) {
+          const match = /^100644 blob ([a-f0-9]{40}|[a-f0-9]{64}) +(\d+)\t(?:.*\/)?([A-Za-z0-9_-]{16,128})\.txt$/.exec(entry);
+          if (match && Number(match[2]) <= 256) candidates.push({ id: match[1], name: match[3] });
+          if (candidates.length >= 64) break;
+        }
+        for (const { id, name } of candidates) {
+          const content = await run("git", ["cat-file", "blob", id], { allowFailure: true, maxBuffer: 1024 });
+          if (content.code === 0 && content.output.trim() === name) values.add(name);
+        }
+      }
+      return [...values].slice(0, 32);
+    };
+    // The rules: gitleaks' own, plus values that are no secret by their
+    // shape, or published by the tree itself. Written here, never read from
+    // the repository, so a repository cannot excuse its own findings.
+    // - An EVM address: 0x and 40 hex digits (a private key has 64).
+    // - A placeholder in a template: "change-me", "your-api-key-here",
+    //   "<token>", "example"... Random keys never spell these words.
+    // - A name made of words only, such as a storage key "app.notices.v1".
+    const shapes = [
+      "^0x[0-9a-fA-F]{40}$",
+      "(?i)(?:change[-_.]?me|your[-_.]|[-_.]here$|example|placeholder|replace[-_.]?(?:me|this|with)|dummy|x{4,}|<[a-z_-]+>)",
+      "^[a-z][a-zA-Z]*(?:\\.[a-zA-Z]+)+(?:\\.v?[0-9]{1,3})?$",
+    ];
+    let rulesWritten;
+    const writeRules = async () => {
+      const allowed = [...shapes, ...(await publishedValues()).map((value) => `^${value}$`)];
+      const rules = [
+        "[extend]", "useDefault = true", "",
+        "[[allowlists]]", "description = \"Values that are public by design\"", "regexTarget = \"secret\"",
+        `regexes = [${allowed.map((value) => `'''${value}'''`).join(", ")}]`, "",
+      ].join("\n");
+      await fs.writeFile(configuration, rules, { mode: 0o600 });
+    };
     const blobPaths = new Map();
     const scan = async (args, stdin, source = "operation text") => {
+      await (rulesWritten ??= writeRules());
       const result = await run(binary, [...args, ...scannerArgs], { allowFailure: true, stdin, cwd: temporary });
       if (![0, 1].includes(result.code)) fail("Secret scanning did not finish. The Git operation is blocked");
       let records;
@@ -308,7 +356,11 @@ async function protect() {
         for (const source of sources) findings.push({ path: source, line: record.StartLine || 1, rule: record.RuleID || "detected-secret" });
       }
     };
-    const blockedPath = (file) => file.split("/").some((part) => /^(?:\.env(?:\..*)?|\.envrc|\.netrc|\.npmrc|\.pypirc|\.?(?:credentials|secrets?)(?:(?:[._-][^.]+)*\.(?:json|ya?ml|toml|ini|conf|config|csv|txt|xml))?|auth\.json|id_(?:rsa|dsa|ecdsa|ed25519)(?:\.(?:pem|key))?|.*\.(?:pem|key|p12|pfx|jks|keystore))$/i.test(part))
+    // Committed environment templates (.env.example and the like) are meant to
+    // be shared: they are not refused by name, and their content is scanned
+    // like any other file, so a real key left in one is still caught.
+    const template = (part) => /^\.env\.(?:example|sample|template|dist|defaults|schema)$/i.test(part);
+    const blockedPath = (file) => file.split("/").some((part) => !template(part) && /^(?:\.env(?:\..*)?|\.envrc|\.netrc|\.npmrc|\.pypirc|\.?(?:credentials|secrets?)(?:(?:[._-][^.]+)*\.(?:json|ya?ml|toml|ini|conf|config|csv|txt|xml))?|auth\.json|id_(?:rsa|dsa|ecdsa|ed25519)(?:\.(?:pem|key))?|.*\.(?:pem|key|p12|pfx|jks|keystore))$/i.test(part))
       || /(?:^|\/)service[-_]?account[^/]*\.json$/i.test(file);
     const inspectPaths = (raw) => {
       const fields = raw.split("\0");
@@ -325,56 +377,82 @@ async function protect() {
         blobPaths.set(name, [...new Set([...(blobPaths.get(name) || []), file])]);
       }
     };
+    // Blobs are read and scanned in batches, so a long history (a first push
+    // of an old repository) is scanned whole without holding it in memory at
+    // once. The totals only stop runaway input.
+    const BATCH_BYTES = 32 * 1024 * 1024;
+    const BATCH_BLOBS = 2000;
+    const MAX_BLOBS = 200000;
+    const MAX_TOTAL = 2 * 1024 * 1024 * 1024;
+    const MAX_BLOB = 256 * 1024 * 1024;
     const scanBlobs = async () => {
       if (!blobPaths.size) return;
-      if (blobPaths.size > 5000) fail("This change exceeds the protected scan limit. Split the change before publishing");
+      if (blobPaths.size > MAX_BLOBS) fail("This change exceeds the protected scan limit. Split the change before publishing");
       const ids = [...blobPaths.keys()].map((name) => name.slice(0, -4));
-      const request = ids.join("\n") + "\n";
-      const metadata = (await run("git", ["cat-file", "--batch-check"], { stdin: request })).output.trim().split("\n");
+      const metadata = (await run("git", ["cat-file", "--batch-check"], { stdin: ids.join("\n") + "\n", maxBuffer: 64 * 1024 * 1024 })).output.trim().split("\n");
+      const sizes = new Map();
       let total = 0;
       for (let index = 0; index < ids.length; index++) {
         const entry = /^(\w+) blob (\d+)$/.exec(metadata[index] || "");
         if (!entry || entry[1] !== ids[index]) fail("A changed Git blob is unavailable");
-        total += Number(entry[2]);
-      }
-      if (total > 64 * 1024 * 1024) fail("This change exceeds the protected scan size. Split the change before publishing");
-      const bytes = (await run("git", ["cat-file", "--batch"], { stdin: request, encoding: "buffer", maxBuffer: 65 * 1024 * 1024 })).output;
-      const snapshot = path.join(temporary, "objects");
-      await fs.mkdir(snapshot, { mode: 0o700 });
-      let offset = 0;
-      for (const id of ids) {
-        const end = bytes.indexOf(10, offset);
-        const entry = /^(\w+) blob (\d+)$/.exec(bytes.subarray(offset, end).toString("ascii"));
-        if (end < offset || !entry || entry[1] !== id) fail("Git returned an invalid blob snapshot");
         const size = Number(entry[2]);
-        offset = end + 1;
-        if (!Number.isSafeInteger(size) || offset + size >= bytes.length || bytes[offset + size] !== 10) fail("Git returned an incomplete blob snapshot");
-        let content = bytes.subarray(offset, offset + size);
-        if (content.subarray(0, 43).toString().startsWith("version https://git-lfs.github.com/spec/v1")) {
-          const pointer = /^version https:\/\/git-lfs.github.com\/spec\/v1\r?\noid sha256:([a-f0-9]{64})\r?\nsize (\d+)\r?\n?$/.exec(content.toString("utf8"));
-          let verified = false;
-          if (pointer) {
-            const configured = await run("git", ["config", "--path", "--get", "lfs.storage"], { allowFailure: true });
-            const storage = path.resolve(common, configured.output.trim() || "lfs");
-            const file = path.join(storage, "objects", pointer[1].slice(0, 2), pointer[1].slice(2, 4), pointer[1]);
-            const expectedSize = Number(pointer[2]);
-            if (!Number.isSafeInteger(expectedSize) || expectedSize + total > 64 * 1024 * 1024) fail("LFS content exceeds the protected scan size");
-            try {
-              const stat = await fs.lstat(file);
-              if (stat.isFile() && !stat.isSymbolicLink() && stat.size === expectedSize) {
-                const object = await fs.readFile(file);
-                if (digest(object) === pointer[1]) { content = object; total += object.length; verified = true; }
-              }
-            } catch { /* Missing LFS data cannot be approved for upload. */ }
-          }
-          if (!verified) for (const source of blobPaths.get(`${id}.txt`)) findings.push({ path: source, line: 0, rule: "unverified-lfs-content" });
-        }
-        await fs.writeFile(path.join(snapshot, `${id}.txt`), content, { mode: 0o600, flag: "wx" });
-        offset += size + 1;
+        if (size > MAX_BLOB) fail("A changed file exceeds the protected scan size. Keep large files out of Git or in Git LFS");
+        sizes.set(ids[index], size);
+        total += size;
       }
-      // Full blobs avoid .gitattributes, textconv, binary-diff omissions and
-      // repository allowlists. Private regular files also make symlinks inert.
-      await scan(["dir", snapshot]);
+      if (total > MAX_TOTAL) fail("This change exceeds the protected scan size. Split the change before publishing");
+      const batches = [];
+      let batch = [];
+      let batchBytes = 0;
+      for (const id of ids) {
+        if (batch.length && (batch.length >= BATCH_BLOBS || batchBytes + sizes.get(id) > BATCH_BYTES)) { batches.push(batch); batch = []; batchBytes = 0; }
+        batch.push(id);
+        batchBytes += sizes.get(id);
+      }
+      if (batch.length) batches.push(batch);
+      for (let number = 0; number < batches.length; number++) {
+        const part = batches[number];
+        const request = part.join("\n") + "\n";
+        const expected = part.reduce((sum, id) => sum + sizes.get(id) + id.length + 32, 0);
+        const bytes = (await run("git", ["cat-file", "--batch"], { stdin: request, encoding: "buffer", maxBuffer: expected + 1024 * 1024 })).output;
+        const snapshot = path.join(temporary, `objects-${number}`);
+        await fs.mkdir(snapshot, { mode: 0o700 });
+        let offset = 0;
+        for (const id of part) {
+          const end = bytes.indexOf(10, offset);
+          const entry = /^(\w+) blob (\d+)$/.exec(bytes.subarray(offset, end).toString("ascii"));
+          if (end < offset || !entry || entry[1] !== id) fail("Git returned an invalid blob snapshot");
+          const size = Number(entry[2]);
+          offset = end + 1;
+          if (!Number.isSafeInteger(size) || offset + size >= bytes.length || bytes[offset + size] !== 10) fail("Git returned an incomplete blob snapshot");
+          let content = bytes.subarray(offset, offset + size);
+          if (content.subarray(0, 43).toString().startsWith("version https://git-lfs.github.com/spec/v1")) {
+            const pointer = /^version https:\/\/git-lfs.github.com\/spec\/v1\r?\noid sha256:([a-f0-9]{64})\r?\nsize (\d+)\r?\n?$/.exec(content.toString("utf8"));
+            let verified = false;
+            if (pointer) {
+              const configured = await run("git", ["config", "--path", "--get", "lfs.storage"], { allowFailure: true });
+              const storage = path.resolve(common, configured.output.trim() || "lfs");
+              const file = path.join(storage, "objects", pointer[1].slice(0, 2), pointer[1].slice(2, 4), pointer[1]);
+              const expectedSize = Number(pointer[2]);
+              if (!Number.isSafeInteger(expectedSize) || expectedSize > MAX_BLOB || expectedSize + total > MAX_TOTAL) fail("LFS content exceeds the protected scan size");
+              try {
+                const stat = await fs.lstat(file);
+                if (stat.isFile() && !stat.isSymbolicLink() && stat.size === expectedSize) {
+                  const object = await fs.readFile(file);
+                  if (digest(object) === pointer[1]) { content = object; total += object.length; verified = true; }
+                }
+              } catch { /* Missing LFS data cannot be approved for upload. */ }
+            }
+            if (!verified) for (const source of blobPaths.get(`${id}.txt`)) findings.push({ path: source, line: 0, rule: "unverified-lfs-content" });
+          }
+          await fs.writeFile(path.join(snapshot, `${id}.txt`), content, { mode: 0o600, flag: "wx" });
+          offset += size + 1;
+        }
+        // Full blobs avoid .gitattributes, textconv, binary-diff omissions and
+        // repository allowlists. Private regular files also make symlinks inert.
+        await scan(["dir", snapshot]);
+        await fs.rm(snapshot, { recursive: true, force: true });
+      }
     };
     const staged = ["commit", "commit_create", "hook_commit", "hook_message"].includes(input.operation);
     const headResult = await run("git", ["rev-parse", "--verify", "HEAD"], { allowFailure: true });
@@ -398,6 +476,7 @@ async function protect() {
       remoteBase = await remoteCommit(input.base);
     }
     if (staged) {
+      publishedTrees.push(tree);
       inspectPaths((await run("git", ["diff", "--cached", "--raw", "--abbrev=64", "-z", "--no-renames", "--diff-filter=ACMT"])).output);
     } else if (input.operation === "hook_push") {
       if (typeof input.updates !== "string" || input.updates.length > 1024 * 1024 || !text(input.remote, 256) || input.remote.startsWith("-")) fail("Invalid push references");
@@ -414,6 +493,7 @@ async function protect() {
         refs.add(ref);
         updates.push({ local, ref, remote });
       }
+      for (const { local } of updates) if (!zero(local)) publishedTrees.push(local);
       const destinationHead = async () => {
         if (!text(input.remoteUrl) || !input.remoteUrl || input.remoteUrl.startsWith("-")) return null;
         // Git may rewrite URLs again on a read. A different lookup destination
@@ -488,6 +568,7 @@ async function protect() {
       const baseId = await git("rev-parse", "--verify", `${base}^{commit}`);
       if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(baseId) || head === "unborn") fail("Cannot resolve the branch being protected");
       range = `${baseId}..${head}`;
+      publishedTrees.push(head);
       inspectPaths((await run("git", ["log", "--raw", "--abbrev=64", "-z", "--format=", "--no-renames", "--diff-filter=ACMT", "-m", "--full-history", range])).output);
       await scan(["stdin"], await git("log", "--format=%B", range));
     }
