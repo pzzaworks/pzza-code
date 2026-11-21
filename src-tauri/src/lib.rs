@@ -7,6 +7,7 @@ mod menu;
 mod open_files;
 mod open_panel;
 mod pane_mode;
+mod pane_programs;
 mod appearance;
 mod forward;
 mod permissions;
@@ -512,6 +513,8 @@ pub fn run() {
             pane_mode::tmux_pane_mode,
             pane_mode::tmux_pane_lines,
             session_refresh::local_tmux_refresh_sessions,
+            session_refresh::local_tmux_refresh_selected,
+            session_refresh::local_tmux_pane_programs,
             restore_local_sessions,
             session_refresh::local_tmux_record_sessions,
             session_refresh::local_tmux_outdated,

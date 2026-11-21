@@ -54,3 +54,42 @@
   backdrop-filter: var(--glass-filter);
 }
 :root[data-transparency="on"] .session-refresh-notice:not(.is-fail) { border-color: var(--glass-border); }
+
+/* Refresh sessions dialog: this Mac's sessions by workspace, each with the
+   programs that start again. Neutral throughout; only focus uses the accent. */
+.rs-dialog .modal-body { display: flex; flex-direction: column; gap: 10px; padding: 14px 16px 12px; }
+.rs-intro, .rs-note { margin: 0; color: var(--muted); font-size: var(--fs-sm); line-height: 1.5; }
+.rs-note { margin-top: -6px; opacity: 0.85; }
+.rs-empty { display: flex; align-items: center; justify-content: center; gap: 8px; min-height: 72px; border: 1px dashed var(--hairline-strong); border-radius: var(--r-md); color: var(--muted); font-size: var(--fs-sm); }
+.rs-list { display: flex; flex-direction: column; min-height: 0; border: 1px solid var(--hairline-strong); border-radius: var(--r-md); overflow: hidden; }
+.rs-rows { max-height: min(380px, 50vh); overflow-y: auto; }
+.rs-list input[type="checkbox"] { width: 15px; height: 15px; min-width: 15px; flex-basis: 15px; }
+.rs-row { display: flex; align-items: center; gap: 10px; min-width: 0; height: 32px; padding: 0 10px 0 22px; font-size: var(--fs-md); cursor: pointer; }
+.rs-row-head { padding-left: 10px; border-bottom: 1px solid var(--divider); background: color-mix(in srgb, var(--text) 3%, transparent); color: var(--muted); font-size: var(--fs-sm); }
+.rs-row-head .rs-name { font-weight: 500; }
+.rs-group + .rs-group { border-top: 1px solid var(--divider); }
+.rs-group-head { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; gap: 10px; height: 28px; padding: 0 10px; background: var(--opaque-surface, var(--surface)); color: var(--muted); font-size: var(--fs-xs); font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; cursor: pointer; }
+.rs-group-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rs-group-count { flex: 0 0 auto; font-variant-numeric: tabular-nums; font-weight: 500; }
+.rs-session { transition: background-color 0.12s ease; }
+.rs-session:hover { background: color-mix(in srgb, var(--text) 5%, transparent); }
+.rs-session.is-on { background: color-mix(in srgb, var(--text) 8%, transparent); }
+.rs-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rs-windows { flex: 0 0 auto; color: var(--muted); font-size: var(--fs-xs); font-variant-numeric: tabular-nums; }
+.rs-status { display: inline-flex; flex: 0 1 auto; align-items: center; gap: 5px; min-width: 0; max-width: 46%; height: 20px; padding: 0 7px; border: 1px solid var(--hairline-strong); border-radius: var(--r-pill); color: var(--muted); font-size: var(--fs-xs); white-space: nowrap; overflow: hidden; }
+.rs-status > svg { flex: 0 0 auto; }
+.rs-launcher { padding: 0; background: none; color: var(--text); font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: var(--fs-xs); font-weight: 600; }
+.rs-state { padding-left: 5px; border-left: 1px solid var(--hairline-strong); }
+/* A program under its session: ticked ones are typed again after the refresh. */
+.rs-program { display: flex; align-items: center; gap: 8px; min-width: 0; height: 26px; padding: 0 10px 0 47px; color: var(--muted); font-size: var(--fs-sm); cursor: pointer; }
+.rs-program:last-child { padding-bottom: 2px; }
+.rs-program.is-fixed { cursor: default; }
+.rs-program.is-fixed > svg { flex: 0 0 auto; margin: 0 1px; }
+.rs-program-line { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0; background: none; color: var(--text); font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: var(--fs-xs); }
+.rs-program.is-fixed .rs-program-line { color: var(--muted); }
+.rs-ports { flex: 0 0 auto; color: var(--muted); font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: var(--fs-xs); }
+.rs-reason { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-xs); opacity: 0.85; }
+.rs-warning { display: flex; align-items: flex-start; gap: 6px; margin: 0; color: var(--muted); font-size: var(--fs-sm); line-height: 1.45; overflow-wrap: anywhere; }
+.rs-warning > svg { flex: 0 0 auto; margin-top: 2px; }
+.rs-actions { align-items: center; margin-top: 2px; }
+.rs-spacer { flex: 1 1 auto; }

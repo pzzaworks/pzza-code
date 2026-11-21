@@ -7,7 +7,7 @@ import path from "node:path";
 import test from "node:test";
 import childProcess from "node:child_process";
 import { syncBuiltinESMExports } from "node:module";
-import { inspectPortProcesses, listPortDetails, parsePorts, protectedListenerPort, stopPortContainer, terminateListener, terminateRemoteListener } from "../lib/ports.js";
+import { INTERNAL_SESSIONS, inspectPortProcesses, listPortDetails, parsePorts, portProbeRules, protectedListenerPort, stopPortContainer, terminateListener, terminateRemoteListener } from "../lib/ports.js";
 
 test("port parser deduplicates IPv4 and IPv6 listeners", () => {
   assert.deepEqual(parsePorts("127.0.0.1:3000\n[::]:3000\n*:4100\n"), [3000, 4100]);
@@ -184,7 +184,8 @@ test("malformed metadata and unavailable daemons do not lose host listeners", as
     if (command === "docker") return ["invalid-json", containerRow("a".repeat(12), "bad", "0.0.0.0:1-65535->1-65535/tcp, 0.0.0.0:0->80/tcp"), containerRow("invalid", "bad", "0.0.0.0:9000->80/tcp")].join("\n");
     return "";
   } });
-  assert.deepEqual(result, [{ port: 8080, scope: "local", containers: [], processes: [] }]);
+  // Nothing names the owner, so the port counts as a system one.
+  assert.deepEqual(result, [{ port: 8080, scope: "local", system: true, internal: false, containers: [], processes: [] }]);
 });
 
 test("serialized device probe remains self-contained", async () => {
@@ -236,7 +237,7 @@ test("listeners report their reach, age, kind of service and the session that st
         if (command === "lsof") return `p500\nn${root}\np600\nn${root}\np700\nn${root}\n`;
         // 600 is a grandchild of the pane 20; 700 has no terminal above it.
         if (command === "ps") return "  500    20       05:10\n  600   550 1-02:03:04\n  550    20       09:00\n   20     1    10:00:00\n  700     1       00:42\n";
-        if (command === "tmux") return "20\tShop dev\n";
+        if (command === "tmux") return "20\t/dev/ttys001\tShop dev\n";
         return "";
       },
     });
@@ -247,10 +248,175 @@ test("listeners report their reach, age, kind of service and the session that st
     assert.deepEqual({ session: api.processes[0].session, uptime: api.processes[0].uptime }, { session: "Shop dev", uptime: 93784 });
     // A database started in a project folder is named by its process, not by the project's framework.
     assert.deepEqual({ kind: database.processes[0].kind, session: database.processes[0].session, uptime: database.processes[0].uptime }, { kind: "PostgreSQL", session: null, uptime: 42 });
-    assert.ok(calls.includes("tmux -N -S /fixture/tmux.sock -u list-panes -a -F #{pane_pid}\t#{session_name}"));
-    // Only ids, parents and ages are read from the process table: no arguments.
-    assert.ok(calls.includes("ps -axo pid=,ppid=,etime="));
+    assert.ok(calls.includes("tmux -N -S /fixture/tmux.sock -u list-panes -a -F #{pane_pid}\t#{pane_tty}\t#{session_name}"));
+    // Only ids, parents, ages and terminals are read from the process table: no arguments.
+    assert.ok(calls.includes("ps -axo pid=,ppid=,etime=,tty="));
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("a listener maps to its session through any depth of parents, or through the pane's terminal", async () => {
+  const calls = [];
+  const result = await inspectPortProcesses({
+    platform: "darwin", containers: false,
+    run: async (command, args) => {
+      calls.push([command, ...args].join(" "));
+      if (command === "lsof" && args.includes("-iTCP")) return "p900\ncnode\nn*:3000\np910\ncnode\nn127.0.0.1:3100\np920\ncnode\nn127.0.0.1:3200\np930\ncnode\nn127.0.0.1:3300\n";
+      // 900 runs six levels below the pane shell 10 (shell, npm, sh, node,
+      // next, worker); 910 lost its parents but kept the pane's terminal; 920
+      // runs in a terminal outside tmux; 930 sits in a parent loop.
+      if (command === "ps") return [
+        "   10     1 10:00:00 ttys001", "  11    10 09:00 ttys001", "  12    11 09:00 ttys001", "  13    12 09:00 ttys001",
+        "   14    13 09:00 ttys001", "  900    14 08:00 ttys001", "  910     1 07:00 ttys002", "  920   500 06:00 ttys009",
+        "  500     1 06:00 ttys009", "  930   931 05:00 ??", "  931   930 05:00 ??",
+      ].join("\n");
+      if (command === "tmux") return "10\t/dev/ttys001\tWeb app\n20\t/dev/ttys002\tAPI nightly\n";
+      return "";
+    },
+  });
+  const session = (port) => result.find((entry) => entry.port === port).processes[0].session;
+  assert.equal(session(3000), "Web app");
+  assert.equal(session(3100), "API nightly");
+  assert.equal(session(3200), null);
+  assert.equal(session(3300), null);
+  // Program paths are read only for listeners no session started.
+  const programs = calls.find((call) => call.includes("-d txt"));
+  assert.equal(programs, "lsof -a -p 920,930 -d txt -Fn");
+});
+
+test("system services are told apart from developer services by owner, program and port", async () => {
+  const root = await mkdtemp(path.join(os.homedir(), ".pzza-port-test-"));
+  try {
+    const project = path.join(root, "shop");
+    await mkdir(project);
+    await writeFile(path.join(project, "package.json"), JSON.stringify({ name: "shop", dependencies: { vite: "7.0.0" } }));
+    const result = await inspectPortProcesses({
+      platform: "darwin", dockerSocket: "/fixture/docker.sock", protectedPorts: [22, 5190],
+      run: async (command, args) => {
+        if (command === "lsof" && args.includes("-iTCP")) return [
+          "p100", "crapportd", "n*:49152",
+          "p101", "cSetappAgent", "n127.0.0.1:2432",
+          "p102", "cadb", "n127.0.0.1:5037",
+          "p103", "cpostgres", "n127.0.0.1:5432",
+          "p104", "cnode", "n*:5173",
+          "p105", "cnode", "n*:3000",
+          "p106", "cnode", "n127.0.0.1:5190",
+          "p107", "cOrbStack Helper", "n127.0.0.1:6379", "n127.0.0.1:32222", "n*:4000",
+          "p108", "cnode", "n*:4000",
+        ].join("\n");
+        if (command === "lsof" && args.includes("cwd")) return ["p100", "n/", "p101", "n/", "p102", "n/", "p103", "n/", "p104", `n${project}`, "p105", `n${project}`, "p106", "n/", "p107", `n${project}`, "p108", `n${project}`].join("\n");
+        if (command === "lsof" && args.includes("txt")) return [
+          "p100", "ftxt", "n/usr/libexec/rapportd", "ftxt", "n/usr/lib/dyld",
+          "p101", "ftxt", "n/Users/dev/Library/Application Support/Setapp/Setapp.app/Contents/MacOS/SetappAgent",
+          "p102", "ftxt", "n/opt/homebrew/bin/adb",
+          "p103", "ftxt", "n/Applications/Postgres.app/Contents/Versions/17/bin/postgres",
+          "p104", "ftxt", "n/opt/homebrew/bin/node",
+          "p106", "ftxt", "n/opt/homebrew/bin/node",
+          "p107", "ftxt", "n/Applications/OrbStack.app/Contents/MacOS/OrbStack Helper",
+          "p108", "ftxt", "n/opt/homebrew/bin/node",
+        ].join("\n");
+        if (command === "ps") return "  105    50 01:00 ttys001\n   50     1 02:00 ttys001\n";
+        if (command === "tmux") return "50\t/dev/ttys001\tShop\n";
+        if (command === "docker") return containerRow("d".repeat(12), "shop-redis-1", "127.0.0.1:6379->6379/tcp", "shop", "redis");
+        return "";
+      },
+    });
+    const port = (number) => result.find((entry) => entry.port === number);
+    // An OS program, an app bundle helper and a daemon outside any project.
+    assert.equal(port(49152).system, true);
+    assert.equal(port(2432).system, true);
+    assert.equal(port(5037).system, true);
+    // A well-known server stays visible even when it ships inside an app.
+    assert.equal(port(5432).system, false);
+    // Project servers, started in a session or not, stay visible.
+    assert.equal(port(5173).system, false);
+    assert.deepEqual({ system: port(3000).system, session: port(3000).processes[0].session }, { system: false, session: "Shop" });
+    // A protected port is a system one even when a project runs on it.
+    assert.equal(port(5190).system, true);
+    // A container runtime helper is a system process, but a port it publishes
+    // for a container, or shares with a project server, is not a system port.
+    assert.equal(port(6379).system, false);
+    assert.equal(port(32222).system, true);
+    assert.equal(port(4000).system, false);
+    assert.deepEqual(port(4000).processes.map((item) => [item.pid, item.system]), [[107, true], [108, false]]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("each port is listed once with its addresses, sockets and processes merged", async () => {
+  const mac = await inspectPortProcesses({
+    platform: "darwin", containers: false, sessions: false,
+    run: async (command, args) => {
+      if (command === "lsof" && args.includes("-iTCP")) return "p200\ncnode\nn127.0.0.1:3000\nn[::1]:3000\nn*:3000\nn127.0.0.1:3000\np201\ncnode\nn[::1]:3000\np200\ncnode\nn127.0.0.1:3001\n";
+      return "";
+    },
+  });
+  assert.deepEqual(mac.map(({ port, scope }) => [port, scope]), [[3000, "network"], [3001, "local"]]);
+  assert.deepEqual(mac[0].processes.map(({ pid }) => pid), [200, 201]);
+  const linux = await inspectPortProcesses({
+    platform: "linux", containers: false, sessions: false,
+    run: async (command) => command === "ss" ? [
+      'LISTEN 0 511 127.0.0.1:5173 0.0.0.0:* users:(("node",pid=300,fd=20))',
+      'LISTEN 0 511 [::1]:5173 [::]:* users:(("node",pid=300,fd=21),("node",pid=300,fd=22))',
+    ].join("\n") : "",
+  });
+  assert.equal(linux.length, 1);
+  assert.deepEqual([linux[0].port, linux[0].scope, linux[0].processes.length], [5173, "local", 1]);
+});
+
+test("the serialized probe carries the protected ports to the source device", async () => {
+  const probe = (0, eval)(`(${inspectPortProcesses.toString()})`);
+  const result = await probe({ platform: "linux", containers: false, protectedPorts: [22], run: async (command) => command === "ss" ? "LISTEN 0 128 0.0.0.0:22 0.0.0.0:*\nLISTEN 0 128 0.0.0.0:8080 0.0.0.0:*" : "" });
+  assert.deepEqual(result.map(({ port, system }) => [port, system]), [[22, true], [8080, true]]);
+});
+
+test("coding agents' own listeners and the app's own sessions are internal, while a dev server an agent started is not", async () => {
+  const calls = [];
+  const rules = await portProbeRules();
+  // The rules are plain data, so the serialized probe gets them as JSON.
+  const probe = (0, eval)(`(${inspectPortProcesses.toString()})`);
+  const result = await probe({
+    ...JSON.parse(JSON.stringify(rules)), platform: "darwin", containers: false,
+    run: async (command, args) => {
+      calls.push([command, ...args].join(" "));
+      if (command === "lsof" && args.includes("-iTCP")) return [
+        "p400", "c2.1.330", "n127.0.0.1:62697",
+        "p401", "cnode", "n*:3000",
+        "p402", "ccodex", "n127.0.0.1:41000",
+        "p403", "c2.1.328", "n127.0.0.1:51862",
+        "p404", "cnode", "n127.0.0.1:5173",
+        "p405", "cpython3", "n127.0.0.1:8000",
+        "p406", "c2.1.330", "n127.0.0.1:4100", "p407", "cnode", "n127.0.0.1:4100",
+      ].join("\n");
+      // 401 is the agent 400's dev server; 403 and 404 run in the app's own
+      // sessions; everything else in "Shop".
+      if (command === "ps") return [
+        "   10     1 10:00 ttys001", "  400    10 05:00 ttys001", "  401   400 04:00 ttys001", "  402    10 04:00 ttys001",
+        "   20     1 10:00 ttys002", "  403    20 03:00 ttys002", "   30     1 10:00 ttys003", "  404    30 02:00 ttys003",
+        "  405    10 01:00 ttys001", "  406    10 01:00 ttys001", "  407    10 01:00 ttys001",
+      ].join("\n");
+      // The view session repeats Shop's pane; it must not take it over.
+      if (command === "tmux") return "10\t/dev/ttys001\tShop\n10\t/dev/ttys001\tpzza-v-abc-1\n20\t/dev/ttys002\tpzza-quick-chat\n30\t/dev/ttys003\tpzza-v-def-2\n";
+      return "";
+    },
+  });
+  const port = (number) => result.find((entry) => entry.port === number);
+  assert.deepEqual(INTERNAL_SESSIONS, { names: ["pzza-quick-chat"], prefixes: ["pzza-v-"] });
+  assert.ok(rules.agentPrograms.includes("codex"));
+  assert.equal(rules.agentPrograms.some((name) => /^(python\d*|node)$/i.test(name)), false);
+  assert.equal(rules.versionNamedAgents, true);
+  // A version-named agent binary and a catalog agent program: internal.
+  assert.deepEqual([port(62697).internal, port(62697).processes[0].agent, port(62697).processes[0].session], [true, true, "Shop"]);
+  assert.equal(port(41000).internal, true);
+  // The agent's dev server, and an interpreter some agents run under, stay visible.
+  assert.deepEqual([port(3000).internal, port(3000).processes[0].session], [false, "Shop"]);
+  assert.equal(port(8000).internal, false);
+  // Anything in the app's own sessions is internal.
+  assert.deepEqual([port(51862).internal, port(51862).processes[0].session], [true, "pzza-quick-chat"]);
+  assert.equal(port(5173).internal, true);
+  // A port an agent shares with a real server is not.
+  assert.equal(port(4100).internal, false);
+  assert.ok(calls.some((call) => call.startsWith("tmux") && call.includes("#{pane_pid}\t#{pane_tty}\t#{session_name}")));
 });

@@ -834,7 +834,6 @@ button {
   font-size: var(--fs-sm);
 }
 .ports-menu-services .ports-status { padding: 6px 10px; }
-.ports-menu-services .ports-box .port-row { padding: 8px 10px; }
 .ports-menu-services .settings-empty { padding: 12px 10px; }
 .menu-body {
   display: flex;
@@ -4357,21 +4356,10 @@ button.update-button-pending:hover { background: color-mix(in srgb, var(--text) 
   flex-direction: column;
 }
 .ports-box .port-row {
-  border-radius: var(--r-lg);
+  border-radius: var(--r-md);
 }
 .ports-box .port-row:hover {
   background: var(--surface-alt);
-}
-.port-state {
-  margin-left: 8px;
-  font-family: ui-sans-serif, system-ui, sans-serif;
-  font-size: var(--fs-xs);
-  text-transform: uppercase;
-  letter-spacing: 0.4px;
-  color: var(--muted);
-}
-.port-state.on {
-  color: var(--success-foreground, var(--success));
 }
 .btn-sm {
   height: 26px;
@@ -4725,7 +4713,15 @@ button.update-button-pending:hover { background: color-mix(in srgb, var(--text) 
 .ns-seg.ns-seg-grid .cselect.ns-pill > svg:last-child { margin-left: auto; flex: 0 0 auto; }
 .ns-seg > * + * { box-shadow: inset 1px 0 0 var(--hairline-strong); }
 .ns-seg .cselect.ns-pill, .ns-seg .path-field.ns-pill, .ns-seg .ns-toggle { flex: 0 0 auto; height: 100%; border: none; border-radius: 0; background: transparent; }
-.ns-seg .cselect.ns-pill:hover:not(:disabled), .ns-seg .path-field.ns-pill:hover:not(:disabled), .ns-seg .ns-toggle:hover:not(:disabled) { background: var(--surface-alt); }
+/* Hover and open fill a whole cell with a light tint of the text color, so it
+   reads the same on opaque and glass popovers and never hides the separators.
+   The folder cell tints as one, its clear button included. */
+.ns-seg .cselect.ns-pill, .ns-seg .ns-pill-path, .ns-seg .ns-toggle { transition: background-color 0.12s ease, color 0.12s ease; }
+.ns-seg .cselect.ns-pill:hover:not(:disabled), .ns-seg .cselect.ns-pill.cselect-open,
+.ns-seg .ns-pill-path:hover:not(:has(:disabled)), .ns-seg .ns-toggle:hover:not(:disabled) { background: color-mix(in srgb, var(--text) 7%, transparent); }
+.ns-seg .ns-pill-path .path-field.ns-pill:hover:not(:disabled) { background: transparent; }
+.ns-seg .cselect.ns-pill:hover:not(:disabled) .muted-icon, .ns-seg .cselect.ns-pill.cselect-open .muted-icon { color: var(--text); }
+.ns-seg .cselect.ns-pill:focus-visible, .ns-seg .path-field.ns-pill:focus-visible, .ns-seg .ns-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .ns-seg .ns-pill-path { flex: 1 1 auto; min-width: 0; }
 .ns-seg .ns-pill-path .path-field.ns-pill { flex: 1 1 auto; min-width: 0; }
 .ns-seg .ns-pill-path .path-field.ns-pill .path-field-value { max-width: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: inherit; font-size: var(--fs-md); color: var(--text); }
@@ -4744,7 +4740,9 @@ button.update-button-pending:hover { background: color-mix(in srgb, var(--text) 
 .ns-clear { display: inline-flex; align-items: center; justify-content: center; border: none; border-radius: var(--r-pill); background: transparent; color: var(--muted); cursor: pointer; }
 .ns-clear:hover { background: var(--surface-alt); color: var(--text); }
 .ns-toggle { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 5px; height: 28px; padding: 0 10px; border: 1px solid var(--hairline-strong); border-radius: var(--r-pill); background: transparent; color: var(--muted); font-size: var(--fs-md); white-space: nowrap; cursor: pointer; }
-.ns-toggle:hover { color: var(--text); border-style: solid; }
+/* Hover only brightens the text: a toggle inside a segment has no border of its own (a
+   border-style here would bring back a medium-width one). */
+.ns-toggle:hover { color: var(--text); }
 .ns-toggle.on { border: 1px solid var(--accent); background: color-mix(in srgb, var(--accent) 22%, transparent); color: var(--text); font-weight: 600; }
 .ns-toggle:disabled { opacity: 0.5; cursor: not-allowed; }
 /* Recent folders as quiet text links under the pills. */
@@ -5593,29 +5591,46 @@ button.update-button-pending:hover { background: color-mix(in srgb, var(--text) 
 .ft-context-menu { position: fixed; right: auto; width: 180px; }
 .ft-operation-path { overflow-wrap: anywhere; font-size: var(--fs-md); }
 
-.port-identity { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
-.port-title { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; min-width: 0; }
-.port-project { font-size: var(--fs-md); font-weight: 600; overflow-wrap: anywhere; line-height: 1.4; }
+/* One port per row: the port in a fixed column, what it is, then its actions.
+   A quieter second line carries reach, process and age, only when known. */
+.ports-box .port-row { display: grid; grid-template-columns: 40px minmax(0, 1fr) auto; align-items: center; column-gap: 8px; padding: 5px 10px; }
+.ports-box .port-row .port-num { align-self: start; font-size: var(--fs-sm); font-weight: 600; line-height: 18px; font-variant-numeric: tabular-nums; }
+.port-main { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.port-line { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.port-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-md); font-weight: 600; line-height: 18px; }
 /* What the service is (Next.js, PostgreSQL): a quiet tag beside its name. */
-.port-kind { flex: 0 0 auto; padding: 0 6px; border-radius: var(--r-pill); background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent); font-size: var(--fs-xs); font-weight: 600; line-height: 16px; white-space: nowrap; }
-/* The facts worth a glance, in one row: port, reach, session, age. */
-.port-facts { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; min-width: 0; }
-.port-facts .port-num { margin-right: 2px; font-weight: 600; }
-.port-fact { display: inline-flex; align-items: center; gap: 4px; min-width: 0; max-width: 100%; padding: 0 6px; border: 1px solid var(--hairline); border-radius: var(--r-pill); color: var(--muted); font-size: var(--fs-xs); line-height: 16px; white-space: nowrap; }
-.port-fact > svg { flex: 0 0 auto; }
-.port-fact-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-/* Reachable from other devices: the one fact that should not be missed. */
-.port-fact-open { border-color: color-mix(in srgb, var(--warning, var(--accent)) 50%, transparent); color: var(--warning-foreground, var(--warning, var(--text))); }
+.port-kind { flex: 0 0 auto; padding: 0 5px; border: 1px solid var(--hairline); border-radius: var(--r-xs); color: var(--muted); font-size: var(--fs-xs); font-weight: 500; line-height: 13px; white-space: nowrap; }
+.port-meta { display: flex; align-items: center; min-width: 0; overflow: hidden; color: var(--muted); font-size: var(--fs-xs); line-height: 15px; white-space: nowrap; }
+.port-meta > span { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.port-meta > span + span::before { content: "·"; margin: 0 5px; }
+.port-meta svg { margin-right: 3px; vertical-align: -1px; }
+/* Reachable from other devices: kept first on the line, in the same quiet tone. */
+.port-meta > .port-net { flex-shrink: 0; }
+.port-meta > .port-meta-session { color: var(--text); opacity: 0.8; }
+.ports-box .port-actions { gap: 2px; }
 .ports-filter { display: flex; align-items: center; gap: 7px; margin: 0 10px 8px; padding: 0 9px; height: 28px; border: 1px solid var(--hairline); border-radius: var(--r-md); color: var(--muted); }
 .ports-filter:focus-within { border-color: var(--hairline-strong); }
 .ports-filter input { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; color: var(--text); font: inherit; font-size: var(--fs-sm); }
 .ports-filter input::placeholder { color: var(--muted); }
 .ports-filter input::-webkit-search-cancel-button { -webkit-appearance: none; }
-.port-process { color: var(--muted); font-size: var(--fs-sm); font-weight: 400; overflow-wrap: anywhere; line-height: 1.4; }
-.port-process:empty { display: none; }
-.ports-box .port-row { gap: 14px; align-items: center; padding-block: 10px; }
-.port-identity { flex: 1; }
-.port-row > .btn { flex-shrink: 0; }
+/* Filter chips: one choice at a time, each with how many ports it shows. */
+.ports-chips { display: flex; flex-wrap: wrap; gap: 4px; margin: 0 10px 6px; }
+.ports-chip { display: inline-flex; align-items: center; gap: 4px; height: 21px; padding: 0 8px; border: 1px solid var(--hairline); border-radius: var(--r-pill); background: transparent; color: var(--muted); font: inherit; font-size: var(--fs-xs); font-weight: 600; cursor: pointer; transition: background 0.12s, color 0.12s, border-color 0.12s; }
+.ports-chip:hover:not(.on) { color: var(--text); border-color: var(--hairline-strong); }
+.ports-chip.on { border-color: var(--hairline-strong); background: var(--surface-alt); color: var(--text); }
+.ports-chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.ports-chip-count { font-weight: 500; opacity: 0.75; font-variant-numeric: tabular-nums; }
+/* Ports grouped by the session that started them, then the rest. */
+.ports-group + .ports-group { margin-top: 4px; }
+.ports-group-head { display: flex; align-items: center; gap: 6px; min-width: 0; padding: 6px 10px 2px; color: var(--muted); font-size: var(--fs-xs); font-weight: 700; letter-spacing: 0.4px; text-transform: uppercase; }
+.ports-group-head > svg { flex: 0 0 auto; }
+.ports-group-head.is-session { color: var(--text); font-size: var(--fs-sm); font-weight: 600; letter-spacing: 0; text-transform: none; }
+.ports-group-head.is-session > svg { color: var(--muted); }
+.ports-group-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ports-group-count { margin-left: auto; color: var(--muted); font-size: var(--fs-xs); font-weight: 500; font-variant-numeric: tabular-nums; }
+.ports-system-toggle { display: flex; align-items: center; gap: 6px; width: 100%; margin-top: 4px; padding: 6px 10px; border: 0; border-top: 1px solid var(--divider); background: transparent; color: var(--muted); font: inherit; font-size: var(--fs-sm); font-weight: 550; text-align: left; cursor: pointer; }
+.ports-system-toggle:hover { color: var(--text); }
+.ports-system-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; border-radius: var(--r-sm); }
 
 /* Translucency affects surfaces only; text and controls retain their contrast. */
 html[data-transparency="on"], html[data-transparency="on"] body, html[data-transparency="on"] #root { background: transparent; }

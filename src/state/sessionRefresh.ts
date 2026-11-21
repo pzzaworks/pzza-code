@@ -2,13 +2,12 @@ import { invoke } from "@tauri-apps/api/core";
 import { create } from "zustand";
 import { isSessionTile, useStore } from "./store";
 import { notify } from "./notifications";
-import { confirmAction } from "./confirmations";
 import { noteDetectedAgents, useSessionAgents } from "./sessionAgents";
 import { PERMISSIONS, PERMISSIONS_SUPPORTED, permissionStatuses, type PermissionId, type PermissionStatus } from "./permissions";
 import { autoSavedLocalAgents } from "./workspaceSnapshots";
 import { sessionConnection } from "../connection";
 import { ALL_WORKSPACE_ID, DEFAULT_WORKSPACE_ID, wsKeyOf } from "../workspaces";
-import { fetchSessionActivity, type SessionActivity } from "../serverApi";
+import { fetchSessionActivity, type AgentLauncher, type SessionActivity } from "../serverApi";
 import { rowAgent } from "../ui/LiveSessionIcon";
 import { sessionAgentResumeCommand, type SessionAgentChoice } from "../../server/lib/session-agents.js";
 
@@ -41,6 +40,10 @@ interface SessionRefreshState {
   notice: SessionRefreshNotice | null;
   /** The terminals still run on the version before an update and wait to move onto this one. */
   outdated: boolean;
+  /** The sessions a refresh in place is working on; null while every local session refreshes (or none does). */
+  sessions: string[] | null;
+  /** The Refresh sessions dialog is open. */
+  dialogOpen: boolean;
 }
 
 // The local terminal server and its saved state exist in the macOS app only.
@@ -48,7 +51,7 @@ const LOCAL_SESSIONS_KEPT = PERMISSIONS_SUPPORTED;
 // How often the saved local sessions are brought up to date.
 const RECORD_MS = 10_000;
 
-export const useSessionRefresh = create<SessionRefreshState>(() => ({ running: false, restoring: false, pending: false, generation: 0, notice: null, outdated: false }));
+export const useSessionRefresh = create<SessionRefreshState>(() => ({ running: false, restoring: false, pending: false, generation: 0, notice: null, outdated: false, sessions: null, dialogOpen: false }));
 
 export interface AgentResume {
   session: string;
@@ -59,6 +62,8 @@ export interface AgentResume {
   onlyIfBusy: boolean;
   /** The exact conversation to continue, when the agent reported it; otherwise the native side decides from its record. */
   conversation?: string;
+  /** The user's launcher the agent was started through: it resumes through that (`ca --resume <id>`). */
+  launcher?: AgentLauncher;
 }
 
 interface RefreshReport {
@@ -67,6 +72,14 @@ interface RefreshReport {
   failed: { session: string; error: string }[];
   /** Restored sessions whose agent stayed at its shell: another pane in the same folder continues that agent's last conversation. */
   skipped: { session: string; error: string }[];
+  /** Sessions whose programs (other than agents) were started again. */
+  restarted: string[];
+}
+
+/** A pane whose program starts again after the refresh: the line it was shown, which must still be what it runs. */
+export interface ProgramRestart {
+  pane: string;
+  command: string;
 }
 
 export interface LocalTile {
@@ -106,7 +119,7 @@ export function agentsToResume(rows: readonly ActivityRow[] | null, tiles: reado
     const account = row.launch?.account ?? undefined;
     const command = sessionAgentResumeCommand(agent, mode !== undefined || account !== undefined ? { id: agent, mode: mode ?? "", account } : undefined);
     const conversation = row.launch?.conversation;
-    return command ? [{ session: row.session, window: row.window, command, onlyIfBusy: false, ...(conversation ? { conversation } : {}) }] : [];
+    return command ? [{ session: row.session, window: row.window, command, onlyIfBusy: false, ...(conversation ? { conversation } : {}), ...(row.launch?.launcher ? { launcher: row.launch.launcher } : {}) }] : [];
   });
 }
 
@@ -193,7 +206,13 @@ export function reportNotice(report: RefreshReport, ok: string, lead = ""): Sess
 }
 
 function refreshOk(report: RefreshReport): string {
-  return report.restored.length ? "Sessions refreshed." : "Terminal server restarted. There were no sessions to restore.";
+  if (!report.restored.length) return "Terminal server restarted. There were no sessions to restore.";
+  return `Sessions refreshed.${programsAgain(report)}`;
+}
+
+// " Programs started again in 2 sessions." when any were.
+function programsAgain(report: RefreshReport): string {
+  return report.restarted.length ? ` Programs started again in ${plural(report.restarted.length, "session")}.` : "";
 }
 
 /** "Restored 3 sessions and resumed 2 agents." */
@@ -211,7 +230,7 @@ function failureReason(error: unknown): string {
  * With `onlyIfIdle` nothing happens (false) unless every local window is at a
  * shell or an idle agent at this moment, so no running work is stopped.
  */
-export async function refreshLocalSessions(options: { onlyIfIdle?: boolean } = {}): Promise<boolean> {
+export async function refreshLocalSessions(options: { onlyIfIdle?: boolean; programs?: readonly ProgramRestart[] } = {}): Promise<boolean> {
   if (useSessionRefresh.getState().running) throw new Error("Sessions are already refreshing.");
   useSessionRefresh.setState({ running: true, restoring: false });
   let refreshed = false;
@@ -223,7 +242,7 @@ export async function refreshLocalSessions(options: { onlyIfIdle?: boolean } = {
     useSessionRefresh.setState({ notice: null });
     const detected = agentsToResume(rows, tiles);
     const agents = [...detected, ...snapshotAgents(detected, autoSavedLocalAgents())];
-    const report = await invoke<RefreshReport>("local_tmux_refresh_sessions", { agents });
+    const report = await invoke<RefreshReport>("local_tmux_refresh_sessions", { agents, programs: options.programs ?? [] });
     // The restarted terminal server runs on this version.
     useSessionRefresh.setState({ notice: reportNotice(report, refreshOk(report)), outdated: false });
   } catch (error) {
@@ -243,20 +262,45 @@ export async function busyLocalSessions(): Promise<string[] | null> {
 
 /**
  * Refresh sessions as asked for by hand (Setup, or the top bar while the
- * terminals wait for a new version): restarting the terminal server stops
- * every program in this Mac's sessions, so it runs only once confirmed, and
- * the dialog names the sessions where something is running right now.
+ * terminals wait for a new version): opens the dialog where every session or
+ * only chosen ones are refreshed. Nothing restarts before a choice there.
  */
-export async function confirmRefreshLocalSessions(): Promise<void> {
-  const busy = await busyLocalSessions();
-  const running = busy === null ? "" : busy.length ? ` Running now in: ${busy.join(", ")}.` : " Nothing is running in them right now.";
-  const accepted = await confirmAction({
-    title: "Refresh this Mac's sessions?",
-    message: `The terminal server restarts so running sessions get new permissions. Sessions, folders, recent output and agent chats come back, but programs running in them stop: dev servers, watchers, and an agent in the middle of a turn.${running}`,
-    confirmLabel: "Refresh sessions",
-    danger: busy === null || busy.length > 0,
-  });
-  if (accepted) await refreshLocalSessions().catch(() => undefined);
+export function openRefreshSessions(): void {
+  useSessionRefresh.setState({ dialogOpen: true });
+}
+
+export function closeRefreshSessions(): void {
+  useSessionRefresh.setState({ dialogOpen: false });
+}
+
+/** "Refreshed 2 sessions and resumed 1 agent." */
+export function refreshedMessage(report: RefreshReport): string {
+  return `Refreshed ${plural(report.restored.length, "session")}${report.resumed.length ? ` and resumed ${plural(report.resumed.length, "agent")}` : ""}.${programsAgain(report)}`;
+}
+
+/**
+ * Refreshes the chosen local sessions in place: their panes start their
+ * shells again with their recent output, and their agents continue their
+ * conversations the way they were started. The terminal server keeps
+ * running, so other sessions are untouched (and these keep the permissions
+ * it has). Throws only when a refresh is already running.
+ */
+export async function refreshSelectedSessions(names: readonly string[], programs: readonly ProgramRestart[] = []): Promise<void> {
+  if (useSessionRefresh.getState().running) throw new Error("Sessions are already refreshing.");
+  const sessions = [...new Set(names)];
+  if (!sessions.length) return;
+  useSessionRefresh.setState({ running: true, restoring: false, sessions, notice: null });
+  try {
+    const rows = await fetchSessionActivity("").catch(() => null);
+    const detected = agentsToResume(rows, localTiles());
+    const agents = [...detected, ...snapshotAgents(detected, autoSavedLocalAgents())].filter(agent => sessions.includes(agent.session));
+    const report = await invoke<RefreshReport>("local_tmux_refresh_selected", { sessions, agents, programs });
+    useSessionRefresh.setState({ notice: reportNotice(report, refreshedMessage(report)) });
+  } catch (error) {
+    useSessionRefresh.setState({ notice: { tone: "fail", message: `Sessions could not be refreshed. ${failureReason(error)}`.trim(), failed: [] } });
+  } finally {
+    useSessionRefresh.setState({ running: false, sessions: null });
+  }
 }
 
 /**

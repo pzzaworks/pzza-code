@@ -1,6 +1,6 @@
 import { Download, Loader2, RefreshCw, RotateCw } from "lucide-react";
 import { useUpdates } from "../state/updates";
-import { confirmRefreshLocalSessions, useSessionRefresh } from "../state/sessionRefresh";
+import { openRefreshSessions, useSessionRefresh } from "../state/sessionRefresh";
 import { HAS_TAURI } from "../tauriEnv";
 
 // Beside the version in the top bar while an update needs something: Update
@@ -37,7 +37,7 @@ export function UpdateButton() {
     </button>;
   }
   if (outdated) {
-    return <button type="button" className="update-button update-button-pending" onClick={() => void confirmRefreshLocalSessions()} disabled={refreshing}
+    return <button type="button" className="update-button update-button-pending" onClick={openRefreshSessions} disabled={refreshing}
       title="Your terminals still run on the previous version, so they cannot use its permissions yet. They move on their own once nothing runs in them; click to refresh them now.">
       {refreshing ? <Loader2 size={12} className="sw-spin" aria-hidden="true" /> : <RefreshCw size={12} strokeWidth={2.2} aria-hidden="true" />}
       {refreshing ? "Refreshing" : "Refresh sessions"}

@@ -5,7 +5,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// A plain path fragment from an agent's detect rules; `end` anchors it at the
 /// end of the path (same as agentBinaryPathRules in session-agents.js).
@@ -95,6 +95,9 @@ pub struct CatalogResume {
     /// Resumed by id: the store the id a folder last ran is read from
     /// (agent_sessions.rs); the command holds agent_sessions::PLACEHOLDER.
     pub lookup: Option<String>,
+    /// The mode's own flags, left out of a line typed through a launcher
+    /// that already passes them (see launcher_line).
+    pub mode_args: Vec<String>,
     /// The same mode reopening one recorded conversation by its id, for an
     /// agent whose running conversation the app records per pane.
     pub by_id: Option<CatalogById>,
@@ -188,9 +191,182 @@ fn resume_entry_in(command: &str, home: Option<&Path>) -> Option<&'static Catalo
     })
 }
 
+/// The user's own shell alias or function an agent was started through (`ca`
+/// for `CLAUDE_CONFIG_DIR=~/.claude-alt claude --dangerously-skip-permissions
+/// --chrome "$@"`), as the activity probe read it from their shell: what it
+/// sets and runs before the arguments typed after it. A resume is typed
+/// through it so the agent comes back exactly as the user starts it, with
+/// flags the catalog does not know (`--chrome`) kept.
+///
+/// Only `name` is ever typed; `env`, `program` and `args` are only compared
+/// with the catalog line, so the rest of the typed line always comes from
+/// the catalog.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Launcher {
+    pub name: String,
+    /// `NAME=value` assignments the launcher makes, with the home folder expanded.
+    pub env: Vec<String>,
+    pub program: String,
+    pub args: Vec<String>,
+}
+
+const LAUNCHER_NAME_MAX: usize = 64;
+const LAUNCHER_PARTS_MAX: usize = 64;
+const LAUNCHER_PART_MAX: usize = 512;
+
+impl Launcher {
+    /// A name typed as one plain shell word (never a flag, never needing
+    /// quotes) and bounded parts without control characters.
+    pub fn valid(&self) -> bool {
+        let mut name = self.name.chars();
+        let plain = |text: &str| text.len() <= LAUNCHER_PART_MAX && !text.chars().any(char::is_control);
+        self.name.len() <= LAUNCHER_NAME_MAX
+            && name.next().is_some_and(|first| first.is_ascii_alphabetic() || first == '_')
+            && name.all(|c| c.is_ascii_alphanumeric() || "_.+-".contains(c))
+            && !self.program.is_empty()
+            && plain(&self.program)
+            && self.env.len() <= LAUNCHER_PARTS_MAX
+            && self.args.len() <= LAUNCHER_PARTS_MAX
+            && self.env.iter().all(|entry| plain(entry) && entry.split_once('=').is_some_and(|(key, _)| env_name(key)))
+            && self.args.iter().all(|arg| plain(arg))
+    }
+
+    fn sets(&self, key: &str) -> Option<&str> {
+        self.env.iter().find_map(|entry| entry.split_once('=').filter(|(name, _)| *name == key).map(|(_, value)| value))
+    }
+}
+
+fn env_name(key: &str) -> bool {
+    let mut chars = key.chars();
+    chars.next().is_some_and(|first| first.is_ascii_alphabetic() || first == '_') && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+fn find_run(words: &[&str], run: &[String]) -> Option<usize> {
+    (!run.is_empty() && words.len() >= run.len()).then(|| words.windows(run.len()).position(|window| window.iter().zip(run).all(|(word, item)| *word == item)))?
+}
+
+/// The resume line typed through the user's launcher instead of the catalog
+/// line itself: `ca --resume <id>` for `env CLAUDE_CONFIG_DIR=<home>/.claude-alt
+/// claude --resume <id> --dangerously-skip-permissions`. `command` is the
+/// catalog resume command the line was made from (see resume_entry) and
+/// `line` the line about to be typed (agent_line in session_refresh.rs).
+///
+/// The launcher must run the same program and make every assignment the line
+/// makes (account folder, mode variables), and must not pick another account
+/// than the line. The arguments it already passes in front (a subcommand)
+/// and the mode's own flags, when it passes them, are left out; everything
+/// else the line has (the resume flags and id, a mode it does not pass)
+/// follows its name. None when any of that does not hold: the catalog line
+/// is typed then.
+pub fn launcher_line(command: &str, line: &str, launcher: &Launcher) -> Option<String> {
+    launcher_line_in(command, line, launcher, home_folder().as_deref())
+}
+
+fn launcher_line_in(command: &str, line: &str, launcher: &Launcher, home: Option<&Path>) -> Option<String> {
+    let entry = resume_entry_in(command, home)?;
+    // Catalog lines are plain words; one that needs quoting is typed as is.
+    if !launcher.valid() || line.chars().any(|c| "'\"\\$`;&|<>(){}".contains(c) || c.is_control()) {
+        return None;
+    }
+    let words: Vec<&str> = line.split(' ').collect();
+    let mut at = 0;
+    let mut assignments = Vec::new();
+    if words.first() == Some(&"env") {
+        at = 1;
+        while words.get(at).is_some_and(|word| word.split_once('=').is_some_and(|(key, _)| env_name(key))) {
+            assignments.push(words[at]);
+            at += 1;
+        }
+    }
+    let program = *words.get(at)?;
+    let launcher_program = launcher.program.rsplit('/').next().unwrap_or(&launcher.program);
+    if launcher_program != program || launcher.name == program {
+        return None;
+    }
+    if !assignments.iter().all(|assignment| launcher.env.iter().any(|entry| entry == assignment)) {
+        return None;
+    }
+    // A launcher that picks an account folder must pick the line's one; the
+    // default folder named explicitly is the same as none.
+    if let (Some(account), Some(home)) = (&entry.account, home) {
+        let named = assignments.iter().find_map(|assignment| assignment.strip_prefix(&format!("{}=", account.env)));
+        let default = |folder: &str| Path::new(folder).parent() == Some(home) && folder.rsplit('/').next() == Some(account.folder.as_str());
+        match (launcher.sets(&account.env), named) {
+            (Some(chosen), Some(named)) if chosen != named => return None,
+            (Some(chosen), None) if !default(chosen) => return None,
+            _ => {}
+        }
+    }
+    let mut tail: Vec<&str> = words[at + 1..].to_vec();
+    let common = tail.iter().zip(&launcher.args).take_while(|(word, arg)| *word == arg).count();
+    tail.drain(..common);
+    if find_run(&launcher.args.iter().map(String::as_str).collect::<Vec<_>>(), &entry.mode_args).is_some() {
+        if let Some(position) = find_run(&tail, &entry.mode_args) {
+            tail.drain(position..position + entry.mode_args.len());
+        }
+    }
+    Some(std::iter::once(launcher.name.as_str()).chain(tail).collect::<Vec<_>>().join(" "))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn launcher(name: &str, env: &[&str], program: &str, args: &[&str]) -> Launcher {
+        Launcher { name: name.into(), env: env.iter().map(|item| item.to_string()).collect(), program: program.into(), args: args.iter().map(|item| item.to_string()).collect() }
+    }
+
+    #[test]
+    fn resumes_type_through_the_users_launcher() {
+        let home = Some(Path::new("/Users/me"));
+        let id = "0b1c2d3e-4f50-4a61-8b72-9c8d7e6f5a41";
+        let line = |command: &str, line: &str, launcher: &Launcher| launcher_line_in(command, line, launcher, home);
+        let ca = launcher("ca", &["CLAUDE_CONFIG_DIR=/Users/me/.claude-alt"], "claude", &["--dangerously-skip-permissions", "--chrome"]);
+        let cb = launcher("cb", &[], "claude", &["--dangerously-skip-permissions", "--chrome"]);
+        let account = "env CLAUDE_CONFIG_DIR=/Users/me/.claude-alt claude -c --dangerously-skip-permissions";
+        assert_eq!(
+            line(account, &format!("env CLAUDE_CONFIG_DIR=/Users/me/.claude-alt claude --resume {id} --dangerously-skip-permissions"), &ca).as_deref(),
+            Some(format!("ca --resume {id}").as_str())
+        );
+        assert_eq!(line(account, account, &ca).as_deref(), Some("ca -c"));
+        let plain = "claude -c --dangerously-skip-permissions";
+        assert_eq!(line(plain, &format!("claude --resume {id} --dangerously-skip-permissions"), &cb).as_deref(), Some(format!("cb --resume {id}").as_str()));
+        // A mode the launcher does not pass is kept after its name.
+        let bare = launcher("c", &[], "/Users/me/.local/bin/claude", &[]);
+        assert_eq!(line("claude -c --permission-mode plan", "claude -c --permission-mode plan", &bare).as_deref(), Some("c -c --permission-mode plan"));
+        // A subcommand the launcher passes is not typed twice.
+        let goose = launcher("g", &["GOOSE_MODE=approve"], "goose", &["session"]);
+        let resume = "env GOOSE_MODE=approve goose session --resume --session-id @SESSION@";
+        assert_eq!(
+            line(resume, "env GOOSE_MODE=approve goose session --resume --session-id 20260101_3", &goose).as_deref(),
+            Some("g --resume --session-id 20260101_3")
+        );
+    }
+
+    #[test]
+    fn a_launcher_that_would_start_the_agent_differently_is_not_used() {
+        let home = Some(Path::new("/Users/me"));
+        let line = |command: &str, launcher: &Launcher| launcher_line_in(command, command, launcher, home);
+        let account = "env CLAUDE_CONFIG_DIR=/Users/me/.claude-alt claude -c --dangerously-skip-permissions";
+        let plain = "claude -c --dangerously-skip-permissions";
+        // Another account, or none where the line names one.
+        assert!(line(account, &launcher("cb", &[], "claude", &["--dangerously-skip-permissions"])).is_none());
+        assert!(line(account, &launcher("w", &["CLAUDE_CONFIG_DIR=/Users/me/.claude-work"], "claude", &[])).is_none());
+        assert!(line(plain, &launcher("ca", &["CLAUDE_CONFIG_DIR=/Users/me/.claude-alt"], "claude", &[])).is_none());
+        // The default folder named explicitly is the default account.
+        assert_eq!(line(plain, &launcher("d", &["CLAUDE_CONFIG_DIR=/Users/me/.claude"], "claude", &[])).as_deref(), Some("d -c --dangerously-skip-permissions"));
+        // Another program, a mode variable it does not set, or the program's own name.
+        assert!(line(plain, &launcher("x", &[], "codex", &[])).is_none());
+        assert!(line("env GOOSE_MODE=approve goose session --resume --session-id @SESSION@", &launcher("g", &[], "goose", &["session"])).is_none());
+        assert!(line(plain, &launcher("claude", &[], "claude", &["--chrome"])).is_none());
+        // Names that are not one plain word, and commands outside the catalog.
+        for name in ["-c", "a b", "a;b", "$(id)", "", "1x", "ä"] {
+            assert!(line(plain, &launcher(name, &[], "claude", &[])).is_none(), "{name}");
+        }
+        assert!(launcher_line_in("claude -c", "claude -c", &launcher("c", &[], "claude", &[]), home).is_none());
+        assert!(line(plain, &launcher("c", &["1X=y"], "claude", &[])).is_none());
+    }
 
     fn agent(id: &str) -> &'static CatalogAgent {
         catalog().agents.iter().find(|agent| agent.id == id).unwrap()

@@ -1,6 +1,6 @@
 import { DeviceIcon } from "../ui/DeviceIcon";
-import { useEffect, useRef, useState } from "react";
-import { Clock, ExternalLink, Globe, LoaderCircle, Lock, Search, Settings, Square, SquareTerminal } from "lucide-react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { CircleStop, Cpu, Eye, EyeOff, ExternalLink, Globe, LoaderCircle, Search, Server, Settings, SquareTerminal } from "lucide-react";
 import { create } from "zustand";
 import { AsyncButton } from "../ui/AsyncButton";
 import { useDelayedLoading } from "../ui/useDelayedLoading";
@@ -301,69 +301,230 @@ export function formatUptime(seconds: number): string {
   return hours % 24 ? `${days}d ${hours % 24}h` : `${days}d`;
 }
 
-const unique = (values: Array<string | null | undefined>): string[] => [...new Set(values.filter((value): value is string => !!value))];
+const sameText = (a: string, b: string): boolean => a.trim().toLowerCase() === b.trim().toLowerCase();
 
-// Everything a row says about a port, also what the filter searches.
-function describePort(entry: PortDetails | undefined) {
-  const processes: PortProcess[] = entry?.processes ?? [];
-  const containers = entry?.containers ?? [];
+// Each fact once, in its first spelling: "Shop" and "shop" are the same name.
+export function uniqueText(values: ReadonlyArray<string | null | undefined>): string[] {
+  const seen = new Set<string>();
+  return values.filter((value): value is string => {
+    const key = value?.trim().toLowerCase();
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+// The agent classifies ports (see inspectPortProcesses); a protected port
+// counts as a system one even when an older agent does not say so.
+export function isSystemPort(entry: PortDetails): boolean {
+  return entry.system ?? PROTECTED_PORTS.includes(entry.port);
+}
+
+// A coding agent's own bridge, or a port of the app's own sessions.
+export function isAgentPort(entry: PortDetails): boolean {
+  return entry.internal === true && !isSystemPort(entry);
+}
+
+// What the list leaves out until asked: system services and agent ports.
+export function isHiddenPort(entry: PortDetails): boolean {
+  return isSystemPort(entry) || isAgentPort(entry);
+}
+
+// "Show 8 system and 9 agent services": what the toggle reveals, by kind.
+export function hiddenPortsLabel(entries: ReadonlyArray<PortDetails>, shown: boolean): string {
+  const system = entries.filter(isSystemPort).length;
+  const agent = entries.filter(isAgentPort).length;
+  const total = system + agent;
+  const kinds = [system ? `${shown ? "" : `${system} `}system` : null, agent ? `${shown ? "" : `${agent} `}agent` : null].filter(Boolean).join(" and ");
+  return `${shown ? "Hide" : "Show"} ${kinds} service${total === 1 && !shown ? "" : "s"}`;
+}
+
+export interface PortSummary {
+  title: string;
+  kinds: string[];
+  sessions: string[];
+  uptime: number | null;
+  /** How it runs (process, folder, container runtime), minus what the title and kinds already say. */
+  runs: string[];
+  /** Every identity in full, for the row's tooltip. */
+  info: string;
+}
+
+// Everything a row says about a port, each fact once; also what the filter searches.
+export function describePort(entry: PortDetails): PortSummary {
+  const containers = entry.containers ?? [];
+  // A developer's process names the port before a system helper or an agent's bridge sharing it,
+  // such as a container runtime's proxy.
+  const owners = entry.processes.filter(process => !process.system && !process.agent);
+  const processes: PortProcess[] = owners.length ? owners : entry.processes;
   const uptimes = processes.map(process => process.uptime).filter((value): value is number => typeof value === "number");
-  const names = unique(containers.length ? containers.map(container => container.name) : processes.map(process => process.name));
+  const names = uniqueText(containers.length ? containers.map(container => container.name) : processes.map(process => process.name));
+  const kinds = uniqueText(containers.length ? [] : processes.map(process => process.kind)).filter(kind => !names.some(name => sameText(name, kind)));
+  const said = [...names, ...kinds];
+  const fresh = (parts: Array<string | null | undefined>) => uniqueText(parts).filter(part => !said.some(text => sameText(text, part))).join(" · ");
+  const reach = entry.scope === "network" ? "Reachable from other devices" : entry.scope === "local" ? "This device only" : null;
+  const info = [
+    ...containers.map(container => `${container.runtime} · ${container.container}${container.project ? ` · project ${container.project}` : ""}${container.service ? ` · service ${container.service}` : ""}`),
+    ...entry.processes.map(process => `${process.name} · ${process.source === "package" ? "project name" : process.source === "folder" ? "working folder" : "process name"} · ${process.process} · PID ${process.pid}${process.system ? " · system service" : ""}`),
+  ];
   return {
-    names,
-    kinds: unique(containers.length ? [] : processes.map(process => process.kind)),
-    sessions: unique(processes.map(process => process.session)),
+    title: names.join(", ") || "TCP service",
+    kinds,
+    sessions: uniqueText(entry.processes.map(process => process.session)),
     // Several processes on one port: the service is as old as its oldest.
     uptime: uptimes.length ? Math.max(...uptimes) : null,
-    runs: unique(containers.length
-      ? containers.map(container => `${container.runtime} · ${container.container}`)
-      : processes.map(process => process.folder && process.folder !== process.name ? `${process.process} · ${process.folder}` : process.process))
-      // A process that is its own name (a system service) has nothing to add.
-      .filter(run => !names.includes(run)),
+    runs: uniqueText(containers.length
+      ? containers.map(container => fresh([container.runtime, container.container]))
+      : processes.map(process => fresh([process.process, process.folder]))),
+    info: info.length ? [...info, ...(reach ? [reach] : [])].join("\n") : "The source device has not provided a readable process identity.",
   };
 }
 
 export function portMatches(entry: PortDetails, query: string): boolean {
   const needle = query.trim().toLowerCase();
   if (!needle) return true;
-  const { names, kinds, sessions, runs } = describePort(entry);
-  return [String(entry.port), ...names, ...kinds, ...sessions, ...runs].some(text => text.toLowerCase().includes(needle));
+  const { title, kinds, sessions, runs } = describePort(entry);
+  return [String(entry.port), title, ...kinds, ...sessions, ...runs].some(text => text.toLowerCase().includes(needle));
 }
 
-function PortIdentity({ port, details, live }: { port: number; details: PortDetails[]; live: boolean }) {
-  const entry = details.find(entry => entry.port === port);
-  const processes = entry?.processes ?? [];
-  const containers = entry?.containers ?? [];
-  const { names, kinds, sessions, uptime, runs } = describePort(entry);
-  const info = [...containers.map(container => `${container.runtime} · ${container.container}${container.project ? ` · project ${container.project}` : ""}${container.service ? ` · service ${container.service}` : ""}`), ...processes.map((process) => `${process.name} · ${process.source === "package" ? "project name" : process.source === "folder" ? "working folder" : "process name"} · ${process.process} · PID ${process.pid}`)].join("\n");
-  return <div className="port-identity" title={info || "The source device has not provided a readable process identity."}>
-    <span className="port-title">
-      <span className="port-project">{names.join(", ") || "TCP service"}</span>
-      {kinds.map(kind => <span key={kind} className="port-kind">{kind}</span>)}
-    </span>
-    <span className="port-facts">
-      <span className="port-num">{port}{live ? <span className="port-state on">live</span> : null}</span>
-      {entry?.scope === "network" ? <span className="port-fact port-fact-open" title="Listens on every network interface: other devices on this network can reach it.">
-        <Globe size={11} aria-hidden="true" />Network
-      </span> : entry?.scope === "local" ? <span className="port-fact" title="Listens on this device only (localhost).">
-        <Lock size={11} aria-hidden="true" />This device
-      </span> : null}
-      {sessions.map(session => <span key={session} className="port-fact" title={`Started in the session “${session}”`}>
-        <SquareTerminal size={11} aria-hidden="true" /><span className="port-fact-text">{session}</span>
-      </span>)}
-      {uptime !== null ? <span className="port-fact" title="How long it has been running">
-        <Clock size={11} aria-hidden="true" />{formatUptime(uptime)}
-      </span> : null}
-    </span>
-    <span className="port-process">{runs.join(", ")}</span>
+// Local-only is the default reach, so Network is the reach worth a filter;
+// the four chips also fit the popover's width on one line.
+export type PortFilter = "all" | "sessions" | "network" | "containers";
+const PORT_FILTERS: ReadonlyArray<{ id: PortFilter; label: string; hint: string; test: (entry: PortDetails) => boolean }> = [
+  { id: "all", label: "All", hint: "Every service", test: () => true },
+  { id: "sessions", label: "Sessions", hint: "Started from a terminal session", test: entry => entry.processes.some(process => !!process.session) },
+  { id: "network", label: "Network", hint: "Reachable from other devices", test: entry => entry.scope === "network" },
+  { id: "containers", label: "Containers", hint: "Published by a container", test: entry => !!entry.containers?.length },
+];
+export function portInFilter(entry: PortDetails, filter: PortFilter): boolean {
+  return PORT_FILTERS.find(item => item.id === filter)?.test(entry) ?? true;
+}
+
+export interface PortGroup {
+  key: string;
+  label: string;
+  /** The session every port in the group was started from. */
+  session: string | null;
+  system: boolean;
+  entries: PortDetails[];
+}
+
+// Ports a session started come first, one group per session, then the other
+// services, then system ones. Sessions running a recognized service (a
+// framework, a database) lead, so dev servers come before helper sockets. A
+// port belongs to exactly one group: one started from two sessions sits under
+// the first and names the other on its row.
+export function groupPorts(entries: ReadonlyArray<PortDetails>): PortGroup[] {
+  const bySession = new Map<string, PortDetails[]>();
+  const services: PortDetails[] = [];
+  const system: PortDetails[] = [];
+  for (const entry of [...entries].sort((a, b) => a.port - b.port)) {
+    const [session] = describePort(entry).sessions;
+    if (session) bySession.set(session, [...(bySession.get(session) ?? []), entry]);
+    else (isSystemPort(entry) ? system : services).push(entry);
+  }
+  const serves = (list: PortDetails[]) => list.some(entry => describePort(entry).kinds.length > 0 || !!entry.containers?.length);
+  const groups: PortGroup[] = [...bySession]
+    .sort(([a, first], [b, second]) => Number(serves(second)) - Number(serves(first)) || a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" }))
+    .map(([session, list]) => ({ key: `session:${session}`, label: session, session, system: false, entries: list }));
+  if (services.length) groups.push({ key: "services", label: "Other services", session: null, system: false, entries: services });
+  if (system.length) groups.push({ key: "system", label: "System", session: null, system: true, entries: system });
+  return groups;
+}
+
+// One port in at most two short lines: the port, what it is, and how it runs.
+// The session is the group's header, so a row names only another one.
+function PortRow({ entry, session, actions }: { entry: PortDetails; session: string | null; actions: ReactNode }) {
+  const summary = describePort(entry);
+  const { kinds, sessions, uptime, info } = summary;
+  // Under a session header, a title that only repeats the session's name
+  // (a folder named like its session) gives way to how the port runs.
+  const repeats = !!session && sameText(summary.title, session) && summary.runs.length > 0;
+  const title = repeats ? summary.runs[0] : summary.title;
+  const runs = repeats ? summary.runs.slice(1) : summary.runs;
+  const elsewhere = sessions.filter(name => !session || !sameText(name, session));
+  const network = entry.scope === "network";
+  return <div className="port-row" title={info}>
+    <span className="port-num">{entry.port}</span>
+    <div className="port-main">
+      <div className="port-line">
+        <span className="port-title">{title}</span>
+        {kinds.map(kind => <span key={kind} className="port-kind">{kind}</span>)}
+      </div>
+      {network || elsewhere.length || runs.length || uptime !== null ? <div className="port-meta">
+        {network ? <span className="port-net" title="Listens on every network interface: other devices on this network can reach it.">
+          <Globe size={10} aria-hidden="true" />Network
+        </span> : null}
+        {elsewhere.map(name => <span key={name} className="port-meta-session" title={`Also started in the session “${name}”`}>
+          <SquareTerminal size={10} aria-hidden="true" />{name}
+        </span>)}
+        {runs.map(run => <span key={run}>{run}</span>)}
+        {uptime !== null ? <span title="How long it has been running">{formatUptime(uptime)}</span> : null}
+      </div> : null}
+    </div>
+    <div className="port-actions">{actions}</div>
   </div>;
+}
+
+// The list every view shares: search, filter chips, session groups and the
+// system services and agent ports, which stay hidden until asked for.
+function PortList({ entries, renderActions, onlySystemText }: {
+  entries: ReadonlyArray<PortDetails>;
+  renderActions: (entry: PortDetails) => ReactNode;
+  /** Shown when only hidden services are left; null when a status line says so already. */
+  onlySystemText: string | null;
+}) {
+  const [query, setQuery] = useState("");
+  const [selected, setSelected] = useState<PortFilter>("all");
+  const [showHidden, setShowHidden] = useState(false);
+  const hidden = entries.filter(isHiddenPort).length;
+  const pool = showHidden ? [...entries] : entries.filter(entry => !isHiddenPort(entry));
+  const counts = new Map(PORT_FILTERS.map(item => [item.id, pool.filter(item.test).length]));
+  // Only filters that narrow the list are offered; when the chosen one stops
+  // narrowing it (its ports went away), the list falls back to All.
+  const offered = PORT_FILTERS.filter(item => {
+    const count = counts.get(item.id) ?? 0;
+    return item.id === "all" || (count > 0 && count < pool.length);
+  });
+  const filter = offered.some(item => item.id === selected) ? selected : "all";
+  const shown = pool.filter(entry => portInFilter(entry, filter) && portMatches(entry, query));
+  const groups = groupPorts(shown);
+  // A lone group of other services needs no header.
+  const headed = groups.length > 1 || groups.some(group => group.session);
+  return <>
+    {pool.length > FILTER_FROM ? <label className="ports-filter">
+      <Search size={13} aria-hidden="true" />
+      <input type="search" value={query} onChange={event => setQuery(event.target.value)} placeholder="Filter by name, port or session" aria-label="Filter ports" spellCheck={false} />
+    </label> : null}
+    {offered.length > 1 ? <div className="ports-chips" role="group" aria-label="Show ports">
+      {offered.map(item => <button key={item.id} type="button" className={`ports-chip${filter === item.id ? " on" : ""}`} aria-pressed={filter === item.id} title={item.hint} onClick={() => setSelected(item.id)}>
+        {/* All counts what the status line already says. */}
+        {item.label}{item.id === "all" ? null : <span className="ports-chip-count">{counts.get(item.id)}</span>}
+      </button>)}
+    </div> : null}
+    <div className="ports-box">
+      {pool.length === 0 ? (onlySystemText ? <p className="settings-empty">{onlySystemText}</p> : null)
+        : shown.length === 0 ? <p className="settings-empty">No port matches “{query.trim()}”.</p>
+        : groups.map(group => <section key={group.key} className="ports-group" aria-label={group.session ? `Session ${group.label}` : group.label}>
+          {headed ? <div className={`ports-group-head${group.session ? " is-session" : ""}`}>
+            {group.session ? <SquareTerminal size={12} aria-hidden="true" /> : group.system ? <Cpu size={12} aria-hidden="true" /> : <Server size={12} aria-hidden="true" />}
+            <span className="ports-group-name">{group.label}</span>
+            <span className="ports-group-count">{group.entries.length}</span>
+          </div> : null}
+          {group.entries.map(entry => <PortRow key={entry.port} entry={entry} session={group.session} actions={renderActions(entry)} />)}
+        </section>)}
+    </div>
+    {hidden ? <button type="button" className="ports-system-toggle" aria-pressed={showHidden} onClick={() => setShowHidden(value => !value)}>
+      {showHidden ? <EyeOff size={12} aria-hidden="true" /> : <Eye size={12} aria-hidden="true" />}
+      {hiddenPortsLabel(entries, showHidden)}
+    </button> : null}
+  </>;
 }
 
 function OpenLink({ port }: { port: number }) {
   return (
-    <a className="btn btn-sm" href={`http://localhost:${port}`} target="_blank" rel="noreferrer">
+    <a className="tile-btn" href={`http://localhost:${port}`} target="_blank" rel="noreferrer" title={`Open localhost:${port}`} aria-label={`Open localhost:${port}`}>
       <ExternalLink size={13} strokeWidth={2} />
-      Open
     </a>
   );
 }
@@ -414,7 +575,7 @@ function StopServiceButton({ port, host, hostName, containers, processes, onStop
         }
       }}
     >
-      {showSpinner ? <LoaderCircle size={13} className="async-spinner" /> : <Square size={13} />}
+      {showSpinner ? <LoaderCircle size={13} className="async-spinner" /> : <CircleStop size={13} />}
     </button>
   );
 }
@@ -514,48 +675,39 @@ function ServerPorts({ pollingActive, showControls, onLoadingChange, route, refr
       {error ? <p className="small pad" role="alert">{error}</p> : null}
       {actionError ? <p className="small pad" role="alert">{actionError}</p> : null}
       {unavailable ? <p className="small muted pad">Could not refresh service details. Showing last known names.</p> : null}
-      <div className="ports-box">
-        {rows.length === 0 ? (
-          <p className="settings-empty">
-            {loading ? (showLoading ? "Checking ports…" : "\u00a0") : isClient ? (enabled ? "No ports to forward." : "Forwarding is off.") : "No listening ports."}
-          </p>
-        ) : (
-          rows.map((port) => (
-            <div key={port} className="settings-row port-row">
-              <PortIdentity port={port} details={details} live={isClient} />
-              <div className="port-actions">
-                <OpenLink port={port} />
-                {stoppable ? (
-                  <StopServiceButton
-                    port={port} host={undefined} hostName="this device"
-                    containers={rowDetail(port)?.containers ?? []} processes={rowDetail(port)?.processes ?? []}
-                    onStopped={onChanged} onError={setActionError}
-                  />
-                ) : null}
-              </div>
-            </div>
-          ))
-        )}
-      </div>
+      {rows.length === 0 ? <div className="ports-box">
+        <p className="settings-empty">
+          {loading ? (showLoading ? "Checking ports…" : "\u00a0") : isClient ? (enabled ? "No ports to forward." : "Forwarding is off.") : "No listening ports."}
+        </p>
+      </div> : <PortList
+        entries={rows.map(port => rowDetail(port) ?? { port, processes: [] })}
+        onlySystemText={isClient ? "Only system and agent services are forwarded." : "Only system and agent services are listening."}
+        renderActions={entry => <>
+          <OpenLink port={entry.port} />
+          {stoppable ? <StopServiceButton
+            port={entry.port} host={undefined} hostName="this device"
+            containers={entry.containers ?? []} processes={entry.processes}
+            onStopped={onChanged} onError={setActionError}
+          /> : null}
+        </>}
+      />}
     </>
   );
 }
 
-function NativeOpenLink({ port }: { port: number }) {
+// The native browser hand-off; a failure is reported in the list's alert line
+// so the row keeps its height.
+function NativeOpenLink({ port, onError }: { port: number; onError: (message: string) => void }) {
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
   const pending = useRef(false);
   const open = async () => {
     if (pending.current) return;
-    pending.current = true; setLoading(true); setError("");
+    pending.current = true; setLoading(true); onError("");
     try { await openUrl(`http://localhost:${port}`); }
-    catch { setError("Could not open the browser. Retry."); }
+    catch { onError("Could not open the browser. Retry."); }
     finally { pending.current = false; setLoading(false); }
   };
-  return <div>
-    <AsyncButton className="btn btn-sm" loading={loading} icon={ExternalLink} onClick={() => void open()}>Open</AsyncButton>
-    {error ? <p className="small" role="alert">{error}</p> : null}
-  </div>;
+  return <AsyncButton className="tile-btn" iconSize={13} loading={loading} icon={ExternalLink} title={`Open localhost:${port}`} aria-label={`Open localhost:${port}`} onClick={() => void open()} />;
 }
 
 function TauriPorts({ serverHost, hostName, clientIsLocal, pollingActive, showControls, onLoadingChange, route, refreshToken, onChanged }: {
@@ -618,24 +770,22 @@ function TauriPorts({ serverHost, hostName, clientIsLocal, pollingActive, showCo
     {error ? <p className="small pad" role="alert">{error}</p> : null}
     {actionError ? <p className="small pad" role="alert">{actionError}</p> : null}
     {unavailable ? <p className="small muted pad">Could not refresh service details. Showing last known names.</p> : null}
-    <div className="ports-box">
-      {forwarded.length === 0 ? <p className="settings-empty">
+    {forwarded.length === 0 ? <div className="ports-box">
+      <p className="settings-empty">
         {!status && loading ? (showLoading ? "Checking ports…" : "\u00a0") : !enabled ? "Forwarding is off." : up ? "No ports to forward." : "Waiting for the source device."}
-      </p> : forwarded.map(port => {
-        const entry = details.find(detail => detail.port === port);
-        return <div key={port} className="settings-row port-row">
-          <PortIdentity port={port} details={details} live />
-          <div className="port-actions">
-            <NativeOpenLink port={port} />
-            <StopServiceButton
-              port={port} host={host ?? undefined} hostName={hostName}
-              containers={entry?.containers ?? []} processes={entry?.processes ?? []}
-              onStopped={onChanged} onError={setActionError}
-            />
-          </div>
-        </div>;
-      })}
-    </div>
+      </p>
+    </div> : <PortList
+      entries={forwarded.map(port => details.find(detail => detail.port === port) ?? { port, processes: [] })}
+      onlySystemText="Only system and agent services are forwarded."
+      renderActions={entry => <>
+        <NativeOpenLink port={entry.port} onError={setActionError} />
+        <StopServiceButton
+          port={entry.port} host={host ?? undefined} hostName={hostName}
+          containers={entry.containers ?? []} processes={entry.processes}
+          onStopped={onChanged} onError={setActionError}
+        />
+      </>}
+    />}
   </>;
 }
 
@@ -650,15 +800,16 @@ function LocalPorts({ pollingActive, onLoadingChange, refreshToken, onChanged, n
   const [actionError, setActionError] = useState("");
   const showLoading = useDelayedLoading(loading);
   useLoadingReport(pollingActive && loading, onLoadingChange);
-  const [query, setQuery] = useState("");
   const rows = details.flatMap(entry => {
     // SSH client TCP listeners are tunnels; sshd is a service on this device.
     const processes = entry.processes.filter(item => item.process !== "ssh");
     if (entry.processes.length && !processes.length && !entry.containers?.length) return [];
     return [{ ...entry, processes }];
   }).sort((a, b) => a.port - b.port);
-  const open = rows.filter(entry => entry.scope === "network").length;
-  const shown = rows.filter(entry => portMatches(entry, query));
+  // The summary counts what the list shows by default; hidden services are
+  // counted on their own toggle below the list.
+  const services = rows.filter(entry => !isHiddenPort(entry));
+  const open = services.filter(entry => entry.scope === "network").length;
 
   return <>
     <div className="settings-row ports-status">
@@ -666,32 +817,25 @@ function LocalPorts({ pollingActive, onLoadingChange, refreshToken, onChanged, n
         {loading ? (showLoading ? "Checking ports…" : "\u00a0")
           : unavailable && rows.length === 0 ? "Port details unavailable"
           : rows.length === 0 ? "No listening ports."
-          : `${rows.length} listening port${rows.length === 1 ? "" : "s"} on this device${open ? `, ${open} open to the network` : ""}`}
+          : services.length === 0 ? "Only system and agent services are listening."
+          : `${services.length} listening port${services.length === 1 ? "" : "s"}${open ? `, ${open} open to the network` : ""}`}
       </span>
       <div className="ports-status-spacer" />
     </div>
-    {rows.length > FILTER_FROM ? <label className="ports-filter">
-      <Search size={13} aria-hidden="true" />
-      <input type="search" value={query} onChange={event => setQuery(event.target.value)} placeholder="Filter by name, port or session" aria-label="Filter ports" spellCheck={false} />
-    </label> : null}
     {actionError ? <p className="small pad" role="alert">{actionError}</p> : null}
     {unavailable && rows.length > 0 ? <p className="small muted pad">Could not refresh service details. Showing last known names.</p> : null}
-    <div className="ports-box">
-      {rows.length === 0 ? (loading ? null : <p className="settings-empty">Nothing is listening on this device.</p>)
-        : shown.length === 0 ? <p className="settings-empty">No port matches “{query.trim()}”.</p>
-        : shown.map(entry => (
-        <div key={entry.port} className="settings-row port-row">
-          <PortIdentity port={entry.port} details={rows} live={false} />
-          <div className="port-actions">
-            {native ? <NativeOpenLink port={entry.port} /> : <OpenLink port={entry.port} />}
-            <StopServiceButton
-              port={entry.port} host={undefined} hostName="this device"
-              containers={entry.containers ?? []} processes={entry.processes}
-              onStopped={() => { setActionError(""); onChanged(); }} onError={setActionError}
-            />
-          </div>
-        </div>
-      ))}
-    </div>
+    {rows.length === 0 ? (loading ? null : <div className="ports-box"><p className="settings-empty">Nothing is listening on this device.</p></div>)
+      : <PortList
+        entries={rows}
+        onlySystemText={null}
+        renderActions={entry => <>
+          {native ? <NativeOpenLink port={entry.port} onError={setActionError} /> : <OpenLink port={entry.port} />}
+          <StopServiceButton
+            port={entry.port} host={undefined} hostName="this device"
+            containers={entry.containers ?? []} processes={entry.processes}
+            onStopped={() => { setActionError(""); onChanged(); }} onError={setActionError}
+          />
+        </>}
+      />}
   </>;
 }

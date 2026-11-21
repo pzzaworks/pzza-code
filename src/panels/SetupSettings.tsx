@@ -4,7 +4,7 @@ import { PERMISSIONS, PERMISSIONS_SUPPORTED } from "../state/permissions";
 import { useSetup } from "../state/setup";
 import { refreshDefaultEditor, useDefaultEditor } from "../state/defaultEditor";
 import { usePermissionControls } from "./Permissions";
-import { confirmRefreshLocalSessions, useSessionRefresh } from "../state/sessionRefresh";
+import { openRefreshSessions, useSessionRefresh } from "../state/sessionRefresh";
 import { AllowAllButton, PermissionGuide, SetupDefaultEditor, SetupHealth, SetupPermissions, SetupRequirements, useRequirementsReady } from "../tour/SetupSteps";
 import "../tour/OnboardingTour.css";
 
@@ -83,8 +83,8 @@ export function SetupSettings() {
       <div className="setup-settings-actions">
         {PERMISSIONS_SUPPORTED ? <AllowAllButton controls={controls} /> : null}
         {PERMISSIONS_SUPPORTED ? <button type="button" className="btn btn-sm" disabled={refreshing} aria-busy={refreshing || undefined}
-          title="Restart this Mac's terminals so they get new permissions. Sessions, folders, recent output and agent chats come back; programs running in them stop."
-          onClick={() => { void confirmRefreshLocalSessions(); }}>
+          title="Choose sessions to refresh, or refresh all so every terminal gets new permissions. Output, folders and agent chats come back; programs running in them stop."
+          onClick={openRefreshSessions}>
           {refreshing ? <Loader2 size={13} className="sw-spin" aria-hidden="true" /> : <RefreshCw size={13} aria-hidden="true" />}
           {refreshing ? "Refreshing sessions…" : "Refresh sessions"}
         </button> : null}

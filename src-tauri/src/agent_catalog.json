@@ -346,6 +346,10 @@
         "folder": ".claude"
       },
       "lookup": null,
+      "modeArgs": [
+        "--permission-mode",
+        "manual"
+      ],
       "byId": {
         "command": "claude --resume @SESSION@ --permission-mode manual",
         "rule": "claude"
@@ -362,6 +366,10 @@
         "folder": ".claude"
       },
       "lookup": null,
+      "modeArgs": [
+        "--permission-mode",
+        "acceptEdits"
+      ],
       "byId": {
         "command": "claude --resume @SESSION@ --permission-mode acceptEdits",
         "rule": "claude"
@@ -378,6 +386,10 @@
         "folder": ".claude"
       },
       "lookup": null,
+      "modeArgs": [
+        "--permission-mode",
+        "plan"
+      ],
       "byId": {
         "command": "claude --resume @SESSION@ --permission-mode plan",
         "rule": "claude"
@@ -394,6 +406,10 @@
         "folder": ".claude"
       },
       "lookup": null,
+      "modeArgs": [
+        "--permission-mode",
+        "auto"
+      ],
       "byId": {
         "command": "claude --resume @SESSION@ --permission-mode auto",
         "rule": "claude"
@@ -410,6 +426,10 @@
         "folder": ".claude"
       },
       "lookup": null,
+      "modeArgs": [
+        "--permission-mode",
+        "dontAsk"
+      ],
       "byId": {
         "command": "claude --resume @SESSION@ --permission-mode dontAsk",
         "rule": "claude"
@@ -426,6 +446,9 @@
         "folder": ".claude"
       },
       "lookup": null,
+      "modeArgs": [
+        "--dangerously-skip-permissions"
+      ],
       "byId": {
         "command": "claude --resume @SESSION@ --dangerously-skip-permissions",
         "rule": "claude"
@@ -439,6 +462,12 @@
       "versionProgram": false,
       "account": null,
       "lookup": null,
+      "modeArgs": [
+        "--sandbox",
+        "read-only",
+        "--ask-for-approval",
+        "on-request"
+      ],
       "byId": null
     },
     {
@@ -449,6 +478,12 @@
       "versionProgram": false,
       "account": null,
       "lookup": null,
+      "modeArgs": [
+        "--sandbox",
+        "workspace-write",
+        "--ask-for-approval",
+        "on-request"
+      ],
       "byId": null
     },
     {
@@ -459,6 +494,9 @@
       "versionProgram": false,
       "account": null,
       "lookup": null,
+      "modeArgs": [
+        "--approve-for-me"
+      ],
       "byId": null
     },
     {
@@ -469,6 +507,9 @@
       "versionProgram": false,
       "account": null,
       "lookup": null,
+      "modeArgs": [
+        "--dangerously-bypass-approvals-and-sandbox"
+      ],
       "byId": null
     },
     {
@@ -479,6 +520,10 @@
       "versionProgram": false,
       "account": null,
       "lookup": null,
+      "modeArgs": [
+        "--agent",
+        "build"
+      ],
       "byId": null
     },
     {
@@ -489,6 +534,10 @@
       "versionProgram": false,
       "account": null,
       "lookup": null,
+      "modeArgs": [
+        "--agent",
+        "plan"
+      ],
       "byId": null
     },
     {
@@ -499,6 +548,9 @@
       "versionProgram": false,
       "account": null,
       "lookup": null,
+      "modeArgs": [
+        "--auto"
+      ],
       "byId": null
     },
     {
@@ -509,6 +561,10 @@
       "versionProgram": false,
       "account": null,
       "lookup": null,
+      "modeArgs": [
+        "--approval-mode",
+        "default"
+      ],
       "byId": null
     },
     {
@@ -519,6 +575,10 @@
       "versionProgram": false,
       "account": null,
       "lookup": null,
+      "modeArgs": [
+        "--approval-mode",
+        "auto_edit"
+      ],
       "byId": null
     },
     {
@@ -529,6 +589,10 @@
       "versionProgram": false,
       "account": null,
       "lookup": null,
+      "modeArgs": [
+        "--approval-mode",
+        "plan"
+      ],
       "byId": null
     },
     {
@@ -539,6 +603,10 @@
       "versionProgram": false,
       "account": null,
       "lookup": null,
+      "modeArgs": [
+        "--approval-mode",
+        "yolo"
+      ],
       "byId": null
     },
     {
@@ -549,6 +617,7 @@
       "versionProgram": false,
       "account": null,
       "lookup": null,
+      "modeArgs": [],
       "byId": null
     },
     {
@@ -559,6 +628,9 @@
       "versionProgram": false,
       "account": null,
       "lookup": null,
+      "modeArgs": [
+        "--plan"
+      ],
       "byId": null
     },
     {
@@ -569,6 +641,9 @@
       "versionProgram": false,
       "account": null,
       "lookup": null,
+      "modeArgs": [
+        "--autopilot"
+      ],
       "byId": null
     },
     {
@@ -579,6 +654,9 @@
       "versionProgram": false,
       "account": null,
       "lookup": null,
+      "modeArgs": [
+        "--allow-all-tools"
+      ],
       "byId": null
     },
     {
@@ -589,6 +667,9 @@
       "versionProgram": false,
       "account": null,
       "lookup": null,
+      "modeArgs": [
+        "--yolo"
+      ],
       "byId": null
     },
     {
@@ -599,6 +680,10 @@
       "versionProgram": false,
       "account": null,
       "lookup": null,
+      "modeArgs": [
+        "--tools",
+        "read,grep,find,ls"
+      ],
       "byId": null
     },
     {
@@ -609,6 +694,7 @@
       "versionProgram": false,
       "account": null,
       "lookup": null,
+      "modeArgs": [],
       "byId": null
     },
     {
@@ -620,6 +706,10 @@
       "versionProgram": false,
       "account": null,
       "lookup": "cline",
+      "modeArgs": [
+        "--auto-approve",
+        "false"
+      ],
       "byId": null
     },
     {
@@ -631,6 +721,11 @@
       "versionProgram": false,
       "account": null,
       "lookup": "cline",
+      "modeArgs": [
+        "--auto-approve",
+        "false",
+        "-p"
+      ],
       "byId": null
     },
     {
@@ -642,6 +737,9 @@
       "versionProgram": false,
       "account": null,
       "lookup": "cline",
+      "modeArgs": [
+        "-y"
+      ],
       "byId": null
     },
     {
@@ -650,6 +748,7 @@
       "versionProgram": false,
       "account": null,
       "lookup": "goose",
+      "modeArgs": [],
       "byId": null
     },
     {
@@ -658,6 +757,7 @@
       "versionProgram": false,
       "account": null,
       "lookup": "goose",
+      "modeArgs": [],
       "byId": null
     },
     {
@@ -666,6 +766,7 @@
       "versionProgram": false,
       "account": null,
       "lookup": "goose",
+      "modeArgs": [],
       "byId": null
     },
     {
@@ -674,6 +775,7 @@
       "versionProgram": false,
       "account": null,
       "lookup": "goose",
+      "modeArgs": [],
       "byId": null
     },
     {
@@ -684,6 +786,7 @@
       "versionProgram": false,
       "account": null,
       "lookup": null,
+      "modeArgs": [],
       "byId": null
     },
     {
@@ -694,6 +797,10 @@
       "versionProgram": false,
       "account": null,
       "lookup": null,
+      "modeArgs": [
+        "--mode",
+        "accept-edits"
+      ],
       "byId": null
     },
     {
@@ -704,6 +811,10 @@
       "versionProgram": false,
       "account": null,
       "lookup": null,
+      "modeArgs": [
+        "--mode",
+        "plan"
+      ],
       "byId": null
     },
     {
@@ -714,6 +825,9 @@
       "versionProgram": false,
       "account": null,
       "lookup": null,
+      "modeArgs": [
+        "--dangerously-skip-permissions"
+      ],
       "byId": null
     },
     {
@@ -724,6 +838,10 @@
       "versionProgram": false,
       "account": null,
       "lookup": null,
+      "modeArgs": [
+        "--approval-mode",
+        "default"
+      ],
       "byId": null
     },
     {
@@ -734,6 +852,10 @@
       "versionProgram": false,
       "account": null,
       "lookup": null,
+      "modeArgs": [
+        "--approval-mode",
+        "plan"
+      ],
       "byId": null
     },
     {
@@ -744,6 +866,10 @@
       "versionProgram": false,
       "account": null,
       "lookup": null,
+      "modeArgs": [
+        "--approval-mode",
+        "auto-edit"
+      ],
       "byId": null
     },
     {
@@ -754,6 +880,10 @@
       "versionProgram": false,
       "account": null,
       "lookup": null,
+      "modeArgs": [
+        "--approval-mode",
+        "auto"
+      ],
       "byId": null
     },
     {
@@ -764,6 +894,10 @@
       "versionProgram": false,
       "account": null,
       "lookup": null,
+      "modeArgs": [
+        "--approval-mode",
+        "yolo"
+      ],
       "byId": null
     },
     {
@@ -774,6 +908,7 @@
       "versionProgram": false,
       "account": null,
       "lookup": null,
+      "modeArgs": [],
       "byId": null
     },
     {
@@ -784,6 +919,9 @@
       "versionProgram": false,
       "account": null,
       "lookup": null,
+      "modeArgs": [
+        "-y"
+      ],
       "byId": null
     },
     {
@@ -795,6 +933,7 @@
       "versionProgram": false,
       "account": null,
       "lookup": null,
+      "modeArgs": [],
       "byId": null
     },
     {
@@ -806,6 +945,9 @@
       "versionProgram": false,
       "account": null,
       "lookup": null,
+      "modeArgs": [
+        "--auto"
+      ],
       "byId": null
     },
     {
@@ -816,6 +958,7 @@
       "versionProgram": false,
       "account": null,
       "lookup": null,
+      "modeArgs": [],
       "byId": null
     },
     {
@@ -826,6 +969,9 @@
       "versionProgram": false,
       "account": null,
       "lookup": null,
+      "modeArgs": [
+        "--always-approve"
+      ],
       "byId": null
     },
     {
@@ -836,6 +982,7 @@
       "versionProgram": false,
       "account": null,
       "lookup": null,
+      "modeArgs": [],
       "byId": null
     },
     {
@@ -846,6 +993,10 @@
       "versionProgram": false,
       "account": null,
       "lookup": null,
+      "modeArgs": [
+        "--auto",
+        "low"
+      ],
       "byId": null
     },
     {
@@ -856,6 +1007,10 @@
       "versionProgram": false,
       "account": null,
       "lookup": null,
+      "modeArgs": [
+        "--auto",
+        "medium"
+      ],
       "byId": null
     },
     {
@@ -866,6 +1021,10 @@
       "versionProgram": false,
       "account": null,
       "lookup": null,
+      "modeArgs": [
+        "--auto",
+        "high"
+      ],
       "byId": null
     },
     {
@@ -877,6 +1036,7 @@
       "versionProgram": false,
       "account": null,
       "lookup": null,
+      "modeArgs": [],
       "byId": null
     },
     {
@@ -888,6 +1048,9 @@
       "versionProgram": false,
       "account": null,
       "lookup": null,
+      "modeArgs": [
+        "--trust-all-tools"
+      ],
       "byId": null
     },
     {
@@ -899,6 +1062,10 @@
       "versionProgram": false,
       "account": null,
       "lookup": null,
+      "modeArgs": [
+        "--permission-mode",
+        "default"
+      ],
       "byId": null
     },
     {
@@ -910,6 +1077,10 @@
       "versionProgram": false,
       "account": null,
       "lookup": null,
+      "modeArgs": [
+        "--permission-mode",
+        "acceptEdits"
+      ],
       "byId": null
     },
     {
@@ -921,6 +1092,10 @@
       "versionProgram": false,
       "account": null,
       "lookup": null,
+      "modeArgs": [
+        "--permission-mode",
+        "plan"
+      ],
       "byId": null
     },
     {
@@ -932,6 +1107,9 @@
       "versionProgram": false,
       "account": null,
       "lookup": null,
+      "modeArgs": [
+        "-y"
+      ],
       "byId": null
     },
     {
@@ -942,6 +1120,7 @@
       "versionProgram": false,
       "account": null,
       "lookup": null,
+      "modeArgs": [],
       "byId": null
     },
     {
@@ -952,6 +1131,9 @@
       "versionProgram": false,
       "account": null,
       "lookup": null,
+      "modeArgs": [
+        "--plan"
+      ],
       "byId": null
     },
     {
@@ -962,6 +1144,9 @@
       "versionProgram": false,
       "account": null,
       "lookup": null,
+      "modeArgs": [
+        "--yolo"
+      ],
       "byId": null
     },
     {
@@ -972,6 +1157,9 @@
       "versionProgram": false,
       "account": null,
       "lookup": null,
+      "modeArgs": [
+        "--auto"
+      ],
       "byId": null
     },
     {
@@ -982,6 +1170,10 @@
       "versionProgram": false,
       "account": null,
       "lookup": null,
+      "modeArgs": [
+        "--permission-mode",
+        "normal"
+      ],
       "byId": null
     },
     {
@@ -992,6 +1184,10 @@
       "versionProgram": false,
       "account": null,
       "lookup": null,
+      "modeArgs": [
+        "--permission-mode",
+        "accept-edits"
+      ],
       "byId": null
     },
     {
@@ -1002,6 +1198,10 @@
       "versionProgram": false,
       "account": null,
       "lookup": null,
+      "modeArgs": [
+        "--permission-mode",
+        "smart"
+      ],
       "byId": null
     },
     {
@@ -1012,6 +1212,10 @@
       "versionProgram": false,
       "account": null,
       "lookup": null,
+      "modeArgs": [
+        "--permission-mode",
+        "dangerous"
+      ],
       "byId": null
     },
     {
@@ -1022,6 +1226,10 @@
       "versionProgram": false,
       "account": null,
       "lookup": null,
+      "modeArgs": [
+        "--agent",
+        "ask"
+      ],
       "byId": null
     },
     {
@@ -1032,6 +1240,7 @@
       "versionProgram": false,
       "account": null,
       "lookup": null,
+      "modeArgs": [],
       "byId": null
     },
     {
@@ -1042,6 +1251,10 @@
       "versionProgram": false,
       "account": null,
       "lookup": null,
+      "modeArgs": [
+        "--agent",
+        "smart-approve"
+      ],
       "byId": null
     },
     {
@@ -1052,6 +1265,9 @@
       "versionProgram": false,
       "account": null,
       "lookup": null,
+      "modeArgs": [
+        "--auto-approve"
+      ],
       "byId": null
     },
     {
@@ -1065,6 +1281,10 @@
       "versionProgram": false,
       "account": null,
       "lookup": null,
+      "modeArgs": [
+        "--chat-mode",
+        "ask"
+      ],
       "byId": null
     },
     {
@@ -1078,6 +1298,7 @@
       "versionProgram": false,
       "account": null,
       "lookup": null,
+      "modeArgs": [],
       "byId": null
     },
     {
@@ -1091,6 +1312,10 @@
       "versionProgram": false,
       "account": null,
       "lookup": null,
+      "modeArgs": [
+        "--architect",
+        "--no-auto-accept-architect"
+      ],
       "byId": null
     },
     {
@@ -1104,6 +1329,9 @@
       "versionProgram": false,
       "account": null,
       "lookup": null,
+      "modeArgs": [
+        "--yes-always"
+      ],
       "byId": null
     },
     {
@@ -1114,6 +1342,10 @@
       "versionProgram": false,
       "account": null,
       "lookup": null,
+      "modeArgs": [
+        "--permission-mode",
+        "standard"
+      ],
       "byId": null
     },
     {
@@ -1124,6 +1356,10 @@
       "versionProgram": false,
       "account": null,
       "lookup": null,
+      "modeArgs": [
+        "--permission-mode",
+        "acceptEdits"
+      ],
       "byId": null
     },
     {
@@ -1134,6 +1370,9 @@
       "versionProgram": false,
       "account": null,
       "lookup": null,
+      "modeArgs": [
+        "--yolo"
+      ],
       "byId": null
     },
     {
@@ -1145,6 +1384,10 @@
       "versionProgram": false,
       "account": null,
       "lookup": null,
+      "modeArgs": [
+        "--permission-mode",
+        "default"
+      ],
       "byId": null
     },
     {
@@ -1156,6 +1399,10 @@
       "versionProgram": false,
       "account": null,
       "lookup": null,
+      "modeArgs": [
+        "--permission-mode",
+        "plan"
+      ],
       "byId": null
     },
     {
@@ -1167,6 +1414,10 @@
       "versionProgram": false,
       "account": null,
       "lookup": null,
+      "modeArgs": [
+        "--permission-mode",
+        "accept_edits"
+      ],
       "byId": null
     },
     {
@@ -1178,6 +1429,9 @@
       "versionProgram": false,
       "account": null,
       "lookup": null,
+      "modeArgs": [
+        "--yolo"
+      ],
       "byId": null
     },
     {
@@ -1186,6 +1440,10 @@
       "versionProgram": false,
       "account": null,
       "lookup": "forge",
+      "modeArgs": [
+        "--agent",
+        "muse"
+      ],
       "byId": null
     },
     {
@@ -1194,6 +1452,10 @@
       "versionProgram": false,
       "account": null,
       "lookup": "forge",
+      "modeArgs": [
+        "--agent",
+        "sage"
+      ],
       "byId": null
     },
     {
@@ -1202,6 +1464,10 @@
       "versionProgram": false,
       "account": null,
       "lookup": "forge",
+      "modeArgs": [
+        "--agent",
+        "forge"
+      ],
       "byId": null
     },
     {
@@ -1212,6 +1478,7 @@
       "versionProgram": false,
       "account": null,
       "lookup": null,
+      "modeArgs": [],
       "byId": null
     },
     {
@@ -1222,6 +1489,9 @@
       "versionProgram": false,
       "account": null,
       "lookup": null,
+      "modeArgs": [
+        "--yolo"
+      ],
       "byId": null
     }
   ]

@@ -253,7 +253,7 @@
 .settings-hub-content .dictation-language-setting > .settings-row-copy { margin: 0; text-align: left; }
 .settings-hub-content .dictation-language-setting > .cselect { flex: 0 1 210px; width: 210px; margin-left: auto; }
 .settings-hub-content .notification-content { padding: 13px 10px; }
-.settings-hub-content .port-row { padding: 12px 10px; border-bottom: 1px solid var(--divider); border-radius: var(--r-sm); }
+.settings-hub-content .port-row { padding: 7px 10px; border-radius: var(--r-md); }
 .notification-event-groups { display: grid; gap: 18px; }
 .notification-event-group { margin: 0; padding: 0; min-width: 0; border: 0; }
 .notification-event-group > legend { display: flex; align-items: center; gap: 8px; padding: 0; margin-bottom: 4px; font-size: var(--fs-md); font-weight: 600; color: var(--text); }

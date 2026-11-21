@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { Loader2, X } from "lucide-react";
 import { checkPermissionsAtLaunch, checkTerminalsUpdated, dismissSessionRefreshNotice, localTileOnCanvas, useSessionRefresh } from "../state/sessionRefresh";
 import { useStore } from "../state/store";
+import { RefreshSessionsDialog } from "./RefreshSessionsDialog";
 import "./SessionRefreshHost.css";
 
 // Successful refreshes say so briefly; failures stay until dismissed.
@@ -31,15 +32,17 @@ export function SessionRefreshHost() {
   }, [notice]);
 
   // The launch check is usually instant: it shows only what it restored.
-  if (running && !pending && !tileInView) return <div className="session-refresh-notice" role="status">
-    <Loader2 size={14} className="sw-spin" aria-hidden="true" />
-    <span>{restoring ? "Restoring sessions…" : "Refreshing sessions…"}</span>
-  </div>;
-  if (!notice || (notice.tone === "ok" && tileInView)) return null;
-  return <div className={`session-refresh-notice is-${notice.tone}`} role={notice.tone === "fail" ? "alert" : "status"}>
-    <span>{notice.message}</span>
-    <button type="button" className="session-refresh-dismiss" aria-label="Dismiss" onClick={dismissSessionRefreshNotice}>
-      <X size={13} aria-hidden="true" />
-    </button>
-  </div>;
+  const status = running && !pending && !tileInView
+    ? <div className="session-refresh-notice" role="status">
+      <Loader2 size={14} className="sw-spin" aria-hidden="true" />
+      <span>{restoring ? "Restoring sessions…" : "Refreshing sessions…"}</span>
+    </div>
+    : !notice || (notice.tone === "ok" && tileInView) ? null
+    : <div className={`session-refresh-notice is-${notice.tone}`} role={notice.tone === "fail" ? "alert" : "status"}>
+      <span>{notice.message}</span>
+      <button type="button" className="session-refresh-dismiss" aria-label="Dismiss" onClick={dismissSessionRefreshNotice}>
+        <X size={13} aria-hidden="true" />
+      </button>
+    </div>;
+  return <>{status}<RefreshSessionsDialog /></>;
 }

@@ -19,5 +19,7 @@ export async function paneForeground(host: string | undefined, session: string, 
   return {
     agent: sessionAgent(launcher)?.id ?? agentForProgram(launcher),
     panes: typeof row.panes === "number" && Number.isInteger(row.panes) ? row.panes : undefined,
+    ...(row.launch?.status ? { status: row.launch.status } : {}),
+    ...(typeof row.launch?.statusSince === "number" ? { statusSince: row.launch.statusSince } : {}),
   };
 }

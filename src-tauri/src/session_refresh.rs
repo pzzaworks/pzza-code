@@ -38,6 +38,9 @@ use std::time::{Duration, Instant};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
+use crate::agent_catalog::Launcher;
+use crate::pane_programs::{PaneProgram, ProgramRequest};
+
 const SESSIONS_FORMAT: &str = "#{session_id}\t#{session_name}";
 // Free text (names, folders) comes last so a tab inside it cannot shift the
 // other fields.
@@ -47,7 +50,7 @@ const SCROLLBACK_START: &str = "-2000";
 const MAX_AGENT_COMMAND: usize = 256;
 // Prints a pane's saved output, deletes it, then becomes the pane's shell.
 const RESTORE_SCRIPT: &str = "f=$1; shift; if [ -n \"$f\" ] && [ -f \"$f\" ]; then cat -- \"$f\"; rm -f -- \"$f\"; printf '\\033[0m\\n'; fi; exec \"$@\"";
-const SHELLS: &[&str] = &["zsh", "bash", "fish", "sh", "dash", "ksh", "tcsh", "nu"];
+pub(crate) const SHELLS: &[&str] = &["zsh", "bash", "fish", "sh", "dash", "ksh", "tcsh", "nu"];
 const INTERPRETERS: &[&str] = &["node", "nodejs", "bun", "deno"];
 // One line per pane: whether it is the only pane of a one-window session that
 // was started with the default shell, has printed less than a screen and sits
@@ -123,6 +126,11 @@ pub struct AgentResume {
     // is kept beside them (see Conversations).
     #[serde(skip)]
     conversation: Option<String>,
+    // The user's shell alias or function the agent was started through
+    // (see agent_catalog::Launcher): the resume is typed through it. Kept
+    // beside the saved files like the conversation.
+    #[serde(skip)]
+    launcher: Option<Launcher>,
 }
 
 /// An agent to resume as the app asks for it: an AgentResume with, when
@@ -140,12 +148,17 @@ pub struct AgentRequest {
     only_if_busy: bool,
     #[serde(default)]
     conversation: Option<String>,
+    // The launcher the agent was started through, as the activity probe read
+    // it; one that is not valid is taken as not known.
+    #[serde(default)]
+    launcher: Option<Launcher>,
 }
 
 impl From<AgentRequest> for AgentResume {
     fn from(request: AgentRequest) -> Self {
         let conversation = request.conversation.filter(|id| reopens(&request.command, id));
-        AgentResume { session: request.session, window: request.window, command: request.command, only_if_busy: request.only_if_busy, conversation }
+        let launcher = request.launcher.filter(Launcher::valid);
+        AgentResume { session: request.session, window: request.window, command: request.command, only_if_busy: request.only_if_busy, conversation, launcher }
     }
 }
 
@@ -163,12 +176,16 @@ fn reopens(command: &str, conversation: &str) -> bool {
 /// They apply only to the exact file they were written with: `file` is its
 /// identity right after that write (see file_stamp), so once any version
 /// rewrites it these are ignored, and its agents' conversations are unknown.
+/// The launchers the agents were started through are kept the same way.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Conversations {
     file: String,
     // One per agent of that file, in its order.
     agents: Vec<Option<String>>,
+    // One per agent too; empty when none was known.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    launchers: Vec<Option<Launcher>>,
 }
 
 /// The local sessions as last seen on one server (identified by its pid and
@@ -321,6 +338,23 @@ pub struct RefreshReport {
     // continues the same conversation, or its conversation is not known and
     // continuing the folder's last one could take another pane's.
     skipped: Vec<FailedSession>,
+    // Sessions whose programs (other than agents) were started again.
+    restarted: Vec<String>,
+}
+
+/// The local panes now, with their shells' process ids.
+fn pane_refs(tmux: Tmux) -> Vec<crate::pane_programs::PaneRef> {
+    read(tmux, &["list-panes", "-a", "-F", crate::pane_programs::PANES]).map(|text| crate::pane_programs::parse_panes(&text)).unwrap_or_default()
+}
+
+/// The programs (other than agents) the local panes run now.
+pub fn programs_now(tmux: Tmux) -> Vec<PaneProgram> {
+    crate::pane_programs::local_programs(&pane_refs(tmux), &agent_pane)
+}
+
+/// Types a program's line into a pane and runs it.
+fn type_line(tmux: Tmux, target: &str, line: &str) -> bool {
+    run(tmux, &strings(&["send-keys", "-t", target, "-l", line])).and_then(|_| run(tmux, &strings(&["send-keys", "-t", target, "Enter"]))).is_ok()
 }
 
 /// How a restored pane becomes interactive: the server's default shell as a
@@ -365,6 +399,12 @@ fn agent_named(pane_command: &str, agent_command: &str) -> bool {
         program == name || program.strip_prefix(name.as_str()).is_some_and(|rest| rest.starts_with(['-', '.']))
     });
     named || (entry.version_program && version)
+}
+
+/// Whether a program name (tmux's pane command, or argv[0]) is one of the
+/// catalog's coding agents under one of its own names.
+pub fn agent_pane(program: &str) -> bool {
+    crate::agent_catalog::catalog().resume.iter().any(|entry| agent_named(program, &entry.command))
 }
 
 /// Sessions on the server that look like what attaching to a missing name
@@ -723,6 +763,8 @@ pub struct AgentTarget {
     folder: Option<String>,
     // The recorded conversation to reopen by its id (see AgentResume).
     conversation: Option<String>,
+    // The launcher the line is typed through, when known (see AgentResume).
+    launcher: Option<Launcher>,
 }
 
 const SAME_CONVERSATION: &str = "Its agent was left at the shell: another pane reopens the same conversation.";
@@ -818,6 +860,14 @@ fn agent_line(command: &str, folder: Option<&str>, conversation: Option<&str>) -
     }
 }
 
+/// The line typed into a target's pane: agent_line, through the user's own
+/// launcher when it was started through one that starts it the same way
+/// (agent_catalog::launcher_line), else the catalog line itself.
+fn typed_line(command: &str, folder: Option<&str>, conversation: Option<&str>, launcher: Option<&Launcher>) -> Option<String> {
+    let line = agent_line(command, folder, conversation)?;
+    Some(launcher.and_then(|launcher| crate::agent_catalog::launcher_line(command, &line, launcher)).unwrap_or(line))
+}
+
 /// The pane each agent goes to, one agent per pane (the first wins), with
 /// its recorded conversation when that pane's command can reopen it.
 fn agent_panes(sessions: &[SavedSession], agents: &[AgentResume], created: &dyn Fn(&str, u32) -> bool) -> Vec<AgentTarget> {
@@ -848,6 +898,7 @@ fn agent_panes(sessions: &[SavedSession], agents: &[AgentResume], created: &dyn 
             command: agent.command.clone(),
             folder: pane.cwd.clone(),
             conversation,
+            launcher: agent.launcher.clone(),
         });
     }
     targets
@@ -1364,8 +1415,8 @@ pub fn restore(
     let made_window = |session: &str, window: u32| created.contains(&(session.to_string(), window));
     let (targets, skipped) = agent_targets(&restored, &agents, busy, &made_window);
     outcome.report.skipped = skipped;
-    for AgentTarget { session, window, target, pane, command, folder, conversation } in targets {
-        let Some(typed_command) = agent_line(&command, folder.as_deref(), conversation.as_deref()) else {
+    for AgentTarget { session, window, target, pane, command, folder, conversation, launcher } in targets {
+        let Some(typed_command) = typed_line(&command, folder.as_deref(), conversation.as_deref(), launcher.as_ref()) else {
             if !outcome.report.skipped.iter().any(|entry| entry.session == session) {
                 outcome.report.skipped.push(FailedSession { session: session.clone(), error: "Its agent was left at the shell: its conversation could not be found.".into() });
             }
@@ -1383,7 +1434,7 @@ pub fn restore(
             .and_then(|_| run(tmux, &strings(&["send-keys", "-t", &target, "Enter"])));
         match typed {
             Ok(_) => {
-                outcome.started.push(AgentResume { session: session.clone(), window: Some(window), command, only_if_busy: false, conversation });
+                outcome.started.push(AgentResume { session: session.clone(), window: Some(window), command, only_if_busy: false, conversation, launcher });
                 if !outcome.report.resumed.contains(&session) {
                     outcome.report.resumed.push(session);
                 }
@@ -1861,12 +1912,17 @@ fn file_stamp(path: &Path) -> Option<String> {
 /// not be written are unknown, and stale ones no longer match the file.
 fn store_conversations(path: &Path, agents: &[AgentResume]) {
     let side = conversations_file(path);
+    let launched = agents.iter().any(|agent| agent.launcher.is_some());
     let conversations = agents
         .iter()
-        .any(|agent| agent.conversation.is_some())
+        .any(|agent| agent.conversation.is_some() || agent.launcher.is_some())
         .then(|| file_stamp(path))
         .flatten()
-        .map(|file| Conversations { file, agents: agents.iter().map(|agent| agent.conversation.clone()).collect() });
+        .map(|file| Conversations {
+            file,
+            agents: agents.iter().map(|agent| agent.conversation.clone()).collect(),
+            launchers: if launched { agents.iter().map(|agent| agent.launcher.clone()).collect() } else { Vec::new() },
+        });
     let written = conversations.is_some_and(|conversations| store_json(&side, &conversations).is_ok());
     if !written {
         let _ = fs::remove_file(&side);
@@ -1882,8 +1938,10 @@ fn with_conversations(path: &Path, agents: &mut [AgentResume]) {
     if conversations.agents.len() != agents.len() || file_stamp(path).as_deref() != Some(conversations.file.as_str()) {
         return;
     }
-    for (agent, conversation) in agents.iter_mut().zip(conversations.agents) {
+    let launchers = if conversations.launchers.len() == agents.len() { conversations.launchers } else { vec![None; agents.len()] };
+    for ((agent, conversation), launcher) in agents.iter_mut().zip(conversations.agents).zip(launchers) {
         agent.conversation = conversation;
+        agent.launcher = launcher.filter(Launcher::valid);
     }
 }
 
@@ -2132,8 +2190,13 @@ fn complete_journal(journal: Journal) -> Result<Journal, String> {
 /// Nothing is ended before the record, the journal (see Journal) and the
 /// output manifest are on disk, and only when the journal lists every session
 /// the restart ends. A failed restart leaves them for the next restore.
-pub fn refresh_with(tmux: Tmux, data: &Path, agents: Vec<AgentResume>, restart: &dyn Fn() -> Result<(), String>) -> Result<RefreshReport, String> {
+/// `programs`: the panes whose programs (other than agents) start again, each
+/// only when it still runs exactly the line asked for (see pane_programs.rs).
+pub fn refresh_with(tmux: Tmux, data: &Path, agents: Vec<AgentResume>, programs: &[ProgramRequest], restart: &dyn Fn() -> Result<(), String>) -> Result<RefreshReport, String> {
     check_agents(&agents)?;
+    // Read before anything ends: a restored pane is found again by its
+    // session, window and index.
+    let restarts: Vec<PaneProgram> = if programs.is_empty() { Vec::new() } else { crate::pane_programs::accepted(&programs_now(tmux), programs).into_iter().cloned().collect() };
     let root = refresh_root(data);
     let saved = load(data);
     if saved.journal_kept {
@@ -2213,7 +2276,150 @@ pub fn refresh_with(tmux: Tmux, data: &Path, agents: Vec<AgentResume>, restart: 
     // The journal now holds the earlier output too.
     discard_refreshes(&root, Some(&suffix));
     restart().map_err(|error| format!("{}. The sessions are saved and come back once the terminal server runs again.", error.trim_end_matches('.')))?;
-    restore_owed(tmux, data, Vec::new())
+    let mut report = restore_owed(tmux, data, Vec::new())?;
+    for program in &restarts {
+        let Some(line) = program.command.as_deref() else { continue };
+        if !report.restored.contains(&program.session) {
+            continue;
+        }
+        let target = format!("={}:{}.{}", program.session, program.window, program.index);
+        if type_line(tmux, &target, line) {
+            if !report.restarted.contains(&program.session) {
+                report.restarted.push(program.session.clone());
+            }
+        } else {
+            report.failed.push(FailedSession { session: program.session.clone(), error: format!("{} could not be started again.", program.label) });
+        }
+    }
+    Ok(report)
+}
+
+/// Where a refresh in place keeps the output it prints back (see
+/// refresh_in_place); gone again once that refresh ends.
+fn respawn_root(data: &Path) -> PathBuf {
+    state_directory(data).join("respawn")
+}
+
+const GONE: &str = "It is not running any more.";
+
+/// Refreshes the chosen local sessions in place, without restarting the
+/// terminal server: every pane of theirs starts its shell again in its folder,
+/// first printing its recent output, and the agents detected in them (or
+/// recorded for them) continue their conversations, typed the way they were
+/// started. Panes, windows and sessions keep their ids, so attached terminals
+/// stay attached. Programs running in them stop. The new shells get the
+/// permissions the running server has: only refreshing every session
+/// restarts it. Sessions not running any more are reported as failed.
+pub fn refresh_in_place(tmux: Tmux, data: &Path, names: &[String], agents: Vec<AgentResume>, programs: &[ProgramRequest]) -> Result<RefreshReport, String> {
+    check_agents(&agents)?;
+    let live = snapshot(tmux)?;
+    // Programs to start again, read before their panes restart.
+    let restarts: Vec<PaneProgram> = if programs.is_empty() { Vec::new() } else {
+        crate::pane_programs::accepted(&programs_now(tmux), programs).into_iter().filter(|program| names.contains(&program.session)).cloned().collect()
+    };
+    let (chosen, others): (Vec<SavedSession>, Vec<SavedSession>) = live.into_iter().partition(|session| names.contains(&session.name));
+    let mut report = RefreshReport::default();
+    for name in names {
+        if !chosen.iter().any(|session| &session.name == name) && !report.failed.iter().any(|entry| &entry.session == name) {
+            report.failed.push(FailedSession { session: name.clone(), error: GONE.into() });
+        }
+    }
+    if chosen.is_empty() {
+        return Ok(report);
+    }
+    // Agents detected now first, then those recorded for the same sessions,
+    // each of those only where its program was running.
+    let recorded = load(data).record.map(|record| record.agents).unwrap_or_default();
+    let agents = with_recorded(agents, &recorded);
+    // Output left by one that was cut short is never shown again.
+    let root = respawn_root(data);
+    let _ = fs::remove_dir_all(&root);
+    let directory = root.join(crate::agent::random_hex(8).ok_or("Could not prepare the session refresh")?);
+    private_directory(&directory).map_err(|_| "Could not prepare a private folder for the session refresh")?;
+    let files = save_scrollback(tmux, &chosen, &directory, &mut 0, &Scrollback::new());
+    let launch = launch_of(tmux);
+    let mut restarted: HashSet<(String, u32)> = HashSet::new();
+    let mut links: HashMap<(String, String), PathBuf> = HashMap::new();
+    for session in &chosen {
+        let mut error = None;
+        for window in &session.windows {
+            let mut window_ok = true;
+            for pane in &window.panes {
+                let shown = files.get(&(session.name.clone(), pane.id.clone())).map(|file| show_link(file).unwrap_or_else(|| file.clone()));
+                let mut args = strings(&["respawn-pane", "-k", "-t", &pane.id]);
+                if let Some(cwd) = &pane.cwd {
+                    args.extend([String::from("-c"), cwd.clone()]);
+                }
+                args.extend(pane_launch(&launch, shown.as_deref()));
+                match run(tmux, &args) {
+                    Ok(_) => {
+                        if let Some(link) = shown {
+                            links.insert((session.name.clone(), pane.id.clone()), link);
+                        }
+                    }
+                    Err(failure) => {
+                        window_ok = false;
+                        error.get_or_insert(failure);
+                    }
+                }
+            }
+            if window_ok {
+                restarted.insert((session.name.clone(), window.index));
+            }
+        }
+        match error {
+            None => report.restored.push(session.name.clone()),
+            Some(error) => report.failed.push(FailedSession { session: session.name.clone(), error: format!("Some of its panes could not start again: {error}") }),
+        }
+    }
+    let made_window = |session: &str, window: u32| restarted.contains(&(session.to_string(), window));
+    let (targets, skipped) = agent_targets(&chosen, &agents, &others, &made_window);
+    report.skipped = skipped;
+    for AgentTarget { session, target, pane, command, folder, conversation, launcher, .. } in targets {
+        let Some(line) = typed_line(&command, folder.as_deref(), conversation.as_deref(), launcher.as_ref()) else {
+            if !report.skipped.iter().any(|entry| entry.session == session) {
+                report.skipped.push(FailedSession { session, error: "Its agent was left at the shell: its conversation could not be found.".into() });
+            }
+            continue;
+        };
+        // Typed once the pane has printed its output, as a restore does.
+        if let Some(link) = links.get(&(session.clone(), pane)) {
+            let deadline = Instant::now() + Duration::from_secs(3);
+            while fs::symlink_metadata(link).is_ok() && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        }
+        let typed = run(tmux, &strings(&["send-keys", "-t", &target, "-l", &line])).and_then(|_| run(tmux, &strings(&["send-keys", "-t", &target, "Enter"])));
+        match typed {
+            Ok(_) if !report.resumed.contains(&session) => report.resumed.push(session),
+            Ok(_) => {}
+            Err(_) => report.failed.push(FailedSession { session, error: "Its agent could not be started again.".into() }),
+        }
+    }
+    for program in &restarts {
+        let Some(line) = program.command.as_deref() else { continue };
+        if !report.restored.contains(&program.session) {
+            continue;
+        }
+        if let Some(link) = links.get(&(program.session.clone(), program.pane.clone())) {
+            let deadline = Instant::now() + Duration::from_secs(3);
+            while fs::symlink_metadata(link).is_ok() && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        }
+        if type_line(tmux, &program.pane, line) {
+            if !report.restarted.contains(&program.session) {
+                report.restarted.push(program.session.clone());
+            }
+        } else {
+            report.failed.push(FailedSession { session: program.session.clone(), error: format!("{} could not be started again.", program.label) });
+        }
+    }
+    // The output holds whatever the terminals showed: it is removed as soon
+    // as every pane printed it.
+    wait_for_shown(&links.into_values().collect::<Vec<_>>());
+    let _ = fs::remove_dir_all(&root);
+    Ok(report)
 }
 
 // UTF-8 output whatever the app's locale: without it tmux prints every tab
@@ -2226,16 +2432,26 @@ fn local_client() -> Command {
 }
 
 #[cfg(target_os = "macos")]
-fn refresh_blocking(data: PathBuf, agents: Vec<AgentResume>) -> Result<RefreshReport, String> {
+fn refresh_blocking(data: PathBuf, agents: Vec<AgentResume>, programs: Vec<ProgramRequest>) -> Result<RefreshReport, String> {
     exclusively(&data, Duration::ZERO, || {
-        refresh_with(&local_client, &data, agents, &|| {
+        refresh_with(&local_client, &data, agents, &programs, &|| {
             crate::local_tmux::restart().map_err(|error| format!("The terminal server could not restart: {error}"))
         })
     })
 }
 
 #[cfg(not(target_os = "macos"))]
-fn refresh_blocking(_data: PathBuf, _agents: Vec<AgentResume>) -> Result<RefreshReport, String> {
+fn refresh_blocking(_data: PathBuf, _agents: Vec<AgentResume>, _programs: Vec<ProgramRequest>) -> Result<RefreshReport, String> {
+    Err("Refreshing sessions is only available in the macOS app.".into())
+}
+
+#[cfg(target_os = "macos")]
+fn refresh_in_place_blocking(data: PathBuf, sessions: Vec<String>, agents: Vec<AgentResume>, programs: Vec<ProgramRequest>) -> Result<RefreshReport, String> {
+    exclusively(&data, Duration::ZERO, || refresh_in_place(&local_client, &data, &sessions, agents, &programs))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn refresh_in_place_blocking(_data: PathBuf, _sessions: Vec<String>, _agents: Vec<AgentResume>, _programs: Vec<ProgramRequest>) -> Result<RefreshReport, String> {
     Err("Refreshing sessions is only available in the macOS app.".into())
 }
 
@@ -2272,12 +2488,59 @@ fn app_data(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     app.path().app_data_dir().map_err(|error| error.to_string())
 }
 
+/// The most programs one refresh starts again.
+const MAX_PROGRAMS: usize = 512;
+
+fn bounded_programs(programs: Option<Vec<ProgramRequest>>) -> Result<Vec<ProgramRequest>, String> {
+    let programs = programs.unwrap_or_default();
+    if programs.len() > MAX_PROGRAMS {
+        return Err("Too many programs to start again.".into());
+    }
+    Ok(programs)
+}
+
+/// The programs (other than agents) the local panes run now, for the
+/// Refresh sessions dialog to offer starting them again.
+#[tauri::command]
+pub async fn local_tmux_pane_programs() -> Result<Vec<PaneProgram>, String> {
+    #[cfg(target_os = "macos")]
+    {
+        tauri::async_runtime::spawn_blocking(|| programs_now(&local_client)).await.map_err(|error| error.to_string())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Ok(Vec::new())
+    }
+}
+
 /// Saves the local sessions, restarts the local tmux server and restores
 /// them. Refuses while another refresh or restore is running.
 #[tauri::command]
-pub async fn local_tmux_refresh_sessions(app: tauri::AppHandle, agents: Vec<AgentRequest>) -> Result<RefreshReport, String> {
+pub async fn local_tmux_refresh_sessions(app: tauri::AppHandle, agents: Vec<AgentRequest>, programs: Option<Vec<ProgramRequest>>) -> Result<RefreshReport, String> {
     let data = app_data(&app)?;
-    tauri::async_runtime::spawn_blocking(move || refresh_blocking(data, requested(agents)))
+    let programs = bounded_programs(programs)?;
+    tauri::async_runtime::spawn_blocking(move || refresh_blocking(data, requested(agents), programs))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+/// The most sessions one refresh in place takes.
+const MAX_REFRESH_SESSIONS: usize = MAX_SAVED_SESSIONS;
+
+/// Refreshes the named local sessions in place (see refresh_in_place), with
+/// the agents detected in them. Refuses while another refresh or restore is
+/// running.
+#[tauri::command]
+pub async fn local_tmux_refresh_selected(app: tauri::AppHandle, sessions: Vec<String>, agents: Vec<AgentRequest>, programs: Option<Vec<ProgramRequest>>) -> Result<RefreshReport, String> {
+    let programs = bounded_programs(programs)?;
+    let mut seen = HashSet::new();
+    let sessions: Vec<String> = sessions.into_iter().filter(|name| user_session(name) && seen.insert(name.clone())).collect();
+    if sessions.is_empty() || sessions.len() > MAX_REFRESH_SESSIONS {
+        return Err("Choose the sessions to refresh.".into());
+    }
+    let data = app_data(&app)?;
+    let agents: Vec<AgentResume> = requested(agents).into_iter().filter(|agent| sessions.contains(&agent.session)).collect();
+    tauri::async_runtime::spawn_blocking(move || refresh_in_place_blocking(data, sessions, agents, programs))
         .await
         .map_err(|error| error.to_string())?
 }
@@ -2455,15 +2718,15 @@ mod tests {
                 SavedWindow { index: 1, active: false, name: None, layout: String::new(), width: 80, height: 24, panes: vec![pane(0, true, "-zsh", "/")] },
             ],
         }];
-        let agent = |session: &str, window: u32, only_if_busy: bool| AgentResume { session: session.into(), window: Some(window), command: "claude -c --permission-mode manual".into(), only_if_busy, conversation: None };
+        let agent = |session: &str, window: u32, only_if_busy: bool| AgentResume { session: session.into(), window: Some(window), command: "claude -c --permission-mode manual".into(), only_if_busy, conversation: None, launcher: None };
         let all = |_: &str, _: u32| true;
         let targets = |agents: &[AgentResume]| agent_targets(&sessions, agents, &[], &all).0;
         let found = targets(&[agent("work", 0, true), agent("work", 0, false), agent("work", 1, true), agent("gone", 0, false), agent("work", 9, false)]);
-        assert_eq!(found, [AgentTarget { session: "work".into(), window: 0, target: "=work:0.1".into(), pane: "%1".into(), command: "claude -c --permission-mode manual".into(), folder: Some("/".into()), conversation: None }]);
+        assert_eq!(found, [AgentTarget { session: "work".into(), window: 0, target: "=work:0.1".into(), pane: "%1".into(), command: "claude -c --permission-mode manual".into(), folder: Some("/".into()), conversation: None, launcher: None }]);
         // A detected agent resumes even where the pane now shows its shell.
         assert_eq!(targets(&[agent("work", 1, false)])[0].target, "=work:1.0");
         // Without a window, the session's active one.
-        let active = AgentResume { session: "work".into(), window: None, command: "codex resume --last --sandbox workspace-write --ask-for-approval on-request".into(), only_if_busy: false, conversation: None };
+        let active = AgentResume { session: "work".into(), window: None, command: "codex resume --last --sandbox workspace-write --ask-for-approval on-request".into(), only_if_busy: false, conversation: None, launcher: None };
         assert_eq!(targets(&[active])[0].target, "=work:0.1");
         // Nothing goes to a window that was not created again.
         assert!(agent_targets(&sessions, &[agent("work", 0, false)], &[], &|_, window| window != 0).0.is_empty());
@@ -2476,7 +2739,7 @@ mod tests {
             windows: vec![SavedWindow { index: 0, active: true, name: None, layout: String::new(), width: 80, height: 24, panes: vec![pane(0, true, "claude", cwd)] }],
         };
         let sessions = vec![session("a", "/repo"), session("b", "/repo"), session("c", "/other"), session("d", "/repo")];
-        let agent = |name: &str, command: &str| AgentResume { session: name.into(), window: Some(0), command: command.into(), only_if_busy: false, conversation: None };
+        let agent = |name: &str, command: &str| AgentResume { session: name.into(), window: Some(0), command: command.into(), only_if_busy: false, conversation: None, launcher: None };
         let claude = "claude -c --permission-mode manual";
         let codex = "codex resume --last --sandbox workspace-write --ask-for-approval on-request";
         let all = |_: &str, _: u32| true;
@@ -2526,6 +2789,7 @@ mod tests {
             command: command.into(),
             only_if_busy: false,
             conversation: conversation.map(String::from),
+            launcher: None,
         };
         let manual = "claude -c --permission-mode manual";
         let plan = "claude -c --permission-mode plan";
@@ -2603,6 +2867,7 @@ mod tests {
             command: command.into(),
             only_if_busy: false,
             conversation: conversation.map(String::from),
+            launcher: None,
         };
         let all = |_: &str, _: u32| true;
         // The same id in two accounts is two conversations, and each account
@@ -2647,6 +2912,7 @@ mod tests {
             command: "claude -c --permission-mode manual".into(),
             only_if_busy: false,
             conversation: conversation.map(String::from),
+            launcher: None,
         };
         let state = SavedState { server: "1 2".into(), sessions: vec![saved("a"), saved("b")], agents: vec![agent("a", Some(FIRST)), agent("b", None)] };
 
@@ -2811,6 +3077,88 @@ mod tests {
     }
 
     #[test]
+    fn chosen_sessions_refresh_in_place_and_resume_through_the_launcher() {
+        let server = Server::new();
+        server.fake_agent();
+        // The user's own launcher, defined where the login shell reads it.
+        let mut profile = fs::read_to_string(server.directory.join(".profile")).unwrap();
+        profile.push_str("cb() { claude --dangerously-skip-permissions --chrome \"$@\"; }\n");
+        fs::write(server.directory.join(".profile"), profile).unwrap();
+        server.start("0");
+        let client = || server.client();
+        let tmux = |args: &[&str]| server.read(args);
+        tmux(&["new-session", "-d", "-s", "work", "-x", "100", "-y", "30", "-c", "/private/tmp"]);
+        tmux(&["new-session", "-d", "-s", "other", "-x", "100", "-y", "30"]);
+        tmux(&["send-keys", "-t", "=work:0", "echo before-$((40+2))", "Enter"]);
+        server.wait_for("=work:0", "before-42");
+        let pane = |target: &str| tmux(&["display-message", "-p", "-t", target, "#{pane_id} #{pane_pid}"]).trim().to_string();
+        let (work, other) = (pane("=work:0"), pane("=other:0"));
+        let data = server.directory.join("data");
+        let id = "0b1c2d3e-4f50-4a61-8b72-9c8d7e6f5a41";
+        let launcher = Launcher { name: "cb".into(), env: vec![], program: "claude".into(), args: vec!["--dangerously-skip-permissions".into(), "--chrome".into()] };
+        let agents = vec![AgentResume {
+            session: "work".into(),
+            window: Some(0),
+            command: "claude -c --dangerously-skip-permissions".into(),
+            only_if_busy: false,
+            conversation: Some(id.into()),
+            launcher: Some(launcher),
+        }];
+        let report = refresh_in_place(&client, &data, &["work".into(), "gone".into()], agents, &[]).unwrap();
+        assert_eq!(report.restored, ["work"]);
+        assert_eq!(report.resumed, ["work"]);
+        assert_eq!(report.failed.iter().map(|entry| entry.session.as_str()).collect::<Vec<_>>(), ["gone"]);
+        // Typed through the launcher, which adds the flags the catalog does not know.
+        let lines = server.wait_for("=work:0", &format!("resumed-agent --dangerously-skip-permissions --chrome --resume {id}"));
+        assert!(lines.iter().any(|line| line == "before-42"), "the output came back: {lines:?}");
+        // The same pane with a new program in the same folder; other sessions untouched.
+        let (work_id, work_pid) = work.split_once(' ').unwrap();
+        let now = pane("=work:0");
+        assert!(now.starts_with(&format!("{work_id} ")) && !now.ends_with(&format!(" {work_pid}")), "{work} -> {now}");
+        assert_eq!(tmux(&["display-message", "-p", "-t", "=work:0", "#{pane_current_path}"]).trim(), "/private/tmp");
+        assert_eq!(pane("=other:0"), other);
+        assert!(!respawn_root(&data).exists(), "the saved output is removed");
+        // An unknown launcher name is never typed: the catalog line is.
+        let odd = Launcher { name: "a;b".into(), env: vec![], program: "claude".into(), args: vec![] };
+        assert_eq!(typed_line("claude -c --dangerously-skip-permissions", None, Some(id), Some(&odd)).as_deref(), Some(format!("claude --resume {id} --dangerously-skip-permissions").as_str()));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_program_starts_again_in_its_pane_only_as_it_was_shown() {
+        let server = Server::new();
+        server.start("0");
+        let client = || server.client();
+        let tmux = |args: &[&str]| server.read(args);
+        tmux(&["new-session", "-d", "-s", "dev", "-x", "100", "-y", "30"]);
+        tmux(&["new-session", "-d", "-s", "other", "-x", "100", "-y", "30"]);
+        tmux(&["send-keys", "-t", "=dev:0", "/bin/sleep 300", "Enter"]);
+        tmux(&["send-keys", "-t", "=other:0", "/bin/sleep 301", "Enter"]);
+        server.wait_command("=dev:0", "sleep");
+        server.wait_command("=other:0", "sleep");
+        let programs = programs_now(&client);
+        let dev = programs.iter().find(|program| program.session == "dev").expect("the program is listed");
+        assert_eq!(dev.command.as_deref(), Some("/bin/sleep 300"));
+        assert_eq!(dev.label, "sleep 300");
+        let pane = dev.pane.clone();
+        let pid = |target: &str| tmux(&["display-message", "-p", "-t", target, "#{pane_pid}"]).trim().to_string();
+        let before = pid("=dev:0");
+        // A line it does not run is never typed; the one it runs is.
+        let requests = vec![
+            ProgramRequest { pane: pane.clone(), command: "/bin/sleep 300".into() },
+            ProgramRequest { pane: pane.clone(), command: "/bin/echo typed".into() },
+        ];
+        let data = server.directory.join("data");
+        let report = refresh_in_place(&client, &data, &["dev".into()], Vec::new(), &requests).unwrap();
+        assert_eq!(report.restarted, ["dev"]);
+        assert_ne!(pid("=dev:0"), before, "the pane started again");
+        server.wait_command("=dev:0", "sleep");
+        let screen = tmux(&["capture-pane", "-p", "-J", "-S", "-50", "-t", "=dev:0"]);
+        assert!(!screen.lines().any(|line| line.trim() == "typed"), "{screen}");
+        assert_eq!(programs_now(&client).iter().filter(|program| program.session == "dev").map(|program| program.command.clone()).collect::<Vec<_>>(), [Some("/bin/sleep 300".to_string())]);
+    }
+
+    #[test]
     fn one_chained_call_lists_what_separate_calls_list() {
         let server = Server::new();
         let client = || server.client();
@@ -2877,7 +3225,7 @@ mod tests {
         let _ = server.client().arg("kill-server").output();
         // A different base index proves windows keep their saved numbers.
         server.start("0");
-        let agents = vec![AgentResume { session: "work one".into(), window: Some(1), command: "echo resumed-agent".into(), only_if_busy: false, conversation: None }];
+        let agents = vec![AgentResume { session: "work one".into(), window: Some(1), command: "echo resumed-agent".into(), only_if_busy: false, conversation: None, launcher: None }];
         let (report, _) = {
             let owed = Owed { sessions: sessions.clone(), partial: HashSet::new() };
             let outcome = restore(&client, &owed, &files, &agents, &[], &|_| true, &mut |_, _| {});
@@ -3052,7 +3400,7 @@ mod tests {
         assert_eq!(names(&owed), ["api", "notes", "old"]);
         assert_eq!(owed.sessions[1].windows[0].layout, "full");
         // Pending sessions are checked like recorded ones, and keep their agents.
-        let agent = |session: &str| AgentResume { session: session.into(), window: Some(0), command: "claude -c --permission-mode manual".into(), only_if_busy: false, conversation: None };
+        let agent = |session: &str| AgentResume { session: session.into(), window: Some(0), command: "claude -c --permission-mode manual".into(), only_if_busy: false, conversation: None, launcher: None };
         let clean = sanitize_journal(Journal {
             pending: vec![saved("old"), saved("old"), saved("pzza-v-x"), saved("bad\nname")],
             partial: vec!["old".into(), "old".into(), "gone".into()],
@@ -3076,8 +3424,8 @@ mod tests {
             pending: vec![saved("lost"), saved("named"), saved("half")],
             partial: vec!["half".into()],
             agents: vec![
-                AgentResume { session: "lost".into(), window: Some(0), command: "claude -c --permission-mode manual".into(), only_if_busy: false, conversation: None },
-                AgentResume { session: "closed".into(), window: Some(0), command: "claude -c --permission-mode manual".into(), only_if_busy: false, conversation: None },
+                AgentResume { session: "lost".into(), window: Some(0), command: "claude -c --permission-mode manual".into(), only_if_busy: false, conversation: None, launcher: None },
+                AgentResume { session: "closed".into(), window: Some(0), command: "claude -c --permission-mode manual".into(), only_if_busy: false, conversation: None, launcher: None },
             ],
             refresh: Some("0123456789abcdef".into()),
             recorded: vec!["1 100".into(), "2 200".into()],
@@ -3245,9 +3593,9 @@ mod tests {
             server: "1 1".into(),
             sessions: vec![saved("pzza-v-view"), saved("pzza-quick-chat"), saved("bad\nname"), bad_window, SavedSession { name: "empty".into(), windows: Vec::new() }],
             agents: vec![
-                AgentResume { session: "windows".into(), window: Some(0), command: "claude -c --permission-mode manual".into(), only_if_busy: false, conversation: None },
-                AgentResume { session: "windows".into(), window: Some(0), command: "claude; rm -rf /".into(), only_if_busy: false, conversation: None },
-                AgentResume { session: "gone".into(), window: Some(0), command: "claude -c --permission-mode manual".into(), only_if_busy: false, conversation: None },
+                AgentResume { session: "windows".into(), window: Some(0), command: "claude -c --permission-mode manual".into(), only_if_busy: false, conversation: None, launcher: None },
+                AgentResume { session: "windows".into(), window: Some(0), command: "claude; rm -rf /".into(), only_if_busy: false, conversation: None, launcher: None },
+                AgentResume { session: "gone".into(), window: Some(0), command: "claude -c --permission-mode manual".into(), only_if_busy: false, conversation: None, launcher: None },
             ],
             ..SavedState::default()
         });
@@ -3255,7 +3603,7 @@ mod tests {
         assert_eq!(state.sessions[0].windows[0].name, None);
         assert_eq!(state.sessions[0].windows[0].panes[0].cwd, None);
         assert_eq!(state.agents.len(), 1);
-        let recorded = with_recorded(vec![AgentResume { session: "a".into(), window: None, command: "codex resume --last --sandbox read-only --ask-for-approval on-request".into(), only_if_busy: false, conversation: None }], &state.agents);
+        let recorded = with_recorded(vec![AgentResume { session: "a".into(), window: None, command: "codex resume --last --sandbox read-only --ask-for-approval on-request".into(), only_if_busy: false, conversation: None, launcher: None }], &state.agents);
         assert_eq!(recorded.iter().map(|agent| agent.only_if_busy).collect::<Vec<_>>(), [false, true], "recorded agents wait for their program");
     }
 
@@ -3291,7 +3639,7 @@ mod tests {
         let client = || server.client();
         let data = server.directory.join("data");
         let path = state_file(&data);
-        let detected = vec![AgentResume { session: "api".into(), window: Some(3), command: "claude -c --permission-mode plan".into(), only_if_busy: false, conversation: None }];
+        let detected = vec![AgentResume { session: "api".into(), window: Some(3), command: "claude -c --permission-mode plan".into(), only_if_busy: false, conversation: None, launcher: None }];
         assert_eq!(record(&client, &data, Some(detected)).unwrap(), RecordStatus { restarted: false });
         assert_eq!(fs::metadata(&path).unwrap().mode() & 0o777, 0o600);
         assert_eq!(fs::metadata(path.parent().unwrap()).unwrap().mode() & 0o777, 0o700);
@@ -3354,7 +3702,7 @@ mod tests {
         let data = server.directory.join("data");
         // Recorded while the agents ran; "shell" stands for an agent that has
         // quit since, which stays stopped.
-        let detected = names.iter().chain(&["shell"]).map(|name| AgentResume { session: name.to_string(), window: Some(0), command: "claude -c --permission-mode manual".into(), only_if_busy: false, conversation: None }).collect();
+        let detected = names.iter().chain(&["shell"]).map(|name| AgentResume { session: name.to_string(), window: Some(0), command: "claude -c --permission-mode manual".into(), only_if_busy: false, conversation: None, launcher: None }).collect();
         record(&client, &data, Some(detected)).unwrap();
 
         // Activity detection found nothing at the moment of the refresh.
@@ -3363,7 +3711,7 @@ mod tests {
             server.start("0");
             Ok(())
         };
-        let report = refresh_with(&client, &data, Vec::new(), &restart).unwrap();
+        let report = refresh_with(&client, &data, Vec::new(), &[], &restart).unwrap();
         assert_eq!(report.restored, ["clean", "rp6", "shell", "test"]);
         assert_eq!(report.resumed, names);
         assert!(report.failed.is_empty(), "{:?}", report.failed);
@@ -3411,6 +3759,7 @@ mod tests {
                 command: "claude -c --permission-mode manual".into(),
                 only_if_busy: false,
                 conversation: conversation.map(String::from),
+                launcher: None,
             })
             .collect();
         record(&client, &data, Some(detected)).unwrap();
@@ -3425,7 +3774,7 @@ mod tests {
             server.start("0");
             Ok(())
         };
-        let report = refresh_with(&client, &data, Vec::new(), &restart).unwrap();
+        let report = refresh_with(&client, &data, Vec::new(), &[], &restart).unwrap();
         assert_eq!(report.restored, ["one", "three", "two"]);
         assert_eq!(report.resumed, ["one", "two"]);
         assert_eq!(report.skipped, [FailedSession { session: "three".into(), error: UNKNOWN_CONVERSATION.into() }]);
@@ -3471,7 +3820,7 @@ mod tests {
             let _ = server.client().arg("kill-server").output();
             Err(String::from("The app was stopped"))
         };
-        assert_eq!(refresh_with(&client, &data, Vec::new(), &ended).unwrap_err(), "The app was stopped. The sessions are saved and come back once the terminal server runs again.");
+        assert_eq!(refresh_with(&client, &data, Vec::new(), &[], &ended).unwrap_err(), "The app was stopped. The sessions are saved and come back once the terminal server runs again.");
         // The journal names the ended server and everything to bring back.
         let journal = load(&data).journal;
         assert_eq!(journal.server, identity);
@@ -3544,7 +3893,7 @@ mod tests {
             server.start("0");
             Ok(())
         };
-        let report = refresh_with(&client, &data, Vec::new(), &restart).unwrap();
+        let report = refresh_with(&client, &data, Vec::new(), &[], &restart).unwrap();
         assert_restored_with_output(&server, &report);
         assert!(!refresh_root(&data).exists(), "the saved output is removed once restored");
         assert!(!journal_file(&data).exists());
@@ -3579,7 +3928,7 @@ mod tests {
         tmux(&["kill-session", "-t", "=placeholder"]);
         let client = || server.client();
         let data = server.directory.join("data");
-        let agent = AgentResume { session: "doomed".into(), window: Some(4), command: "claude -c --permission-mode manual".into(), only_if_busy: false, conversation: None };
+        let agent = AgentResume { session: "doomed".into(), window: Some(4), command: "claude -c --permission-mode manual".into(), only_if_busy: false, conversation: None, launcher: None };
         record(&client, &data, Some(vec![agent.clone()])).unwrap();
         let _ = server.client().arg("kill-server").output();
         server.start("0");
@@ -3647,7 +3996,7 @@ mod tests {
             fs::write(&flag, "").unwrap();
             Ok(())
         };
-        let report = refresh_with(&refusing, &data, Vec::new(), &restart).unwrap();
+        let report = refresh_with(&refusing, &data, Vec::new(), &[], &restart).unwrap();
         assert_eq!(report.restored, ["kept"]);
         assert_eq!(report.failed, [FailedSession { session: "doomed".into(), error: "Some of its windows could not be restored: refused for the test".into() }]);
         assert_eq!(tmux(&["list-windows", "-t", "=doomed", "-F", "#{window_index}"]).trim(), "0", "the half-built window was closed");
@@ -3836,7 +4185,7 @@ mod tests {
         private_directory(&folder).unwrap();
         assert_eq!(record(&client, &data, None).unwrap(), RecordStatus { restarted: false });
         let restart = || -> Result<(), String> { panic!("a refresh must not end the server") };
-        assert_eq!(refresh_with(&client, &data, Vec::new(), &restart).unwrap_err(), KEPT_JOURNAL);
+        assert_eq!(refresh_with(&client, &data, Vec::new(), &[], &restart).unwrap_err(), KEPT_JOURNAL);
         assert!(restore_lost(&client, &data, Vec::new()).is_ok());
         assert_eq!(fs::read_to_string(journal_file(&data)).unwrap(), newer);
         assert!(folder.exists(), "its saved output stays");

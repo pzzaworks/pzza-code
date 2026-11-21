@@ -183,9 +183,12 @@ export function agentLaunch(agent, mode, account, accountSet) {
 // The conversation a Claude Code process is in (its session id, which follows
 // /resume) and whether it is mid-turn. Only a lowercase UUID and the two known
 // states survive; anything else reports nothing (or no status).
-export function agentSessionState(conversation, status) {
+// `since`: when the status last changed (epoch ms), so a turn that started and
+// ended between two reads still shows as one.
+export function agentSessionState(conversation, status, since) {
   if (typeof conversation !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(conversation)) return null;
-  return { conversation, ...(status === "busy" || status === "idle" ? { status } : {}) };
+  const known = status === "busy" || status === "idle";
+  return { conversation, ...(known ? { status } : {}), ...(known && Number.isSafeInteger(since) && since > 0 ? { statusSince: since } : {}) };
 }
 
 // Adds a verified session state to a launch; a launch that knew nothing else
@@ -204,7 +207,7 @@ function verifiedClaudeSession(process) {
   const session = process.claudeSession;
   if (!session || typeof process.started !== "string" || typeof session.procStart !== "string") return null;
   if (session.procStart !== process.started.trim().replace(/\s+/g, " ")) return null;
-  return agentSessionState(session.conversation, session.status);
+  return agentSessionState(session.conversation, session.status, session.statusSince);
 }
 
 // Claude Code writes `<config folder>/sessions/<pid>.json` for each running
@@ -233,7 +236,7 @@ export async function readClaudeSessionFile(fs, path, directory, pid) {
     if (data.pid !== pid || data.kind !== "interactive" || typeof data.procStart !== "string") return null;
     const procStart = data.procStart.trim().replace(/\s+/g, " ");
     if (!/^[A-Za-z]{3} [A-Za-z]{3} \d{1,2} \d{1,2}:\d{2}:\d{2} \d{4}$/.test(procStart)) return null;
-    const state = agentSessionState(data.sessionId, data.status);
+    const state = agentSessionState(data.sessionId, data.status, data.statusUpdatedAt);
     return state ? { ...state, procStart } : null;
   } catch {
     return null;
@@ -260,7 +263,9 @@ function activityMetadata(row) {
   return { effectiveModel: normalized.model, effectiveProvider: normalized.provider, effectiveModelEvidence: row.effectiveModelEvidence };
 }
 
-export function detectSessionActivity(panes, processes) {
+// `found` (optional, local only) collects the agent process behind each row,
+// by "session\twindow", for what only this device may read from it.
+export function detectSessionActivity(panes, processes, found) {
   const known = new Set(KNOWN_PROGRAMS);
   const basename = (value) => String(value || "").split("/").pop().replace(/^-/, "");
   const label = (value) => {
@@ -300,7 +305,7 @@ export function detectSessionActivity(panes, processes) {
         // tell a flag from the same words inside a prompt.
         const mode = matchAgentMode(process.exactArgs, AGENT_MODE_RULES[command] || []);
         const session = command === "claude" ? verifiedClaudeSession(process) : null;
-        best = { command, metadata: processMetadata(process), launch: withAgentSession(agentLaunch(command, mode, process.account, Boolean(process.accountDirectory)), session), depth };
+        best = { command, process, metadata: processMetadata(process), launch: withAgentSession(agentLaunch(command, mode, process.account, Boolean(process.accountDirectory)), session), depth };
       }
     }
     // Once a process snapshot exists, never infer an agent or preserve stale
@@ -310,8 +315,9 @@ export function detectSessionActivity(panes, processes) {
     const metadata = best?.metadata || (!root && fallbackAgent ? activityMetadata(pane) : null);
     // A remote device's row (no process snapshot here) brings its own launch;
     // that device verified its session file, and only catalog values survive.
-    const remoteSession = fallback === "claude" ? agentSessionState(pane.launch?.conversation, pane.launch?.status) : null;
+    const remoteSession = fallback === "claude" ? agentSessionState(pane.launch?.conversation, pane.launch?.status, pane.launch?.statusSince) : null;
     const launch = best ? best.launch : !root && fallbackAgent ? withAgentSession(agentLaunch(fallback, pane.launch?.mode, pane.launch?.account, pane.launch?.accountUnusable === true), remoteSession) : null;
+    if (found && best) found.set(`${pane.session}\t${pane.window}`, { agent: best.command, process: best.process });
     return {
       session: pane.session,
       window: pane.window,
@@ -526,7 +532,8 @@ export async function probeSessionSnapshot(tmuxOptions, cache) {
     return { session, window: Number(window), active: active === "1", paneActive: paneActive === "1", pid: Number(pid), tty, command, created: Number(created), cwd: cwd.join("\t") };
   }).filter((pane) => pane.session && Number.isInteger(pane.window) && pane.pid > 0);
   const activePanes = panes.filter((pane) => pane.paneActive);
-  if (!activePanes.length) return { rows: detectSessionActivity(panes, []), panes };
+  const found = new Map();
+  if (!activePanes.length) return { rows: detectSessionActivity(panes, [], found), panes, agents: found };
   // The start time identifies a process across polls (a pid can be reused).
   // LC_TIME=C fixes its format and TZ=UTC its zone, the form Claude Code
   // records in its session files; the character locale is kept for names.
@@ -657,7 +664,7 @@ export async function probeSessionSnapshot(tmuxOptions, cache) {
       if (starts.has(process.pid)) process.started = starts.get(process.pid);
     }
   }
-  return { rows: detectSessionActivity(panes, processes), panes };
+  return { rows: detectSessionActivity(panes, processes, found), panes, agents: found };
 }
 
 export async function probeSessionActivity(tmuxOptions = tmuxArgs([]), cache) {

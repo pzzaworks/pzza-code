@@ -467,6 +467,8 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
   const restoringLocal = useSessionRefresh((s) => s.restoring);
   const launchCheckLocal = useSessionRefresh((s) => s.pending);
   const localGeneration = useSessionRefresh((s) => s.generation);
+  // A refresh in place works on chosen sessions only; the others stay attached.
+  const refreshingSessions = useSessionRefresh((s) => s.sessions);
   const sessionWs = useStore((s) => s.sessionWs);
   const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
   const workspaces = useStore((s) => s.workspaces);
@@ -1316,7 +1318,7 @@ export function Canvas({ onNewSession }: { onNewSession: () => void }) {
       },
       bodyClass: codeOpen ? `tile-body-code-${tileCode[t.id]?.layout ?? "side-by-side"}` : "",
       body: <>
-        {(refreshingLocal || launchCheckLocal) && isLocal ? <div className="term-surface term-refreshing" role="status">
+        {((refreshingLocal && (refreshingSessions === null || refreshingSessions.includes(t.session ?? t.name))) || launchCheckLocal) && isLocal ? <div className="term-surface term-refreshing" role="status">
           {refreshingLocal && !launchCheckLocal ? <><Loader2 size={14} className="sw-spin" aria-hidden="true" /> {restoringLocal ? "Restoring session…" : "Refreshing session…"}</> : null}
         </div> : <ErrorBoundary key={isLocal ? `${t.id}:${localGeneration}` : t.id} label="This terminal" className="term-surface term-refreshing">
           {/* One broken tile never takes the grid with it; its session keeps running in tmux. */}

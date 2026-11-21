@@ -5,6 +5,8 @@ import { notify, useNotifications } from "../state/notifications";
 import { isSessionTile, useStore, type Session } from "../state/store";
 import { outputWorking } from "../tasks/taskStatus";
 import { paneForeground } from "./permissionForeground";
+import { paneLines } from "./paneMode";
+import { agentLastWords, asksUser, endsWithHousekeeping } from "./agentLastWords";
 import { sessionAgent, type SessionAgentId } from "../../server/lib/session-agents.js";
 
 // Live dots for hidden tiles without streaming pty output. The visible-only
@@ -41,9 +43,16 @@ const lastSeen = new Map<string, number>();
 const hiddenStreak = new Map<string, number>();
 // Tiles already dotted for their current hidden burst. One dot until viewed.
 const dotted = new Set<string>();
-// Hidden tiles whose coding agent is working: the agent and when (this
-// machine's clock) its output was last seen moving.
-const agentTurns = new Map<string, { agent: SessionAgentId; movedAt: number }>();
+// Hidden tiles whose coding agent is working: the agent, when (this
+// machine's clock) its output was last seen moving, and whether the agent
+// itself reported a turn (`busy`) while it moved. An agent that reports its
+// state (Claude Code) and never said busy only printed housekeeping, such as
+// compacting while idle: that is no turn to tell anyone about. `since` is when
+// the output started moving, so a status change after it (a turn quicker
+// than a poll) still counts.
+const agentTurns = new Map<string, { agent: SessionAgentId; since: number; movedAt: number; reports: boolean; busy: boolean }>();
+// Slack for the device and this machine reading time a little apart.
+const CLOCK_SLACK_MS = 5000;
 
 function prune(known: Set<string>) {
   for (const id of [...lastSeen.keys()]) if (!known.has(id)) lastSeen.delete(id);
@@ -79,6 +88,27 @@ function dot(tile: Tile, activity: number, title: string, body: string): void {
     dedupeKey: `bg-activity:${tile.id}:${activity}`,
     source: label || "Terminal", device,
   });
+}
+
+/**
+ * Tells about a finished turn with what the agent said last, read from its
+ * pane: a question reads as one, anything else as the end of its turn. When
+ * nothing of its own can be read, the notice stays general.
+ */
+async function announceTurn(tile: Tile, target: { host?: string; session: string; window?: number }, agent: SessionAgentId, activity: number): Promise<void> {
+  const label = sessionAgent(agent)?.label ?? "The agent";
+  const lines = await paneLines(target).catch(() => null);
+  // A note printed while idle (compacting) is not the end of a turn.
+  if (lines && endsWithHousekeeping(lines)) return;
+  const words = lines ? agentLastWords(lines, agent) : null;
+  if (words && asksUser(words)) {
+    dot(tile, activity, `${label} is asking you`, words);
+  } else if (words) {
+    dot(tile, activity, `${label} finished its turn`, words);
+  } else {
+    dot(tile, activity, `${label} finished and may need you`,
+      `${label} stopped working while this tile was hidden. Open it to see where it left off.`);
+  }
 }
 
 /** One reading of every hidden tile's output activity; `now` is this machine's clock. */
@@ -143,10 +173,12 @@ export async function pollBackgroundActivity(now = Date.now()): Promise<void> {
         // New output: is a coding agent producing it (the pane's foreground
         // program, from the device's activity rows and the agent catalog)?
         let agent: SessionAgentId | undefined;
+        let status: "busy" | "idle" | undefined;
         try {
           const pane = await paneForeground(host, session, tile.window, freshForeground);
           freshForeground = false;
           agent = sessionAgent(pane?.agent)?.id;
+          status = pane?.status;
         } catch {
           // Unknown for now: this output is read again on the next poll.
           continue;
@@ -155,7 +187,13 @@ export async function pollBackgroundActivity(now = Date.now()): Promise<void> {
         // An agent that just exited still finishes its turn quietly.
         const working = agent ?? turn?.agent;
         if (working) {
-          agentTurns.set(tile.id, { agent: working, movedAt: now });
+          agentTurns.set(tile.id, {
+            agent: working,
+            since: turn?.since ?? now,
+            movedAt: now,
+            reports: (turn?.reports ?? false) || status !== undefined,
+            busy: (turn?.busy ?? false) || status === "busy",
+          });
           continue;
         }
         dot(tile, peak.activity, "Terminal has new activity",
@@ -164,10 +202,28 @@ export async function pollBackgroundActivity(now = Date.now()): Promise<void> {
       }
       lastSeen.set(tile.id, peak.activity);
       if (!turn || outputWorking({ now, outputMovedAt: turn.movedAt })) continue;
+      // An agent that reports its state is asked again: quiet output with the
+      // agent still busy is a long step (a build, a test run), not the end.
+      let tookTurn = turn.busy;
+      if (turn.reports) {
+        let pane;
+        try {
+          pane = await paneForeground(host, session, tile.window, freshForeground);
+          freshForeground = false;
+        } catch {
+          continue;
+        }
+        if (pane?.status === "busy") {
+          agentTurns.set(tile.id, { ...turn, busy: true });
+          continue;
+        }
+        // Went idle after the output began: it was busy in between.
+        if (pane?.statusSince !== undefined && pane.statusSince >= turn.since - CLOCK_SLACK_MS) tookTurn = true;
+      }
       agentTurns.delete(tile.id);
-      const label = sessionAgent(turn.agent)?.label ?? "The agent";
-      dot(tile, peak.activity, `${label} stopped and may need you`,
-        `${label} went quiet after working while this tile was hidden. It finished its turn or is waiting for you.`);
+      // It printed without ever taking a turn: housekeeping, nothing to say.
+      if (turn.reports && !tookTurn) continue;
+      await announceTurn(tile, { host, session, window: tile.window }, turn.agent, peak.activity);
     }
   }));
 }

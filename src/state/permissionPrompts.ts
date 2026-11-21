@@ -43,6 +43,10 @@ export interface PaneForeground {
   agent: string | undefined;
   /** Undefined when the device could not say. */
   panes: number | undefined;
+  /** Whether the agent is mid-turn, when it reports that itself (Claude Code). */
+  status?: "busy" | "idle";
+  /** When that status last changed (epoch ms), when reported. */
+  statusSince?: number;
 }
 
 export type PermissionPhase = "waiting" | "sending" | "sent";

@@ -31,8 +31,9 @@ export function listPorts() {
 }
 
 // This self-contained probe also runs on the selected SSH source. It reads
-// process names, start times, parent ids, project manifests and tmux session
-// names, never process arguments or environments.
+// process names, start times, parent ids, controlling terminals, program
+// paths, project manifests and tmux session names, never process arguments or
+// environments. Its rules come as plain data in `options` (see portProbeRules).
 export async function inspectPortProcesses(options = {}) {
   const fs = await import("node:fs/promises");
   const path = await import("node:path");
@@ -126,33 +127,69 @@ export async function inspectPortProcesses(options = {}) {
   }
   const home = os.homedir();
   const clean = (text) => typeof text === "string" ? text.replace(/[\x00-\x1f\x7f]/g, "").slice(0, 120) : "";
-  // One process table read gives every listener its parent and its age.
-  // etime is "[[dd-]hh:]mm:ss" on both macOS and Linux.
+  // The app's own tmux sessions (Quick Chat, tile views), named by
+  // `options.internalSessions` as { names, prefixes }.
+  const internalNames = Array.isArray(options.internalSessions?.names) ? options.internalSessions.names.filter((name) => typeof name === "string" && name) : [];
+  const internalPrefixes = Array.isArray(options.internalSessions?.prefixes) ? options.internalSessions.prefixes.filter((prefix) => typeof prefix === "string" && prefix) : [];
+  const internalSession = (session) => typeof session === "string" && (internalNames.includes(session) || internalPrefixes.some((prefix) => session.startsWith(prefix)));
+  // Coding agents' own programs (`options.agentPrograms`), plus agents whose
+  // native binary is named after its version, like "2.1.330"
+  // (`options.versionNamedAgents`). Their listeners are the agent's IDE or MCP
+  // bridge, not a service. Linux reports at most 15 characters of a name.
+  const agentPrograms = Array.isArray(options.agentPrograms) ? options.agentPrograms.filter((name) => typeof name === "string" && name) : [];
+  const agentProgram = (name) => !!name && ((options.versionNamedAgents === true && /^\d+\.\d+\.\d+$/.test(name))
+    || agentPrograms.some((program) => program === name || (name.length >= 15 && program.startsWith(name))));
+  // "/dev/ttys012" (tmux) and "ttys012" (ps) name the same terminal.
+  const terminal = (name) => typeof name === "string" ? name.trim().replace(/^\/dev\//, "") : "";
+  // One process table read gives every listener its parent, its age and its
+  // controlling terminal. etime is "[[dd-]hh:]mm:ss" on both macOS and Linux;
+  // a process without a terminal shows "??" (macOS) or "?" (Linux).
   const parents = new Map();
   const ages = new Map();
+  const terminals = new Map();
   if (pids.length) {
-    for (const line of (await run("ps", ["-axo", "pid=,ppid=,etime="])).split("\n")) {
-      const match = line.trim().match(/^(\d+)\s+(\d+)\s+(?:(\d+)-)?(?:(\d+):)?(\d+):(\d+)$/);
-      if (!match) continue;
-      parents.set(Number(match[1]), Number(match[2]));
-      ages.set(Number(match[1]), Number(match[3] || 0) * 86400 + Number(match[4] || 0) * 3600 + Number(match[5]) * 60 + Number(match[6]));
+    for (const line of (await run("ps", ["-axo", "pid=,ppid=,etime=,tty="])).split("\n")) {
+      const [pid, ppid, etime, tty] = line.trim().split(/\s+/);
+      // The parent link matters most, so an unexpected age never drops it.
+      if (!/^\d+$/.test(pid) || !/^\d+$/.test(ppid)) continue;
+      parents.set(Number(pid), Number(ppid));
+      const age = typeof etime === "string" ? etime.match(/^(?:(\d+)-)?(?:(\d+):)?(\d+):(\d+)$/) : null;
+      if (age) ages.set(Number(pid), Number(age[1] || 0) * 86400 + Number(age[2] || 0) * 3600 + Number(age[3]) * 60 + Number(age[4]));
+      if (tty && !/^[?-]+$/.test(tty)) terminals.set(Number(pid), terminal(tty));
     }
   }
   // The terminal session a listener was started from: the tmux pane among its
   // ancestors. `options.tmux` names this device's tmux (PzzaCode runs its own
   // server locally); the default is the plain one a remote source has.
   const panes = new Map();
+  const paneTerminals = new Map();
   if (pids.length && options.sessions !== false) {
     const [tmux, ...tmuxOptions] = Array.isArray(options.tmux) && options.tmux.length ? options.tmux : ["tmux"];
-    for (const line of (await run(tmux, [...tmuxOptions, "-u", "list-panes", "-a", "-F", "#{pane_pid}\t#{session_name}"])).split("\n")) {
-      const [panePid, ...name] = line.split("\t");
-      if (/^\d+$/.test(panePid) && name.length) panes.set(Number(panePid), clean(name.join("\t")));
+    // The session name goes last: it is the only field that may hold a tab.
+    for (const line of (await run(tmux, [...tmuxOptions, "-u", "list-panes", "-a", "-F", "#{pane_pid}\t#{pane_tty}\t#{session_name}"])).split("\n")) {
+      const [panePid, paneTty, ...name] = line.split("\t");
+      if (!/^\d+$/.test(panePid) || !name.length) continue;
+      const session = clean(name.join("\t"));
+      // A grouped view session lists the same panes as the session it shows;
+      // the pane belongs to that session, never to the app's view of it.
+      if (panes.has(Number(panePid)) && internalSession(session)) continue;
+      panes.set(Number(panePid), session);
+      if (terminal(paneTty)) paneTerminals.set(terminal(paneTty), session);
     }
   }
   const sessionOf = (pid) => {
-    for (let current = pid, depth = 0; current > 1 && depth < 32; current = parents.get(current), depth++) {
+    const chain = [];
+    for (let current = pid; current > 1 && chain.length < 64 && !chain.includes(current); current = parents.get(current)) {
+      // A pane's shell is an ancestor of everything started in it, however deep.
       if (panes.has(current)) return panes.get(current) || null;
+      chain.push(current);
       if (!parents.has(current)) break;
+    }
+    // A job whose parent exited (a subshell, a `&` job) is adopted by init and
+    // loses the pane from its ancestors, but keeps the pane's terminal.
+    for (const current of chain) {
+      const session = paneTerminals.get(terminals.get(current));
+      if (session) return session;
     }
     return null;
   };
@@ -174,8 +211,27 @@ export async function inspectPortProcesses(options = {}) {
     [/^(httpd|apache2)/i, "Apache"], [/^caddy/i, "Caddy"], [/^ollama/i, "Ollama"], [/^(com\.docker|docker)/i, "Docker"],
     [/^(rapportd|ControlCe|AirPlayXPC|sharingd)/i, "macOS"], [/^sshd/i, "SSH server"], [/^OrbStack/i, "OrbStack"],
   ];
+  // Services that belong to the platform or a container runtime, not to a
+  // project; the rest of SERVICES are servers a developer runs on purpose.
+  const PLATFORM_SERVICES = ["macOS", "SSH server", "Docker", "OrbStack"];
   const JS_RUNTIME = /^(node|bun|deno|next-server|tsx|vite|expo|npm|pnpm|yarn)/i;
   const serviceOf = (process) => SERVICES.find(([pattern]) => pattern.test(process))?.[1] || null;
+  // Programs installed with the operating system, and programs shipped inside
+  // a desktop app bundle (menu bar helpers, sync agents, app runtimes).
+  const OS_PROGRAM = /^\/(System|sbin|usr\/(libexec|sbin)|Library\/Apple|usr\/lib\/systemd|lib\/systemd)\//;
+  const APP_PROGRAM = /\.app\/Contents\//;
+  // Whether a listener is a background service of the device rather than
+  // something a developer started: never when a session started it; a
+  // well-known server stays visible wherever it is installed; otherwise an OS
+  // or app-bundle program, a platform service, or a daemon running outside
+  // any project folder (a device bridge, this agent).
+  const systemOf = ({ session, kind, project, program }) => {
+    if (session) return false;
+    if (kind && !PLATFORM_SERVICES.includes(kind)) return false;
+    if (OS_PROGRAM.test(program) || APP_PROGRAM.test(program) || kind) return true;
+    return !project;
+  };
+  const protectedPorts = Array.isArray(options.protectedPorts) ? options.protectedPorts : [];
   const projects = new Map();
   const projectAt = async (cwd) => {
     if (!cwd || (cwd !== home && !cwd.startsWith(home + path.sep))) return null;
@@ -198,6 +254,19 @@ export async function inspectPortProcesses(options = {}) {
     projects.set(cwd, pending);
     return pending;
   };
+  const sessions = new Map(pids.map((pid) => [pid, sessionOf(pid)]));
+  // The program file of each listener no session started, to recognize OS and
+  // desktop app services. Only the executable's path is read, never arguments.
+  const programs = new Map();
+  const unattached = pids.filter((pid) => !sessions.get(pid));
+  if (platform === "darwin" && unattached.length) {
+    let pid;
+    for (const line of (await run("lsof", ["-a", "-p", unattached.join(","), "-d", "txt", "-Fn"])).split("\n")) {
+      if (line.startsWith("p")) pid = Number(line.slice(1));
+      // The program is the first text file lsof lists for a process.
+      if (line.startsWith("n") && pid && !programs.has(pid)) programs.set(pid, line.slice(1));
+    }
+  }
   const identities = new Map();
   // Bound concurrent filesystem reads, even when a device has many listeners.
   for (let offset = 0; offset < pids.length; offset += 8) {
@@ -205,6 +274,9 @@ export async function inspectPortProcesses(options = {}) {
       let cwd = directories.get(pid);
       if (platform === "linux") {
         try { cwd = await fs.readlink(`/proc/${pid}/cwd`); } catch { /* Process ownership may hide its directory. */ }
+        if (!sessions.get(pid)) {
+          try { programs.set(pid, await fs.readlink(`/proc/${pid}/exe`)); } catch { /* Same as above. */ }
+        }
       }
       identities.set(pid, await projectAt(cwd));
     }));
@@ -239,22 +311,55 @@ export async function inspectPortProcesses(options = {}) {
       }
     }
   }
-  return [...listeners].sort(([a], [b]) => a - b).map(([port, entries]) => ({
-    port,
-    // "network": reachable from other devices; "local": this device only.
-    scope: reach.get(port) || null,
-    containers: [...(containers.get(port)?.values() || [])],
-    processes: [...entries].map(([pid, process]) => {
+  // One entry per port: every address (IPv4, IPv6, loopback, wildcard) and
+  // every socket of the same process were merged into it while collecting.
+  return [...listeners].sort(([a], [b]) => a - b).map(([port, entries]) => {
+    const published = [...(containers.get(port)?.values() || [])];
+    const processes = [...entries].map(([pid, process]) => {
       const project = identities.get(pid);
+      const session = sessions.get(pid) || null;
+      // A database started from a project folder is still a database: the
+      // process decides first, the project only for a JavaScript runtime.
+      const kind = serviceOf(clean(process)) || (JS_RUNTIME.test(clean(process)) ? project?.kind || null : null);
       return {
         pid, process: clean(process), name: project?.name || clean(process) || "TCP service", source: project?.source || "process", folder: project?.folder || null,
-        // A database started from a project folder is still a database: the
-        // process decides first, the project only for a JavaScript runtime.
-        kind: serviceOf(clean(process)) || (JS_RUNTIME.test(clean(process)) ? project?.kind || null : null),
-        session: sessionOf(pid), uptime: ages.has(pid) ? ages.get(pid) : null,
+        kind, session, uptime: ages.has(pid) ? ages.get(pid) : null,
+        system: systemOf({ session, kind, project, program: programs.get(pid) || "" }),
+        agent: agentProgram(clean(process)),
       };
-    }),
-  }));
+    });
+    return {
+      port,
+      // "network": reachable from other devices; "local": this device only.
+      scope: reach.get(port) || null,
+      // A protected port, or one held only by system services. A port whose
+      // owner is hidden (another user's process) counts too, while a published
+      // container never does.
+      system: protectedPorts.includes(port) || (!published.length && processes.every((item) => item.system)),
+      // Held only by coding agents' own bridges or by the app's own sessions;
+      // a dev server an agent started is its own process and stays visible.
+      internal: !published.length && processes.length > 0 && processes.every((item) => item.agent || internalSession(item.session)),
+      containers: published,
+      processes,
+    };
+  });
+}
+
+// The app's own tmux sessions; session-name.js reserves the same names.
+export const INTERNAL_SESSIONS = { names: ["pzza-quick-chat"], prefixes: ["pzza-v-"] };
+// Interpreters an agent may run under, which also run ordinary dev servers:
+// a listener named after one is never taken for an agent's own bridge.
+const SHARED_RUNTIMES = /^(python\d*|node|nodejs|bun|deno|ruby|java)$/i;
+
+// Plain-data rules for inspectPortProcesses, safe to serialize to a remote probe.
+export async function portProbeRules() {
+  const { SESSION_AGENTS } = await import("./session-agents.js");
+  return {
+    protectedPorts: PROTECTED_PORTS,
+    internalSessions: INTERNAL_SESSIONS,
+    agentPrograms: [...new Set(SESSION_AGENTS.flatMap((agent) => agent.detect.programs))].filter((name) => !SHARED_RUNTIMES.test(name)),
+    versionNamedAgents: SESSION_AGENTS.some((agent) => agent.detect.versionProgram === true),
+  };
 }
 
 const pendingDetails = new Map();
@@ -268,8 +373,10 @@ export async function listPortDetails(host) {
   if (pendingDetails.has(target)) return pendingDetails.get(target);
   const pending = (async () => {
     // Locally the sessions live in PzzaCode's own tmux server.
-    if (!target) return inspectPortProcesses({ tmux: ["tmux", ...tmuxArgs([])] });
-    const script = `(${inspectPortProcesses.toString()})().then(result => console.log(JSON.stringify(result))).catch(() => process.exit(1))`;
+    const rules = await portProbeRules();
+    if (!target) return inspectPortProcesses({ tmux: ["tmux", ...tmuxArgs([])], ...rules });
+    // The rules travel as plain JSON: the probe stays self-contained remotely.
+    const script = `(${inspectPortProcesses.toString()})(${JSON.stringify(rules)}).then(result => console.log(JSON.stringify(result))).catch(() => process.exit(1))`;
     return new Promise((resolve, reject) => {
       execFile("ssh", ["-o", "BatchMode=yes", "-o", "ConnectTimeout=5", target, `node -e ${shQuote(script)}`],
         { timeout: 15000, maxBuffer: 2 * 1024 * 1024 }, (error, output) => {

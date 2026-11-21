@@ -1122,6 +1122,9 @@ export function sessionAgentResumeAllowlist() {
       versionProgram: agent.detect.versionProgram === true,
       account: agent.account ? { ...agent.account } : null,
       lookup: agent.resume.kind === "by-id" ? agent.resume.lookup : null,
+      // The mode's own flags, so a resume typed through the user's launcher
+      // (a shell alias or function that already passes them) leaves them out.
+      modeArgs: [...item.args],
       byId: rule ? { command: commandLine(Object.entries(item.env ?? {}), byIdArgv(agent, item, RESUME_SESSION)), rule } : null,
     };
   }));

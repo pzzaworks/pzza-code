@@ -366,14 +366,14 @@ const PortsDemo = () => (
           { port: 5173, name: "web", process: "node" },
           { port: 8080, name: "api", process: "docker · api-1" },
         ].map((row) => (
-          <div key={row.port} className="settings-row port-row">
-            <div className="port-identity">
-              <span className="port-project">{row.name}</span>
-              <span className="port-num">{row.port}<span className="port-state on">live</span></span>
-              <span className="port-process">{row.process}</span>
+          <div key={row.port} className="port-row">
+            <span className="port-num">{row.port}</span>
+            <div className="port-main">
+              <div className="port-line"><span className="port-title">{row.name}</span></div>
+              <div className="port-meta"><span>{row.process}</span></div>
             </div>
             <div className="port-actions">
-              <span className="btn btn-sm"><ExternalLink size={13} /> Open</span>
+              <span className="tile-btn"><ExternalLink size={13} /></span>
             </div>
           </div>
         ))}

@@ -143,6 +143,22 @@ export interface SessionAgentLaunchInfo {
   conversation?: string;
   /** Whether the agent is in the middle of a turn, when its process reports it. */
   status?: "busy" | "idle";
+  /** When that status last changed (epoch ms, the device's clock), when reported. */
+  statusSince?: number;
+  /** The user's shell alias or function the agent was started through (local agents only). */
+  launcher?: AgentLauncher;
+}
+/**
+ * A shell alias or function that starts an agent (`ca`), as read from the
+ * user's shell: what it sets and runs before the arguments typed after it.
+ * A refresh resumes the agent through it.
+ */
+export interface AgentLauncher {
+  name: string;
+  /** `NAME=value` assignments it makes. */
+  env: string[];
+  program: string;
+  args: string[];
 }
 export async function fetchSessionActivity(host?: string, signal?: AbortSignal): Promise<SessionActivity[]> {
   const response = await agentFetch(`${SERVER_HTTP}/sessions/activity${host !== undefined ? `?host=${encodeURIComponent(host)}` : ""}`, { signal });
@@ -226,18 +242,26 @@ export interface PortProcess {
   name: string;
   source: "package" | "folder" | "process";
   folder: string | null;
-  // The three below are missing from a source device running an older agent.
+  // The fields below are missing from a source device running an older agent.
   /** What the service is: its framework, or a well-known server. */
   kind?: string | null;
   /** The terminal session it was started from. */
   session?: string | null;
   /** Seconds since the process started. */
   uptime?: number | null;
+  /** An operating system or desktop app service, not a developer's. */
+  system?: boolean;
+  /** A coding agent's own program (its IDE or MCP bridge). */
+  agent?: boolean;
 }
 export interface PortDetails {
   port: number;
   /** "network": other devices can reach it; "local": this device only. */
   scope?: "local" | "network" | null;
+  /** Held only by system services, or a protected port. */
+  system?: boolean;
+  /** Held only by coding agents' own bridges or the app's own sessions. */
+  internal?: boolean;
   containers?: Array<{ name: string; runtime: "docker" | "podman"; project?: string; service?: string; container: string; id: string }>;
   processes: PortProcess[];
 }

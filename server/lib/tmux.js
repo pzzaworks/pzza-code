@@ -5,6 +5,7 @@ import { DEVBOX, IS_CLIENT } from "./config.js";
 import { sh, shQuote, SSH_TOKEN, deviceEnv } from "./shell.js";
 import { tmuxCommand } from "./tmux-client.js";
 import { ACTIVITY_PROBE_SCRIPT, detectSessionActivity, normalizeEffectiveModel, probeSessionSnapshot } from "./session-activity.js";
+import { withLaunchers } from "./agent-launchers.js";
 import { findSessionModel } from "./session-cost.js";
 import { SESSION_USAGE_AGENTS } from "./agent-usage/index.js";
 import { SESSION_AGENTS, agentForProgram } from "./session-agents.js";
@@ -308,7 +309,7 @@ export function sessionActivity(host) {
         return resolve(detectSessionActivity(panes, []));
       }
     });
-  }) : probeSessionSnapshot(tmuxArgs([]), localProcessReads).then(({ rows, panes }) => withReportedModels(rows, panes))).then((rows) => {
+  }) : probeSessionSnapshot(tmuxArgs([]), localProcessReads).then(async ({ rows, panes, agents }) => withLaunchers(await withReportedModels(rows, panes), agents))).then((rows) => {
     for (const [key, value] of activityCache) {
       if (Date.now() - value.at >= ACTIVITY_FRESH_MS) activityCache.delete(key);
     }

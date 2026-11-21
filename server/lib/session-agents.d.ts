@@ -156,6 +156,8 @@ export interface SessionAgentResumeEntry {
   versionProgram: boolean;
   account: SessionAgentAccount | null;
   lookup: string | null;
+  /** The mode's own flags, left out when a launcher already passes them. */
+  modeArgs: string[];
   /** The same mode reopening one conversation by its id (see resume.byId.restore). */
   byId: SessionAgentResumeEntryById | null;
 }
