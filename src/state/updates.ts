@@ -74,6 +74,14 @@ const mayInstallInBackground = (version: string) => !autoInstallFailed.has(versi
 
 const errMsg = (e: unknown) => String((e as Error)?.message || e);
 
+// Whether release version a (major.minor.patch, as in latest.json) is newer than b.
+function newerVersion(a: string, b: string): boolean {
+  const parts = (v: string) => v.replace(/^v/, "").split(/[.+-]/).slice(0, 3).map(p => Number.parseInt(p, 10) || 0);
+  const [x, y] = [parts(a), parts(b)];
+  for (let i = 0; i < 3; i++) if ((x[i] ?? 0) !== (y[i] ?? 0)) return (x[i] ?? 0) > (y[i] ?? 0);
+  return false;
+}
+
 // Whether this user can replace PzzaCode's app bundle. When they cannot,
 // installing asks macOS for an administrator password, which a background
 // install must never do. null: unknown (the check failed or is not available),
@@ -152,18 +160,27 @@ export const useUpdates = create<UpdateState>((set, get) => {
     },
     check: async (manual = false, installAutomatically = true) => {
       if (!HAS_TAURI) return;
-      const { kind } = get().status;
-      if (kind === "checking" || kind === "installing" || kind === "ready") return;
-      set({ status: { kind: "checking" } });
+      const before = get().status;
+      if (before.kind === "checking" || before.kind === "installing") return;
+      if (before.kind === "ready" && before.restarting) return;
+      // An installed update waiting for its restart keeps being checked: a release
+      // published since then replaces it, so the restart lands on the latest version
+      // instead of one stale version per restart. The Restart button stays while it looks.
+      const staged = before.kind === "ready" ? before : null;
+      if (!staged) set({ status: { kind: "checking" } });
       try {
+        // The updater compares with the running version, so it also offers the staged one.
         const update = await checkForUpdate();
-        if (!update) {
+        if (staged) {
+          if (!update || !newerVersion(update.version, staged.update.version) || get().status !== staged) return;
+        } else if (!update) {
           set({ status: { kind: "latest" } });
           return;
         }
         set({ status: { kind: "available", update } });
         if (installAutomatically && get().autoUpdate && mayInstallInBackground(update.version)) await installUpdate(true);
       } catch (e) {
+        if (staged) return;
         set({ status: manual ? { kind: "error", msg: errMsg(e) } : { kind: "idle" } });
       }
     },
