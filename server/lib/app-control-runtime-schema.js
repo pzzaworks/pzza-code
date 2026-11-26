@@ -28,7 +28,7 @@ export const RUNTIME_APP_COMMANDS = {
   close_app: command("Close the desktop app after acknowledging this request. Refuses any unsaved or saving editor."),
   relaunch_app: command("Relaunch the desktop app after acknowledging this request. Refuses any unsaved or saving editor."),
   navigate: command("Open the existing session/workspace form, the Add a device dialog (setup: install the agent on another machine over SSH), the guided tour of the app (tour), the requirements and permissions check (requirements), or return to the terminal canvas.", { target: enumeration("terminal", "new_session", "new_workspace", "setup", "tour", "requirements") }, ["target"]),
-  open_settings: command("Open an app settings section, optionally selecting its subpage.", { section: enumeration("general", "notifications", "setup", "quick-chat", "devices", "sync", "mcp", "remote", "ports", "help", "about"), page: string(80) }, ["section"]),
+  open_settings: command("Open an app settings section, optionally selecting its subpage.", { section: enumeration("general", "notifications", "security", "quick-chat", "devices", "sync", "mcp", "remote", "ports", "help", "about"), page: string(80) }, ["section"]),
   open_help: command("Open a specific existing help topic.", { topic: string(80) }, ["topic"]),
   open_menu: command("Open or close a named toolbar dropdown using its actual control.", { menu: enumeration("remote_desktop", "port_forwarding", "usage", "notifications", "new_session", "quick_chat"), open: boolean }, ["menu", "open"]),
   set_focus_mode: command("Focus a session tile by maximizing it in its workspace, or restore the grid (same as set_fullscreen).", { tileId, enabled: boolean }, ["tileId", "enabled"]),

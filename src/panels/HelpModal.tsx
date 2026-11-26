@@ -684,9 +684,9 @@ const SetupDemo = () => (
   </Panel>
 );
 
-// Settings → Setup, one row per group with its state.
+// Settings → Security, one page per group; the demo shows each group with its state.
 const SetupGroupsDemo = () => (
-  <Panel caption="Settings · Setup" wide>
+  <Panel caption="Settings · Security" wide>
     <div className="setup-settings-groups">
       {[
         { Icon: Package, title: "Tools PzzaCode runs on", state: "Installed", tone: "ok" },
@@ -1180,7 +1180,7 @@ export const HELP_PAGES: Record<HelpTopic, HelpPage> = {
   },
   permissions: {
     label: "Permissions & tools",
-    blurb: "Settings → Setup shows at a glance whether this machine has every permission and tool PzzaCode needs, and fixes what is missing.",
+    blurb: "Settings → Security has a page for each thing PzzaCode needs on this machine (tools, permissions, this device) with its state, and fixes what is missing.",
     icon: Wrench,
     demo: <SetupGroupsDemo />,
     body: (
@@ -1200,7 +1200,7 @@ export const HELP_PAGES: Record<HelpTopic, HelpPage> = {
       </>
     ),
     tips: [
-      <>A group that needs you opens on its own. Full Disk Access and Screen Recording apply after a restart.</>,
+      <>Allow all walks through every permission still missing. Full Disk Access and Screen Recording apply after a restart.</>,
     ],
   },
   topbar: {
@@ -1271,7 +1271,7 @@ export const HELP_PAGES: Record<HelpTopic, HelpPage> = {
     ),
     tips: [
       <><b>Continue</b> resumes the last conversation; red modes never ask.</>,
-      <>Install agents yourself: <b>Settings → Setup</b> lists the install command for each one that is missing.</>,
+      <>Install agents yourself: <b>Settings → Security → Tools</b> lists the install command for each one that is missing.</>,
     ],
   },
   palette: {

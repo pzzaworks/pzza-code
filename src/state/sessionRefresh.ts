@@ -438,7 +438,7 @@ export function observePermissionStatuses(next: Statuses): void {
       notify({
         category: "app",
         title: "New permission ready for new sessions",
-        body: `${names} ${granted.length > 1 ? "are" : "is"} allowed. New terminals have it now. Running sessions get it after Refresh sessions in Settings > Setup, which restarts the programs running in them.`,
+        body: `${names} ${granted.length > 1 ? "are" : "is"} allowed. New terminals have it now. Running sessions get it after Refresh sessions in Settings > Security, which restarts the programs running in them.`,
         dedupeKey: `permission-granted:${granted.map(item => item.id).join(",")}`,
       });
     })

@@ -18,6 +18,7 @@ import { PathField } from "../ui/PathField";
 import { compactPath } from "../grid/compactPath";
 import { AgentIcon } from "../icons/AgentIcon";
 import { DEFAULT_WORKSPACE_ID } from "../workspaces";
+import { folderLabel, recentFolders, rememberFolder } from "../folderShortcuts";
 
 const DEVICE_KEY = "pzza.session.device";
 // The name length is only worth showing when it gets close to the limit.
@@ -29,39 +30,8 @@ const APPROVAL_ICONS: Record<SessionAgentMode["approval"], LucideIcon> = { ask: 
 export const modeIcon = (mode: SessionAgentMode): LucideIcon => MODE_ICONS[mode.id] ?? APPROVAL_ICONS[mode.approval];
 
 
-const RECENT_FOLDERS_KEY = "pzza.session.recentFolders.v1";
 // Quick folders under the form: this tile's folder and recent ones, at most three.
 const RECENT_SHORTCUTS = 3;
-const RECENT_FOLDERS_MAX = 5;
-
-export function readRecentFolders(): Record<string, string[]> {
-  try {
-    const value: unknown = JSON.parse(localStorage.getItem(RECENT_FOLDERS_KEY) ?? "{}");
-    if (!value || typeof value !== "object" || Array.isArray(value)) return {};
-    const out: Record<string, string[]> = {};
-    for (const [device, paths] of Object.entries(value)) {
-      if (Array.isArray(paths)) out[device] = paths.filter((p): p is string => typeof p === "string" && p.startsWith("/") && p.length <= 4096).slice(0, RECENT_FOLDERS_MAX);
-    }
-    return out;
-  } catch {
-    return {};
-  }
-}
-
-// Folders are remembered per device, since a path only means something there.
-function recentFolders(deviceId: string): string[] {
-  return readRecentFolders()[deviceId] ?? [];
-}
-
-function rememberFolder(deviceId: string, path: string) {
-  const all = readRecentFolders();
-  all[deviceId] = [path, ...(all[deviceId] ?? []).filter((p) => p !== path)].slice(0, RECENT_FOLDERS_MAX);
-  try {
-    localStorage.setItem(RECENT_FOLDERS_KEY, JSON.stringify(all));
-  } catch {
-    /* ignore */
-  }
-}
 
 const FOLDER_AGENTS_KEY = "pzza.session.folderAgents.v1";
 const FOLDER_AGENTS_MAX = 100;
@@ -101,8 +71,6 @@ function rememberFolderAgent(deviceId: string, folder: string, agent: SessionAge
     /* ignore */
   }
 }
-
-const folderLabel = (path: string) => path.replace(/\/+$/, "").split("/").pop() || path;
 
 
 // New-session dropdown content: choose the device, workspace, working folder

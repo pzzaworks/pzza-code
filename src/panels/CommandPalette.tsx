@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 import {
   Bell, Blocks, CircleQuestionMark, Code2, Columns2, Columns3, Columns4, Contrast, Copy, EthernetPort, EyeOff, FolderOpen, FolderSync, GitCompare,
   HardDrive, Info, LayoutDashboard, LayoutGrid, Maximize2, MessageSquare, Mic, Minimize2, Minus, Monitor, Moon, Palette, Plus, Radio, RefreshCw, Rocket, Search,
-  Server, Settings, Sparkles, SquareDashed, SquareTerminal, Sun, Type, Wand2, Wrench, FileText, Folder, type LucideIcon,
+  Server, Settings, Sparkles, SquareDashed, SquareTerminal, Sun, Type, ShieldCheck, Wand2, FileText, Folder, type LucideIcon,
 } from "lucide-react";
 import { fileTilePath, isFileTile, isFolderTile, isSessionTile, useStore } from "../state/store";
 import { NATIVE_OPEN_PANELS, openTerminalInFileTile, showOpenPanel } from "../openFiles";
@@ -14,8 +14,9 @@ import { readAppControlRuntime } from "../appControlRuntime";
 import { fuzzyMatch } from "../fuzzyMatch";
 import { HELP_PAGES } from "./HelpModal";
 import { HELP_SECTIONS } from "./helpTopics";
-import { generalSections } from "./settingsSections";
-import { readRecentFolders } from "./SessionMenu";
+import { generalSections, securitySections } from "./settingsSections";
+import { useDefaultEditor } from "../state/defaultEditor";
+import { readRecentFolders } from "../folderShortcuts";
 import { requestNewSession } from "../state/newSession";
 import { DICTATION_SUPPORTED } from "../state/dictation";
 import { confirmEditorDiscard } from "../editorChanges";
@@ -72,7 +73,7 @@ const SETTINGS: { section: string; label: string; icon: LucideIcon; shortcut?: s
   { section: "mcp", label: "Connections", icon: Blocks },
   { section: "remote", label: "Remote desktop", icon: Monitor },
   { section: "ports", label: "Ports", icon: EthernetPort },
-  { section: "setup", label: "Setup", icon: Wrench },
+  { section: "security", label: "Security", icon: ShieldCheck },
   { section: "help", label: "Help", icon: CircleQuestionMark, shortcut: shiftCmdKey("/") },
   { section: "about", label: "About", icon: Info },
 ];
@@ -259,6 +260,9 @@ function usePaletteItems(open: boolean): PaletteItem[] {
     for (const entry of SETTINGS) action(`settings-${entry.section}`, entry.icon, `Settings: ${entry.label}`, command("open_settings", { section: entry.section }), { shortcut: entry.shortcut, keywords: "preferences" });
     for (const page of generalSections) action(`settings-general-${page.id}`, page.id === "appearance" ? Palette : Settings, `Settings: ${page.label}`,
       command("open_settings", { section: "general", page: page.id }), { keywords: "preferences general" });
+    // The default editor page is offered once Settings has seen the app can change default apps.
+    for (const page of securitySections) if (page.id !== "editor" || useDefaultEditor.getState().status?.supported) action(`settings-security-${page.id}`, ShieldCheck, `Settings: Security · ${page.label}`,
+      command("open_settings", { section: "security", page: page.id }), { keywords: "preferences security setup permissions" });
     action("tour", Wand2, "Start the tour", () => window.dispatchEvent(new Event("pzza:start-tour")), { keywords: "onboarding guide walkthrough" });
     action("setup", Rocket, "Run setup", () => window.dispatchEvent(new Event("pzza:start-setup")), { keywords: "permissions requirements install tmux onboarding" });
     action("refresh", RefreshCw, "Refresh sessions", command("refresh_sessions"), { keywords: "reload tmux" });

@@ -121,8 +121,12 @@ export function createDragGhost(tile: HTMLElement, tileId: string, x: number, y:
       if (image && clones[index]) paint(clones[index], image);
     });
   }, () => { /* The tile keeps whatever its canvases showed. */ });
+  // The top bar sits above the canvas, so a ghost dragged up toward the
+  // workspace tabs would slide under it and lose its top edge. It stops at
+  // the bar's bottom edge instead: whole, and clear of the tab it drops on.
+  const floor = document.querySelector(".topbar")?.getBoundingClientRect().bottom ?? 0;
   const move = (nextX: number, nextY: number) => {
-    ghost.style.transform = `translate3d(${Math.round(nextX - grabX)}px, ${Math.round(nextY - grabY)}px, 0)`;
+    ghost.style.transform = `translate3d(${Math.round(nextX - grabX)}px, ${Math.round(Math.max(floor, nextY - grabY))}px, 0)`;
   };
   move(x, y);
   document.body.appendChild(ghost);

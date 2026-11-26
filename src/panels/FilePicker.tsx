@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import {
   ArrowUp,
   ChevronRight,
+  Clock,
   Eye,
   EyeOff,
   File,
@@ -15,10 +16,16 @@ import {
   Loader2,
   Pencil,
   Search,
+  Star,
+  X,
 } from "lucide-react";
 import { Modal } from "../ui/Modal";
 import { Select } from "../ui/Select";
 import { listDir, type DirEntry } from "../serverApi";
+import { useStore } from "../state/store";
+import { deviceForHost } from "../devices";
+import { folderLabel, readFavoriteFolders, readRecentFolders, toggleFavoriteFolder } from "../folderShortcuts";
+import { useScrollEdges } from "../ui/useScrollEdges";
 
 const join = (dir: string, name: string) => (dir.endsWith("/") ? dir + name : `${dir}/${name}`);
 
@@ -70,7 +77,8 @@ function crumbs(dir: string, home: string): { label: string; path: string }[] {
 // in "folder" mode you navigate into a folder and "Use this folder" returns it.
 // Breadcrumbs jump up the tree, the pencil (or typing a path) jumps anywhere,
 // and the arrow keys / Enter / Backspace drive it from the keyboard. With
-// `hosts` a device switcher lets you browse another device's files.
+// `hosts` a device switcher lets you browse another device's files. Folder mode
+// also offers the device's starred and recent session folders as one row of chips.
 export function FilePicker({
   open,
   onClose,
@@ -158,6 +166,27 @@ export function FilePicker({
     nav(undefined, h);
   };
   const canPick = !!(open && !loading && !error && dir && selection.current?.host === curHost && selection.current.generation === request.current.generation);
+
+  // Favorites and recents are stored per device id; the browsed host names the device.
+  const devices = useStore((s) => s.activeDevices);
+  const deviceId = mode === "folder" ? (deviceForHost(devices, curHost)?.id ?? "") : "";
+  const [favorites, setFavorites] = useState<Record<string, string[]>>({});
+  const [recents, setRecents] = useState<Record<string, string[]>>({});
+  useEffect(() => {
+    if (!open || mode !== "folder") return;
+    setFavorites(readFavoriteFolders());
+    setRecents(readRecentFolders());
+  }, [open, mode]);
+  const favoriteList = deviceId ? (favorites[deviceId] ?? []) : [];
+  const recentList = deviceId ? (recents[deviceId] ?? []).filter((p) => !favoriteList.includes(p)) : [];
+  const starred = !!dir && favoriteList.includes(dir);
+  const quickRef = useRef<HTMLDivElement>(null);
+  useScrollEdges(quickRef, open && (favoriteList.length > 0 || recentList.length > 0));
+  const toggleFavorite = (path: string) => {
+    if (!deviceId) return;
+    const next = toggleFavoriteFolder(deviceId, path);
+    setFavorites((all) => ({ ...all, [deviceId]: next }));
+  };
 
   const toggleHidden = () => {
     setShowHidden((v) => {
@@ -305,6 +334,19 @@ export function FilePicker({
             >
               <Pencil size={15} />
             </button>
+            {deviceId ? (
+              <button
+                type="button"
+                className={`fp-tool fp-star ${starred ? "on" : ""}`}
+                onClick={() => dir && toggleFavorite(dir)}
+                disabled={!canPick}
+                aria-pressed={starred}
+                aria-label={starred ? "Remove this folder from favorites" : "Add this folder to favorites"}
+                title={starred ? "Remove from favorites" : "Add to favorites"}
+              >
+                <Star size={15} fill={starred ? "currentColor" : "none"} />
+              </button>
+            ) : null}
           </div>
           {/* The filter sits in the same row as the path: where you are, and
               what you are looking for in it. */}
@@ -332,6 +374,57 @@ export function FilePicker({
             </button>
           </div>
         </div>
+
+        {/* Favorites, then recent session folders: one quiet row that scrolls sideways. */}
+        {favoriteList.length || recentList.length ? (
+          <div className="fp-quick" role="group" aria-label="Favorite and recent folders" ref={quickRef}>
+            {favoriteList.map((path) => {
+              const label = folderLabel(path);
+              return (
+                <span key={`fav:${path}`} className={`fp-chip fp-chip-fav ${path === dir ? "on" : ""}`}>
+                  <button
+                    type="button"
+                    className="fp-chip-go"
+                    onClick={() => nav(path, curHost)}
+                    title={path}
+                    aria-label={`${label}, favorite`}
+                    aria-current={path === dir ? "location" : undefined}
+                  >
+                    <Star size={11} fill="currentColor" aria-hidden="true" />
+                    <span className="fp-chip-label">{label}</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="fp-chip-x"
+                    onClick={() => toggleFavorite(path)}
+                    title="Remove from favorites"
+                    aria-label={`Remove ${label} from favorites`}
+                  >
+                    <X size={10} aria-hidden="true" />
+                  </button>
+                </span>
+              );
+            })}
+            {recentList.map((path) => {
+              const label = folderLabel(path);
+              return (
+                <span key={`recent:${path}`} className={`fp-chip ${path === dir ? "on" : ""}`}>
+                  <button
+                    type="button"
+                    className="fp-chip-go"
+                    onClick={() => nav(path, curHost)}
+                    title={path}
+                    aria-label={`${label}, recent`}
+                    aria-current={path === dir ? "location" : undefined}
+                  >
+                    <Clock size={11} aria-hidden="true" />
+                    <span className="fp-chip-label">{label}</span>
+                  </button>
+                </span>
+              );
+            })}
+          </div>
+        ) : null}
 
         <div className="fp-list" ref={listRef}>
           {loading ? (

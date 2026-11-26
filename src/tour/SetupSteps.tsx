@@ -164,7 +164,7 @@ const PERMISSION_PILLS: Record<PermissionStatus, { tone: Tone; text: string }> =
   unknown: { tone: "neutral", text: "Not checked" },
 };
 
-/** Both permission groups, or with `only` a single one without its own heading (Settings → Setup frames each group itself). Pass `controls` to share one status source with the caller. */
+/** Both permission groups, or with `only` a single one without its own heading (Settings → Security gives each group its own page). Pass `controls` to share one status source with the caller. */
 export function SetupPermissions({ only, controls }: { only?: "app" | "tmux"; controls?: PermissionControls } = {}) {
   return controls ? <PermissionGroups only={only} controls={controls} /> : <OwnPermissionGroups only={only} />;
 }

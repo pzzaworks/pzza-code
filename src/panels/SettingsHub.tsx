@@ -2,8 +2,9 @@ import { useEffect, useRef, useState } from "react";
 import { useModalFocus } from "../ui/Modal";
 import { registerAppControlHandler, registerAppControlState } from "../appControlRuntime";
 import { createPortal } from "react-dom";
-import { Info, ChevronDown, Bell, Blocks, CircleQuestionMark, FolderSync, HardDrive, MessageSquare, Settings, Wrench, X } from "lucide-react";
-import { generalSections, type GeneralSection } from "./settingsSections";
+import { Info, ChevronDown, Bell, Blocks, CircleQuestionMark, FolderSync, HardDrive, MessageSquare, Settings, ShieldCheck, X } from "lucide-react";
+import { generalSections, securitySections, type GeneralSection, type SecuritySection } from "./settingsSections";
+import { refreshDefaultEditor, useDefaultEditor } from "../state/defaultEditor";
 import { QuickChatSettings } from "./QuickChat";
 import { PortsMenu } from "./PortsMenu";
 import { RdpMenu } from "./RdpMenu";
@@ -26,7 +27,7 @@ const sections = [
   { id: "devices", label: "Devices", icon: HardDrive },
   { id: "sync", label: "Sync", icon: FolderSync },
   { id: "mcp", label: "Connections", icon: Blocks },
-  { id: "setup", label: "Setup", icon: Wrench },
+  { id: "security", label: "Security", icon: ShieldCheck },
   { id: "help", label: "Help", icon: CircleQuestionMark },
   { id: "about", label: "About", icon: Info },
 ] as const;
@@ -46,6 +47,14 @@ interface Props {
 export function SettingsHub({ open, section, onSectionChange, onOpen, onClose, syncRequest = 0, onSyncingChange, helpRequest }: Props) {
   const hasRemote = useStore((state) => hasRemoteDevice(state.devices));
   const [generalSection, setGeneralSection] = useState<GeneralSection>("appearance");
+  // A section's pages fold away when its open entry is clicked again; another
+  // section, or a page opened from elsewhere, shows them again.
+  const [folded, setFolded] = useState(false);
+  const [securitySection, setSecuritySection] = useState<SecuritySection>("tools");
+  // The default editor page shows only where the app can change default apps.
+  const editorSupported = useDefaultEditor((state) => !!state.status?.supported);
+  const securityPages = securitySections.filter((item) => item.id !== "editor" || editorSupported);
+  const securityPage = securityPages.some((item) => item.id === securitySection) ? securitySection : "tools";
   const [notificationPage, setNotificationPage] = useState<"activity" | "preferences">("activity");
   const [helpTopic, setHelpTopic] = useState<HelpTopic>("start");
   useEffect(() => {
@@ -55,18 +64,18 @@ export function SettingsHub({ open, section, onSectionChange, onOpen, onClose, s
   const [syncVisited, setSyncVisited] = useState(false);
   const [mcpVisited, setMcpVisited] = useState(false);
   const [portsVisited, setPortsVisited] = useState(false);
-  const controlRef = useRef({ open, section, generalSection, notificationPage, helpTopic, syncPage, onOpen });
-  controlRef.current = { open, section, generalSection, notificationPage, helpTopic, syncPage, onOpen };
+  const controlRef = useRef({ open, section, generalSection, securityPage, notificationPage, helpTopic, syncPage, onOpen });
+  controlRef.current = { open, section, generalSection, securityPage, notificationPage, helpTopic, syncPage, onOpen };
   useEffect(() => {
     const pages: Record<SettingsSection, readonly string[]> = {
       general: generalSections.map(item => item.id), notifications: ["activity", "preferences"],
-      setup: [], "quick-chat": [], devices: [], sync: ["repositories", "preferences"],
+      security: securitySections.map(item => item.id), "quick-chat": [], devices: [], sync: ["repositories", "preferences"],
       mcp: ["mcp"], help: HELP_SECTIONS.flatMap(item => item.topics), about: [], remote: [], ports: [],
     };
     const cleanups = [
       registerAppControlState("settings", () => {
         const current = controlRef.current;
-        return { open: current.open, section: current.section, pages, page: current.section === "general" ? current.generalSection : current.section === "notifications" ? current.notificationPage : current.section === "help" ? current.helpTopic : current.section === "mcp" ? "mcp" : current.section === "sync" ? current.syncPage : null };
+        return { open: current.open, section: current.section, pages, page: current.section === "general" ? current.generalSection : current.section === "security" ? current.securityPage : current.section === "notifications" ? current.notificationPage : current.section === "help" ? current.helpTopic : current.section === "mcp" ? "mcp" : current.section === "sync" ? current.syncPage : null };
       }),
       registerAppControlHandler("open_settings", args => {
         const target = args.section as SettingsSection;
@@ -74,10 +83,12 @@ export function SettingsHub({ open, section, onSectionChange, onOpen, onClose, s
         if (page !== undefined && !pages[target].includes(page)) throw new Error("Unknown page for this settings section. Read settings.pages for supported pages.");
         if (page !== undefined) {
           if (target === "general") setGeneralSection(page as GeneralSection);
+          if (target === "security") setSecuritySection(page as SecuritySection);
           if (target === "notifications") setNotificationPage(page as "activity" | "preferences");
           if (target === "help") setHelpTopic(page as HelpTopic);
           if (target === "sync") setSyncPage(page as "repositories" | "preferences");
         }
+        setFolded(false);
         controlRef.current.onOpen(target);
         return { section: target, page: page ?? null };
       }),
@@ -85,10 +96,14 @@ export function SettingsHub({ open, section, onSectionChange, onOpen, onClose, s
     return () => cleanups.forEach(cleanup => cleanup());
   }, []);
   const parentSection = section === "remote" || section === "ports" ? "mcp" : section;
+  useEffect(() => { setFolded(false); }, [parentSection, open]);
   const dialog = useRef<HTMLDivElement>(null);
   useEffect(() => {
     dialog.current?.querySelector(".settings-hub-content")?.scrollTo({ top: 0 });
-  }, [section, generalSection, notificationPage, helpTopic, syncPage]);
+  }, [section, generalSection, securityPage, notificationPage, helpTopic, syncPage]);
+  useEffect(() => {
+    if (open && section === "security") void refreshDefaultEditor();
+  }, [open, section]);
   // Settings shows once all of its pages are loaded (usually already, see
   // preloadWhenIdle), so it never opens on an empty page.
   const pagesReady = useSurfacesLoaded(SETTINGS_PAGES, open);
@@ -112,14 +127,16 @@ export function SettingsHub({ open, section, onSectionChange, onOpen, onClose, s
           <nav className="settings-hub-nav" aria-label="Settings sections">
             {sections.map(({ id, label, icon: Icon }) => {
               const active = parentSection === id;
-              const hasChildren = ["general", "notifications", "sync", "mcp", "help"].includes(id);
+              const hasChildren = ["general", "security", "notifications", "sync", "mcp", "help"].includes(id);
+              const expanded = active && !folded;
               return <div className="settings-nav-group" key={id}>
-                <button type="button" aria-current={active && !hasChildren ? "page" : undefined} aria-expanded={hasChildren ? active : undefined} className={`settings-hub-link ${active ? "active" : ""}`} onClick={() => onSectionChange(id)}><Icon size={16} /><span>{label}</span>{hasChildren ? <ChevronDown size={13} className="settings-nav-chevron" /> : null}</button>
-                {active && id === "general" ? <SettingsSubnav label="General settings" items={generalSections} value={generalSection} onChange={setGeneralSection} /> : null}
-                {active && id === "notifications" ? <SettingsSubnav label="Notification pages" items={[{ id: "activity", label: "Activity" }, { id: "preferences", label: "Preferences" }]} value={notificationPage} onChange={setNotificationPage} /> : null}
-                {active && id === "sync" ? <SettingsSubnav label="Sync pages" items={[{ id: "repositories", label: "Repositories" }, { id: "preferences", label: "Preferences" }]} value={syncPage} onChange={setSyncPage} /> : null}
-                {active && id === "mcp" ? <SettingsSubnav label="Connection settings" items={[{ id: "mcp" as const, label: "MCP integrations" }, ...(hasRemote ? [{ id: "remote" as const, label: "Remote desktop" }] : []), { id: "ports" as const, label: "Port forwarding" }]} value={section === "remote" || section === "ports" ? section : "mcp"} onChange={(value: "mcp" | "remote" | "ports") => onSectionChange(value)} /> : null}
-                {active && id === "help" ? <HelpNav value={helpTopic} onChange={setHelpTopic} /> : null}
+                <button type="button" aria-current={active && !hasChildren ? "page" : undefined} aria-expanded={hasChildren ? expanded : undefined} className={`settings-hub-link ${active ? "active" : ""}`} onClick={() => { if (active && hasChildren) setFolded(!folded); else onSectionChange(id); }}><Icon size={16} /><span>{label}</span>{hasChildren ? <ChevronDown size={13} className="settings-nav-chevron" /> : null}</button>
+                {expanded && id === "general" ? <SettingsSubnav label="General settings" items={generalSections} value={generalSection} onChange={setGeneralSection} /> : null}
+                {expanded && id === "security" ? <SettingsSubnav label="Security pages" items={securityPages} value={securityPage} onChange={setSecuritySection} /> : null}
+                {expanded && id === "notifications" ? <SettingsSubnav label="Notification pages" items={[{ id: "activity", label: "Activity" }, { id: "preferences", label: "Preferences" }]} value={notificationPage} onChange={setNotificationPage} /> : null}
+                {expanded && id === "sync" ? <SettingsSubnav label="Sync pages" items={[{ id: "repositories", label: "Repositories" }, { id: "preferences", label: "Preferences" }]} value={syncPage} onChange={setSyncPage} /> : null}
+                {expanded && id === "mcp" ? <SettingsSubnav label="Connection settings" items={[{ id: "mcp" as const, label: "MCP integrations" }, ...(hasRemote ? [{ id: "remote" as const, label: "Remote desktop" }] : []), { id: "ports" as const, label: "Port forwarding" }]} value={section === "remote" || section === "ports" ? section : "mcp"} onChange={(value: "mcp" | "remote" | "ports") => onSectionChange(value)} /> : null}
+                {expanded && id === "help" ? <HelpNav value={helpTopic} onChange={setHelpTopic} /> : null}
               </div>;
             })}
           </nav>
@@ -127,7 +144,7 @@ export function SettingsHub({ open, section, onSectionChange, onOpen, onClose, s
             <div className="settings-hub-content">
               {shown && section === "general" ? <SettingsMenu section={generalSection} /> : null}
               {shown && section === "notifications" ? <NotificationsSettings page={notificationPage} /> : null}
-              {shown && section === "setup" ? <SetupSettings /> : null}
+              {shown && section === "security" ? <SetupSettings page={securityPage} /> : null}
               {shown && section === "quick-chat" ? <QuickChatSettings /> : null}
               {shown && section === "devices" ? <DevicesMenu /> : null}
               {/* The same sync instance owns the scan across navigation and closing. */}

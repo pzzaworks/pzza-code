@@ -4,6 +4,7 @@ import { CircleStop, Cpu, Eye, EyeOff, ExternalLink, Globe, LoaderCircle, Search
 import { create } from "zustand";
 import { AsyncButton } from "../ui/AsyncButton";
 import { useDelayedLoading } from "../ui/useDelayedLoading";
+import { useScrollEdges } from "../ui/useScrollEdges";
 import { confirmAction } from "../ui/ConfirmDialog";
 import { useStore } from "../state/store";
 import { THIS_MAC, deviceHost, hasRemoteDevice, type Device } from "../devices";
@@ -387,8 +388,7 @@ export function portMatches(entry: PortDetails, query: string): boolean {
   return [String(entry.port), title, ...kinds, ...sessions, ...runs].some(text => text.toLowerCase().includes(needle));
 }
 
-// Local-only is the default reach, so Network is the reach worth a filter;
-// the four chips also fit the popover's width on one line.
+// Local-only is the default reach, so Network is the reach worth a filter.
 export type PortFilter = "all" | "sessions" | "network" | "containers";
 const PORT_FILTERS: ReadonlyArray<{ id: PortFilter; label: string; hint: string; test: (entry: PortDetails) => boolean }> = [
   { id: "all", label: "All", hint: "Every service", test: () => true },
@@ -487,6 +487,9 @@ function PortList({ entries, renderActions, onlySystemText }: {
     return item.id === "all" || (count > 0 && count < pool.length);
   });
   const filter = offered.some(item => item.id === selected) ? selected : "all";
+  // The chips stay on one line and scroll sideways, fading at a clipped edge.
+  const chipsRef = useRef<HTMLDivElement>(null);
+  useScrollEdges(chipsRef, offered.length > 1);
   const shown = pool.filter(entry => portInFilter(entry, filter) && portMatches(entry, query));
   const groups = groupPorts(shown);
   // A lone group of other services needs no header.
@@ -496,8 +499,9 @@ function PortList({ entries, renderActions, onlySystemText }: {
       <Search size={13} aria-hidden="true" />
       <input type="search" value={query} onChange={event => setQuery(event.target.value)} placeholder="Filter by name, port or session" aria-label="Filter ports" spellCheck={false} />
     </label> : null}
-    {offered.length > 1 ? <div className="ports-chips" role="group" aria-label="Show ports">
-      {offered.map(item => <button key={item.id} type="button" className={`ports-chip${filter === item.id ? " on" : ""}`} aria-pressed={filter === item.id} title={item.hint} onClick={() => setSelected(item.id)}>
+    {offered.length > 1 ? <div className="ports-chips" role="group" aria-label="Show ports" ref={chipsRef}>
+      {offered.map(item => <button key={item.id} type="button" className={`ports-chip${filter === item.id ? " on" : ""}`} aria-pressed={filter === item.id} title={item.hint}
+        onClick={event => { setSelected(item.id); event.currentTarget.scrollIntoView({ block: "nearest", inline: "nearest" }); }}>
         {/* All counts what the status line already says. */}
         {item.label}{item.id === "all" ? null : <span className="ports-chip-count">{counts.get(item.id)}</span>}
       </button>)}

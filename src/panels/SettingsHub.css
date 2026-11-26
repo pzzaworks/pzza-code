@@ -292,9 +292,10 @@
 /* Sub-page names truncate rather than wrap. */
 .settings-hub-sublink { gap: 6px; }
 .settings-hub-sublabel { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-/* Settings → Setup: one short row per group (permissions, tools, this
-   device) with its state; a group opens to its rows. The rows are the setup
-   screen's own, so they get the same tour variables here. */
+/* Settings → Security: a page per group (tools, permissions, this device)
+   with its state and actions on top. The rows are the setup screen's own,
+   so they get the same tour variables here. The group cards below are the
+   Help page's picture of the groups. */
 .setup-settings {
   --tour-strong: var(--text);
   --tour-on-strong: var(--opaque-surface, var(--surface));
@@ -308,7 +309,8 @@
 .setup-settings-intro { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 12px; }
 .setup-settings-intro p { flex: 1; min-width: 220px; margin: 0; color: var(--muted); font-size: var(--fs-md); line-height: 1.5; }
 .setup-settings-intro .btn { flex: 0 0 auto; }
-.setup-settings-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+.setup-settings-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 6px; }
+.setup-settings-actions .setup-settings-state { margin-right: 4px; }
 .setup-settings-groups { display: flex; flex-direction: column; gap: 8px; }
 .setup-settings-group { border: 1px solid var(--hairline); border-radius: var(--r-lg); overflow: hidden; }
 .setup-settings-head {
@@ -337,7 +339,7 @@
 .setup-settings-body { padding: 14px; border-top: 1px solid var(--divider); }
 @media (prefers-reduced-motion: reduce) { .setup-settings-chevron { transition: none; } }
 /* Menu buttons (Settings > General): a titled card per bar, one row per item
-   with its switch, like the Setup cards. A disabled card (status bar off)
+   with its switch, like the Security group cards. A disabled card (status bar off)
    fades and its switches rest. */
 .settings-hub-content .bar-item-settings + .bar-item-settings { margin-top: 20px; }
 /* The card's own switch lines up with its rows' switches: their 12px padding plus the 1px border. */
