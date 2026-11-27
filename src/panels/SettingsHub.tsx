@@ -99,7 +99,7 @@ export function SettingsHub({ open, section, onSectionChange, onOpen, onClose, s
   useEffect(() => { setFolded(false); }, [parentSection, open]);
   const dialog = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    dialog.current?.querySelector(".settings-hub-content")?.scrollTo({ top: 0 });
+    dialog.current?.querySelectorAll(".settings-hub-content, .help-hub-content").forEach((content) => content.scrollTo({ top: 0 }));
   }, [section, generalSection, securityPage, notificationPage, helpTopic, syncPage]);
   useEffect(() => {
     if (open && section === "security") void refreshDefaultEditor();
@@ -141,7 +141,7 @@ export function SettingsHub({ open, section, onSectionChange, onOpen, onClose, s
             })}
           </nav>
           <div className="settings-hub-main">
-            <div className="settings-hub-content">
+            <div className="settings-hub-content" hidden={shown && section === "help"}>
               {shown && section === "general" ? <SettingsMenu section={generalSection} /> : null}
               {shown && section === "notifications" ? <NotificationsSettings page={notificationPage} /> : null}
               {shown && section === "security" ? <SetupSettings page={securityPage} /> : null}
@@ -153,8 +153,10 @@ export function SettingsHub({ open, section, onSectionChange, onOpen, onClose, s
               {shown && section === "remote" ? <RdpMenu close={onClose} /> : null}
               {mcpVisited || (shown && section === "mcp") ? <div hidden={!shown || section !== "mcp"}><McpMenu /></div> : null}
               {shown && section === "about" ? <About /> : null}
-              {shown && section === "help" ? <HelpContent topic={helpTopic} request={helpRequest} onNavigate={setHelpTopic} /> : null}
             </div>
+            {/* Help has a column of its own: its pages draw other windows of
+                the app, which the settings pages' own rules must not reach. */}
+            {shown && section === "help" ? <div className="help-hub-content"><HelpContent topic={helpTopic} request={helpRequest} onNavigate={setHelpTopic} /></div> : null}
           </div>
         </div>
       </div>

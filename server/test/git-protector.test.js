@@ -423,6 +423,132 @@ test("untrusted destination advertisements fall back to a sensitive full-history
   await assert.rejects(git(remote, "rev-parse", "--verify", "refs/heads/feature"));
 });
 
+test("history the destination's default branch holds is skipped, while content new to it is still blocked", async t => {
+  const { root, remote } = await protectedRemoteWithPublishedSensitiveHistory(t);
+  // A branch started before the configuration was published, then synced
+  // with main: the merge brings main's published history along.
+  const first = await git(root, "rev-list", "--max-parents=0", "HEAD");
+  await git(root, "switch", "-qc", "feature", first);
+  await stage(root, "feature.txt", "Feature work.\n");
+  await git(root, "commit", "-qm", "Start feature");
+  await git(root, "push", "-qu", "origin", "feature");
+  await git(root, "merge", "-q", "--no-edit", "main");
+  const merged = await git(root, "rev-parse", "HEAD");
+
+  assert.equal((await runGitProtection({ path: root, operation: "push" })).approved, true);
+  assert.equal((await runGitProtection({ path: root, operation: "pull_request", base: "refs/remotes/origin/feature" })).approved, true);
+  await git(root, "push", "-q", "origin", "feature");
+  assert.equal(await git(remote, "rev-parse", "refs/heads/feature"), merged);
+  // A new branch from published history needs no full-history rescan either.
+  await git(root, "push", "-q", "origin", `${first}:refs/heads/from-first`, "main:refs/heads/from-main");
+  assert.equal(await git(remote, "rev-parse", "refs/heads/from-main"), await git(root, "rev-parse", "main"));
+
+  await stage(root, ".env.local");
+  const unsafe = await git(root, "commit-tree", await git(root, "write-tree"), "-p", merged, "-m", "Unpublished configuration");
+  await git(root, "update-ref", "refs/heads/feature", unsafe);
+  const tool = await runGitProtection({ path: root, operation: "push" });
+  assert.equal(tool.approved, false);
+  assert.deepEqual([...new Set(tool.findings.map(finding => finding.path))], [".env.local"]);
+  const error = await rejectedGit(root, ["push", "origin", "feature"]);
+  assert.match(gitErrorOutput(error), /\.env\.local/);
+  assert.doesNotMatch(gitErrorOutput(error), /\.env\.production/);
+  assert.equal(await git(remote, "rev-parse", "refs/heads/feature"), merged);
+});
+
+test("history only another destination branch holds is still scanned, since its readers may differ", async t => {
+  const { root, remote, base } = await protectedRemote(t);
+  await stage(root, ".env.production");
+  const added = await git(root, "commit-tree", await git(root, "write-tree"), "-p", base, "-m", "Configuration on develop");
+  await git(root, "rm", "-q", "--cached", ".env.production");
+  const develop = await git(root, "commit-tree", await git(root, "rev-parse", `${base}^{tree}`), "-p", added, "-m", "Remove configuration");
+  await git(root, "-c", "core.hooksPath=/dev/null", "push", "-q", "origin", `${develop}:refs/heads/develop`);
+  const feature = await git(root, "commit-tree", await git(root, "rev-parse", `${base}^{tree}`), "-p", base, "-m", "Feature");
+  await git(root, "-c", "core.hooksPath=/dev/null", "push", "-q", "origin", `${feature}:refs/heads/feature`);
+  const merged = await git(root, "commit-tree", await git(root, "rev-parse", `${base}^{tree}`), "-p", feature, "-p", develop, "-m", "Merge develop");
+
+  const error = await rejectedGit(root, ["push", "origin", `${merged}:refs/heads/feature`]);
+  assert.match(gitErrorOutput(error), /\.env\.production/);
+  assert.equal(await git(remote, "rev-parse", "refs/heads/feature"), feature);
+});
+
+test("history a destination dropped is scanned again even while local tracking refs still show it", async t => {
+  const { root, remote, base } = await protectedRemote(t);
+  await stage(root, ".env.production");
+  const unsafe = await git(root, "commit-tree", await git(root, "write-tree"), "-p", base, "-m", "Configuration published by mistake");
+  await git(root, "update-ref", "refs/heads/main", unsafe);
+  // Published past protection, then removed from the destination elsewhere.
+  await git(root, "-c", "core.hooksPath=/dev/null", "push", "-q", "origin", "main");
+  await git(remote, "update-ref", "refs/heads/main", base);
+  assert.equal(await git(root, "rev-parse", "refs/remotes/origin/main"), unsafe);
+
+  const error = await rejectedGit(root, ["push", "origin", "main:refs/heads/restored"]);
+  assert.match(gitErrorOutput(error), /\.env\.production/);
+  await assert.rejects(git(remote, "rev-parse", "--verify", "refs/heads/restored"));
+
+  // The explicit check uses the stale tracking ref only to limit its walk,
+  // never as published content: merging it still reports the dropped file.
+  const feature = await git(root, "commit-tree", await git(root, "rev-parse", `${base}^{tree}`), "-p", base, "-m", "Feature");
+  const merged = await git(root, "commit-tree", await git(root, "rev-parse", `${unsafe}^{tree}`), "-p", feature, "-p", unsafe, "-m", "Merge stale main");
+  await git(root, "update-ref", "refs/heads/feature", merged);
+  await git(root, "symbolic-ref", "HEAD", "refs/heads/feature");
+  const tool = await runGitProtection({ path: root, operation: "push", base: "refs/remotes/origin/main" });
+  assert.equal(tool.approved, false);
+  assert.ok(tool.findings.some(finding => finding.path === ".env.production"));
+});
+
+test("a user's log configuration cannot hide root or merge changes from the push scan", async t => {
+  const { root, remote, base } = await protectedRemote(t);
+  await git(root, "config", "log.showRoot", "false");
+  await git(root, "config", "log.diffMerges", "combined");
+  await stage(root, ".env.production");
+  const unsafeTree = await git(root, "write-tree");
+  await git(root, "rm", "-q", "--cached", ".env.production");
+  const orphan = await git(root, "commit-tree", unsafeTree, "-m", "Unrelated history");
+  const rootError = await rejectedGit(root, ["push", "origin", `${orphan}:refs/heads/imported`]);
+  assert.match(gitErrorOutput(rootError), /\.env\.production/);
+  await assert.rejects(git(remote, "rev-parse", "--verify", "refs/heads/imported"));
+
+  const clean = await git(root, "rev-parse", `${base}^{tree}`);
+  const left = await git(root, "commit-tree", clean, "-p", base, "-m", "Left branch");
+  const right = await git(root, "commit-tree", clean, "-p", base, "-m", "Right branch");
+  const merged = await git(root, "commit-tree", unsafeTree, "-p", left, "-p", right, "-m", "Resolve merge");
+  await git(root, "update-ref", "refs/heads/main", merged);
+  const mergeError = await rejectedGit(root, ["push", "origin", "main"]);
+  assert.match(gitErrorOutput(mergeError), /\.env\.production/);
+  assert.equal(await git(remote, "rev-parse", "refs/heads/main"), base);
+});
+
+test("an LFS pointer the destination holds still has its local content scanned", async t => {
+  const { root, remote, base } = await protectedRemote(t);
+  const token = generatedToken();
+  const content = Buffer.from(`access_token = "${token}"\n`);
+  const hash = crypto.createHash("sha256").update(content).digest("hex");
+  await stage(root, "payload.bin", `version https://git-lfs.github.com/spec/v1\noid sha256:${hash}\nsize ${content.length}\n`);
+  const published = await git(root, "commit-tree", await git(root, "write-tree"), "-p", base, "-m", "Publish a pointer");
+  await git(root, "update-ref", "refs/heads/main", published);
+  // The pointer reached the Git server, its content never reached the LFS server.
+  await git(root, "-c", "core.hooksPath=/dev/null", "push", "-q", "origin", "main");
+  const feature = await git(root, "commit-tree", await git(root, "rev-parse", `${base}^{tree}`), "-p", base, "-m", "Feature");
+  await git(root, "-c", "core.hooksPath=/dev/null", "push", "-q", "origin", `${feature}:refs/heads/feature`);
+  const merged = await git(root, "commit-tree", await git(root, "rev-parse", `${published}^{tree}`), "-p", feature, "-p", published, "-m", "Merge main");
+
+  // Without local LFS content there is nothing to upload: the merge passes.
+  await mkdir(path.join(root, ".git/lfs"), { recursive: true });
+  await git(root, "push", "-q", "origin", `${merged}:refs/heads/feature`);
+  assert.equal(await git(remote, "rev-parse", "refs/heads/feature"), merged);
+
+  const object = path.join(root, ".git/lfs/objects", hash.slice(0, 2), hash.slice(2, 4), hash);
+  await mkdir(path.dirname(object), { recursive: true });
+  await writeFile(object, content);
+  const second = await git(root, "commit-tree", await git(root, "rev-parse", `${base}^{tree}`), "-p", base, "-m", "Second feature");
+  await git(root, "-c", "core.hooksPath=/dev/null", "push", "-q", "origin", `${second}:refs/heads/second`);
+  const secondMerged = await git(root, "commit-tree", await git(root, "rev-parse", `${published}^{tree}`), "-p", second, "-p", published, "-m", "Merge main");
+  const error = await rejectedGit(root, ["push", "origin", `${secondMerged}:refs/heads/second`]);
+  assert.match(gitErrorOutput(error), /payload\.bin/);
+  assert.equal(gitErrorOutput(error).includes(token), false);
+  assert.equal(await git(remote, "rev-parse", "refs/heads/second"), second);
+});
+
 test("pre-push ignores replacement objects while scanning unpublished history", async t => {
   const { root, remote, base } = await protectedRemote(t);
   const { unsafe, head } = await unpublishedRemovedHistory(root, base);

@@ -12,8 +12,7 @@ import { announceMenu } from "../ui/menuBus";
 import { runLocalAppCommand } from "../appControl";
 import { readAppControlRuntime } from "../appControlRuntime";
 import { fuzzyMatch } from "../fuzzyMatch";
-import { HELP_PAGES } from "./HelpModal";
-import { HELP_SECTIONS } from "./helpTopics";
+import { HELP_SECTIONS, helpLabel, helpPage } from "./helpTopics";
 import { generalSections, securitySections } from "./settingsSections";
 import { useDefaultEditor } from "../state/defaultEditor";
 import { readRecentFolders } from "../folderShortcuts";
@@ -278,8 +277,8 @@ function usePaletteItems(open: boolean): PaletteItem[] {
         keywords: "new session start", run: () => requestNewSession(path, deviceHost(device)) });
     }
 
-    for (const section of HELP_SECTIONS) for (const topic of section.topics) items.push({ id: `help:${topic}`, group: "help", icon: HELP_PAGES[topic].icon, label: HELP_PAGES[topic].label,
-      detail: section.label, keywords: `docs guide ${topic}`, run: command("open_help", { topic }) });
+    for (const section of HELP_SECTIONS) for (const topic of section.topics) items.push({ id: `help:${topic}`, group: "help", icon: section.icon, label: helpLabel(topic),
+      detail: section.label, keywords: `docs guide ${topic} ${helpPage(topic).title}`, run: command("open_help", { topic }) });
     return items;
   }, [open, tiles, tileTitles, workspaces, activeWorkspaceId, activeId, sessionWs, hiddenTiles, devices, activeDevices, allSessions, tileCode, themeId, semiTransparent, grayscale, spacing, columns, prompts, iconSet]);
 }

@@ -1,8 +1,10 @@
 .settings-hub-backdrop[hidden] { display: none; }
 .settings-hub-backdrop { backdrop-filter: none; -webkit-backdrop-filter: none; }
 .modal.settings-hub { --muted: color-mix(in srgb, var(--text) 68%, var(--surface)); width: 720px; height: min(500px, 82vh); max-height: 82vh; }
-.settings-hub .modal-head { padding: 10px 16px; border-bottom: 1px solid var(--divider); }
-.settings-hub .modal-title { font-size: var(--fs-md); }
+/* Help's figures (.help-figure) draw other dialogs inside this one: only the
+   Settings dialog's own head, or one a scene draws, takes these. */
+.settings-hub .modal-head:where(:not(.help-figure *)), :where(.help-figure) .settings-hub .modal-head { padding: 10px 16px; border-bottom: 1px solid var(--divider); }
+.settings-hub .modal-title:where(:not(.help-figure *)), :where(.help-figure) .settings-hub .modal-title { font-size: var(--fs-md); }
 .settings-hub-layout { display: flex; flex: 1; min-height: 0; }
 .settings-hub-nav { display: flex; flex-direction: column; flex: 0 0 auto; width: max-content; min-width: 178px; max-width: 240px; padding: 10px 8px; gap: 3px; overflow-y: auto; border-right: 1px solid var(--divider); background: color-mix(in srgb, var(--surface-alt) 24%, transparent); }
 .settings-nav-group { flex-shrink: 0; }
@@ -117,6 +119,41 @@
 
 /* Help shows one page at a time inside the Settings content column. */
 .settings-hub-content .help-page .doc-content { padding: 0; overflow: visible; animation: none; display: flex; flex-direction: column; }
+/* Help's own column (HelpModal.tsx): laid out as the settings pages' column,
+   but outside it, so none of the settings pages' rules reach a page's scenes. */
+.help-hub-content { min-height: 0; padding: 22px; overflow: auto; scrollbar-gutter: stable; font-size: var(--fs-md); line-height: 1.5; }
+.help-hub-content > * { width: 100%; min-width: 0; margin-inline: auto; }
+.help-article > .help-tour-banner .btn { width: auto; min-height: 30px; padding: 5px 10px; font-size: var(--fs-md); font-weight: 500; box-shadow: none; border-radius: var(--r-sm); }
+/* A page's content is the docs page (src/help/generated). Every rule here
+   styles the page's own blocks, the direct children of .help-prose and the
+   text inside them, never a figure's scene, which draws the app's windows
+   with the app's own rules. */
+.help-prose { min-width: 0; }
+.help-prose > :first-child { margin-top: 0; }
+.help-prose > :last-child { margin-bottom: 0; }
+.help-prose > .doc-p { margin: 0 0 12px; line-height: 1.65; }
+.help-prose > .help-h { margin: 20px 0 8px; color: var(--text); font-size: var(--fs-md); font-weight: 600; line-height: 1.4; }
+.help-prose > :is(ul, ol) { display: grid; gap: 5px; margin: 0 0 12px; padding-left: 18px; color: color-mix(in srgb, var(--text) 82%, var(--muted)); font-size: var(--fs-md); line-height: 1.6; }
+.help-prose > :is(ul, ol) > li::marker { color: var(--muted); }
+.help-prose > :is(p, ul, ol, table, .doc-note) :is(strong, b) { color: var(--text); font-weight: 600; }
+.help-prose > :is(p, ul, ol, table, .doc-note) a { color: var(--text); text-decoration: underline; text-decoration-color: color-mix(in srgb, var(--text) 35%, transparent); text-underline-offset: 2px; }
+.help-prose > :is(p, ul, ol, table, .doc-note) a:hover { text-decoration-color: var(--text); }
+.help-prose > :is(p, ul, ol, table, .doc-note) .kbd { margin: 0 1px; vertical-align: 1px; }
+.help-prose > :is(p, ul, ol, table, .doc-note) .doc-code { white-space: normal; overflow-wrap: anywhere; }
+.help-prose > .doc-note { margin: 14px 0; font-size: var(--fs-sm); line-height: 1.6; }
+.help-callout-body { flex: 1; min-width: 0; }
+.help-callout-body > p { margin: 0; color: inherit; font-size: inherit; line-height: inherit; }
+.help-callout-body > p + p { margin-top: 6px; }
+.help-prose > table { margin: 0 0 14px; }
+.help-prose > .help-table th { padding: 7px 8px; border-bottom: 1px solid var(--divider); color: var(--muted); font-size: var(--fs-sm); font-weight: 600; text-align: left; }
+.help-prose > .help-table td:first-child { width: auto; white-space: normal; color: var(--text); }
+/* The docs' product scenes: the app window at its real size, framed on what
+   the page is about, as the website shows them. The scene's text takes the
+   theme's own muted colour rather than the one this dialog tints for itself
+   (HelpModal sets --help-root-muted from the document root). */
+.help-prose > .help-figure { margin: 4px 0 16px; --muted: var(--help-root-muted); color: var(--text); font-size: var(--fs-md); line-height: normal; }
+.help-figure > .doc-scene { overflow: hidden; border-radius: var(--r-lg); box-shadow: 0 0 0 1px var(--hairline); }
+.help-figure > .doc-scene > .h-visual { border-radius: inherit; }
 .help-tour-banner { display: flex; align-items: center; gap: 12px; padding: 12px 14px; margin-bottom: 6px; border: 1px solid var(--hairline); border-radius: var(--r-lg); background: color-mix(in srgb, var(--accent) 7%, transparent); }
 .help-tour-banner > svg { flex-shrink: 0; color: var(--text); }
 .help-tour-banner > div { flex: 1; display: flex; flex-direction: column; gap: 1px; min-width: 0; }
@@ -183,9 +220,13 @@
 .doc-dialog-demo .cmdk { width: 100%; max-width: 440px; box-shadow: none; pointer-events: none; }
 .doc-dialog-demo .cmdk-list { max-height: none; overflow: visible; }
 .doc-changes { display: grid; grid-template-columns: 182px minmax(0, 1fr); gap: 10px; pointer-events: none; }
-.doc-changes-side { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.doc-changes-side { display: flex; flex-direction: column; gap: 6px; min-width: 0; container-type: inline-size; }
 .doc-changes-main { min-width: 0; overflow: hidden; border: 1px solid var(--hairline); border-radius: var(--r-sm); }
 .doc-changes-main .doc-tile-body { padding: 6px 8px; }
+.doc-changes-bar { grid-column: 1 / -1; }
+/* The Worktrees dialog demo: its search placeholder and small buttons as the dialog draws them. */
+.doc-search-placeholder { flex: 1; min-width: 0; overflow: hidden; color: var(--muted); font-size: var(--fs-md); text-overflow: ellipsis; white-space: nowrap; }
+.settings-hub-content .wtm .btn-sm { min-height: 0; padding: 0 12px; border-radius: var(--r-md); font-weight: 550; }
 .code-diff-mode > span { display: inline-flex; align-items: center; gap: 4px; height: 20px; padding: 0 8px; border-radius: var(--r-xs); color: var(--muted); font-size: var(--fs-sm); font-weight: 600; }
 .code-diff-mode > span.on { background: var(--surface-alt); color: var(--text); }
 .doc-diff-del { color: var(--danger-foreground, var(--danger)); }
@@ -195,11 +236,13 @@
 .doc-review .doc-tile-body { border-top: 1px solid var(--divider); }
 .doc-diff-picked { background: color-mix(in srgb, var(--accent) 22%, transparent); }
 .doc-review .code-diff-ask { border-bottom: 0; }
-.doc-review-input { flex: 1 1 200px; min-width: 0; padding: 4px 8px; border: 1px solid var(--hairline); border-radius: var(--r-sm); color: var(--text); font-size: var(--fs-sm); }
+.doc-review-input { display: inline-flex; align-items: center; overflow: hidden; white-space: nowrap; }
 .doc-hovercard { display: flex; flex-direction: column; gap: 2px; align-self: center; max-width: 100%; padding: 8px 10px; border: 1px solid var(--hairline); border-radius: var(--r-sm); background: var(--surface); color: var(--text); font-size: var(--fs-xs); line-height: 1.5; box-shadow: 0 4px 14px rgba(0, 0, 0, 0.14); }
 .doc-quote { color: var(--text); font-size: var(--fs-md); font-style: italic; }
 .doc-quickchat { display: flex; flex-direction: column; gap: 8px; }
 .doc-quickchat .doc-tile-body { border: 1px solid var(--hairline); border-radius: var(--r-sm); }
+/* Notification rows in previews: their buttons are spans, sized as the panel's buttons. */
+.doc-panel .notification-row-actions > span { width: 28px; height: 28px; flex: 0 0 28px; }
 .settings-hub-content .doc-h { margin: 18px 0 8px; font-size: var(--fs-md); font-weight: 550; text-transform: none; letter-spacing: 0; color: var(--text); }
 .settings-hub-content .doc-p { font-size: var(--fs-sm); line-height: 1.75; margin: 8px 0; }
 .settings-hub-content .doc-row { padding: 11px 0; gap: 12px; }
@@ -210,6 +253,9 @@
 .settings-hub-content .doc-note > svg { color: var(--muted); }
 .settings-hub-content .doc-panelwrap { display: flex; flex-direction: column; align-items: center; gap: 8px; border: 0; padding: 0; margin: 0 0 14px; background: transparent; }
 .settings-hub-content .doc-panel { margin: 0 auto; max-width: 100%; }
+/* The Port manager preview is the menu bar dropdown, not a Settings page: its status row and ports keep the dropdown's spacing. */
+.settings-hub-content .doc-panel .ports-menu-services .ports-status { gap: 7px; padding: 6px 10px; }
+.settings-hub-content .doc-panel .ports-menu-services .port-row { padding: 5px 10px; }
 .settings-hub-content .doc-hero { padding: 12px; margin: 0 0 14px; border: 1px solid var(--hairline); border-radius: var(--r-sm); background: transparent; }
 .settings-hub-content .doc-demo { overflow: auto; padding: 10px; margin: 10px 0; }
 .settings-hub-content .doc-steps { gap: 0; margin: 8px 0 14px; }
@@ -230,7 +276,7 @@
 .about-resource:hover { color: var(--muted); }
 
 @container (max-width: 430px) {
-  .settings-hub-content { padding: 16px; }
+  :is(.settings-hub-content, .help-hub-content) { padding: 16px; }
   .settings-hub-content .settings-form { grid-template-columns: 1fr; }
   .settings-hub-content :is(.settings-row, .set-row) { flex-wrap: wrap; gap: 10px; }
   .settings-hub-content .set-label { min-width: 140px; }
@@ -294,8 +340,7 @@
 .settings-hub-sublabel { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 /* Settings → Security: a page per group (tools, permissions, this device)
    with its state and actions on top. The rows are the setup screen's own,
-   so they get the same tour variables here. The group cards below are the
-   Help page's picture of the groups. */
+   so they get the same tour variables here. */
 .setup-settings {
   --tour-strong: var(--text);
   --tour-on-strong: var(--opaque-surface, var(--surface));
@@ -311,35 +356,11 @@
 .setup-settings-intro .btn { flex: 0 0 auto; }
 .setup-settings-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 6px; }
 .setup-settings-actions .setup-settings-state { margin-right: 4px; }
-.setup-settings-groups { display: flex; flex-direction: column; gap: 8px; }
-.setup-settings-group { border: 1px solid var(--hairline); border-radius: var(--r-lg); overflow: hidden; }
-.setup-settings-head {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  width: 100%;
-  min-height: 44px;
-  padding: 0 14px;
-  border: 0;
-  background: transparent;
-  color: var(--text);
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
-}
-.setup-settings-head:hover { background: var(--surface-alt); }
-.setup-settings-head:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: -2px; }
-.setup-settings-icon { flex: 0 0 auto; color: var(--muted); }
-.setup-settings-title { flex: 1; min-width: 0; font-size: var(--fs-md); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .setup-settings-state { flex: 0 0 auto; font-size: var(--fs-sm); color: var(--muted); }
 .setup-settings-state.is-ok { color: var(--success-foreground, var(--success)); }
 .setup-settings-state.is-action { color: var(--warning); }
-.setup-settings-chevron { flex: 0 0 auto; color: var(--muted); transition: transform 0.15s ease; }
-.setup-settings-group.is-open .setup-settings-chevron { transform: rotate(90deg); }
-.setup-settings-body { padding: 14px; border-top: 1px solid var(--divider); }
-@media (prefers-reduced-motion: reduce) { .setup-settings-chevron { transition: none; } }
 /* Menu buttons (Settings > General): a titled card per bar, one row per item
-   with its switch, like the Security group cards. A disabled card (status bar off)
+   with its switch, like the setup rows. A disabled card (status bar off)
    fades and its switches rest. */
 .settings-hub-content .bar-item-settings + .bar-item-settings { margin-top: 20px; }
 /* The card's own switch lines up with its rows' switches: their 12px padding plus the 1px border. */

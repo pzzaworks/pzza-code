@@ -111,6 +111,22 @@ pub fn install(app: &tauri::AppHandle) -> tauri::Result<()> {
                     ],
                 ),
                 (
+                    "Guides",
+                    &[
+                        ("run-multiple-claude-code-sessions", "Parallel sessions"),
+                        ("claude-code-git-worktrees", "Git worktrees"),
+                        ("compare-claude-code-and-codex", "Claude Code vs Codex"),
+                        (
+                            "send-one-prompt-to-multiple-agents",
+                            "One prompt, many agents",
+                        ),
+                        ("run-claude-code-over-ssh", "Claude Code over SSH"),
+                        ("keep-claude-code-running", "Keep sessions running"),
+                        ("claude-code-permission-prompts", "Permission prompts"),
+                        ("track-claude-code-usage-limits", "Usage limits"),
+                    ],
+                ),
+                (
                     "Workspace",
                     &[
                         ("tiles", "Sessions & tiles"),

@@ -56,5 +56,6 @@ Thumbs.db
 !/scripts/build-local.sh
 !/scripts/fetch-onnxruntime.sh
 !/scripts/release.sh
+!/scripts/sync-help.mjs
 !/scripts/terminal-renderer-patch.mjs
 !/scripts/terminal-renderer-patch.d.mts

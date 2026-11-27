@@ -36,11 +36,12 @@ export function runNoticeAction(item: Notice) {
   openTileChangesView(item.target.tileId, item.action.folder);
 }
 
-// One notice. Its text is three lines in the panel, where a click opens it in
-// Settings; there it is six lines with Show more when there is more (measured,
-// so short notices never offer it). The arrow opens the related terminal or
-// page in both.
-function NoticeRow({ item, readOnly, openDetails }: { item: Notice; readOnly: boolean; openDetails?: () => void }) {
+// One notice. Its text is three lines in the panel and six in Settings, with
+// Show more when there is more (measured, so short notices never offer it).
+// Clicking it does what the arrow does: open the related terminal or page and
+// close the panel. A notice with nothing to open shows its full text in
+// Settings instead, when clicked in the panel.
+function NoticeRow({ item, readOnly, openDetails, onOpened }: { item: Notice; readOnly: boolean; openDetails?: () => void; onOpened?: () => void }) {
   const remove = useNotifications(state => state.remove);
   const body = useRef<HTMLSpanElement>(null);
   const [expanded, setExpanded] = useState(false);
@@ -59,8 +60,14 @@ function NoticeRow({ item, readOnly, openDetails }: { item: Notice; readOnly: bo
   const related = !!(item.target?.section || item.target?.tileId);
   const actions = 1 + (review ? 1 : 0) + (related ? 1 : 0);
   const permission = item.action?.kind === "permission";
+  const openRelated = () => { openNotice(item); onOpened?.(); };
+  const openContent = () => {
+    if (related) return openRelated();
+    useNotifications.getState().read(item.id);
+    if (!readOnly) openDetails?.();
+  };
   return <article className={`notification-row ${item.read ? "" : "unread"} ${permission ? "notification-row-permission" : ""}`} style={{ "--notification-actions": actions } as CSSProperties}>
-    <button className="notification-content" onClick={() => { useNotifications.getState().read(item.id); if (!readOnly) openDetails?.(); }}>
+    <button className="notification-content" onClick={openContent}>
       <span className="notification-title"><strong>{item.title}</strong>{!item.read ? <span className="notification-new">New</span> : null}</span>
       {item.source || item.device ? <span className="notification-origin">
         {item.source ? <span className="notification-source">{item.source}</span> : null}
@@ -73,20 +80,20 @@ function NoticeRow({ item, readOnly, openDetails }: { item: Notice; readOnly: bo
     {readOnly && !waiting && (overflows || expanded) ? <button type="button" className="notification-more" aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>{expanded ? "Show less" : "Show more"}</button> : null}
     <div className="notification-row-actions">
       {review ? <button type="button" className="icon-btn notification-action" aria-label="Review changes" title="Review changes" onClick={() => runNoticeAction(item)}><FileDiff size={15} /></button> : null}
-      {related ? <button type="button" className="icon-btn notification-open" aria-label={`Open target for ${item.title}`} title="Open related activity" onClick={() => openNotice(item)}><ArrowUpRight size={15} /></button> : null}
+      {related ? <button type="button" className="icon-btn notification-open" aria-label={`Open target for ${item.title}`} title="Open related activity" onClick={openRelated}><ArrowUpRight size={15} /></button> : null}
       <button type="button" className="dismiss-btn notification-dismiss" aria-label={`Dismiss ${item.title}`} onClick={() => remove(item.id)}><X size={16} /></button>
     </div>
     {permission ? <PermissionNoticeActions notice={item} /> : null}
   </article>;
 }
 
-function Rows({ items, readOnly = false, openDetails }: { items: Notice[]; readOnly?: boolean; openDetails?: () => void }) {
+function Rows({ items, readOnly = false, openDetails, onOpened }: { items: Notice[]; readOnly?: boolean; openDetails?: () => void; onOpened?: () => void }) {
   return <div className="notification-list">{items.length
-    ? items.map(item => <NoticeRow key={item.id} item={item} readOnly={readOnly} openDetails={openDetails} />)
+    ? items.map(item => <NoticeRow key={item.id} item={item} readOnly={readOnly} openDetails={openDetails} onOpened={onOpened} />)
     : <p className="set-note">You’re all caught up. New activity will appear here.</p>}</div>;
 }
 
-export function LatestNotifications({ viewAll }: { viewAll(): void }) {
+export function LatestNotifications({ viewAll, close }: { viewAll(): void; close?: () => void }) {
   const items = useNotifications(state => state.items);
   const pending = usePermissionPrompts(state => state.pending);
   // Prompts still waiting stay on top, however much activity came after them.
@@ -95,7 +102,7 @@ export function LatestNotifications({ viewAll }: { viewAll(): void }) {
   return <div className="menu-body latest-notifications"><div className="notification-actions menu-head"><span className="menu-head-title">Notifications</span>
     {waiting.length ? <span className="perm-waiting-count" role="status"><ShieldQuestion size={12} aria-hidden="true" />{waiting.length} waiting for approval</span> : null}
     <button className="btn btn-sm" onClick={() => useNotifications.getState().read()}>Mark all read</button></div>
-    <Rows items={shown} openDetails={viewAll} /><button className="btn" onClick={viewAll}>View all notifications</button></div>;
+    <Rows items={shown} openDetails={viewAll} onOpened={close} /><button className="btn" onClick={viewAll}>View all notifications</button></div>;
 }
 // Compact count for badges: exact up to nine, then "9+" so the chip keeps its width.
 export function countLabel(count: number): string {
@@ -108,7 +115,7 @@ export function NotificationsTool({ viewAll }: { viewAll(): void }) {
   return <Dropdown icon={Bell} title="Notifications" controlId="notifications" width={380} panelClassName="notifications-panel" tourId="notifications"
     badgeLabel={unread ? `Notifications: ${unread} unread` : undefined}
     cornerBadge={unread ? countLabel(unread) : null}>
-    {(close) => <LatestNotifications viewAll={() => { close(); viewAll(); }} />}
+    {(close) => <LatestNotifications viewAll={() => { close(); viewAll(); }} close={close} />}
   </Dropdown>;
 }
 function NotificationToggle({ label, hint, checked, onChange, disabled = false }: { label: string; hint?: string; checked: boolean; onChange: (checked: boolean) => void; disabled?: boolean }) {

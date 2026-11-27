@@ -147,10 +147,12 @@ button {
 :root { --group-divider: var(--border); }
 :root[data-appearance="dark"] { --group-divider: color-mix(in srgb, var(--control-border) 80%, transparent); }
 .topbar-tools-sep { flex: 0 0 auto; width: 1px; height: 14px; margin: 0 5px; background: var(--group-divider); }
-/* New session keeps the bordered look of a .btn, as an icon-only square. */
-.topbar [data-tour="new-session"] > .icon-btn { width: 30px; height: 30px; margin-left: 4px; border: 1px solid var(--hairline-strong); border-radius: var(--r-md); background: transparent; }
+/* New session keeps the bordered look of a .btn, as an icon-only square
+   (the Help's picture of the menu bar draws the same square). */
+.topbar [data-tour="new-session"] > .icon-btn,
+.doc-new-session.icon-btn { width: 30px; height: 30px; margin-left: 4px; border: 1px solid var(--hairline-strong); border-radius: var(--r-md); background: transparent; }
 .topbar [data-tour="new-session"] > .icon-btn:hover:not(:disabled) { border-color: var(--muted); background: var(--surface-alt); }
-:root[data-appearance="light"] .topbar [data-tour="new-session"] > .icon-btn { background: var(--bg); border-radius: var(--r-sm); }
+:root[data-appearance="light"] :is(.topbar [data-tour="new-session"] > .icon-btn, .doc-new-session.icon-btn) { background: var(--bg); border-radius: var(--r-sm); }
 :root[data-appearance="light"] .topbar [data-tour="new-session"] > .icon-btn:hover:not(:disabled) { background: var(--hover); }
 /* The tool cluster: inline on wide windows, collapsed behind a menu button and
    opened as a full-width bar under the top bar on narrow ones. It is rendered
@@ -2821,6 +2823,17 @@ button.tile-strip-shared:disabled { cursor: default; opacity: 0.7; }
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.16);
   pointer-events: none;
   text-align: left;
+  /* Setup previews reuse the setup screen's rows, which read these, as
+     Settings → Security does. */
+  --tour-strong: var(--text);
+  --tour-on-strong: var(--opaque-surface, var(--surface));
+  --tour-card: var(--opaque-surface, var(--surface));
+  --tour-well: color-mix(in srgb, var(--surface-alt) 32%, var(--tour-card));
+  --tour-line: var(--hairline);
+}
+:root[data-appearance="light"] .doc-panel {
+  --tour-card: var(--surface);
+  --tour-well: color-mix(in srgb, var(--surface-alt) 45%, var(--surface));
 }
 /* numbered "how to" steps */
 .doc-steps {
@@ -2914,6 +2927,7 @@ button.tile-strip-shared:disabled { cursor: default; opacity: 0.7; }
 }
 .doc-tilehead-selected {
   background: color-mix(in srgb, var(--accent) 14%, var(--surface));
+  border-color: var(--accent);
 }
 /* a whole tile: header, a few terminal rows and the status strip */
 .doc-tile {
@@ -3069,27 +3083,25 @@ button.tile-strip-shared:disabled { cursor: default; opacity: 0.7; }
   align-items: center;
   gap: 6px;
 }
+/* the tab strip on the top bar's bottom line, as WorkspaceTabs lays it out:
+   the active tab covers the line and joins the grid below it */
 .doc-tabs {
   display: flex;
-  gap: 4px;
+  align-items: flex-end;
+  gap: 2px;
+  border-bottom: 1px solid var(--divider);
 }
-.doc-tabs .ws-tab {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
+.doc-tabs :is(.ws-tab, .ws-tab-add) {
   pointer-events: none;
 }
-.ws-tab-add-demo {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 24px;
-  height: 24px;
-  border-radius: var(--r-sm);
-  background: transparent;
-  border: 1px solid var(--hairline);
-  color: var(--muted);
-  font-weight: 700;
+/* the + in running text, shown as it looks under the pointer */
+.doc-steps .doc-ws-add {
+  width: 22px;
+  height: 22px;
+  margin: 0;
+  vertical-align: middle;
+  background: var(--surface-alt);
+  color: var(--text);
 }
 .doc-keys {
   width: 100%;
@@ -4375,8 +4387,11 @@ button.update-button-pending:hover { background: color-mix(in srgb, var(--text) 
   font-weight: 550;
 }
 /* In dialogs every text button is one height, whichever size the markup asks
-   for, and never squeezed shorter by a column that runs out of room. */
-.modal :is(.btn, .btn-sm) {
+   for, and never squeezed shorter by a column that runs out of room. Help's
+   figures (.help-figure) draw other windows inside the Settings dialog, so
+   there only a dialog inside the scene counts. */
+.modal :is(.btn, .btn-sm):where(:not(.help-figure *)),
+:where(.help-figure) .modal :is(.btn, .btn-sm) {
   height: 30px;
   flex-shrink: 0;
 }

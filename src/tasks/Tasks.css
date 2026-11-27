@@ -205,5 +205,7 @@
 /* ------------------------------------------------------------ Help demos */
 .doc-tasks-menu { width: min(360px, 100%); margin: 0 auto; text-align: left; }
 .doc-tasks-menu .task-row, .doc-tasks-menu .usage-seg > span { cursor: default; }
-.usage-seg.task-attempts > .task-attempt-seg { display: inline-flex; align-items: center; justify-content: center; gap: 6px; flex: 1 1 0; min-width: 0; padding: 4px 8px; border-radius: var(--r-sm); color: var(--muted); font-size: var(--fs-md); font-weight: 600; }
-.usage-seg.task-attempts > .task-attempt-seg.on { background: var(--surface-alt); color: var(--text); }
+/* A move button at the end of the list, drawn as the form's disabled button. */
+.doc-tasks-menu .ns-clear.task-agent-remove.is-disabled { opacity: 0.35; }
+/* The mode switch's segments share its width, as its buttons do. */
+.doc-tasks-menu .usage-seg.task-mode-seg > span { flex: 1 1 0; min-width: 0; padding-inline: 6px; text-align: center; }

@@ -362,17 +362,27 @@ async function protect() {
     const template = (part) => /^\.env\.(?:example|sample|template|dist|defaults|schema)$/i.test(part);
     const blockedPath = (file) => file.split("/").some((part) => !template(part) && /^(?:\.env(?:\..*)?|\.envrc|\.netrc|\.npmrc|\.pypirc|\.?(?:credentials|secrets?)(?:(?:[._-][^.]+)*\.(?:json|ya?ml|toml|ini|conf|config|csv|txt|xml))?|auth\.json|id_(?:rsa|dsa|ecdsa|ed25519)(?:\.(?:pem|key))?|.*\.(?:pem|key|p12|pfx|jks|keystore))$/i.test(part))
       || /(?:^|\/)service[-_]?account[^/]*\.json$/i.test(file);
-    const inspectPaths = (raw) => {
+    // `fresh`, when given, holds the objects new to the destination: a blob it
+    // already holds is published content, so neither its path nor its
+    // contents can expose anything new and it is skipped (kept in
+    // `heldBlobs`, since an LFS pointer's content lives on another server).
+    const heldBlobs = new Map();
+    const heldPointers = new Set();
+    const inspectPaths = (raw, fresh) => {
       const fields = raw.split("\0");
       for (let index = 0; index < fields.length; index++) {
         const entry = /^:[0-7]{6} ([0-7]{6}) [a-f0-9]+ ([a-f0-9]+) [ACMT]$/.exec(fields[index].trim());
         if (!entry) continue;
         const file = fields[++index];
-        if (file && blockedPath(file)) findings.push({ path: file, line: 0, rule: "sensitive-file" });
         // Gitlinks reference another repository; regular files and symlink
         // targets have blob contents in this repository and must be scanned.
+        if (entry[1] !== "160000" && (!file || !["100644", "100755", "120000"].includes(entry[1]) || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(entry[2]))) fail("Cannot verify a changed Git object");
+        if (fresh && entry[1] !== "160000" && !fresh.has(entry[2])) {
+          heldBlobs.set(entry[2], [...new Set([...(heldBlobs.get(entry[2]) || []), file])]);
+          continue;
+        }
+        if (file && blockedPath(file)) findings.push({ path: file, line: 0, rule: "sensitive-file" });
         if (entry[1] === "160000") continue;
-        if (!file || !["100644", "100755", "120000"].includes(entry[1]) || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(entry[2])) fail("Cannot verify a changed Git object");
         const name = `${entry[2]}.txt`;
         blobPaths.set(name, [...new Set([...(blobPaths.get(name) || []), file])]);
       }
@@ -443,7 +453,10 @@ async function protect() {
                 }
               } catch { /* Missing LFS data cannot be approved for upload. */ }
             }
-            if (!verified) for (const source of blobPaths.get(`${id}.txt`)) findings.push({ path: source, line: 0, rule: "unverified-lfs-content" });
+            // A pointer the destination already holds uploads only LFS content
+            // this machine has: missing content cannot be sent, so only a new
+            // pointer requires it.
+            if (!verified && !heldPointers.has(id)) for (const source of blobPaths.get(`${id}.txt`)) findings.push({ path: source, line: 0, rule: "unverified-lfs-content" });
           }
           await fs.writeFile(path.join(snapshot, `${id}.txt`), content, { mode: 0o600, flag: "wx" });
           offset += size + 1;
@@ -453,6 +466,118 @@ async function protect() {
         await scan(["dir", snapshot]);
         await fs.rm(snapshot, { recursive: true, force: true });
       }
+    };
+    const objectId = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/;
+    const zero = (value) => /^0+$/.test(value);
+    // Keeps the ids this repository has as a commit or an annotated tag.
+    const localTips = async (ids) => {
+      const unique = [...new Set(ids)].filter((id) => objectId.test(id) && !zero(id));
+      if (!unique.length) return [];
+      const types = (await run("git", ["cat-file", "--batch-check"], { stdin: unique.join("\n") + "\n", maxBuffer: 16 * 1024 * 1024 })).output.split("\n");
+      return unique.filter((id, index) => new RegExp(`^${id} (?:commit|tag) \\d+$`).test(types[index] || ""));
+    };
+    // The destination's default branch, from its own advertisement at the
+    // exact URL being published to: the one published history every reader
+    // of the repository can see. Other branches and tags never count, since
+    // a server may restrict who reads them, and local tracking refs never
+    // count either: they can be stale (a branch force-pushed elsewhere to
+    // drop a secret) or fetched from another URL. `updates` must agree with
+    // what Git saw while pushing. Returns null when this cannot be verified.
+    const destinationHead = async (url, updates) => {
+      if (!text(url) || !url || url.startsWith("-")) return null;
+      // Git may rewrite URLs again on a read. A different lookup destination
+      // cannot establish what the original push destination already contains.
+      const resolved = await run("git", ["ls-remote", "--get-url", "--", url], { allowFailure: true, timeout: 2000, maxBuffer: 8192 });
+      if (resolved.code !== 0 || resolved.output !== `${url}\n`) return null;
+      const requested = new Set(updates.map(({ ref }) => ref));
+      const advert = await run("git", ["ls-remote", "--", url, "HEAD", ...requested], { allowFailure: true, timeout: 10000, maxBuffer: 64 * 1024 });
+      if (advert.code !== 0 || !advert.output.endsWith("\n")) return null;
+      const advertised = new Map();
+      for (const line of advert.output.slice(0, -1).split("\n")) {
+        const fields = line.split("\t");
+        if (fields.length !== 2 || !objectId.test(fields[0]) || zero(fields[0]) || advertised.has(fields[1])
+          || (fields[1] !== "HEAD" && !requested.has(fields[1]))) return null;
+        advertised.set(fields[1], fields[0]);
+      }
+      for (const update of updates) {
+        if (zero(update.remote) ? advertised.has(update.ref) : advertised.get(update.ref) !== update.remote) return null;
+      }
+      const head = advertised.get("HEAD");
+      if (!head) return null;
+      const object = await run("git", ["cat-file", "-t", head], { allowFailure: true, timeout: 2000, maxBuffer: 1024 });
+      return object.code === 0 && object.output === "commit\n" ? head : null;
+    };
+    const revisionsFor = (tips, excluded) => [...new Set(tips), ...new Set(excluded.map((id) => `^${id}`))].join("\n") + "\n";
+    // Every object reachable from the revisions, with the path rev-list names it by.
+    const objectsFor = async (revisions) => {
+      const listing = (await run("git", ["rev-list", "--objects", "--stdin"], { stdin: revisions, maxBuffer: 256 * 1024 * 1024 })).output;
+      const objects = new Map();
+      for (const line of listing.split("\n")) {
+        const space = line.indexOf(" ");
+        const id = space < 0 ? line : line.slice(0, space);
+        if (objectId.test(id) && !objects.has(id)) objects.set(id, space < 0 ? "" : line.slice(space + 1));
+      }
+      return objects;
+    };
+    // Reads small blobs whole, for telling LFS pointers apart.
+    const smallBlobs = async (ids) => {
+      if (!ids.length) return new Map();
+      const metadata = (await run("git", ["cat-file", "--batch-check"], { stdin: ids.join("\n") + "\n", maxBuffer: 64 * 1024 * 1024 })).output.split("\n");
+      const small = ids.filter((id, index) => { const entry = /^(\w+) blob (\d+)$/.exec(metadata[index] || ""); return entry?.[1] === id && Number(entry[2]) <= 1024; });
+      const contents = new Map();
+      if (!small.length) return contents;
+      const bytes = (await run("git", ["cat-file", "--batch"], { stdin: small.join("\n") + "\n", encoding: "buffer", maxBuffer: small.length * 1200 + 1024 * 1024 })).output;
+      let offset = 0;
+      for (const id of small) {
+        const end = bytes.indexOf(10, offset);
+        const entry = /^(\w+) blob (\d+)$/.exec(bytes.subarray(offset, end).toString("ascii"));
+        if (end < offset || !entry || entry[1] !== id) fail("Git returned an invalid blob snapshot");
+        offset = end + 1;
+        contents.set(id, bytes.subarray(offset, offset + Number(entry[2])).toString("utf8"));
+        offset += Number(entry[2]) + 1;
+      }
+      return contents;
+    };
+    // History walks never follow the user's log configuration: a signature
+    // line, combined merge diffs or a hidden root diff would drop changed
+    // files from the listing.
+    const logArgs = ["-c", "log.showSignature=false", "-c", "log.diffMerges=separate", "-c", "log.showRoot=true", "log", "--no-color", "--no-show-signature", "--root", "-m", "--full-history", "--stdin"];
+    // Scans what publishing `tips` adds to a destination that holds `held`:
+    // the commits reachable from the tips and not from anything it holds, and
+    // only the objects new to it, the set `git push` itself would send. A
+    // merge of an already published branch adds just the merge, and history
+    // the destination already has is never reported again. `walkOnly` limits
+    // which commits are walked without counting as published content.
+    const scanUnpublished = async (tips, held, walkOnly = []) => {
+      const revisions = revisionsFor(tips, [...held, ...walkOnly]);
+      const walked = await objectsFor(revisions);
+      // Without anything verified as held, every object counts as new.
+      const fresh = !walkOnly.length ? new Set(walked.keys()) : held.length ? new Set((await objectsFor(revisionsFor(tips, held))).keys()) : null;
+      inspectPaths((await run("git", [...logArgs, "--raw", "--abbrev=64", "-z", "--format=", "--no-renames", "--diff-filter=ACMT"], { stdin: revisions, maxBuffer: 256 * 1024 * 1024 })).output, fresh ?? undefined);
+      await scan(["stdin"], (await run("git", [...logArgs, "--format=%B"], { stdin: revisions, maxBuffer: 256 * 1024 * 1024 })).output);
+      // Every new blob appears in some walked commit's own diff. One that did
+      // not (an unexpected listing) is still checked, by its rev-list path.
+      const unlisted = [...walked.keys()].filter((id) => (!fresh || fresh.has(id)) && !blobPaths.has(`${id}.txt`));
+      if (unlisted.length) {
+        const types = (await run("git", ["cat-file", "--batch-check"], { stdin: unlisted.join("\n") + "\n", maxBuffer: 64 * 1024 * 1024 })).output.split("\n");
+        unlisted.forEach((id, index) => {
+          if (!new RegExp(`^${id} blob \\d+$`).test(types[index] || "")) return;
+          const file = walked.get(id) || id;
+          if (blockedPath(file)) findings.push({ path: file, line: 0, rule: "sensitive-file" });
+          blobPaths.set(`${id}.txt`, [file]);
+        });
+      }
+      // A held LFS pointer can still send content: the LFS server is not the
+      // Git destination. Only with LFS storage here, the only content it uploads.
+      const lfsStorage = path.resolve(common, (await run("git", ["config", "--path", "--get", "lfs.storage"], { allowFailure: true })).output.trim() || "lfs");
+      if (heldBlobs.size && await fs.stat(lfsStorage).then(() => true, () => false)) {
+        for (const [id, content] of await smallBlobs([...heldBlobs.keys()])) {
+          if (!content.startsWith("version https://git-lfs.github.com/spec/v1")) continue;
+          heldPointers.add(id);
+          blobPaths.set(`${id}.txt`, [...new Set([...(blobPaths.get(`${id}.txt`) || []), ...heldBlobs.get(id)])]);
+        }
+      }
+      return revisions;
     };
     const staged = ["commit", "commit_create", "hook_commit", "hook_message"].includes(input.operation);
     const headResult = await run("git", ["rev-parse", "--verify", "HEAD"], { allowFailure: true });
@@ -480,46 +605,34 @@ async function protect() {
       inspectPaths((await run("git", ["diff", "--cached", "--raw", "--abbrev=64", "-z", "--no-renames", "--diff-filter=ACMT"])).output);
     } else if (input.operation === "hook_push") {
       if (typeof input.updates !== "string" || input.updates.length > 1024 * 1024 || !text(input.remote, 256) || input.remote.startsWith("-")) fail("Invalid push references");
-      const oid = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/;
-      const zero = (value) => /^0+$/.test(value);
       const updates = [];
       const refs = new Set();
       for (const line of input.updates.trim().split("\n").filter(Boolean)) {
         const fields = line.split(/\s+/);
-        if (fields.length !== 4 || !oid.test(fields[1]) || !oid.test(fields[3])) fail("Invalid push reference update");
+        if (fields.length !== 4 || !objectId.test(fields[1]) || !objectId.test(fields[3])) fail("Invalid push reference update");
         const [, local, ref, remote] = fields;
         if (refs.has(ref) || refs.size >= 128 || ref.length > 1024 || !ref.startsWith("refs/")
           || (await run("git", ["check-ref-format", ref], { allowFailure: true })).code !== 0) fail("Invalid push destination reference");
         refs.add(ref);
         updates.push({ local, ref, remote });
       }
-      for (const { local } of updates) if (!zero(local)) publishedTrees.push(local);
-      const destinationHead = async () => {
-        if (!text(input.remoteUrl) || !input.remoteUrl || input.remoteUrl.startsWith("-")) return null;
-        // Git may rewrite URLs again on a read. A different lookup destination
-        // cannot establish what the original push destination already contains.
-        const resolved = await run("git", ["ls-remote", "--get-url", "--", input.remoteUrl], { allowFailure: true, timeout: 2000, maxBuffer: 8192 });
-        if (resolved.code !== 0 || resolved.output !== `${input.remoteUrl}\n`) return null;
-        const advert = await run("git", ["ls-remote", "--", input.remoteUrl, "HEAD", ...refs], { allowFailure: true, timeout: 10000, maxBuffer: 64 * 1024 });
-        if (advert.code !== 0 || !advert.output.endsWith("\n")) return null;
-        const advertised = new Map();
-        for (const line of advert.output.slice(0, -1).split("\n")) {
-          const fields = line.split("\t");
-          if (fields.length !== 2 || !oid.test(fields[0]) || zero(fields[0]) || advertised.has(fields[1])
-            || (fields[1] !== "HEAD" && !refs.has(fields[1]))) return null;
-          advertised.set(fields[1], fields[0]);
-        }
-        for (const update of updates) {
-          if (zero(update.remote) ? advertised.has(update.ref) : advertised.get(update.ref) !== update.remote) return null;
-        }
-        const candidate = advertised.get("HEAD");
-        if (!candidate) return null;
-        const object = await run("git", ["cat-file", "-t", candidate], { allowFailure: true, timeout: 2000, maxBuffer: 1024 });
-        return object.code === 0 && object.output === "commit\n" ? candidate : null;
-      };
-      // Only default-head ancestry observed at this exact destination is an
-      // optional exclusion. Unknown destinations retain full-history scanning.
-      const published = updates.some(({ local, remote }) => !zero(local) && zero(remote)) ? await destinationHead() : null;
+      const pushed = updates.map(({ local }) => local).filter((local) => !zero(local));
+      publishedTrees.push(...pushed);
+      // What the destination holds: the old values Git itself reported for
+      // the updated refs, plus its verified default branch. An unverifiable
+      // advertisement leaves only Git's own values, so an unknown destination
+      // keeps the full-history scan.
+      const held = await localTips(updates.map(({ remote }) => remote));
+      // The advertisement costs a second connection, so it is read only when
+      // Git's own values may not cover the history: a new ref, a forced
+      // update, or merges bringing in another branch such as the default one.
+      const replacesHistory = async ({ local, remote }) => zero(remote) || (await run("git", ["merge-base", "--is-ancestor", remote, local], { allowFailure: true })).code !== 0;
+      let consult = false;
+      for (const update of updates) if (!zero(update.local) && await replacesHistory(update)) consult = true;
+      if (!consult && pushed.length) consult = (await run("git", ["rev-list", "--merges", "--max-count=1", "--stdin"], { stdin: revisionsFor(pushed, held) })).output.trim() !== "";
+      const published = consult ? await destinationHead(input.remoteUrl, updates) : null;
+      if (published) held.push(published);
+      const heldTags = new Set(held);
       const tags = new Set();
       let tagBytes = 0;
       const inspectTags = async (tip) => {
@@ -532,29 +645,19 @@ async function protect() {
           const headerEnd = content.indexOf("\n\n");
           const target = /^object ([a-f0-9]{40}|[a-f0-9]{64})\ntype (commit|tag)\n/.exec(content.subarray(0, headerEnd).toString("utf8"));
           if (headerEnd < 0 || !target) fail("Cannot verify this annotated tag target");
-          if (!tags.has(current)) {
+          // A tag's own content is newly published even when its commit is old,
+          // unless the destination already advertises this very tag object.
+          if (!tags.has(current) && !heldTags.has(current)) {
             tags.add(current);
             tagBytes += content.length;
             if (tags.size > 128 || tagBytes > 1024 * 1024) fail("Annotated tags exceed the protected scan limit");
-            // A tag's own content is newly published even when its commit is old.
             await scan(["stdin"], content, "tag annotation");
           }
           current = target[1];
         }
       };
-      const ranges = [];
-      for (const { local, remote } of updates) {
-        if (zero(local)) continue;
-        await inspectTags(local);
-        if (!zero(remote)) ranges.push(`${remote}..${local}`);
-        else ranges.push(published ? `${published}..${local}` : local);
-      }
-      for (const selected of ranges) {
-        const args = ["-m", "--full-history", ...selected.split(" ")];
-        inspectPaths((await run("git", ["log", "--raw", "--abbrev=64", "-z", "--format=", "--no-renames", "--diff-filter=ACMT", ...args])).output);
-        await scan(["stdin"], (await run("git", ["log", "--format=%B", ...args])).output);
-      }
-      range = ranges.join(";");
+      for (const local of pushed) await inspectTags(local);
+      if (pushed.length) range = await scanUnpublished(pushed, held);
     } else {
       let base = remoteBase || input.base;
       if (!base) {
@@ -566,11 +669,24 @@ async function protect() {
       }
       if (!base) fail("Specify the remote base branch to protect unpublished commits");
       const baseId = await git("rev-parse", "--verify", `${base}^{commit}`);
-      if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(baseId) || head === "unborn") fail("Cannot resolve the branch being protected");
-      range = `${baseId}..${head}`;
+      if (!objectId.test(baseId) || head === "unborn") fail("Cannot resolve the branch being protected");
       publishedTrees.push(head);
-      inspectPaths((await run("git", ["log", "--raw", "--abbrev=64", "-z", "--format=", "--no-renames", "--diff-filter=ACMT", "-m", "--full-history", range])).output);
-      await scan(["stdin"], await git("log", "--format=%B", range));
+      // The push destination's verified default branch is published already:
+      // merging it adds nothing new to scan. The base is a local ref that may
+      // be stale, so it only limits the walk. The destination is chosen as
+      // `git push` chooses it; the pre-push hook repeats this against the URL
+      // Git actually pushes to.
+      const setting = async (key) => {
+        const value = await run("git", ["config", "--get", key], { allowFailure: true });
+        return value.code === 0 && value.output.trim() && value.output.trim() !== "." ? value.output.trim() : null;
+      };
+      const branch = await run("git", ["symbolic-ref", "--quiet", "--short", "HEAD"], { allowFailure: true });
+      const branchName = branch.code === 0 ? branch.output.trim() : null;
+      const remoteName = (branchName && await setting(`branch.${branchName}.pushRemote`)) || await setting("remote.pushDefault")
+        || (branchName && await setting(`branch.${branchName}.remote`)) || "origin";
+      const pushUrl = await run("git", ["remote", "get-url", "--push", "--", remoteName], { allowFailure: true });
+      const remoteHead = pushUrl.code === 0 ? await destinationHead(pushUrl.output.trim(), []) : null;
+      range = await scanUnpublished([head], remoteHead ? [remoteHead] : [], [baseId]);
     }
     await scanBlobs();
     const operationText = [input.message, input.title, input.body].filter((value) => value !== undefined).join("\n");

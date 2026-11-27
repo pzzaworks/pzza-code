@@ -1,7 +1,7 @@
 {
   "name": "pzza-code",
   "private": true,
-  "version": "0.2.94",
+  "version": "0.2.95",
   "author": "Berke (pzzaworks)",
   "description": "Every terminal, every agent, one grid. A grid terminal manager for agentic coding - run, watch and orchestrate many terminals and AI coding agents across your machines.",
   "license": "MIT",
@@ -15,7 +15,8 @@
     "test:native:full": "cargo test --manifest-path src-tauri/Cargo.toml --locked --release --lib -- --include-ignored",
     "preview": "vite preview",
     "tauri": "tauri",
-    "build:local": "bash scripts/build-local.sh"
+    "build:local": "bash scripts/build-local.sh",
+    "sync:help": "node scripts/sync-help.mjs"
   },
   "dependencies": {
     "@codemirror/language": "^6.12.4",
